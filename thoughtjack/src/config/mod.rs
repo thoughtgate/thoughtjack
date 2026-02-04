@@ -2,3 +2,7 @@
 //!
 //! Handles loading and validation of `ThoughtJack` configuration files,
 //! including attack scenarios, tool definitions, and runtime settings.
+
+pub mod schema;
+
+pub use schema::*;
