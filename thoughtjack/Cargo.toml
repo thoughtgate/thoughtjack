@@ -1,0 +1,58 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "thoughtjack"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Adversarial MCP server for security testing"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/example/thoughtjack"
+keywords = ["mcp", "security", "testing", "adversarial"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+tokio = { version = "1.49", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+clap = { version = "4.5", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+thiserror = "2.0"
+async-trait = "0.1"
+dashmap = "6.1"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+base64 = "0.22"
+rand = "0.9"
+indexmap = { version = "2.13", features = ["serde"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+chrono = { version = "0.4", features = ["serde"] }
+axum = "0.8"
+futures = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []
+
+[[bin]]
+name = "thoughtjack"
+path = "src/main.rs"
+
+[lib]
+name = "thoughtjack"
+path = "src/lib.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
