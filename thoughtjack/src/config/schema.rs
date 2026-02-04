@@ -72,9 +72,24 @@ pub struct ServerMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 
+    /// Phase state scope (per-connection or global)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_scope: Option<StateScope>,
+
     /// MCP capabilities to advertise
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Capabilities>,
+}
+
+/// Phase state scope - determines how phase state is managed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateScope {
+    /// Each connection maintains its own phase state (default)
+    #[default]
+    PerConnection,
+    /// All connections share the same phase state
+    Global,
 }
 
 /// MCP server capabilities (F-014).
@@ -1191,17 +1206,17 @@ pub struct LoggingConfig {
 // Unknown Method Handling (F-013)
 // ============================================================================
 
-/// How to handle unknown MCP methods.
+/// How to handle unknown MCP methods (F-013).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UnknownMethodHandling {
-    /// Return success with null result
+    /// Return success with null result (default)
     #[default]
     Ignore,
-    /// Return JSON-RPC method not found error
+    /// Return JSON-RPC method not found error (-32601)
     Error,
-    /// Echo back the request (for testing)
-    Echo,
+    /// No response (test timeout handling)
+    Drop,
 }
 
 // ============================================================================
@@ -1977,5 +1992,216 @@ text: '{"key": "value"}'
             serde_yaml::from_str::<Role>("assistant").unwrap(),
             Role::Assistant
         );
+    }
+
+    #[test]
+    fn test_state_scope() {
+        assert_eq!(
+            serde_yaml::from_str::<StateScope>("per_connection").unwrap(),
+            StateScope::PerConnection
+        );
+        assert_eq!(
+            serde_yaml::from_str::<StateScope>("global").unwrap(),
+            StateScope::Global
+        );
+        assert_eq!(StateScope::default(), StateScope::PerConnection);
+    }
+
+    #[test]
+    fn test_unknown_method_handling_drop() {
+        let handling: UnknownMethodHandling = serde_yaml::from_str("drop").unwrap();
+        assert_eq!(handling, UnknownMethodHandling::Drop);
+    }
+
+    #[test]
+    fn test_config_with_all_optional_fields() {
+        let yaml = r#"
+server:
+  name: "full-test-server"
+  version: "2.0.0"
+  stateScope: global
+  capabilities:
+    tools:
+      listChanged: true
+    resources:
+      subscribe: true
+      listChanged: true
+    prompts:
+      listChanged: false
+
+tools:
+  - tool:
+      name: "test-tool"
+      description: "A test tool with all fields"
+      inputSchema:
+        type: object
+        properties:
+          input:
+            type: string
+        required: ["input"]
+    response:
+      content:
+        - type: text
+          text: "Response text"
+      isError: false
+    behavior:
+      delivery:
+        type: slow_loris
+        byte_delay_ms: 50
+      side_effects:
+        - type: notification_flood
+          trigger: on_connect
+          rate_per_sec: 10
+
+resources:
+  - resource:
+      uri: "file:///test"
+      name: "Test Resource"
+      description: "A test resource"
+      mimeType: "text/plain"
+    response:
+      content: "Test content"
+    behavior:
+      delivery:
+        type: response_delay
+        delay_ms: 100
+
+prompts:
+  - prompt:
+      name: "test-prompt"
+      description: "A test prompt"
+      arguments:
+        - name: "arg1"
+          description: "First argument"
+          required: true
+    response:
+      messages:
+        - role: user
+          content: "Test message"
+    behavior:
+      delivery:
+        type: normal
+
+behavior:
+  delivery:
+    type: normal
+  side_effects:
+    - type: close_connection
+      trigger: continuous
+      graceful: true
+
+logging:
+  level: debug
+  on_phase_change: true
+  on_request: true
+  on_response: true
+
+unknown_methods: error
+"#;
+
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+
+        // Verify server metadata
+        assert_eq!(config.server.name, "full-test-server");
+        assert_eq!(config.server.version, Some("2.0.0".to_string()));
+        assert_eq!(config.server.state_scope, Some(StateScope::Global));
+
+        // Verify capabilities
+        let caps = config.server.capabilities.as_ref().unwrap();
+        assert_eq!(caps.tools.as_ref().unwrap().list_changed, Some(true));
+        assert_eq!(caps.resources.as_ref().unwrap().subscribe, Some(true));
+
+        // Verify tools
+        assert_eq!(config.tools.as_ref().unwrap().len(), 1);
+        let tool = &config.tools.as_ref().unwrap()[0];
+        assert_eq!(tool.tool.name, "test-tool");
+        assert!(tool.behavior.is_some());
+
+        // Verify resources
+        assert_eq!(config.resources.as_ref().unwrap().len(), 1);
+
+        // Verify prompts
+        assert_eq!(config.prompts.as_ref().unwrap().len(), 1);
+
+        // Verify logging
+        let logging = config.logging.as_ref().unwrap();
+        assert_eq!(logging.level, Some("debug".to_string()));
+        assert_eq!(logging.on_phase_change, Some(true));
+
+        // Verify unknown_methods
+        assert_eq!(config.unknown_methods, Some(UnknownMethodHandling::Error));
+    }
+
+    #[test]
+    fn test_camel_case_field_mapping() {
+        // Test that camelCase YAML maps correctly to snake_case Rust fields
+        let yaml = r#"
+server:
+  name: "camel-test"
+  stateScope: per_connection
+  capabilities:
+    tools:
+      listChanged: true
+    resources:
+      listChanged: false
+      subscribe: true
+    prompts:
+      listChanged: true
+
+tools:
+  - tool:
+      name: "test"
+      description: "Test"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "ok"
+      isError: false
+"#;
+
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+
+        // Verify stateScope -> state_scope mapping
+        assert_eq!(config.server.state_scope, Some(StateScope::PerConnection));
+
+        // Verify listChanged -> list_changed mapping
+        let caps = config.server.capabilities.as_ref().unwrap();
+        assert_eq!(caps.tools.as_ref().unwrap().list_changed, Some(true));
+        assert_eq!(caps.resources.as_ref().unwrap().list_changed, Some(false));
+        assert_eq!(caps.prompts.as_ref().unwrap().list_changed, Some(true));
+
+        // Verify inputSchema -> input_schema mapping
+        let tool = &config.tools.as_ref().unwrap()[0];
+        assert!(tool.tool.input_schema.is_object());
+
+        // Verify isError -> is_error mapping
+        assert_eq!(tool.response.is_error, Some(false));
+    }
+
+    #[test]
+    fn test_serialization_uses_camel_case() {
+        let metadata = ServerMetadata {
+            name: "test".to_string(),
+            version: Some("1.0".to_string()),
+            state_scope: Some(StateScope::Global),
+            capabilities: Some(Capabilities {
+                tools: Some(ToolsCapability {
+                    list_changed: Some(true),
+                }),
+                resources: None,
+                prompts: None,
+            }),
+        };
+
+        let yaml = serde_yaml::to_string(&metadata).unwrap();
+
+        // Verify camelCase is used in serialized output
+        assert!(yaml.contains("stateScope: global"));
+        assert!(yaml.contains("listChanged: true"));
+        // Verify snake_case is NOT used
+        assert!(!yaml.contains("state_scope"));
+        assert!(!yaml.contains("list_changed"));
     }
 }

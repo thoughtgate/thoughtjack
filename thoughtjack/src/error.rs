@@ -31,6 +31,12 @@ impl ExitCode {
     /// Transport error (connection failed, protocol error)
     pub const TRANSPORT_ERROR: i32 = 4;
 
+    /// Phase engine error (invalid transition, trigger error)
+    pub const PHASE_ERROR: i32 = 5;
+
+    /// Generator error (limit exceeded, generation failed)
+    pub const GENERATOR_ERROR: i32 = 10;
+
     /// Usage error (invalid arguments, missing required options)
     pub const USAGE_ERROR: i32 = 64;
 
@@ -94,7 +100,9 @@ impl ThoughtJackError {
         match self {
             Self::Config(_) | Self::Json(_) | Self::Yaml(_) => ExitCode::CONFIG_ERROR,
             Self::Transport(_) => ExitCode::TRANSPORT_ERROR,
-            Self::Phase(_) | Self::Behavior(_) | Self::Generator(_) => ExitCode::ERROR,
+            Self::Phase(_) => ExitCode::PHASE_ERROR,
+            Self::Generator(_) => ExitCode::GENERATOR_ERROR,
+            Self::Behavior(_) => ExitCode::ERROR,
             Self::Io(_) => ExitCode::IO_ERROR,
         }
     }
@@ -322,9 +330,23 @@ mod tests {
         assert_eq!(ExitCode::CONFIG_ERROR, 2);
         assert_eq!(ExitCode::IO_ERROR, 3);
         assert_eq!(ExitCode::TRANSPORT_ERROR, 4);
+        assert_eq!(ExitCode::PHASE_ERROR, 5);
+        assert_eq!(ExitCode::GENERATOR_ERROR, 10);
         assert_eq!(ExitCode::USAGE_ERROR, 64);
         assert_eq!(ExitCode::INTERRUPTED, 130);
         assert_eq!(ExitCode::TERMINATED, 143);
+    }
+
+    #[test]
+    fn test_phase_error_exit_code() {
+        let err: ThoughtJackError = PhaseError::InvalidTransition("test".to_string()).into();
+        assert_eq!(err.exit_code(), ExitCode::PHASE_ERROR);
+    }
+
+    #[test]
+    fn test_generator_error_exit_code() {
+        let err: ThoughtJackError = GeneratorError::LimitExceeded("test".to_string()).into();
+        assert_eq!(err.exit_code(), ExitCode::GENERATOR_ERROR);
     }
 
     #[test]
