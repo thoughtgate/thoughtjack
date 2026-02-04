@@ -552,28 +552,32 @@ impl Default for GeneratorLimits {
 // ============================================================================
 
 /// A resource pattern defining an MCP resource and its response.
+///
+/// Resources represent data that can be read by clients (files, configs, etc.).
+/// They are prime targets for injection attacks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourcePattern {
     /// MCP resource definition
     pub resource: ResourceDefinition,
 
-    /// Response configuration
-    pub response: ResourceResponseConfig,
+    /// Response configuration (optional - if None, uses default empty response)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<ResourceResponse>,
 
     /// Resource-specific behavior override
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
 }
 
-/// MCP resource definition sent in resources/list response.
+/// MCP resource definition sent in `resources/list` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceDefinition {
-    /// Resource URI
+    /// Resource URI (e.g., `file:///etc/passwd`, `config://app/database`)
     pub uri: String,
 
-    /// Display name
+    /// Display name for the resource
     pub name: String,
 
     /// Resource description
@@ -588,29 +592,9 @@ pub struct ResourceDefinition {
 /// Response configuration for resource reads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ResourceResponseConfig {
-    /// Resource contents
-    pub contents: Vec<ResourceContent>,
-}
-
-/// Resource content in a response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResourceContent {
-    /// Resource URI
-    pub uri: String,
-
-    /// Content MIME type
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-
-    /// Text content
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<ContentValue>,
-
-    /// Binary content (base64 encoded)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blob: Option<String>,
+pub struct ResourceResponse {
+    /// Resource content (static, generated, or from file)
+    pub content: ContentValue,
 }
 
 // ============================================================================
@@ -618,6 +602,9 @@ pub struct ResourceContent {
 // ============================================================================
 
 /// A prompt pattern defining an MCP prompt and its response.
+///
+/// Prompts are injection vectors because they define system context given to LLMs.
+/// Arguments are interpolated directly into prompt text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptPattern {
@@ -625,34 +612,34 @@ pub struct PromptPattern {
     pub prompt: PromptDefinition,
 
     /// Response configuration
-    pub response: PromptResponseConfig,
+    pub response: PromptResponse,
 
     /// Prompt-specific behavior override
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
 }
 
-/// MCP prompt definition sent in prompts/list response.
+/// MCP prompt definition sent in `prompts/list` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptDefinition {
-    /// Prompt name
+    /// Prompt name (unique identifier)
     pub name: String,
 
     /// Prompt description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    /// Prompt arguments
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub arguments: Vec<PromptArgument>,
+    /// Prompt arguments (for parameterized prompts)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<PromptArgument>>,
 }
 
 /// Prompt argument definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptArgument {
-    /// Argument name
+    /// Argument name (used in `${args.name}` interpolation)
     pub name: String,
 
     /// Argument description
@@ -660,19 +647,15 @@ pub struct PromptArgument {
     pub description: Option<String>,
 
     /// Whether the argument is required
-    #[serde(default)]
-    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }
 
 /// Response configuration for prompts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PromptResponseConfig {
-    /// Optional description override
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-
-    /// Prompt messages
+pub struct PromptResponse {
+    /// Prompt messages (the actual prompt content)
     pub messages: Vec<PromptMessage>,
 }
 
@@ -680,47 +663,21 @@ pub struct PromptResponseConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptMessage {
-    /// Message role
-    pub role: PromptRole,
+    /// Message role (user or assistant)
+    pub role: Role,
 
-    /// Message content
-    pub content: MessageContent,
+    /// Message content (static, generated, or from file)
+    pub content: ContentValue,
 }
 
 /// Role in a prompt message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PromptRole {
+pub enum Role {
     /// User message
     User,
     /// Assistant message
     Assistant,
-}
-
-/// Content of a prompt message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum MessageContent {
-    /// Text content
-    Text {
-        /// Text value (supports ${args.*} interpolation)
-        text: String,
-    },
-
-    /// Image content
-    Image {
-        /// MIME type
-        #[serde(rename = "mimeType")]
-        mime_type: String,
-        /// Base64 encoded data
-        data: String,
-    },
-
-    /// Resource content
-    Resource {
-        /// Embedded resource
-        resource: EmbeddedResource,
-    },
 }
 
 // ============================================================================
@@ -1210,59 +1167,24 @@ pub enum SideEffectTrigger {
 // ============================================================================
 
 /// Logging configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LoggingConfig {
-    /// Log level
-    #[serde(default)]
-    pub level: LogLevel,
+    /// Log level (debug, info, warn, error)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
 
     /// Log phase changes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_phase_change: Option<bool>,
 
-    /// Log trigger matches
+    /// Log incoming requests
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_trigger_match: Option<bool>,
+    pub on_request: Option<bool>,
 
-    /// Output destination
+    /// Log outgoing responses
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<LogOutput>,
-}
-
-/// Log level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    /// Debug level
-    Debug,
-    /// Info level
-    #[default]
-    Info,
-    /// Warning level
-    Warn,
-    /// Error level
-    Error,
-}
-
-/// Log output destination.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum LogOutput {
-    /// Standard streams
-    Stream(LogStream),
-    /// File path
-    File(PathBuf),
-}
-
-/// Standard log stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogStream {
-    /// Standard error
-    Stderr,
-    /// Standard output
-    Stdout,
+    pub on_response: Option<bool>,
 }
 
 // ============================================================================
@@ -1921,5 +1843,139 @@ payload: "https://evil.com"
     fn test_unicode_category_default() {
         let category = UnicodeCategory::default();
         assert_eq!(category, UnicodeCategory::ZeroWidth);
+    }
+
+    #[test]
+    fn test_resource_pattern() {
+        let yaml = r#"
+resource:
+  uri: "file:///etc/passwd"
+  name: "Password file"
+  description: "System password file"
+  mimeType: "text/plain"
+response:
+  content: "root:x:0:0:root:/root:/bin/bash"
+"#;
+
+        let pattern: ResourcePattern = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(pattern.resource.uri, "file:///etc/passwd");
+        assert_eq!(pattern.resource.name, "Password file");
+        assert_eq!(
+            pattern.resource.description,
+            Some("System password file".to_string())
+        );
+        assert_eq!(pattern.resource.mime_type, Some("text/plain".to_string()));
+        assert!(pattern.response.is_some());
+    }
+
+    #[test]
+    fn test_resource_pattern_minimal() {
+        let yaml = r#"
+resource:
+  uri: "config://app"
+  name: "App Config"
+"#;
+
+        let pattern: ResourcePattern = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(pattern.resource.uri, "config://app");
+        assert_eq!(pattern.resource.name, "App Config");
+        assert!(pattern.resource.description.is_none());
+        assert!(pattern.response.is_none());
+    }
+
+    #[test]
+    fn test_prompt_pattern() {
+        let yaml = r#"
+prompt:
+  name: "code_review"
+  description: "Review code for security issues"
+  arguments:
+    - name: code
+      description: "Code to review"
+      required: true
+    - name: language
+      description: "Programming language"
+response:
+  messages:
+    - role: user
+      content: "Review this code"
+"#;
+
+        let pattern: PromptPattern = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(pattern.prompt.name, "code_review");
+        assert_eq!(
+            pattern.prompt.description,
+            Some("Review code for security issues".to_string())
+        );
+        let args = pattern.prompt.arguments.unwrap();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].name, "code");
+        assert_eq!(args[0].required, Some(true));
+        assert_eq!(args[1].required, None);
+    }
+
+    #[test]
+    fn test_prompt_message_roles() {
+        let yaml = r#"
+messages:
+  - role: user
+    content: "Hello"
+  - role: assistant
+    content: "Hi there"
+"#;
+
+        let response: PromptResponse = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(response.messages.len(), 2);
+        assert_eq!(response.messages[0].role, Role::User);
+        assert_eq!(response.messages[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_logging_config() {
+        let yaml = r#"
+level: debug
+on_phase_change: true
+on_request: true
+on_response: false
+"#;
+
+        let config: LoggingConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.level, Some("debug".to_string()));
+        assert_eq!(config.on_phase_change, Some(true));
+        assert_eq!(config.on_request, Some(true));
+        assert_eq!(config.on_response, Some(false));
+    }
+
+    #[test]
+    fn test_logging_config_default() {
+        let config = LoggingConfig::default();
+        assert!(config.level.is_none());
+        assert!(config.on_phase_change.is_none());
+        assert!(config.on_request.is_none());
+        assert!(config.on_response.is_none());
+    }
+
+    #[test]
+    fn test_embedded_resource() {
+        let yaml = r#"
+uri: "file:///config.json"
+mimeType: "application/json"
+text: '{"key": "value"}'
+"#;
+
+        let resource: EmbeddedResource = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(resource.uri, "file:///config.json");
+        assert_eq!(resource.mime_type, Some("application/json".to_string()));
+        assert_eq!(resource.text, Some("{\"key\": \"value\"}".to_string()));
+        assert!(resource.blob.is_none());
+    }
+
+    #[test]
+    fn test_role_enum() {
+        assert_eq!(serde_yaml::from_str::<Role>("user").unwrap(), Role::User);
+        assert_eq!(
+            serde_yaml::from_str::<Role>("assistant").unwrap(),
+            Role::Assistant
+        );
     }
 }
