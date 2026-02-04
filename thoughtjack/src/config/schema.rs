@@ -249,53 +249,302 @@ pub struct EmbeddedResource {
 }
 
 // ============================================================================
-// Generator Configuration (F-012)
+// Generator Configuration (TJ-SPEC-005)
 // ============================================================================
 
-/// Configuration for payload generators.
+/// Configuration for payload generators (TJ-SPEC-005).
+///
+/// Generators create payloads at configuration load time for deterministic
+/// testing. All generators are seeded for reproducibility.
+///
+/// YAML example:
+/// ```yaml
+/// $generate:
+///   type: nested_json
+///   depth: 10000
+///   structure: mixed
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum GeneratorConfig {
-    /// Deeply nested JSON structure
-    NestedJson {
-        /// Nesting depth
-        depth: usize,
-        /// Structure type: "object", "array", or "mixed"
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        structure: Option<String>,
-    },
+pub struct GeneratorConfig {
+    /// Generator type
+    #[serde(rename = "type")]
+    pub type_: GeneratorType,
 
-    /// Batch of notifications
-    BatchNotifications {
-        /// Number of notifications
-        count: usize,
-        /// Notification method
-        method: String,
-    },
+    /// Type-specific parameters (flattened from YAML)
+    #[serde(flatten)]
+    pub params: GeneratorParams,
+}
 
-    /// Random garbage bytes
-    Garbage {
-        /// Number of bytes to generate
-        bytes: usize,
-    },
+/// Generator type identifier (TJ-SPEC-005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratorType {
+    /// Generate deeply nested JSON structures
+    NestedJson,
 
-    /// Repeated keys for hash collision attacks
-    RepeatedKeys {
-        /// Number of keys
-        count: usize,
-        /// Length of each key
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key_length: Option<usize>,
-    },
+    /// Generate batch of JSON-RPC notifications
+    BatchNotifications,
 
-    /// Unicode attack sequences
-    UnicodeSpam {
-        /// Number of bytes to generate
-        bytes: usize,
-        /// Character set: "bidi", "zalgo", "homoglyph", "mixed"
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        charset: Option<String>,
-    },
+    /// Generate random garbage bytes
+    Garbage,
+
+    /// Generate JSON with repeated keys (hash collision attack)
+    RepeatedKeys,
+
+    /// Generate Unicode attack sequences
+    UnicodeSpam,
+
+    /// Generate ANSI escape sequences (terminal attacks)
+    AnsiEscape,
+}
+
+/// Generator parameters (TJ-SPEC-005).
+///
+/// Parameters are type-specific and flattened from YAML.
+/// The `HashMap` allows flexible parameters for each generator type.
+pub type GeneratorParams = std::collections::HashMap<String, serde_json::Value>;
+
+/// Parameters for `nested_json` generator.
+///
+/// Generates deeply nested JSON to test parser stack limits.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NestedJsonParams {
+    /// Nesting depth (required)
+    pub depth: usize,
+
+    /// Structure type for nesting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure: Option<NestedStructure>,
+
+    /// Key name to use for object nesting (default: "data")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+
+    /// Value to place at the innermost level
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<serde_json::Value>,
+}
+
+/// Structure type for nested JSON generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NestedStructure {
+    /// Nested objects: `{"key": {"key": ...}}`
+    #[default]
+    Object,
+
+    /// Nested arrays: `[[...]]`
+    Array,
+
+    /// Alternating objects and arrays
+    Mixed,
+}
+
+/// Parameters for `garbage` generator.
+///
+/// Generates random bytes to test parser error handling.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GarbageParams {
+    /// Number of bytes to generate (required)
+    pub bytes: usize,
+
+    /// Character set for generation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charset: Option<Charset>,
+
+    /// Random seed for reproducibility
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+}
+
+/// Character set for garbage generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Charset {
+    /// ASCII printable characters (0x20-0x7E)
+    #[default]
+    Ascii,
+
+    /// Valid UTF-8 characters
+    Utf8,
+
+    /// Raw binary bytes (0x00-0xFF)
+    Binary,
+
+    /// Numeric characters only (0-9)
+    Numeric,
+
+    /// Alphanumeric characters (a-z, A-Z, 0-9)
+    Alphanumeric,
+}
+
+/// Parameters for `batch_notifications` generator.
+///
+/// Generates arrays of JSON-RPC notifications for batch attacks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BatchNotificationsParams {
+    /// Number of notifications to generate (required)
+    pub count: usize,
+
+    /// Notification method (default: "notifications/message")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+
+    /// Parameters for each notification
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+/// Parameters for `repeated_keys` generator.
+///
+/// Generates JSON objects with repeated keys to trigger hash collisions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RepeatedKeysParams {
+    /// Number of repeated keys (required)
+    pub count: usize,
+
+    /// Length of each key in characters
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_length: Option<usize>,
+
+    /// Value to assign to each key
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+}
+
+/// Parameters for `unicode_spam` generator.
+///
+/// Generates Unicode attack sequences for display/rendering attacks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UnicodeSpamParams {
+    /// Number of bytes to generate (required)
+    pub bytes: usize,
+
+    /// Unicode category for attack sequences
+    #[serde(default)]
+    pub category: UnicodeCategory,
+
+    /// Carrier text to embed attack sequences in
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier: Option<String>,
+}
+
+/// Unicode category for spam generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnicodeCategory {
+    /// Zero-width characters (U+200B, U+FEFF, etc.)
+    #[default]
+    ZeroWidth,
+
+    /// Homoglyphs (visually similar characters)
+    Homoglyph,
+
+    /// Combining characters (diacritics, zalgo text)
+    Combining,
+
+    /// Right-to-left override characters (text direction attacks)
+    Rtl,
+
+    /// Emoji and emoji modifiers
+    Emoji,
+}
+
+/// Parameters for `ansi_escape` generator.
+///
+/// Generates ANSI escape sequences for terminal attacks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AnsiEscapeParams {
+    /// Types of ANSI sequences to generate
+    #[serde(default)]
+    pub sequences: Vec<AnsiSequenceType>,
+
+    /// Number of sequences to generate
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+
+    /// Payload to include (for title/hyperlink attacks)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
+}
+
+/// ANSI escape sequence types for terminal attacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnsiSequenceType {
+    /// Cursor movement sequences
+    CursorMove,
+
+    /// Color/style sequences
+    Color,
+
+    /// Terminal title manipulation (OSC sequences)
+    Title,
+
+    /// Hyperlink sequences (OSC 8)
+    Hyperlink,
+
+    /// Screen clear sequences
+    Clear,
+}
+
+// ============================================================================
+// Generator Limits (TJ-SPEC-005 F-011)
+// ============================================================================
+
+/// Safety limits for payload generators (TJ-SPEC-005 F-011).
+///
+/// These limits prevent accidental resource exhaustion during testing.
+/// Can be overridden via environment variables:
+/// - `THOUGHTJACK_MAX_PAYLOAD_BYTES`
+/// - `THOUGHTJACK_MAX_NEST_DEPTH`
+/// - `THOUGHTJACK_MAX_BATCH_SIZE`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneratorLimits {
+    /// Maximum payload size in bytes (default: 100MB)
+    #[serde(default = "GeneratorLimits::default_max_payload_bytes")]
+    pub max_payload_bytes: usize,
+
+    /// Maximum JSON nesting depth (default: 100,000)
+    #[serde(default = "GeneratorLimits::default_max_nest_depth")]
+    pub max_nest_depth: usize,
+
+    /// Maximum batch size (default: 100,000)
+    #[serde(default = "GeneratorLimits::default_max_batch_size")]
+    pub max_batch_size: usize,
+}
+
+impl GeneratorLimits {
+    /// Default maximum payload size: 100MB
+    pub const DEFAULT_MAX_PAYLOAD_BYTES: usize = 104_857_600;
+
+    /// Default maximum nesting depth: 100,000
+    pub const DEFAULT_MAX_NEST_DEPTH: usize = 100_000;
+
+    /// Default maximum batch size: 100,000
+    pub const DEFAULT_MAX_BATCH_SIZE: usize = 100_000;
+
+    const fn default_max_payload_bytes() -> usize {
+        Self::DEFAULT_MAX_PAYLOAD_BYTES
+    }
+
+    const fn default_max_nest_depth() -> usize {
+        Self::DEFAULT_MAX_NEST_DEPTH
+    }
+
+    const fn default_max_batch_size() -> usize {
+        Self::DEFAULT_MAX_BATCH_SIZE
+    }
+}
+
+impl Default for GeneratorLimits {
+    fn default() -> Self {
+        Self {
+            max_payload_bytes: Self::DEFAULT_MAX_PAYLOAD_BYTES,
+            max_nest_depth: Self::DEFAULT_MAX_NEST_DEPTH,
+            max_batch_size: Self::DEFAULT_MAX_BATCH_SIZE,
+        }
+    }
 }
 
 // ============================================================================
@@ -1154,10 +1403,13 @@ text:
         let item: ContentItem = serde_yaml::from_str(yaml).unwrap();
         match item {
             ContentItem::Text { text } => match text {
-                ContentValue::Generated { generator } => match generator {
-                    GeneratorConfig::NestedJson { depth, .. } => assert_eq!(depth, 100),
-                    _ => panic!("Expected nested_json generator"),
-                },
+                ContentValue::Generated { generator } => {
+                    assert_eq!(generator.type_, GeneratorType::NestedJson);
+                    assert_eq!(
+                        generator.params.get("depth").unwrap(),
+                        &serde_json::json!(100)
+                    );
+                }
                 _ => panic!("Expected generated content"),
             },
             _ => panic!("Expected text content"),
@@ -1547,5 +1799,127 @@ side_effects:
     fn test_side_effect_trigger_default() {
         let trigger = SideEffectTrigger::default();
         assert_eq!(trigger, SideEffectTrigger::OnRequest);
+    }
+
+    #[test]
+    fn test_generator_config_nested_json() {
+        let yaml = r#"
+type: nested_json
+depth: 5000
+structure: mixed
+key: "wrapper"
+"#;
+
+        let config: GeneratorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.type_, GeneratorType::NestedJson);
+        assert_eq!(
+            config.params.get("depth").unwrap(),
+            &serde_json::json!(5000)
+        );
+        assert_eq!(
+            config.params.get("structure").unwrap(),
+            &serde_json::json!("mixed")
+        );
+        assert_eq!(
+            config.params.get("key").unwrap(),
+            &serde_json::json!("wrapper")
+        );
+    }
+
+    #[test]
+    fn test_generator_config_garbage() {
+        let yaml = r#"
+type: garbage
+bytes: 1000
+charset: binary
+seed: 12345
+"#;
+
+        let config: GeneratorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.type_, GeneratorType::Garbage);
+        assert_eq!(
+            config.params.get("bytes").unwrap(),
+            &serde_json::json!(1000)
+        );
+        assert_eq!(
+            config.params.get("charset").unwrap(),
+            &serde_json::json!("binary")
+        );
+        assert_eq!(
+            config.params.get("seed").unwrap(),
+            &serde_json::json!(12345)
+        );
+    }
+
+    #[test]
+    fn test_generator_config_unicode_spam() {
+        let yaml = r#"
+type: unicode_spam
+bytes: 500
+category: combining
+carrier: "Hello"
+"#;
+
+        let config: GeneratorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.type_, GeneratorType::UnicodeSpam);
+        assert_eq!(config.params.get("bytes").unwrap(), &serde_json::json!(500));
+        assert_eq!(
+            config.params.get("category").unwrap(),
+            &serde_json::json!("combining")
+        );
+        assert_eq!(
+            config.params.get("carrier").unwrap(),
+            &serde_json::json!("Hello")
+        );
+    }
+
+    #[test]
+    fn test_generator_config_ansi_escape() {
+        let yaml = r#"
+type: ansi_escape
+sequences:
+  - title
+  - hyperlink
+count: 10
+payload: "https://evil.com"
+"#;
+
+        let config: GeneratorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.type_, GeneratorType::AnsiEscape);
+        assert_eq!(
+            config.params.get("sequences").unwrap(),
+            &serde_json::json!(["title", "hyperlink"])
+        );
+        assert_eq!(config.params.get("count").unwrap(), &serde_json::json!(10));
+        assert_eq!(
+            config.params.get("payload").unwrap(),
+            &serde_json::json!("https://evil.com")
+        );
+    }
+
+    #[test]
+    fn test_generator_limits_default() {
+        let limits = GeneratorLimits::default();
+        assert_eq!(limits.max_payload_bytes, 104_857_600); // 100MB
+        assert_eq!(limits.max_nest_depth, 100_000);
+        assert_eq!(limits.max_batch_size, 100_000);
+    }
+
+    #[test]
+    fn test_nested_structure_default() {
+        let structure = NestedStructure::default();
+        assert_eq!(structure, NestedStructure::Object);
+    }
+
+    #[test]
+    fn test_charset_default() {
+        let charset = Charset::default();
+        assert_eq!(charset, Charset::Ascii);
+    }
+
+    #[test]
+    fn test_unicode_category_default() {
+        let category = UnicodeCategory::default();
+        assert_eq!(category, UnicodeCategory::ZeroWidth);
     }
 }
