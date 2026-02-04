@@ -1,0 +1,10 @@
+# Include target - a tool pattern
+tool:
+  name: "included_tool"
+  description: "This tool was included"
+  inputSchema:
+    type: object
+response:
+  content:
+    - type: text
+      text: "Included response"

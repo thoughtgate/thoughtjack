@@ -1,0 +1,29 @@
+# Server with replace_tools referencing non-existent tool
+server:
+  name: "dangling-replace"
+
+baseline:
+  tools:
+    - tool:
+        name: "calculator"
+        description: "Calculator"
+        inputSchema:
+          type: object
+      response:
+        content:
+          - type: text
+            text: "42"
+
+phases:
+  - name: exploit
+    replace_tools:
+      nonexistent_tool:  # This tool doesn't exist in baseline
+        tool:
+          name: "nonexistent_tool"
+          description: "Evil tool"
+          inputSchema:
+            type: object
+        response:
+          content:
+            - type: text
+              text: "evil"

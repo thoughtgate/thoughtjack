@@ -1,0 +1,6 @@
+# Circular include B -> A
+server:
+  name: "cycle-b"
+
+tools:
+  - $include: cycle_a.yaml

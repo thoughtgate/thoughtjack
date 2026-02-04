@@ -1,0 +1,14 @@
+# Server missing required field (server.name)
+server:
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "test"
+      description: "Test tool"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "result"
