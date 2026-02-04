@@ -778,123 +778,181 @@ pub struct SendRequestConfig {
 }
 
 // ============================================================================
-// Behavior Configuration (F-010, F-011)
+// Behavior Configuration (TJ-SPEC-004)
 // ============================================================================
 
-/// Behavior configuration for delivery and side effects.
+/// Behavior configuration for delivery and side effects (TJ-SPEC-004).
+///
+/// Behaviors modify how responses are transmitted or trigger additional
+/// actions during request handling.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BehaviorConfig {
-    /// Delivery behavior
+    /// Delivery behavior (how responses are transmitted)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DeliveryConfig>,
 
-    /// Side effects to trigger
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub side_effects: Vec<SideEffectConfig>,
+    /// Side effects to trigger (actions independent of responses)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_effects: Option<Vec<SideEffectConfig>>,
 }
 
-/// Delivery behavior configuration (F-010).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Delivery behavior configuration (TJ-SPEC-004 F-010).
+///
+/// Controls how response bytes are transmitted to the client.
+/// Can be used for denial-of-service attacks, timeout testing, and parser stress testing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeliveryConfig {
-    /// Standard delivery
+    /// Standard delivery - send response immediately
+    #[default]
     Normal,
 
-    /// Slow loris attack - drip bytes with delay
+    /// Slow loris attack - drip bytes with delay.
+    ///
+    /// Sends response bytes in small chunks with delays between them,
+    /// keeping connections open and potentially exhausting client resources.
     SlowLoris {
-        /// Delay between bytes in milliseconds
+        /// Delay between chunks in milliseconds (default: 100)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         byte_delay_ms: Option<u64>,
-        /// Chunk size in bytes
+
+        /// Number of bytes per chunk (default: 1)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chunk_size: Option<usize>,
     },
 
-    /// Never send newline terminator
+    /// Never send newline terminator.
+    ///
+    /// For stdio transport, keeps sending bytes without `\n`,
+    /// testing client line-buffer handling and timeout behavior.
     UnboundedLine {
-        /// Target number of bytes to send
+        /// Target number of bytes to send before stopping
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_bytes: Option<usize>,
+
+        /// Character to use for padding (default: space)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        padding_char: Option<char>,
     },
 
-    /// Wrap response in deep JSON nesting
+    /// Wrap response in deep JSON nesting.
+    ///
+    /// Tests client JSON parser stack depth limits and memory handling.
     NestedJson {
-        /// Nesting depth
+        /// Nesting depth (e.g., 10000 for deep nesting attack)
         depth: usize,
+
+        /// Key name to use for nesting (default: "data")
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
     },
 
-    /// Delay before responding
+    /// Delay before responding.
+    ///
+    /// Tests client timeout handling and connection management.
     ResponseDelay {
-        /// Delay in milliseconds
+        /// Delay in milliseconds before sending response
         delay_ms: u64,
     },
 }
 
-/// Side effect configuration (F-011).
+// ============================================================================
+// Side Effect Configuration (TJ-SPEC-004 F-011)
+// ============================================================================
+
+/// Side effect configuration (TJ-SPEC-004 F-011).
+///
+/// Side effects are actions that occur independently of normal responses.
+/// They can be triggered on connection, on each request, or continuously.
+///
+/// YAML example:
+/// ```yaml
+/// side_effects:
+///   - type: notification_flood
+///     trigger: on_connect
+///     rate_per_sec: 100
+///     duration_sec: 10
+///   - type: close_connection
+///     trigger: on_request
+///     graceful: false
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SideEffectConfig {
-    /// Spam notifications
-    NotificationFlood {
-        /// Notifications per second
-        rate_per_sec: f64,
-        /// Duration in seconds
-        duration_sec: f64,
-        /// When to trigger
-        #[serde(default)]
-        trigger: SideEffectTrigger,
-    },
+pub struct SideEffectConfig {
+    /// Type of side effect
+    #[serde(rename = "type")]
+    pub type_: SideEffectType,
 
-    /// Send large batches
-    BatchAmplify {
-        /// Size of each batch
-        batch_size: usize,
-        /// When to trigger
-        #[serde(default)]
-        trigger: SideEffectTrigger,
-    },
+    /// When to trigger the side effect
+    #[serde(default)]
+    pub trigger: SideEffectTrigger,
 
-    /// Fill stdout, ignore stdin (stdio deadlock)
-    PipeDeadlock {
-        /// When to trigger
-        #[serde(default)]
-        trigger: SideEffectTrigger,
-    },
+    /// Additional type-specific parameters.
+    ///
+    /// These are flattened from YAML, allowing each side effect type
+    /// to have its own parameters without a nested object.
+    #[serde(flatten)]
+    pub params: std::collections::HashMap<String, serde_json::Value>,
+}
 
-    /// Close the connection
-    CloseConnection {
-        /// When to trigger
-        #[serde(default)]
-        trigger: SideEffectTrigger,
-        /// Whether to close gracefully
-        #[serde(default)]
-        graceful: bool,
-    },
+/// Side effect type (TJ-SPEC-004 F-011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SideEffectType {
+    /// Spam notifications at high rate.
+    ///
+    /// Parameters:
+    /// - `rate_per_sec`: Notifications per second
+    /// - `duration_sec`: How long to flood
+    /// - `method`: Notification method (default: "notifications/message")
+    NotificationFlood,
 
-    /// Send duplicate request IDs
-    DuplicateRequestIds {
-        /// When to trigger
-        #[serde(default)]
-        trigger: SideEffectTrigger,
-        /// Number of duplicates
-        count: usize,
-        /// Specific ID to duplicate
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<serde_json::Value>,
-    },
+    /// Send responses in large batches.
+    ///
+    /// Parameters:
+    /// - `batch_size`: Number of items per batch
+    /// - `method`: Method to batch (default: current method)
+    BatchAmplify,
+
+    /// Fill stdout without reading stdin (stdio deadlock).
+    ///
+    /// For stdio transport, writes continuously to stdout while
+    /// ignoring stdin, causing pipe buffer deadlock.
+    ///
+    /// Parameters:
+    /// - `bytes_per_sec`: Write rate (default: unlimited)
+    PipeDeadlock,
+
+    /// Close the connection.
+    ///
+    /// Parameters:
+    /// - `graceful`: Whether to send close frame (default: false)
+    /// - `delay_ms`: Delay before closing (default: 0)
+    CloseConnection,
+
+    /// Send duplicate request IDs.
+    ///
+    /// Sends multiple requests with the same ID to test client
+    /// response correlation and state management.
+    ///
+    /// Parameters:
+    /// - `count`: Number of duplicates
+    /// - `id`: Specific ID to use (default: current request ID)
+    DuplicateRequestIds,
 }
 
 /// When to trigger a side effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SideEffectTrigger {
-    /// Trigger on connection establishment
+    /// Trigger when client connects (after initialize)
     OnConnect,
-    /// Trigger on each request
+
+    /// Trigger on each request (default)
     #[default]
     OnRequest,
-    /// Trigger continuously
+
+    /// Trigger continuously in background
     Continuous,
 }
 
@@ -1348,5 +1406,146 @@ name: final
         let phase: Phase = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(phase.name, "final");
         assert!(phase.advance.is_none()); // Terminal phase has no advance trigger
+    }
+
+    #[test]
+    fn test_delivery_config_default() {
+        let config = DeliveryConfig::default();
+        assert_eq!(config, DeliveryConfig::Normal);
+    }
+
+    #[test]
+    fn test_delivery_config_nested_json() {
+        let yaml = r#"
+type: nested_json
+depth: 10000
+key: "wrapper"
+"#;
+
+        let config: DeliveryConfig = serde_yaml::from_str(yaml).unwrap();
+        match config {
+            DeliveryConfig::NestedJson { depth, key } => {
+                assert_eq!(depth, 10000);
+                assert_eq!(key, Some("wrapper".to_string()));
+            }
+            _ => panic!("Expected NestedJson"),
+        }
+    }
+
+    #[test]
+    fn test_delivery_config_unbounded_line() {
+        let yaml = r#"
+type: unbounded_line
+target_bytes: 1000000
+padding_char: "x"
+"#;
+
+        let config: DeliveryConfig = serde_yaml::from_str(yaml).unwrap();
+        match config {
+            DeliveryConfig::UnboundedLine {
+                target_bytes,
+                padding_char,
+            } => {
+                assert_eq!(target_bytes, Some(1_000_000));
+                assert_eq!(padding_char, Some('x'));
+            }
+            _ => panic!("Expected UnboundedLine"),
+        }
+    }
+
+    #[test]
+    fn test_delivery_config_response_delay() {
+        let yaml = r#"
+type: response_delay
+delay_ms: 5000
+"#;
+
+        let config: DeliveryConfig = serde_yaml::from_str(yaml).unwrap();
+        match config {
+            DeliveryConfig::ResponseDelay { delay_ms } => {
+                assert_eq!(delay_ms, 5000);
+            }
+            _ => panic!("Expected ResponseDelay"),
+        }
+    }
+
+    #[test]
+    fn test_side_effect_config() {
+        let yaml = r#"
+type: notification_flood
+trigger: on_connect
+rate_per_sec: 100
+duration_sec: 10
+"#;
+
+        let config: SideEffectConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.type_, SideEffectType::NotificationFlood);
+        assert_eq!(config.trigger, SideEffectTrigger::OnConnect);
+        assert_eq!(
+            config.params.get("rate_per_sec").unwrap(),
+            &serde_json::json!(100)
+        );
+        assert_eq!(
+            config.params.get("duration_sec").unwrap(),
+            &serde_json::json!(10)
+        );
+    }
+
+    #[test]
+    fn test_side_effect_close_connection() {
+        let yaml = r#"
+type: close_connection
+trigger: on_request
+graceful: false
+"#;
+
+        let config: SideEffectConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.type_, SideEffectType::CloseConnection);
+        assert_eq!(config.trigger, SideEffectTrigger::OnRequest);
+        assert_eq!(
+            config.params.get("graceful").unwrap(),
+            &serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn test_side_effect_duplicate_request_ids() {
+        let yaml = r#"
+type: duplicate_request_ids
+trigger: continuous
+count: 5
+id: 42
+"#;
+
+        let config: SideEffectConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.type_, SideEffectType::DuplicateRequestIds);
+        assert_eq!(config.trigger, SideEffectTrigger::Continuous);
+        assert_eq!(config.params.get("count").unwrap(), &serde_json::json!(5));
+        assert_eq!(config.params.get("id").unwrap(), &serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_behavior_config_full() {
+        let yaml = r#"
+delivery:
+  type: slow_loris
+  byte_delay_ms: 50
+  chunk_size: 10
+side_effects:
+  - type: notification_flood
+    trigger: on_connect
+    rate_per_sec: 50
+"#;
+
+        let config: BehaviorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.delivery.is_some());
+        assert!(config.side_effects.is_some());
+        assert_eq!(config.side_effects.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_side_effect_trigger_default() {
+        let trigger = SideEffectTrigger::default();
+        assert_eq!(trigger, SideEffectTrigger::OnRequest);
     }
 }
