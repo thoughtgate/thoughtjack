@@ -1,4 +1,4 @@
-//! ThoughtJack - Adversarial MCP server for security testing
+//! `ThoughtJack` - Adversarial MCP server for security testing
 
 use clap::Parser;
 

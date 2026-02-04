@@ -1,4 +1,4 @@
-//! ThoughtJack - Adversarial MCP server for security testing
+//! `ThoughtJack` - Adversarial MCP server for security testing
 //!
 //! This library provides components for building adversarial MCP servers
 //! used in security testing scenarios.
