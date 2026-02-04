@@ -3,6 +3,7 @@
 //! This module defines the core configuration types for `ThoughtJack` servers.
 //! These types are deserialized from YAML configuration files.
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -506,44 +507,57 @@ pub struct BaselineState {
 // Phase Configuration (F-002, F-007, F-008, F-009)
 // ============================================================================
 
-/// A phase in a phased server.
+/// A phase in a phased server (F-002).
+///
+/// Phases define temporal attack stages with diff operations that modify
+/// the baseline state. Each phase can replace, add, or remove tools,
+/// resources, and prompts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Phase {
     /// Phase name (must be unique)
     pub name: String,
 
-    /// Tool replacements (F-007)
+    /// Trigger for advancing to the next phase (F-008).
+    /// If `None`, this is a terminal phase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replace_tools: Option<std::collections::HashMap<String, ToolReplacement>>,
+    pub advance: Option<Trigger>,
+
+    /// Actions to execute when entering this phase (F-009)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_enter: Option<Vec<EntryAction>>,
+
+    /// Tool replacements (F-007) - keyed by tool name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace_tools: Option<IndexMap<String, ToolPatternRef>>,
 
     /// Tools to add
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub add_tools: Option<Vec<ToolPattern>>,
+    pub add_tools: Option<Vec<ToolPatternRef>>,
 
     /// Tools to remove (by name)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remove_tools: Option<Vec<String>>,
 
-    /// Resource replacements
+    /// Resource replacements - keyed by URI
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replace_resources: Option<std::collections::HashMap<String, ResourceReplacement>>,
+    pub replace_resources: Option<IndexMap<String, ResourcePatternRef>>,
 
     /// Resources to add
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub add_resources: Option<Vec<ResourcePattern>>,
+    pub add_resources: Option<Vec<ResourcePatternRef>>,
 
     /// Resources to remove (by URI)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remove_resources: Option<Vec<String>>,
 
-    /// Prompt replacements
+    /// Prompt replacements - keyed by name
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replace_prompts: Option<std::collections::HashMap<String, PromptReplacement>>,
+    pub replace_prompts: Option<IndexMap<String, PromptPatternRef>>,
 
     /// Prompts to add
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub add_prompts: Option<Vec<PromptPattern>>,
+    pub add_prompts: Option<Vec<PromptPatternRef>>,
 
     /// Prompts to remove (by name)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -556,105 +570,93 @@ pub struct Phase {
     /// Behavior override for this phase
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
-
-    /// Actions to execute when entering this phase (F-009)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_enter: Option<Vec<OnEnterAction>>,
-
-    /// Trigger for advancing to the next phase (F-008)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub advance: Option<AdvanceTrigger>,
 }
 
-/// Tool replacement value - can be file path or inline definition.
+// ============================================================================
+// Pattern References (for $include or inline definitions)
+// ============================================================================
+
+/// Reference to a tool pattern - either inline or via file path.
+///
+/// Allows both forms in YAML:
+/// ```yaml
+/// # Inline definition
+/// - tool:
+///     name: "calc"
+///     description: "Calculator"
+///     inputSchema: {}
+///   response:
+///     content: [...]
+///
+/// # File path (for $include resolution)
+/// - tools/calculator/benign.yaml
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum ToolReplacement {
-    /// File path to tool pattern
-    Path(PathBuf),
-    /// Inline tool pattern
+pub enum ToolPatternRef {
+    /// Inline tool pattern definition
     Inline(ToolPattern),
+    /// File path to tool pattern (resolved by loader)
+    Path(PathBuf),
 }
 
-/// Resource replacement value.
+/// Reference to a resource pattern - either inline or via file path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum ResourceReplacement {
-    /// File path to resource pattern
-    Path(PathBuf),
-    /// Inline resource pattern
+pub enum ResourcePatternRef {
+    /// Inline resource pattern definition
     Inline(ResourcePattern),
+    /// File path to resource pattern (resolved by loader)
+    Path(PathBuf),
 }
 
-/// Prompt replacement value.
+/// Reference to a prompt pattern - either inline or via file path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum PromptReplacement {
-    /// File path to prompt pattern
-    Path(PathBuf),
-    /// Inline prompt pattern
+pub enum PromptPatternRef {
+    /// Inline prompt pattern definition
     Inline(PromptPattern),
+    /// File path to prompt pattern (resolved by loader)
+    Path(PathBuf),
 }
 
-/// Actions to execute when entering a phase (F-009).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnEnterAction {
-    /// Send a JSON-RPC notification
-    SendNotification(String),
-
-    /// Send a JSON-RPC request
-    SendRequest {
-        /// Method name
-        method: String,
-        /// Optional ID override (for collision attacks)
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<serde_json::Value>,
-        /// Request parameters
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        params: Option<serde_json::Value>,
-    },
-
-    /// Log a message
-    Log(String),
-}
+// ============================================================================
+// Trigger Configuration (F-008)
+// ============================================================================
 
 /// Trigger for phase advancement (F-008).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Supports multiple trigger types:
+/// - Event-based: `on: "tools/call"` with optional `count`
+/// - Specific tool: `on: "tools/call:calculator"`
+/// - Time-based: `after: "30s"`
+/// - Content matching: `match: { args: { path: "/etc/passwd" } }`
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct AdvanceTrigger {
-    /// Event to trigger on (e.g., "tools/call", "tools/call:name")
+pub struct Trigger {
+    /// Event to trigger on (e.g., `"tools/call"`, `"tools/call:calculator"`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
 
-    /// Number of event occurrences before advancing
+    /// Number of event occurrences before advancing (default: 1)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u64>,
 
     /// Content matching condition
     #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
-    pub match_condition: Option<MatchCondition>,
+    pub match_condition: Option<MatchPredicate>,
 
-    /// Time-based trigger (e.g., "30s", "5m")
+    /// Time-based trigger (e.g., `"30s"`, `"5m"`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<String>,
 
-    /// Timeout for event triggers
+    /// Timeout for event triggers (max wait time)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
 
     /// Behavior when timeout is reached
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_timeout: Option<TimeoutBehavior>,
-}
-
-/// Content matching condition for triggers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct MatchCondition {
-    /// Match on request arguments
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<serde_json::Value>,
 }
 
 /// Behavior when a timeout is reached.
@@ -666,6 +668,113 @@ pub enum TimeoutBehavior {
     Advance,
     /// Abort the phase machine
     Abort,
+}
+
+// ============================================================================
+// Match Predicate (for content matching in triggers)
+// ============================================================================
+
+/// Predicate for matching request content in triggers.
+///
+/// Example YAML:
+/// ```yaml
+/// match:
+///   args.path: "/etc/passwd"
+///   args.mode:
+///     contains: "write"
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MatchPredicate {
+    /// Field matchers keyed by field path (e.g., `"args.path"`)
+    #[serde(flatten)]
+    pub conditions: IndexMap<String, FieldMatcher>,
+}
+
+/// Matcher for a single field value.
+///
+/// Supports exact matching or pattern-based matching.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FieldMatcher {
+    /// Exact string match
+    Exact(String),
+
+    /// Pattern-based match (at least one field must be set)
+    Pattern {
+        /// Match if field contains this substring
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contains: Option<String>,
+
+        /// Match if field starts with this prefix
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+
+        /// Match if field ends with this suffix
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suffix: Option<String>,
+
+        /// Match if field matches this regex pattern
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        regex: Option<String>,
+    },
+}
+
+// ============================================================================
+// Entry Actions (F-009)
+// ============================================================================
+
+/// Actions to execute when entering a phase (F-009).
+///
+/// Entry actions run after the phase transition but before processing
+/// new requests. They enable attacks like:
+/// - Sending `list_changed` notifications (rug pull)
+/// - Injecting requests with duplicate IDs (ID collision)
+/// - Logging phase transitions for debugging
+///
+/// YAML example:
+/// ```yaml
+/// on_enter:
+///   - send_notification: "notifications/tools/list_changed"
+///   - log: "Phase entered"
+///   - send_request:
+///       method: "sampling/createMessage"
+///       id: 1
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EntryAction {
+    /// Send a JSON-RPC notification to the client
+    SendNotification {
+        /// The notification method to send
+        send_notification: String,
+    },
+
+    /// Send a JSON-RPC request to the client
+    SendRequest {
+        /// Request configuration
+        send_request: SendRequestConfig,
+    },
+
+    /// Log a message to the server log
+    Log {
+        /// Message to log
+        log: String,
+    },
+}
+
+/// Configuration for a `send_request` entry action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendRequestConfig {
+    /// Method name
+    pub method: String,
+
+    /// Optional ID override (for collision attacks)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<serde_json::Value>,
+
+    /// Request parameters
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 // ============================================================================
@@ -1044,5 +1153,200 @@ resources:
         let resources = caps.resources.unwrap();
         assert_eq!(resources.subscribe, Some(true));
         assert_eq!(resources.list_changed, Some(false));
+    }
+
+    #[test]
+    fn test_trigger_event_based() {
+        let yaml = r#"
+on: tools/call
+count: 3
+"#;
+
+        let trigger: Trigger = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(trigger.on, Some("tools/call".to_string()));
+        assert_eq!(trigger.count, Some(3));
+        assert!(trigger.after.is_none());
+    }
+
+    #[test]
+    fn test_trigger_time_based() {
+        let yaml = r#"
+after: 30s
+"#;
+
+        let trigger: Trigger = serde_yaml::from_str(yaml).unwrap();
+        assert!(trigger.on.is_none());
+        assert_eq!(trigger.after, Some("30s".to_string()));
+    }
+
+    #[test]
+    fn test_trigger_with_timeout() {
+        let yaml = r#"
+on: tools/call:read_file
+timeout: 60s
+on_timeout: abort
+"#;
+
+        let trigger: Trigger = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(trigger.on, Some("tools/call:read_file".to_string()));
+        assert_eq!(trigger.timeout, Some("60s".to_string()));
+        assert_eq!(trigger.on_timeout, Some(TimeoutBehavior::Abort));
+    }
+
+    #[test]
+    fn test_match_predicate_exact() {
+        let yaml = r#"
+args.path: "/etc/passwd"
+"#;
+
+        let predicate: MatchPredicate = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(predicate.conditions.len(), 1);
+        match predicate.conditions.get("args.path").unwrap() {
+            FieldMatcher::Exact(s) => assert_eq!(s, "/etc/passwd"),
+            _ => panic!("Expected exact match"),
+        }
+    }
+
+    #[test]
+    fn test_match_predicate_pattern() {
+        let yaml = r#"
+args.path:
+  contains: ".env"
+  prefix: "/home"
+"#;
+
+        let predicate: MatchPredicate = serde_yaml::from_str(yaml).unwrap();
+        match predicate.conditions.get("args.path").unwrap() {
+            FieldMatcher::Pattern {
+                contains,
+                prefix,
+                suffix,
+                regex,
+            } => {
+                assert_eq!(contains, &Some(".env".to_string()));
+                assert_eq!(prefix, &Some("/home".to_string()));
+                assert!(suffix.is_none());
+                assert!(regex.is_none());
+            }
+            _ => panic!("Expected pattern match"),
+        }
+    }
+
+    #[test]
+    fn test_entry_action_send_notification() {
+        let yaml = r#"
+send_notification: "notifications/tools/list_changed"
+"#;
+
+        let action: EntryAction = serde_yaml::from_str(yaml).unwrap();
+        match action {
+            EntryAction::SendNotification { send_notification } => {
+                assert_eq!(send_notification, "notifications/tools/list_changed");
+            }
+            _ => panic!("Expected SendNotification"),
+        }
+    }
+
+    #[test]
+    fn test_entry_action_send_request() {
+        let yaml = r#"
+send_request:
+  method: "sampling/createMessage"
+  id: 1
+  params:
+    messages:
+      - role: user
+        content: "Test"
+"#;
+
+        let action: EntryAction = serde_yaml::from_str(yaml).unwrap();
+        match action {
+            EntryAction::SendRequest { send_request } => {
+                assert_eq!(send_request.method, "sampling/createMessage");
+                assert_eq!(send_request.id, Some(serde_json::json!(1)));
+                assert!(send_request.params.is_some());
+            }
+            _ => panic!("Expected SendRequest"),
+        }
+    }
+
+    #[test]
+    fn test_entry_action_log() {
+        let yaml = r#"
+log: "Rug pull triggered"
+"#;
+
+        let action: EntryAction = serde_yaml::from_str(yaml).unwrap();
+        match action {
+            EntryAction::Log { log } => assert_eq!(log, "Rug pull triggered"),
+            _ => panic!("Expected Log"),
+        }
+    }
+
+    #[test]
+    fn test_tool_pattern_ref_inline() {
+        let yaml = r#"
+tool:
+  name: "test"
+  description: "Test tool"
+  inputSchema:
+    type: object
+response:
+  content:
+    - type: text
+      text: "result"
+"#;
+
+        let pattern_ref: ToolPatternRef = serde_yaml::from_str(yaml).unwrap();
+        match pattern_ref {
+            ToolPatternRef::Inline(pattern) => {
+                assert_eq!(pattern.tool.name, "test");
+            }
+            _ => panic!("Expected inline pattern"),
+        }
+    }
+
+    #[test]
+    fn test_tool_pattern_ref_path() {
+        let yaml = r#"
+tools/calculator/benign.yaml
+"#;
+
+        let pattern_ref: ToolPatternRef = serde_yaml::from_str(yaml).unwrap();
+        match pattern_ref {
+            ToolPatternRef::Path(path) => {
+                assert_eq!(path.to_string_lossy(), "tools/calculator/benign.yaml");
+            }
+            _ => panic!("Expected path"),
+        }
+    }
+
+    #[test]
+    fn test_phase_with_entry_actions() {
+        let yaml = r#"
+name: trigger
+advance:
+  on: tools/list
+on_enter:
+  - send_notification: "notifications/tools/list_changed"
+  - log: "Phase entered"
+"#;
+
+        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(phase.name, "trigger");
+        assert!(phase.advance.is_some());
+        assert!(phase.on_enter.is_some());
+        assert_eq!(phase.on_enter.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_phase_terminal() {
+        let yaml = r#"
+name: final
+"#;
+
+        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(phase.name, "final");
+        assert!(phase.advance.is_none()); // Terminal phase has no advance trigger
     }
 }
