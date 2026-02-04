@@ -29,6 +29,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 base64 = "0.22"
 rand = "0.9"
+regex = "1.12"
 indexmap = { version = "2.13", features = ["serde"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 chrono = { version = "0.4", features = ["serde"] }
