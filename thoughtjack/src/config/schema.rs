@@ -363,7 +363,7 @@ pub struct NestedJsonParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structure: Option<NestedStructure>,
 
-    /// Key name to use for object nesting (default: "data")
+    /// Key name to use for object nesting (default: "a")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
 

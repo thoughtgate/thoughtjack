@@ -59,7 +59,7 @@ impl NestedJsonGenerator {
             })
             .unwrap_or_default();
 
-        let key = extract_string(params, "key", "data");
+        let key = extract_string(params, "key", "a");
         let inner = extract_value(params, "inner").unwrap_or(Value::Null);
 
         let this = Self {
@@ -317,7 +317,7 @@ mod tests {
         let generator = NestedJsonGenerator::new(&params, &default_limits()).unwrap();
         let payload = generator.generate().unwrap().into_bytes();
         let s = String::from_utf8(payload).unwrap();
-        assert_eq!(s, r#"{"data":null}"#);
+        assert_eq!(s, r#"{"a":null}"#);
     }
 
     #[test]
