@@ -82,7 +82,7 @@ pub struct ServerMetadata {
 }
 
 /// Phase state scope - determines how phase state is managed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum StateScope {
     /// Each connection maintains its own phase state (default)
