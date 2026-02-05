@@ -372,6 +372,7 @@ The system SHALL collect quantitative metrics.
 | `thoughtjack_side_effects_total` | Counter | effect_type | Side effects executed |
 | `thoughtjack_current_phase` | Gauge | phase_name | Current phase (1 = active) |
 | `thoughtjack_event_counts` | Gauge | event_type | Current event counts |
+| `thoughtjack_connections_active` | Gauge | — | Active connections |
 
 **Label Cardinality Protection:**
 
@@ -1287,7 +1288,7 @@ impl EventEmitter {
 | Name | Labels | Description |
 |------|--------|-------------|
 | `thoughtjack_current_phase` | phase_name | Active phase (1=active) |
-| `thoughtjack_event_count` | event_type | Current event counts |
+| `thoughtjack_event_counts` | event_type | Current event counts |
 | `thoughtjack_connections_active` | — | Open connections |
 | `thoughtjack_uptime_seconds` | — | Server uptime |
 
