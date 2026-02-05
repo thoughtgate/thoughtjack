@@ -497,41 +497,34 @@ advance:
 
 **Implementation:**
 ```rust
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum MatchCondition {
-    /// Exact equality match
+pub enum FieldMatcher {
+    /// Pattern-based match (tried first — requires object shape).
+    Pattern {
+        contains: Option<String>,
+        prefix: Option<String>,
+        suffix: Option<String>,
+        regex: Option<String>,
+    },
+    /// Exact value match (catch-all for primitives and strings).
     Exact(serde_json::Value),
-    /// Operator-based match
-    Operator(MatchOperator),
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MatchOperator {
-    Contains(String),
-    StartsWith(String),
-    EndsWith(String),
-    Regex(#[serde(deserialize_with = "deserialize_regex")] regex::Regex),
-    AnyOf(Vec<serde_json::Value>),
-}
-
-impl MatchCondition {
+impl FieldMatcher {
     pub fn matches(&self, value: &serde_json::Value) -> bool {
         match self {
-            MatchCondition::Exact(expected) => value == expected,
-            MatchCondition::Operator(op) => {
+            FieldMatcher::Exact(expected) => value == expected,
+            FieldMatcher::Pattern { contains, prefix, suffix, regex } => {
                 let s = match value {
                     serde_json::Value::String(s) => s.as_str(),
                     _ => return false,
                 };
-                match op {
-                    MatchOperator::Contains(needle) => s.contains(needle.as_str()),
-                    MatchOperator::StartsWith(prefix) => s.starts_with(prefix.as_str()),
-                    MatchOperator::EndsWith(suffix) => s.ends_with(suffix.as_str()),
-                    MatchOperator::Regex(re) => re.is_match(s),
-                    MatchOperator::AnyOf(values) => values.iter().any(|v| value == v),
-                }
+                if let Some(needle) = contains { if !s.contains(needle.as_str()) { return false; } }
+                if let Some(p) = prefix { if !s.starts_with(p.as_str()) { return false; } }
+                if let Some(sfx) = suffix { if !s.ends_with(sfx.as_str()) { return false; } }
+                if let Some(re) = regex { regex::Regex::new(re).map_or(false, |r| r.is_match(s)) }
+                else { true }
             }
         }
     }
@@ -1112,7 +1105,16 @@ impl PhaseEngine {
     
     /// Process an incoming event, potentially triggering transition
     pub async fn process_event(&self, event: &McpEvent) -> Result<(), PhaseError>;
-    
+
+    /// Evaluate triggers for an event without incrementing counters.
+    /// Used for dual-counting: counters are incremented separately,
+    /// then triggers evaluated without double-counting.
+    pub fn evaluate_trigger(
+        &self,
+        event: &EventType,
+        params: Option<&serde_json::Value>,
+    ) -> Option<PhaseTransition>;
+
     /// Check time-based triggers (called periodically by timer task)
     pub async fn check_timers(&self) -> Result<(), PhaseError>;
     
