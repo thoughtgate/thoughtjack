@@ -498,10 +498,19 @@ pub struct ConnectionContext {
 }
 
 pub struct SideEffectResult {
-    pub messages_sent: u64,
+    pub messages_sent: usize,
     pub bytes_sent: usize,
     pub duration: Duration,
-    pub completed: bool,
+    pub outcome: SideEffectOutcome,
+}
+
+/// Outcome of side effect execution.
+#[derive(Debug, Clone)]
+pub enum SideEffectOutcome {
+    /// Side effect completed normally.
+    Completed,
+    /// Side effect requests connection closure.
+    CloseConnection { graceful: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -789,80 +798,67 @@ impl SideEffect for PipeDeadlock {
     async fn execute(
         &self,
         transport: &dyn Transport,
-        connection: &ConnectionContext,  // Connection context for targeting
+        _connection: &ConnectionContext,
         cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = Instant::now();
-        
-        // Signal to stop reading stdin (transport-specific)
-        transport.pause_reading()?;
-        
-        // CRITICAL: Acquire exclusive write lock to prevent interleaving
-        // with concurrent response writes
-        let _write_guard = transport.acquire_write_lock().await?;
-        
-        // IMPORTANT: Use tokio's async stdout, not std::io::stdout()
-        // std::io::stdout() blocks the thread and can stall the entire runtime
-        let mut stdout = tokio::io::stdout();
-        
-        // Write garbage to stdout until blocked or cancelled
+
+        // Write garbage via send_raw() until blocked or cancelled.
+        // The transport's internal write serialization (Mutex<BufWriter>)
+        // prevents interleaving with concurrent response writes.
         let chunk = vec![b'X'; 4096];
         let mut bytes_sent = 0usize;
-        
+
         while bytes_sent < self.fill_bytes {
             tokio::select! {
                 _ = cancel.cancelled() => {
                     break;
                 }
-                result = stdout.write(&chunk) => {
+                result = transport.send_raw(&chunk) => {
                     match result {
-                        Ok(n) => bytes_sent += n,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            // Write blocked - deadlock achieved!
+                        Ok(()) => bytes_sent += chunk.len(),
+                        Err(e) => {
+                            // Write blocked or failed - deadlock may be achieved
                             tracing::info!(
                                 bytes_written = bytes_sent,
-                                "Pipe deadlock achieved"
+                                error = %e,
+                                "Pipe deadlock write stopped"
                             );
                             break;
                         }
-                        Err(e) => return Err(e.into()),
                     }
                 }
             }
         }
-        
+
         Ok(SideEffectResult {
             messages_sent: 0,
             bytes_sent,
             duration: start.elapsed(),
-            completed: true,
+            outcome: SideEffectOutcome::Completed,
         })
     }
-    
+
     fn supports_transport(&self, transport_type: TransportType) -> bool {
         transport_type == TransportType::Stdio
     }
-    
+
     fn trigger(&self) -> SideEffectTrigger {
         self.trigger
     }
-    
+
     fn name(&self) -> &'static str {
         "pipe_deadlock"
     }
 }
 ```
 
-**Warning: Lock Starvation:**
+**Note on Write Serialization:**
 
-The `pipe_deadlock` side effect holds an exclusive write lock while filling the pipe. This intentionally blocks all other write operations (responses, heartbeats, concurrent requests). Tasks waiting for the write lock will:
+The `pipe_deadlock` side effect writes via `transport.send_raw()`. The stdio transport's internal `Mutex<BufWriter>` serializes all writes, preventing interleaving with concurrent response writes. No explicit lock acquisition is needed.
 
-1. **Block** until the deadlock completes or is cancelled
-2. **Timeout** if they have their own deadlines
-
-This is the intended behavior for testing deadlock resilience. However, implementers should:
+This is the intended behavior for testing deadlock resilience. Implementers should:
 - Ensure the cancellation token is respected (checked in the write loop)
-- Use `tokio::time::timeout` on lock acquisition if graceful degradation is needed
 - Log when other tasks are blocked waiting for the write lock
 
 > ⚠️ **Terminal State Behavior**

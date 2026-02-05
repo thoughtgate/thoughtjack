@@ -486,7 +486,6 @@ response:
         count: 10000              # Number of keys (required)
         key_length: 8             # Length of each key (default: 8)
         value: "x"                # Value for each key (default: "x")
-        collision_mode: djb2      # Hash algorithm to target (default: djb2)
 ```
 
 **Parameters:**
@@ -496,15 +495,16 @@ response:
 | `count` | usize | required | Number of keys |
 | `key_length` | usize | 8 | Length of each key |
 | `value` | Value | "x" | Value for each key |
-| `collision_mode` | enum | djb2 | `djb2`, `fnv1a`, or `sequential` |
 
-**Collision Modes:**
+**Key Generation:**
 
-| Mode | Description | Target |
-|------|-------------|--------|
-| `djb2` | Keys that collide in DJB2 hash | Older hash tables |
-| `fnv1a` | Keys that collide in FNV-1a | Some JSON parsers |
-| `sequential` | Sequential keys (k0, k1, k2...) | Baseline comparison |
+Keys are generated sequentially (`k0000000`, `k0000001`, ...) to produce a
+large JSON object with many distinct keys.  This is sufficient to stress-test
+JSON parser allocation and hash-table resizing without relying on
+algorithm-specific collision generation.
+
+> **Future enhancement:** `collision_mode` parameter targeting specific hash
+> functions (`djb2`, `fnv1a`) may be added in a later version.
 
 **Implementation:**
 ```rust
@@ -512,25 +512,17 @@ pub struct RepeatedKeysGenerator {
     pub count: usize,
     pub key_length: usize,
     pub value: serde_json::Value,
-    pub collision_mode: CollisionMode,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum CollisionMode {
-    Djb2,
-    Fnv1a,
-    Sequential,
 }
 
 impl PayloadGenerator for RepeatedKeysGenerator {
     fn generate(&self) -> Result<GeneratedPayload, GeneratorError> {
-        let keys = self.generate_colliding_keys();
-        
+        let keys = self.generate_keys();
+
         let mut output = Vec::new();
         output.push(b'{');
-        
+
         let value_json = serde_json::to_string(&self.value)?;
-        
+
         for (i, key) in keys.iter().enumerate() {
             if i > 0 {
                 output.push(b',');
@@ -540,55 +532,15 @@ impl PayloadGenerator for RepeatedKeysGenerator {
             output.extend_from_slice(b"\":");
             output.extend_from_slice(value_json.as_bytes());
         }
-        
+
         output.push(b'}');
         Ok(GeneratedPayload::Buffered(output))
     }
-    
-    fn generate_colliding_keys(&self) -> Vec<String> {
-        match self.collision_mode {
-            CollisionMode::Sequential => {
-                (0..self.count)
-                    .map(|i| format!("k{:0width$}", i, width = self.key_length - 1))
-                    .collect()
-            }
-            CollisionMode::Djb2 => {
-                // Generate keys that collide in DJB2
-                // Using known collision pairs and variations
-                self.generate_djb2_collisions()
-            }
-            CollisionMode::Fnv1a => {
-                self.generate_fnv1a_collisions()
-            }
-        }
-    }
-    
-    fn generate_djb2_collisions(&self) -> Vec<String> {
-        // DJB2 collision pairs: "az" and "bY", "cX" and "dW", etc.
-        // Extend these patterns to desired length
-        let base_pairs = vec![
-            ("az", "bY"), ("cX", "dW"), ("eV", "fU"),
-            ("gT", "hS"), ("iR", "jQ"), ("kP", "lO"),
-        ];
-        
-        let mut keys = Vec::with_capacity(self.count);
-        for i in 0..self.count {
-            let pair_idx = i / 2 % base_pairs.len();
-            let variant = if i % 2 == 0 { base_pairs[pair_idx].0 } else { base_pairs[pair_idx].1 };
-            let padding = "A".repeat(self.key_length.saturating_sub(variant.len()));
-            keys.push(format!("{}{}{}", variant, padding, i / (base_pairs.len() * 2)));
-        }
-        keys
-    }
-    
-    fn generate_fnv1a_collisions(&self) -> Vec<String> {
-        // FNV-1a collision generation
-        // Similar approach with FNV-specific collision pairs
+
+    fn generate_keys(&self) -> Vec<String> {
+        // Sequential keys: k0000000, k0000001, ...
         (0..self.count)
-            .map(|i| {
-                let base = format!("{:x}", i * 0x01000193); // FNV prime
-                format!("{:0<width$}", base, width = self.key_length)
-            })
+            .map(|i| format!("k{:0width$}", i, width = self.key_length - 1))
             .collect()
     }
     
@@ -1028,69 +980,45 @@ The system SHALL ensure deterministic payload generation with meaningful variati
 
 **Acceptance Criteria:**
 - Same parameters always produce same output
-- RNG seeded from config or default seed
-- Seed can be specified per-generator
-- **Generators without explicit seed derive their seed from (global_seed + location_hash)**
+- RNG seeded from config or hardcoded default
+- Seed can be specified per-generator via `seed` parameter
 - Useful for reproducible test cases
 
-**Derived Seeding:**
+**Per-Generator Seeding:**
 
-When a generator doesn't specify an explicit `seed`, its seed is derived from the global seed plus its **full path** in the config. This ensures multiple generators produce **different** but **deterministic** output:
+Each generator accepts an optional `seed` parameter. If omitted, a hardcoded default seed is used (e.g., `0xDEADBEEF`).
 
 ```yaml
-# Each generator gets a unique seed based on its full path:
+# Explicit seeds for reproducibility:
 tools:
   - tool: { name: a }
     response:
       content:
-        - $generate: { type: garbage, bytes: 100 }  # path: "tools[0].response.content[0]"
-        - $generate: { type: garbage, bytes: 100 }  # path: "tools[0].response.content[1]"
+        - $generate: { type: garbage, bytes: 100, seed: 111 }
+        - $generate: { type: garbage, bytes: 100, seed: 222 }
   - tool: { name: b }
     response:
       content:
-        - $generate: { type: garbage, bytes: 100 }  # path: "tools[1].response.content[0]"
+        - $generate: { type: garbage, bytes: 100 }  # Uses default seed
 ```
-
-**Path Format:** The generator path MUST include full array indices (e.g., `tools[0].response.content[2]`), not just names. This ensures two generators in the same tool's response content array produce different output.
-
-**Seed Derivation Formula:**
-```rust
-/// Derive seed from global seed + full config path
-/// Path MUST include array indices: "tools[0].response.content[1]"
-fn derive_seed(global_seed: u64, generator_path: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    use std::collections::hash_map::DefaultHasher;
-    
-    let mut hasher = DefaultHasher::new();
-    global_seed.hash(&mut hasher);
-    generator_path.hash(&mut hasher);  // e.g., "tools[0].response.content[1]"
-    hasher.finish()
-}
-```
-
-**Global Seed Configuration:**
-```yaml
-# Set global seed for reproducibility
-# All derived seeds are based on this
-seed: 12345  # Top-level config
-```
-
-Or via CLI: `thoughtjack server --config x.yaml --seed 12345`
 
 **Implementation:**
 ```rust
 impl GarbageGenerator {
+    const DEFAULT_SEED: u64 = 0xDEAD_BEEF;
+
     fn generate_deterministic(&self) -> Vec<u8> {
-        // Use explicit seed if provided, otherwise derived seed
-        let seed = self.explicit_seed.unwrap_or(self.derived_seed);
+        let seed = self.seed.unwrap_or(Self::DEFAULT_SEED);
         let mut rng = StdRng::seed_from_u64(seed);
-        
+
         (0..self.bytes)
             .map(|_| self.charset.sample(&mut rng))
             .collect()
     }
 }
 ```
+
+> **Future Enhancement:** Derived seeding (global_seed + location_hash) could be added if users need automatic unique seeds per generator without explicit configuration.
 
 ---
 

@@ -577,44 +577,54 @@ THOUGHTJACK_EVENTS_FILE=events.jsonl thoughtjack server --config attack.yaml
 {"type":"ServerStopped","timestamp":"2025-02-04T10:15:40Z","reason":"client_disconnected","summary":{"uptime_seconds":10,"requests_received":8,"responses_sent":8,"phases_entered":["trust_building","trigger_swap","exploit"],"final_phase":"exploit","attacks_triggered":["tool_swap"]}}
 ```
 
-### F-013: Debug Mode
+### F-013: Verbose Logging Levels
 
-The system SHALL support a debug mode with enhanced output.
+The system SHALL support multiple verbosity levels via `-v` flags.
 
 **Acceptance Criteria:**
-- `--debug` flag enables all debug features
-- Full request/response payloads logged
-- State dumps on phase transition
-- Timing information on all operations
+- `-v` enables info-level logging (default)
+- `-vv` enables debug-level logging (full payloads)
+- `-vvv` enables trace-level logging (maximum detail)
+- Verbosity levels control what gets logged to tracing output
 
-**Debug Features:**
+**Verbosity Levels:**
 
-| Feature | Normal | Debug |
-|---------|--------|-------|
-| Request payloads | Not logged | Full JSON |
-| Response payloads | Not logged | Full JSON |
-| Phase state | Transition only | Full state dump |
-| Timing | Response only | Per-operation |
-| Memory usage | Not tracked | Periodic reports |
+| Flag | Level | Content |
+|------|-------|---------|
+| (none) | warn | Warnings and errors only |
+| `-v` | info | Lifecycle events, phase transitions |
+| `-vv` | debug | Full request/response payloads |
+| `-vvv` | trace | Per-operation timing, internal state |
+
+**Usage:**
+```bash
+# Normal operation (info level)
+thoughtjack server run -c config.yaml -v
+
+# Debug payloads (debug level)
+thoughtjack server run -c config.yaml -vv
+
+# Maximum verbosity (trace level)
+thoughtjack server run -c config.yaml -vvv
+```
 
 **Implementation:**
 ```rust
 #[instrument(skip_all, fields(request_id = %request.id))]
 async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
-    if self.debug_mode {
-        debug!(payload = ?request, "Full request payload");
-    }
-    
+    // At debug level (-vv), log full payloads
+    debug!(payload = ?request, "Full request payload");
+
     let response = self.process(request).await;
-    
-    if self.debug_mode {
-        debug!(payload = ?response, "Full response payload");
-        debug!(
-            phase_state = ?self.phase_engine.debug_state(),
-            "Current phase state"
-        );
-    }
-    
+
+    debug!(payload = ?response, "Full response payload");
+
+    // At trace level (-vvv), log internal state
+    trace!(
+        phase_state = ?self.phase_engine.debug_state(),
+        "Current phase state"
+    );
+
     response
 }
 ```
@@ -797,7 +807,7 @@ The system SHALL support capturing full request/response pairs for debugging and
 | Feature | Purpose | Content |
 |---------|---------|---------|
 | Event Logging (`--events-file`) | Lifecycle events | Phase transitions, attack triggers |
-| Debug Mode (`--debug`) | Live debugging | Full payloads to tracing log |
+| Verbose Logging (`-vv` / `-vvv`) | Live debugging | Full payloads to tracing log |
 | **Capture (`--capture-dir`)** | **Replay/Analysis** | **Full request/response pairs to file** |
 
 **Use Cases:**
@@ -966,12 +976,11 @@ thoughtjack server --config attack.yaml --capture-dir ./captures --capture-redac
 
 | Flag | Environment | Default | Description |
 |------|-------------|---------|-------------|
-| `--log-level` | `THOUGHTJACK_LOG_LEVEL` | `info` | Log verbosity |
+| `-v` / `-vv` / `-vvv` | `THOUGHTJACK_LOG_LEVEL` | warn | Verbosity level (info/debug/trace) |
 | `--log-format` | `THOUGHTJACK_LOG_FORMAT` | `human` | Log format (human/json) |
 | `--log-file` | `THOUGHTJACK_LOG_FILE` | — | Log file path |
 | `--log-file-format` | — | (same as --log-format) | Log file format |
 | `--quiet` | — | false | Suppress non-error output |
-| `--debug` | `THOUGHTJACK_DEBUG` | false | Enable debug mode |
 | `--metrics` | — | false | Enable metrics endpoint |
 | `--events-file` | `THOUGHTJACK_EVENTS_FILE` | — | Events output file |
 | `--report` | — | false | Print summary on exit |
