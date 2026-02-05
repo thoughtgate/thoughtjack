@@ -436,7 +436,7 @@ pub fn create_side_effect(config: &SideEffectConfig) -> Box<dyn SideEffect> {
 
     match config.type_ {
         SideEffectType::NotificationFlood => {
-            let rate_per_sec = extract_u64(params, "rate_per_sec", 100);
+            let rate_per_sec = extract_u64(params, "rate_per_sec", 1000);
             let duration_sec = extract_u64(params, "duration_sec", 10);
             let method = extract_string(params, "method", "notifications/message");
             let notification_params = params.get("params").cloned();
@@ -450,7 +450,7 @@ pub fn create_side_effect(config: &SideEffectConfig) -> Box<dyn SideEffect> {
             })
         }
         SideEffectType::BatchAmplify => {
-            let batch_size = extract_usize(params, "batch_size", 10);
+            let batch_size = extract_usize(params, "batch_size", 10000);
             let method = extract_string(params, "method", "notifications/message");
 
             Box::new(BatchAmplify {
@@ -460,7 +460,7 @@ pub fn create_side_effect(config: &SideEffectConfig) -> Box<dyn SideEffect> {
             })
         }
         SideEffectType::PipeDeadlock => {
-            let fill_bytes = extract_usize(params, "fill_bytes", 65536);
+            let fill_bytes = extract_usize(params, "fill_bytes", 1_048_576);
 
             Box::new(PipeDeadlock {
                 trigger_cond,
@@ -468,7 +468,7 @@ pub fn create_side_effect(config: &SideEffectConfig) -> Box<dyn SideEffect> {
             })
         }
         SideEffectType::CloseConnection => {
-            let graceful = extract_bool(params, "graceful", false);
+            let graceful = extract_bool(params, "graceful", true);
             let delay_ms = extract_u64(params, "delay_ms", 0);
 
             Box::new(CloseConnectionEffect {
@@ -478,7 +478,7 @@ pub fn create_side_effect(config: &SideEffectConfig) -> Box<dyn SideEffect> {
             })
         }
         SideEffectType::DuplicateRequestIds => {
-            let count = extract_usize(params, "count", 2);
+            let count = extract_usize(params, "count", 3);
             let explicit_id = params.get("id").cloned();
             let method = extract_string(params, "method", "tools/call");
             let request_params = params.get("params").cloned();
