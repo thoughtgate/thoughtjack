@@ -1264,7 +1264,7 @@ pub enum SideEffectType {
 
 /// When to trigger a side effect.
 ///
-/// Implements: TJ-SPEC-001 F-011
+/// Implements: TJ-SPEC-001 F-011, TJ-SPEC-004 F-014
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SideEffectTrigger {
@@ -1274,6 +1274,12 @@ pub enum SideEffectTrigger {
     /// Trigger on each request (default)
     #[default]
     OnRequest,
+
+    /// Trigger when a client subscribes to a resource
+    OnSubscribe,
+
+    /// Trigger when a client unsubscribes from a resource
+    OnUnsubscribe,
 
     /// Trigger continuously in background
     Continuous,
@@ -1842,6 +1848,15 @@ side_effects:
     fn test_side_effect_trigger_default() {
         let trigger = SideEffectTrigger::default();
         assert_eq!(trigger, SideEffectTrigger::OnRequest);
+    }
+
+    #[test]
+    fn test_side_effect_trigger_subscribe_variants() {
+        let on_sub: SideEffectTrigger = serde_yaml::from_str("on_subscribe").unwrap();
+        assert_eq!(on_sub, SideEffectTrigger::OnSubscribe);
+
+        let on_unsub: SideEffectTrigger = serde_yaml::from_str("on_unsubscribe").unwrap();
+        assert_eq!(on_unsub, SideEffectTrigger::OnUnsubscribe);
     }
 
     #[test]
