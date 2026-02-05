@@ -18,13 +18,14 @@ use crate::error::ThoughtJackError;
 ///
 /// Returns an error if the dispatched command handler fails.
 ///
-/// Implements: TJ-SPEC-007 F-001
+/// Implements: TJ-SPEC-007 F-001, F-005
 pub async fn dispatch(cli: Cli, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
     match cli.command {
         Commands::Server(cmd) => match cmd.subcommand {
-            ServerSubcommand::Run(args) => server::run(&args, cancel).await,
-            ServerSubcommand::Validate(args) => server::validate(&args).await,
-            ServerSubcommand::List(args) => server::list(&args).await,
+            Some(ServerSubcommand::Run(args)) => server::run(&args, cancel).await,
+            Some(ServerSubcommand::Validate(args)) => server::validate(&args).await,
+            Some(ServerSubcommand::List(args)) => server::list(&args).await,
+            None => server::run(&cmd.run_args, cancel).await,
         },
         Commands::Agent(cmd) => agent::run(&cmd).await,
         Commands::Completions(args) => {

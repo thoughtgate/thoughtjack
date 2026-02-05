@@ -46,7 +46,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Start or manage the adversarial MCP server.
-    Server(ServerCommand),
+    Server(Box<ServerCommand>),
 
     /// Run as an MCP client agent (coming soon).
     Agent(AgentCommand),
@@ -64,12 +64,19 @@ pub enum Commands {
 
 /// Server management commands.
 ///
-/// Implements: TJ-SPEC-007 F-002
+/// When no subcommand is given, defaults to `run`.
+///
+/// Implements: TJ-SPEC-007 F-002, F-005
 #[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct ServerCommand {
     /// Server subcommand.
     #[command(subcommand)]
-    pub subcommand: ServerSubcommand,
+    pub subcommand: Option<ServerSubcommand>,
+
+    /// Default run arguments (used when no subcommand is specified).
+    #[command(flatten)]
+    pub run_args: ServerRunArgs,
 }
 
 /// Server subcommands.
@@ -386,7 +393,7 @@ mod tests {
             Cli::try_parse_from(["thoughtjack", "server", "run", "--config", "test.yaml"]).unwrap();
 
         if let Commands::Server(cmd) = cli.command {
-            if let ServerSubcommand::Run(args) = cmd.subcommand {
+            if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
                 assert_eq!(args.state_scope, StateScope::PerConnection);
                 return;
             }
@@ -400,7 +407,7 @@ mod tests {
             Cli::try_parse_from(["thoughtjack", "server", "run", "--config", "test.yaml"]).unwrap();
 
         if let Commands::Server(cmd) = cli.command {
-            if let ServerSubcommand::Run(args) = cmd.subcommand {
+            if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
                 assert_eq!(args.profile, ServerProfile::Default);
                 return;
             }
@@ -480,6 +487,26 @@ mod tests {
         ])
         .unwrap();
         assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_server_default_subcommand() {
+        // `server --config x.yaml` should work without explicit `run`
+        let cli = Cli::try_parse_from(["thoughtjack", "server", "--config", "x.yaml"]).unwrap();
+
+        if let Commands::Server(cmd) = cli.command {
+            assert!(
+                cmd.subcommand.is_none(),
+                "Expected no subcommand (defaults to run)"
+            );
+            assert_eq!(
+                cmd.run_args.config,
+                Some(PathBuf::from("x.yaml")),
+                "Expected --config to be captured in run_args"
+            );
+        } else {
+            panic!("Expected Server command");
+        }
     }
 
     #[test]
