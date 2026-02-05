@@ -397,6 +397,14 @@ impl Server {
     ) {
         for effect in &resolved.side_effects {
             if effect.trigger() == trigger {
+                if !effect.supports_transport(self.transport.transport_type()) {
+                    warn!(
+                        effect = effect.name(),
+                        transport = ?self.transport.transport_type(),
+                        "side effect not supported on this transport, skipping"
+                    );
+                    continue;
+                }
                 let cancel = self.cancel.child_token();
                 match effect
                     .execute(
@@ -447,10 +455,14 @@ impl Server {
             self.transport.transport_type(),
         );
 
+        let transport_type = self.transport.transport_type();
         let continuous: Vec<_> = resolved
             .side_effects
             .drain(..)
-            .filter(|e| e.trigger() == SideEffectTrigger::Continuous)
+            .filter(|e| {
+                e.trigger() == SideEffectTrigger::Continuous
+                    && e.supports_transport(transport_type)
+            })
             .collect();
 
         let mut handles = Vec::new();
