@@ -1,34 +1,19 @@
 //! `ThoughtJack` — Adversarial MCP server for security testing
 
 use clap::Parser;
-use tracing::Level;
 
 use thoughtjack::cli::args::Cli;
 use thoughtjack::cli::commands;
 use thoughtjack::error::ExitCode;
-
-fn setup_logging(verbose: u8, quiet: bool) {
-    let level = if quiet {
-        Level::ERROR
-    } else {
-        match verbose {
-            0 => Level::WARN,
-            1 => Level::INFO,
-            2 => Level::DEBUG,
-            _ => Level::TRACE,
-        }
-    };
-
-    tracing_subscriber::fmt()
-        .with_max_level(level)
-        .with_target(verbose >= 3)
-        .init();
-}
+use thoughtjack::observability::{LogFormat, init_logging};
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    setup_logging(cli.verbose, cli.quiet);
+
+    if !cli.quiet {
+        init_logging(LogFormat::Human, cli.verbose);
+    }
 
     // Spawn signal handler for graceful shutdown
     tokio::spawn(async {
