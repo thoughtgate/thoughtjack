@@ -4,9 +4,11 @@
 //! over different transport mechanisms (stdio, HTTP). The transport layer handles
 //! message framing, serialization, and delivery behavior adaptation.
 
+pub mod http;
 pub mod jsonrpc;
 pub mod stdio;
 
+pub use http::HttpTransport;
 pub use jsonrpc::{
     JSONRPC_VERSION, JsonRpcError, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse,
@@ -68,6 +70,22 @@ pub trait Transport: Send + Sync {
 
     /// Returns the type of this transport for logging and metrics.
     fn transport_type(&self) -> TransportType;
+
+    /// Signals that the current response delivery is complete.
+    ///
+    /// For HTTP: drops the response body sender, ending the chunked stream and
+    /// completing the HTTP response. For stdio: no-op.
+    ///
+    /// Implements: TJ-SPEC-002 F-001
+    async fn finalize_response(&self) -> Result<()>;
+
+    /// Returns the connection context for the current request.
+    ///
+    /// For HTTP: returns context set by the last `receive_message()`.
+    /// For stdio: returns the fixed stdio context.
+    ///
+    /// Implements: TJ-SPEC-002 F-016
+    fn connection_context(&self) -> ConnectionContext;
 }
 
 /// Transport type identifier.
@@ -96,7 +114,7 @@ impl fmt::Display for TransportType {
 /// logging, and connection-scoped state management.
 ///
 /// Implements: TJ-SPEC-002 F-016
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConnectionContext {
     /// Unique connection identifier.
     ///

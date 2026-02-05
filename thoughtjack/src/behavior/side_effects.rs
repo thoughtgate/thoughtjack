@@ -547,6 +547,14 @@ mod tests {
         fn transport_type(&self) -> TransportType {
             TransportType::Stdio
         }
+
+        async fn finalize_response(&self) -> crate::transport::Result<()> {
+            Ok(())
+        }
+
+        fn connection_context(&self) -> crate::transport::ConnectionContext {
+            crate::transport::ConnectionContext::stdio()
+        }
     }
 
     // ========================================================================

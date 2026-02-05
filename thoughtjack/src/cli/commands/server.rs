@@ -12,7 +12,8 @@ use crate::config::schema::{
 use crate::error::ThoughtJackError;
 use crate::observability::events::EventEmitter;
 use crate::server::Server;
-use crate::transport::StdioTransport;
+use crate::transport::http::{HttpConfig, parse_bind_addr};
+use crate::transport::{DEFAULT_MAX_MESSAGE_SIZE, HttpTransport, StdioTransport, Transport};
 
 /// Start the adversarial MCP server.
 ///
@@ -80,7 +81,20 @@ pub async fn run(args: &ServerRunArgs) -> Result<(), ThoughtJackError> {
         side_effects: None,
     });
 
-    let transport = Box::new(StdioTransport::new());
+    let transport: Box<dyn Transport> = if let Some(ref bind_addr) = args.http {
+        let addr = parse_bind_addr(bind_addr);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let http_config = HttpConfig {
+            bind_addr: addr,
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+        };
+        let (http_transport, bound_addr) = HttpTransport::bind(http_config, cancel).await?;
+        tracing::info!(%bound_addr, "HTTP server listening");
+        Box::new(http_transport)
+    } else {
+        Box::new(StdioTransport::new())
+    };
+
     let event_emitter = EventEmitter::stdout();
 
     let server = Server::new(config, transport, cli_behavior, event_emitter);

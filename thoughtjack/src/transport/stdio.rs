@@ -214,6 +214,15 @@ impl Transport for StdioTransport {
     fn transport_type(&self) -> TransportType {
         TransportType::Stdio
     }
+
+    async fn finalize_response(&self) -> Result<()> {
+        // No-op for stdio — responses are complete after send_message/send_raw.
+        Ok(())
+    }
+
+    fn connection_context(&self) -> ConnectionContext {
+        self.context.clone()
+    }
 }
 
 /// Reads an environment variable, parsing it to type `T`, or returns the default.

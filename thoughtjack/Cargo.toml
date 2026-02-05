@@ -35,10 +35,13 @@ indexmap = { version = "2.13", features = ["serde"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 chrono = { version = "0.4", features = ["serde"] }
 axum = "0.8"
+bytes = "1.11"
 futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
 
 [features]
 default = []

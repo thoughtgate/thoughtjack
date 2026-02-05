@@ -23,11 +23,11 @@ use crate::observability::events::{Event, EventEmitter};
 use crate::observability::metrics;
 use crate::phase::engine::PhaseEngine;
 use crate::phase::state::EventType;
+use crate::transport::Transport;
 use crate::transport::jsonrpc::{
     JSONRPC_VERSION, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     error_codes,
 };
-use crate::transport::{ConnectionContext, Transport};
 
 /// MCP server runtime.
 ///
@@ -41,7 +41,6 @@ pub struct Server {
     phase_engine: Arc<PhaseEngine>,
     behavior_coordinator: BehaviorCoordinator,
     event_emitter: EventEmitter,
-    connection: ConnectionContext,
     generator_limits: GeneratorLimits,
     cancel: CancellationToken,
 }
@@ -64,7 +63,6 @@ impl Server {
         let (baseline, phases) = build_baseline_and_phases(&config);
         let phase_engine = Arc::new(PhaseEngine::new(phases, baseline));
         let behavior_coordinator = BehaviorCoordinator::new(cli_behavior);
-        let connection = ConnectionContext::stdio();
         let generator_limits = GeneratorLimits::default();
         let cancel = CancellationToken::new();
 
@@ -74,7 +72,6 @@ impl Server {
             phase_engine,
             behavior_coordinator,
             event_emitter,
-            connection,
             generator_limits,
             cancel,
         }
@@ -229,6 +226,11 @@ impl Server {
                 self.deliver_response(resp, &resolved, &request, start)
                     .await;
 
+                // Finalize the HTTP response (no-op for stdio)
+                if let Err(e) = self.transport.finalize_response().await {
+                    warn!(error = %e, "failed to finalize response");
+                }
+
                 // Execute OnRequest side effects after delivery
                 self.execute_on_request_effects(&resolved).await;
 
@@ -363,7 +365,11 @@ impl Server {
             if effect.trigger() == SideEffectTrigger::OnRequest {
                 let cancel = self.cancel.child_token();
                 if let Err(e) = effect
-                    .execute(self.transport.as_ref(), &self.connection, cancel)
+                    .execute(
+                        self.transport.as_ref(),
+                        &self.transport.connection_context(),
+                        cancel,
+                    )
                     .await
                 {
                     warn!(effect = effect.name(), error = %e, "OnRequest side effect failed");
@@ -378,7 +384,11 @@ impl Server {
             if effect.trigger() == SideEffectTrigger::OnConnect {
                 let cancel = self.cancel.child_token();
                 if let Err(e) = effect
-                    .execute(self.transport.as_ref(), &self.connection, cancel)
+                    .execute(
+                        self.transport.as_ref(),
+                        &self.transport.connection_context(),
+                        cancel,
+                    )
                     .await
                 {
                     warn!(effect = effect.name(), error = %e, "OnConnect side effect failed");
@@ -516,6 +526,14 @@ mod tests {
 
         fn transport_type(&self) -> TransportType {
             TransportType::Stdio
+        }
+
+        async fn finalize_response(&self) -> crate::transport::Result<()> {
+            Ok(())
+        }
+
+        fn connection_context(&self) -> crate::transport::ConnectionContext {
+            crate::transport::ConnectionContext::stdio()
         }
     }
 
