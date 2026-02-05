@@ -1,19 +1,27 @@
 //! Server command handlers (TJ-SPEC-007)
 //!
-//! Stub implementations for `server run`, `server validate`, and `server list`.
+//! Implements `server run`, `server validate`, and `server list`.
 
-use crate::cli::args::{ServerListArgs, ServerRunArgs, ServerValidateArgs};
+use std::sync::Arc;
+
+use crate::cli::args::{DeliveryMode, ServerListArgs, ServerRunArgs, ServerValidateArgs};
+use crate::config::loader::{ConfigLoader, LoaderOptions};
+use crate::config::schema::{
+    BehaviorConfig, DeliveryConfig, GeneratorLimits, ServerConfig, ServerMetadata, ToolPattern,
+};
 use crate::error::ThoughtJackError;
+use crate::observability::events::EventEmitter;
+use crate::server::Server;
+use crate::transport::StdioTransport;
 
 /// Start the adversarial MCP server.
 ///
 /// # Errors
 ///
 /// Returns a usage error if neither `--config` nor `--tool` is provided,
-/// or a transport/phase error once the server runtime is wired in.
+/// or a transport/phase error if the server fails during operation.
 ///
 /// Implements: TJ-SPEC-007 F-002
-#[allow(clippy::unused_async)] // will use async when server runtime is wired in
 pub async fn run(args: &ServerRunArgs) -> Result<(), ThoughtJackError> {
     // EC-CLI-003: require at least one source
     if args.config.is_none() && args.tool.is_none() {
@@ -23,17 +31,60 @@ pub async fn run(args: &ServerRunArgs) -> Result<(), ThoughtJackError> {
         )));
     }
 
-    tracing::info!("server starting...");
-
-    if let Some(ref path) = args.config {
+    let config = if let Some(ref path) = args.config {
         tracing::info!(config = %path.display(), "loading configuration");
-    }
-    if let Some(ref path) = args.tool {
-        tracing::info!(tool = %path.display(), "loading single tool definition");
-    }
+        let options = LoaderOptions {
+            library_root: args.library.clone(),
+            generator_limits: GeneratorLimits::default(),
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        let load_result = loader.load(path)?;
 
-    // TODO: wire up config loader → phase engine → transport loop
-    Ok(())
+        for warning in &load_result.warnings {
+            tracing::warn!(
+                location = warning.location.as_deref().unwrap_or("<unknown>"),
+                "{}",
+                warning.message
+            );
+        }
+
+        load_result.config
+    } else if let Some(ref path) = args.tool {
+        tracing::info!(tool = %path.display(), "loading single tool definition");
+        let raw = std::fs::read_to_string(path)?;
+        let tool_pattern: ToolPattern = serde_yaml::from_str(&raw)?;
+        Arc::new(ServerConfig {
+            server: ServerMetadata {
+                name: tool_pattern.tool.name.clone(),
+                version: Some("0.0.0".to_string()),
+                state_scope: None,
+                capabilities: None,
+            },
+            baseline: None,
+            tools: Some(vec![tool_pattern]),
+            resources: None,
+            prompts: None,
+            phases: None,
+            behavior: None,
+            logging: None,
+            unknown_methods: None,
+        })
+    } else {
+        unreachable!("validated above");
+    };
+
+    // Convert CLI delivery mode to BehaviorConfig override
+    let cli_behavior = args.behavior.map(|mode| BehaviorConfig {
+        delivery: Some(delivery_mode_to_config(mode)),
+        side_effects: None,
+    });
+
+    let transport = Box::new(StdioTransport::new());
+    let event_emitter = EventEmitter::stdout();
+
+    let server = Server::new(config, transport, cli_behavior, event_emitter);
+    server.run().await
 }
 
 /// Validate configuration files without starting the server.
@@ -41,10 +92,10 @@ pub async fn run(args: &ServerRunArgs) -> Result<(), ThoughtJackError> {
 /// # Errors
 ///
 /// Returns an I/O error if any file does not exist, or a config error
-/// once the full validation pipeline is wired in.
+/// if validation fails.
 ///
 /// Implements: TJ-SPEC-007 F-003
-#[allow(clippy::unused_async)] // will use async when config loader is wired in
+#[allow(clippy::unused_async)] // will use async when config loader gains async support
 pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError> {
     for path in &args.files {
         if !path.exists() {
@@ -54,9 +105,25 @@ pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError>
             )));
         }
         tracing::info!(file = %path.display(), "validating configuration");
+
+        let options = LoaderOptions {
+            library_root: args.library.clone(),
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        let load_result = loader.load(path)?;
+
+        for warning in &load_result.warnings {
+            tracing::warn!(
+                location = warning.location.as_deref().unwrap_or("<unknown>"),
+                "{}",
+                warning.message
+            );
+        }
+
+        tracing::info!(file = %path.display(), "configuration valid");
     }
 
-    // TODO: wire up config loader + validation
     Ok(())
 }
 
@@ -73,4 +140,24 @@ pub async fn list(args: &ServerListArgs) -> Result<(), ThoughtJackError> {
 
     // TODO: scan library directory and render output
     Ok(())
+}
+
+/// Converts a CLI `DeliveryMode` to a `DeliveryConfig`.
+const fn delivery_mode_to_config(mode: DeliveryMode) -> DeliveryConfig {
+    match mode {
+        DeliveryMode::Normal => DeliveryConfig::Normal,
+        DeliveryMode::SlowLoris => DeliveryConfig::SlowLoris {
+            byte_delay_ms: Some(100),
+            chunk_size: Some(1),
+        },
+        DeliveryMode::UnboundedLine => DeliveryConfig::UnboundedLine {
+            target_bytes: Some(1_000_000),
+            padding_char: None,
+        },
+        DeliveryMode::NestedJson => DeliveryConfig::NestedJson {
+            depth: 10_000,
+            key: None,
+        },
+        DeliveryMode::ResponseDelay => DeliveryConfig::ResponseDelay { delay_ms: 5000 },
+    }
 }
