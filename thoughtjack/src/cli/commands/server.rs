@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::cli::args::{DeliveryMode, ServerListArgs, ServerRunArgs, ServerValidateArgs};
 use crate::config::loader::{ConfigLoader, LoaderOptions};
 use crate::config::schema::{
@@ -23,13 +25,19 @@ use crate::transport::{DEFAULT_MAX_MESSAGE_SIZE, HttpTransport, StdioTransport, 
 /// or a transport/phase error if the server fails during operation.
 ///
 /// Implements: TJ-SPEC-007 F-002
-pub async fn run(args: &ServerRunArgs) -> Result<(), ThoughtJackError> {
+pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
     // EC-CLI-003: require at least one source
     if args.config.is_none() && args.tool.is_none() {
         return Err(ThoughtJackError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "either --config or --tool is required",
         )));
+    }
+
+    // Initialize Prometheus metrics if --metrics-port is provided
+    if let Some(port) = args.metrics_port {
+        crate::observability::init_metrics(Some(port))?;
+        tracing::info!(port, "Prometheus metrics endpoint started");
     }
 
     let config = if let Some(ref path) = args.config {
@@ -83,21 +91,24 @@ pub async fn run(args: &ServerRunArgs) -> Result<(), ThoughtJackError> {
 
     let transport: Box<dyn Transport> = if let Some(ref bind_addr) = args.http {
         let addr = parse_bind_addr(bind_addr);
-        let cancel = tokio_util::sync::CancellationToken::new();
         let http_config = HttpConfig {
             bind_addr: addr,
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
         };
-        let (http_transport, bound_addr) = HttpTransport::bind(http_config, cancel).await?;
+        let (http_transport, bound_addr) = HttpTransport::bind(http_config, cancel.clone()).await?;
         tracing::info!(%bound_addr, "HTTP server listening");
         Box::new(http_transport)
     } else {
         Box::new(StdioTransport::new())
     };
 
-    let event_emitter = EventEmitter::stdout();
+    let event_emitter = if let Some(ref path) = args.events_file {
+        EventEmitter::from_file(path)?
+    } else {
+        EventEmitter::stderr()
+    };
 
-    let server = Server::new(config, transport, cli_behavior, event_emitter);
+    let server = Server::new(config, transport, cli_behavior, event_emitter, cancel);
     server.run().await
 }
 

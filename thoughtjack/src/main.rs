@@ -1,6 +1,7 @@
 //! `ThoughtJack` — Adversarial MCP server for security testing
 
 use clap::Parser;
+use tokio_util::sync::CancellationToken;
 
 use thoughtjack::cli::args::Cli;
 use thoughtjack::cli::commands;
@@ -15,8 +16,12 @@ async fn main() {
         init_logging(LogFormat::Human, cli.verbose);
     }
 
+    // Create a single cancellation token shared across the entire process
+    let cancel = CancellationToken::new();
+    let cancel_for_signal = cancel.clone();
+
     // Spawn signal handler for graceful shutdown
-    tokio::spawn(async {
+    tokio::spawn(async move {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to register SIGTERM handler");
 
@@ -25,6 +30,7 @@ async fn main() {
             _ = sigterm.recv() => {}
         }
 
+        cancel_for_signal.cancel();
         eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
 
         tokio::select! {
@@ -33,7 +39,7 @@ async fn main() {
         }
     });
 
-    let result = commands::dispatch(cli).await;
+    let result = commands::dispatch(cli, cancel).await;
 
     match result {
         Ok(()) => std::process::exit(ExitCode::SUCCESS),

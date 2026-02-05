@@ -196,21 +196,30 @@ The system SHALL track event occurrences for transition trigger evaluation.
 **Acceptance Criteria:**
 - Every MCP request/notification increments appropriate event counter
 - Counters distinguish between generic and specific events
-- `tools/call` increments both `ToolsCall(None)` and `ToolsCall(Some(tool_name))`
+- `tools/call` increments both `"tools/call"` and `"tools/call:X"` (dual-counting)
 - Counters persist across phase transitions (not reset)
 - Counter overflow handled gracefully (saturating add at u64::MAX)
+
+**Event Type Representation:**
+
+Event types use a string-based newtype wrapper for simplicity:
+
+```rust
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct EventType(pub String);
+```
 
 **Event Classification:**
 | MCP Method | Event Type(s) Incremented |
 |------------|---------------------------|
-| `initialize` | `Initialize` |
-| `notifications/initialized` | `Initialized` |
-| `tools/list` | `ToolsList` |
-| `tools/call` (tool: X) | `ToolsCall(None)`, `ToolsCall(Some("X"))` |
-| `resources/list` | `ResourcesList` |
-| `resources/read` (uri: Y) | `ResourcesRead(None)`, `ResourcesRead(Some("Y"))` |
-| `prompts/list` | `PromptsList` |
-| `prompts/get` (name: Z) | `PromptsGet(None)`, `PromptsGet(Some("Z"))` |
+| `initialize` | `"initialize"` |
+| `notifications/initialized` | `"notifications/initialized"` |
+| `tools/list` | `"tools/list"` |
+| `tools/call` (tool: X) | `"tools/call"`, `"tools/call:X"` |
+| `resources/list` | `"resources/list"` |
+| `resources/read` (uri: Y) | `"resources/read"`, `"resources/read:Y"` |
+| `prompts/list` | `"prompts/list"` |
+| `prompts/get` (name: Z) | `"prompts/get"`, `"prompts/get:Z"` |
 
 ### F-004: Transition Trigger Evaluation
 

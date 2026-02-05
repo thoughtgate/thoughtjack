@@ -51,6 +51,8 @@ impl Server {
     /// Converts the `ServerConfig` into a baseline + phases pair and
     /// initialises all subsystems. The `cli_behavior` override (if
     /// provided) takes highest priority in the behaviour scoping chain.
+    /// The `cancel` token is used for cooperative shutdown — cancelling it
+    /// stops the server's main loop.
     ///
     /// Implements: TJ-SPEC-002 F-001
     #[must_use]
@@ -59,12 +61,12 @@ impl Server {
         transport: Box<dyn Transport>,
         cli_behavior: Option<BehaviorConfig>,
         event_emitter: EventEmitter,
+        cancel: CancellationToken,
     ) -> Self {
         let (baseline, phases) = build_baseline_and_phases(&config);
         let phase_engine = Arc::new(PhaseEngine::new(phases, baseline));
         let behavior_coordinator = BehaviorCoordinator::new(cli_behavior);
         let generator_limits = GeneratorLimits::default();
-        let cancel = CancellationToken::new();
 
         Self {
             config,
@@ -132,6 +134,7 @@ impl Server {
     }
 
     /// Core message loop.
+    #[allow(clippy::too_many_lines)]
     async fn main_loop(
         &self,
         server_name: &str,
@@ -181,10 +184,21 @@ impl Server {
             let effective_state = self.phase_engine.effective_state();
 
             // 2. Build event type and record it — may trigger transition via CAS
+            //    Record both generic ("tools/call") and specific ("tools/call:calc")
+            //    events for dual-counting (TJ-SPEC-003 F-003).
             let event = EventType::new(&request.method);
             let transition = self
                 .phase_engine
                 .record_event(&event, request.params.as_ref());
+
+            // Only try the specific event if the generic didn't already fire a transition
+            let transition = transition.or_else(|| {
+                extract_specific_name(&request.method, request.params.as_ref()).and_then(|name| {
+                    let specific = EventType::new(format!("{}:{name}", request.method));
+                    self.phase_engine
+                        .record_event(&specific, request.params.as_ref())
+                })
+            });
 
             // 3. Merge with any timer-triggered transition
             let transition = match transition {
@@ -428,14 +442,6 @@ impl Server {
         }
         handles
     }
-
-    /// Returns the cancellation token for external shutdown.
-    ///
-    /// Implements: TJ-SPEC-002 F-001
-    #[must_use]
-    pub fn cancel_token(&self) -> CancellationToken {
-        self.cancel.clone()
-    }
 }
 
 /// Builds a `(BaselineState, Vec<Phase>)` from a `ServerConfig`.
@@ -463,6 +469,22 @@ fn build_baseline_and_phases(
             (baseline.clone(), phases)
         },
     )
+}
+
+/// Extracts the specific item name from request params for dual-counting.
+///
+/// - `tools/call` → `params.name`
+/// - `resources/read` → `params.uri`
+/// - `prompts/get` → `params.name`
+///
+/// Implements: TJ-SPEC-003 F-003
+fn extract_specific_name(method: &str, params: Option<&serde_json::Value>) -> Option<String> {
+    let params = params?;
+    match method {
+        "tools/call" | "prompts/get" => params.get("name")?.as_str().map(String::from),
+        "resources/read" => params.get("uri")?.as_str().map(String::from),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -644,7 +666,7 @@ mod tests {
         let emitter = EventEmitter::new(Box::new(tw.clone()));
         let transport = Box::new(MockTransport::new(vec![make_init_request()]));
 
-        let server = Server::new(config, transport, None, emitter);
+        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
 
         let sent = server.transport.as_ref();
@@ -665,7 +687,7 @@ mod tests {
         let sent_ref = mock.sent_messages.clone();
         let transport = Box::new(mock);
 
-        let server = Server::new(config, transport, None, emitter);
+        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
 
         // Find the response in sent bytes
@@ -689,7 +711,7 @@ mod tests {
         let sent_ref = mock.sent_messages.clone();
         let transport = Box::new(mock);
 
-        let server = Server::new(config, transport, None, emitter);
+        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
 
         let sent = sent_ref.lock().unwrap();
@@ -718,7 +740,7 @@ mod tests {
         let sent_ref = mock.sent_messages.clone();
         let transport = Box::new(mock);
 
-        let server = Server::new(config, transport, None, emitter);
+        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
 
         let sent = sent_ref.lock().unwrap();
@@ -744,7 +766,7 @@ mod tests {
         let sent_ref = mock.sent_messages.clone();
         let transport = Box::new(mock);
 
-        let server = Server::new(config, transport, None, emitter);
+        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
 
         // No response should be sent for Drop mode

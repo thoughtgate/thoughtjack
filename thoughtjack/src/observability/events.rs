@@ -146,6 +146,27 @@ impl EventEmitter {
         Self::new(Box::new(std::io::stdout()))
     }
 
+    /// Creates an emitter that writes to stderr.
+    ///
+    /// This is the default for server operation — stderr does not conflict
+    /// with the stdio transport which uses stdout for MCP JSON-RPC messages.
+    ///
+    /// Implements: TJ-SPEC-008 F-012
+    #[must_use]
+    pub fn stderr() -> Self {
+        Self::new(Box::new(std::io::stderr()))
+    }
+
+    /// Creates an emitter that silently discards all events.
+    ///
+    /// Useful for quiet mode or when events are not needed.
+    ///
+    /// Implements: TJ-SPEC-008 F-012
+    #[must_use]
+    pub fn noop() -> Self {
+        Self::new(Box::new(std::io::sink()))
+    }
+
     /// Creates an emitter that writes to a file at `path`.
     ///
     /// # Errors

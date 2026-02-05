@@ -7,6 +7,8 @@ pub mod completions;
 pub mod server;
 pub mod version;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::cli::args::{Cli, Commands, ServerSubcommand};
 use crate::error::ThoughtJackError;
 
@@ -17,10 +19,10 @@ use crate::error::ThoughtJackError;
 /// Returns an error if the dispatched command handler fails.
 ///
 /// Implements: TJ-SPEC-007 F-001
-pub async fn dispatch(cli: Cli) -> Result<(), ThoughtJackError> {
+pub async fn dispatch(cli: Cli, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
     match cli.command {
         Commands::Server(cmd) => match cmd.subcommand {
-            ServerSubcommand::Run(args) => server::run(&args).await,
+            ServerSubcommand::Run(args) => server::run(&args, cancel).await,
             ServerSubcommand::Validate(args) => server::validate(&args).await,
             ServerSubcommand::List(args) => server::list(&args).await,
         },

@@ -129,6 +129,14 @@ pub struct ServerRunArgs {
     #[arg(long, default_value = "./library", env = "THOUGHTJACK_LIBRARY")]
     pub library: PathBuf,
 
+    /// Enable Prometheus metrics endpoint on the specified port.
+    #[arg(long, env = "THOUGHTJACK_METRICS_PORT")]
+    pub metrics_port: Option<u16>,
+
+    /// Write structured events to a JSONL file instead of stderr.
+    #[arg(long, env = "THOUGHTJACK_EVENTS_FILE")]
+    pub events_file: Option<PathBuf>,
+
     /// Directory to capture request/response traffic.
     #[arg(long, env = "THOUGHTJACK_CAPTURE_DIR")]
     pub capture_dir: Option<PathBuf>,
