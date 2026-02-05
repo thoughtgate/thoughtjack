@@ -367,9 +367,12 @@ impl Validator {
             "tools/list",
             "resources/read",
             "resources/list",
+            "resources/subscribe",
+            "resources/unsubscribe",
             "prompts/get",
             "prompts/list",
             "initialize",
+            "initialized",
         ];
 
         // Extract the base event (before any colon)
@@ -1083,9 +1086,12 @@ mod tests {
             "resources/read",
             "resources/list",
             "resources/read:file:///etc/passwd",
+            "resources/subscribe",
+            "resources/unsubscribe",
             "prompts/get",
             "prompts/list",
             "initialize",
+            "initialized",
         ] {
             validator.errors.clear();
             validator.validate_event_name(event, "test");
