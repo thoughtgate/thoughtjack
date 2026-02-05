@@ -161,11 +161,16 @@ impl BehaviorCoordinator {
 /// Implements: TJ-SPEC-004 F-015
 #[allow(clippy::cast_precision_loss)]
 pub fn record_delivery_metrics(name: &str, result: &DeliveryResult) {
-    metrics::counter!("behavior.delivery.total", "behavior" => name.to_string()).increment(1);
-    metrics::histogram!("behavior.delivery.bytes", "behavior" => name.to_string())
-        .record(result.bytes_sent as f64);
-    metrics::histogram!("behavior.delivery.duration_ms", "behavior" => name.to_string())
-        .record(result.duration.as_secs_f64() * 1000.0);
+    metrics::counter!(
+        "thoughtjack_delivery_bytes_total",
+        "behavior" => name.to_string()
+    )
+    .increment(result.bytes_sent as u64);
+    metrics::histogram!(
+        "thoughtjack_delivery_duration_ms",
+        "behavior" => name.to_string()
+    )
+    .record(result.duration.as_secs_f64() * 1000.0);
 }
 
 /// Records metrics for a side effect operation.
@@ -173,13 +178,26 @@ pub fn record_delivery_metrics(name: &str, result: &DeliveryResult) {
 /// Implements: TJ-SPEC-004 F-015
 #[allow(clippy::cast_precision_loss)]
 pub fn record_side_effect_metrics(name: &str, result: &SideEffectResult) {
-    metrics::counter!("behavior.side_effect.total", "effect" => name.to_string()).increment(1);
-    metrics::histogram!("behavior.side_effect.messages", "effect" => name.to_string())
-        .record(result.messages_sent as f64);
-    metrics::histogram!("behavior.side_effect.bytes", "effect" => name.to_string())
-        .record(result.bytes_sent as f64);
-    metrics::histogram!("behavior.side_effect.duration_ms", "effect" => name.to_string())
-        .record(result.duration.as_secs_f64() * 1000.0);
+    metrics::counter!(
+        "thoughtjack_side_effects_total",
+        "effect" => name.to_string()
+    )
+    .increment(1);
+    metrics::histogram!(
+        "behavior.side_effect.messages",
+        "effect" => name.to_string()
+    )
+    .record(result.messages_sent as f64);
+    metrics::histogram!(
+        "behavior.side_effect.bytes",
+        "effect" => name.to_string()
+    )
+    .record(result.bytes_sent as f64);
+    metrics::histogram!(
+        "behavior.side_effect.duration_ms",
+        "effect" => name.to_string()
+    )
+    .record(result.duration.as_secs_f64() * 1000.0);
 }
 
 // ============================================================================
