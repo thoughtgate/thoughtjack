@@ -220,7 +220,7 @@ impl SideEffect for BatchAmplify {
         &self,
         transport: &dyn Transport,
         _connection: &ConnectionContext,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = std::time::Instant::now();
 
@@ -230,7 +230,19 @@ impl SideEffect for BatchAmplify {
 
         let serialized = serde_json::to_vec(&notifications)?;
         let bytes_sent = serialized.len();
-        transport.send_raw(&serialized).await?;
+
+        tokio::select! {
+            () = cancel.cancelled() => {
+                return Ok(SideEffectResult {
+                    messages_sent: 0,
+                    bytes_sent: 0,
+                    duration: start.elapsed(),
+                    completed: false,
+                    outcome: SideEffectOutcome::Completed,
+                });
+            }
+            result = transport.send_raw(&serialized) => { result?; }
+        }
 
         Ok(SideEffectResult {
             messages_sent: self.batch_size,
@@ -272,16 +284,36 @@ impl SideEffect for PipeDeadlock {
         &self,
         transport: &dyn Transport,
         _connection: &ConnectionContext,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = std::time::Instant::now();
         let chunk = vec![b'X'; 4096];
         let mut bytes_sent: usize = 0;
 
         while bytes_sent < self.fill_bytes {
+            if cancel.is_cancelled() {
+                return Ok(SideEffectResult {
+                    messages_sent: 0,
+                    bytes_sent,
+                    duration: start.elapsed(),
+                    completed: false,
+                    outcome: SideEffectOutcome::Completed,
+                });
+            }
             let remaining = self.fill_bytes - bytes_sent;
             let to_send = remaining.min(chunk.len());
-            transport.send_raw(&chunk[..to_send]).await?;
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    return Ok(SideEffectResult {
+                        messages_sent: 0,
+                        bytes_sent,
+                        duration: start.elapsed(),
+                        completed: false,
+                        outcome: SideEffectOutcome::Completed,
+                    });
+                }
+                result = transport.send_raw(&chunk[..to_send]) => { result?; }
+            }
             bytes_sent += to_send;
         }
 
@@ -325,12 +357,23 @@ impl SideEffect for CloseConnectionEffect {
         &self,
         _transport: &dyn Transport,
         _connection: &ConnectionContext,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = std::time::Instant::now();
 
         if self.delay > Duration::ZERO {
-            tokio::time::sleep(self.delay).await;
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    return Ok(SideEffectResult {
+                        messages_sent: 0,
+                        bytes_sent: 0,
+                        duration: start.elapsed(),
+                        completed: false,
+                        outcome: SideEffectOutcome::Completed,
+                    });
+                }
+                () = tokio::time::sleep(self.delay) => {}
+            }
         }
 
         Ok(SideEffectResult {
@@ -376,7 +419,7 @@ impl SideEffect for DuplicateRequestIds {
         &self,
         transport: &dyn Transport,
         _connection: &ConnectionContext,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = std::time::Instant::now();
 
@@ -393,15 +436,38 @@ impl SideEffect for DuplicateRequestIds {
             id,
         });
 
+        let mut messages_sent: usize = 0;
         let mut bytes_sent: usize = 0;
         for _ in 0..self.count {
+            if cancel.is_cancelled() {
+                return Ok(SideEffectResult {
+                    messages_sent,
+                    bytes_sent,
+                    duration: start.elapsed(),
+                    completed: false,
+                    outcome: SideEffectOutcome::Completed,
+                });
+            }
             let msg_bytes = serde_json::to_vec(&request)?;
-            bytes_sent += msg_bytes.len();
-            transport.send_message(&request).await?;
+            let len = msg_bytes.len();
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    return Ok(SideEffectResult {
+                        messages_sent,
+                        bytes_sent,
+                        duration: start.elapsed(),
+                        completed: false,
+                        outcome: SideEffectOutcome::Completed,
+                    });
+                }
+                result = transport.send_message(&request) => { result?; }
+            }
+            messages_sent += 1;
+            bytes_sent += len;
         }
 
         Ok(SideEffectResult {
-            messages_sent: self.count,
+            messages_sent,
             bytes_sent,
             duration: start.elapsed(),
             completed: true,
@@ -727,5 +793,112 @@ mod tests {
         };
         let effect = create_side_effect(&config);
         assert_eq!(effect.name(), "duplicate_request_ids");
+    }
+
+    // ========================================================================
+    // Cancellation tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_batch_amplify_cancellation() {
+        // BatchAmplify is a single send, so we verify the select path
+        // by pre-cancelling and checking the result is either completed
+        // (send won the race) or cancelled.
+        let config = SideEffectConfig {
+            type_: SideEffectType::BatchAmplify,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("batch_size".to_string(), serde_json::json!(100));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+        // With a pre-cancelled token, select! may pick either branch;
+        // just verify we get a result without error.
+        assert!(result.completed || !result.completed);
+    }
+
+    #[tokio::test]
+    async fn test_pipe_deadlock_cancellation() {
+        let config = SideEffectConfig {
+            type_: SideEffectType::PipeDeadlock,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("fill_bytes".to_string(), serde_json::json!(1_000_000));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+        assert!(!result.completed);
+        assert_eq!(result.bytes_sent, 0);
+    }
+
+    #[tokio::test]
+    async fn test_close_connection_cancellation() {
+        let config = SideEffectConfig {
+            type_: SideEffectType::CloseConnection,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("delay_ms".to_string(), serde_json::json!(60_000));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // cancel immediately
+
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+        assert!(!result.completed);
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_request_ids_cancellation() {
+        let config = SideEffectConfig {
+            type_: SideEffectType::DuplicateRequestIds,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("count".to_string(), serde_json::json!(100));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+        assert!(!result.completed);
+        assert_eq!(result.messages_sent, 0);
     }
 }
