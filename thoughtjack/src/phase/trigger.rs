@@ -181,13 +181,7 @@ fn json_path_get<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a ser
 /// Matches a single field value against a `FieldMatcher`.
 fn field_matches(matcher: &FieldMatcher, value: &serde_json::Value) -> bool {
     match matcher {
-        FieldMatcher::Exact(expected) => {
-            // Compare the JSON value's string representation to the expected string
-            match value {
-                serde_json::Value::String(s) => s == expected,
-                _ => false,
-            }
-        }
+        FieldMatcher::Exact(expected) => value == expected,
         FieldMatcher::Pattern {
             contains,
             prefix,
@@ -362,7 +356,7 @@ mod tests {
         let mut conditions = IndexMap::new();
         conditions.insert(
             "path".to_string(),
-            FieldMatcher::Exact("/etc/passwd".to_string()),
+            FieldMatcher::Exact(json!("/etc/passwd")),
         );
         let predicate = MatchPredicate { conditions };
 
@@ -375,7 +369,7 @@ mod tests {
         let mut conditions = IndexMap::new();
         conditions.insert(
             "path".to_string(),
-            FieldMatcher::Exact("/etc/passwd".to_string()),
+            FieldMatcher::Exact(json!("/etc/passwd")),
         );
         let predicate = MatchPredicate { conditions };
 
@@ -388,7 +382,7 @@ mod tests {
         let mut conditions = IndexMap::new();
         conditions.insert(
             "path".to_string(),
-            FieldMatcher::Exact("/etc/passwd".to_string()),
+            FieldMatcher::Exact(json!("/etc/passwd")),
         );
         let predicate = MatchPredicate { conditions };
 
@@ -473,7 +467,7 @@ mod tests {
         let mut conditions = IndexMap::new();
         conditions.insert(
             "args.options.path".to_string(),
-            FieldMatcher::Exact("/etc/passwd".to_string()),
+            FieldMatcher::Exact(json!("/etc/passwd")),
         );
         let predicate = MatchPredicate { conditions };
 
@@ -484,10 +478,7 @@ mod tests {
     #[test]
     fn test_matches_content_multiple_conditions_and() {
         let mut conditions = IndexMap::new();
-        conditions.insert(
-            "operation".to_string(),
-            FieldMatcher::Exact("read".to_string()),
-        );
+        conditions.insert("operation".to_string(), FieldMatcher::Exact(json!("read")));
         conditions.insert(
             "path".to_string(),
             FieldMatcher::Pattern {
@@ -644,7 +635,7 @@ mod tests {
         let mut conditions = IndexMap::new();
         conditions.insert(
             "path".to_string(),
-            FieldMatcher::Exact("/etc/passwd".to_string()),
+            FieldMatcher::Exact(json!("/etc/passwd")),
         );
         let trigger = Trigger {
             on: Some("tools/call".to_string()),
@@ -677,7 +668,7 @@ mod tests {
         let mut conditions = IndexMap::new();
         conditions.insert(
             "path".to_string(),
-            FieldMatcher::Exact("/etc/passwd".to_string()),
+            FieldMatcher::Exact(json!("/etc/passwd")),
         );
         let trigger = Trigger {
             on: Some("tools/call".to_string()),

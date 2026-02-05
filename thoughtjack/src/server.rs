@@ -465,8 +465,7 @@ impl Server {
             .side_effects
             .drain(..)
             .filter(|e| {
-                e.trigger() == SideEffectTrigger::Continuous
-                    && e.supports_transport(transport_type)
+                e.trigger() == SideEffectTrigger::Continuous && e.supports_transport(transport_type)
             })
             .collect();
 

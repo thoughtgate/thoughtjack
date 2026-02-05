@@ -999,16 +999,16 @@ pub struct MatchPredicate {
 
 /// Matcher for a single field value.
 ///
-/// Supports exact matching or pattern-based matching.
+/// Supports exact matching (any JSON value) or pattern-based matching.
+/// Serde `untagged` tries variants in order: `Pattern` first (matches
+/// objects with `contains`/`prefix`/`suffix`/`regex` keys), then `Exact`
+/// as catch-all for strings, numbers, booleans, null, etc.
 ///
-/// Implements: TJ-SPEC-001 F-008
+/// Implements: TJ-SPEC-001 F-008, TJ-SPEC-003 F-005
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FieldMatcher {
-    /// Exact string match
-    Exact(String),
-
-    /// Pattern-based match (at least one field must be set)
+    /// Pattern-based match (tried first — requires object shape)
     Pattern {
         /// Match if field contains this substring
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1026,6 +1026,9 @@ pub enum FieldMatcher {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         regex: Option<String>,
     },
+
+    /// Exact value match (catch-all for primitives and strings)
+    Exact(serde_json::Value),
 }
 
 // ============================================================================
@@ -1561,7 +1564,7 @@ args.path: "/etc/passwd"
         let predicate: MatchPredicate = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(predicate.conditions.len(), 1);
         match predicate.conditions.get("args.path").unwrap() {
-            FieldMatcher::Exact(s) => assert_eq!(s, "/etc/passwd"),
+            FieldMatcher::Exact(v) => assert_eq!(*v, serde_json::json!("/etc/passwd")),
             _ => panic!("Expected exact match"),
         }
     }

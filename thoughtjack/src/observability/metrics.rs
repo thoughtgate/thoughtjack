@@ -103,18 +103,9 @@ fn describe_metrics() {
         "thoughtjack_connections_active",
         "Number of currently active connections"
     );
-    describe_counter!(
-        "thoughtjack_delivery_bytes_total",
-        "Bytes delivered"
-    );
-    describe_counter!(
-        "thoughtjack_side_effects_total",
-        "Side effects executed"
-    );
-    describe_gauge!(
-        "thoughtjack_event_counts",
-        "Current event counts"
-    );
+    describe_counter!("thoughtjack_delivery_bytes_total", "Bytes delivered");
+    describe_counter!("thoughtjack_side_effects_total", "Side effects executed");
+    describe_gauge!("thoughtjack_event_counts", "Current event counts");
 }
 
 /// Records an incoming MCP request.

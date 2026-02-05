@@ -576,7 +576,7 @@ mod tests {
         let mut conditions = IndexMap::new();
         conditions.insert(
             "path".to_string(),
-            FieldMatcher::Exact("/etc/passwd".to_string()),
+            FieldMatcher::Exact(serde_json::json!("/etc/passwd")),
         );
 
         let phases = vec![
