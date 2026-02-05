@@ -12,7 +12,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::behavior::{BehaviorCoordinator, ResolvedBehavior, record_delivery_metrics};
+use crate::behavior::{
+    BehaviorCoordinator, ResolvedBehavior, record_delivery_metrics, record_side_effect_metrics,
+};
 use crate::config::schema::{
     BaselineState, BehaviorConfig, EntryAction, GeneratorLimits, ServerConfig, SideEffectTrigger,
     UnknownMethodHandling,
@@ -37,7 +39,7 @@ use crate::transport::jsonrpc::{
 /// Implements: TJ-SPEC-002 F-001
 pub struct Server {
     config: Arc<ServerConfig>,
-    transport: Box<dyn Transport>,
+    transport: Arc<dyn Transport>,
     phase_engine: Arc<PhaseEngine>,
     behavior_coordinator: BehaviorCoordinator,
     event_emitter: EventEmitter,
@@ -58,7 +60,7 @@ impl Server {
     #[must_use]
     pub fn new(
         config: Arc<ServerConfig>,
-        transport: Box<dyn Transport>,
+        transport: Arc<dyn Transport>,
         cli_behavior: Option<BehaviorConfig>,
         event_emitter: EventEmitter,
         cancel: CancellationToken,
@@ -246,12 +248,23 @@ impl Server {
                 }
 
                 // Execute OnRequest side effects after delivery
-                self.execute_on_request_effects(&resolved).await;
+                self.execute_triggered_effects(&resolved, SideEffectTrigger::OnRequest)
+                    .await;
 
                 // If this was a successful initialize, run OnConnect effects
                 if !*initialized && request.method == "initialize" && resp.error.is_none() {
                     *initialized = true;
-                    self.execute_on_connect_effects(&resolved).await;
+                    self.execute_triggered_effects(&resolved, SideEffectTrigger::OnConnect)
+                        .await;
+                }
+
+                // Subscription triggers (TJ-SPEC-004 F-014)
+                if request.method == "resources/subscribe" {
+                    self.execute_triggered_effects(&resolved, SideEffectTrigger::OnSubscribe)
+                        .await;
+                } else if request.method == "resources/unsubscribe" {
+                    self.execute_triggered_effects(&resolved, SideEffectTrigger::OnUnsubscribe)
+                        .await;
                 }
             }
 
@@ -373,12 +386,19 @@ impl Server {
         }
     }
 
-    /// Executes side effects that have `OnRequest` trigger.
-    async fn execute_on_request_effects(&self, resolved: &ResolvedBehavior) {
+    /// Executes side effects matching the given trigger.
+    ///
+    /// Emits a [`SideEffectTriggered`](Event::SideEffectTriggered) event for
+    /// each successfully executed effect (TJ-SPEC-008 F-011).
+    async fn execute_triggered_effects(
+        &self,
+        resolved: &ResolvedBehavior,
+        trigger: SideEffectTrigger,
+    ) {
         for effect in &resolved.side_effects {
-            if effect.trigger() == SideEffectTrigger::OnRequest {
+            if effect.trigger() == trigger {
                 let cancel = self.cancel.child_token();
-                if let Err(e) = effect
+                match effect
                     .execute(
                         self.transport.as_ref(),
                         &self.transport.connection_context(),
@@ -386,34 +406,34 @@ impl Server {
                     )
                     .await
                 {
-                    warn!(effect = effect.name(), error = %e, "OnRequest side effect failed");
-                }
-            }
-        }
-    }
-
-    /// Executes side effects that have `OnConnect` trigger.
-    async fn execute_on_connect_effects(&self, resolved: &ResolvedBehavior) {
-        for effect in &resolved.side_effects {
-            if effect.trigger() == SideEffectTrigger::OnConnect {
-                let cancel = self.cancel.child_token();
-                if let Err(e) = effect
-                    .execute(
-                        self.transport.as_ref(),
-                        &self.transport.connection_context(),
-                        cancel,
-                    )
-                    .await
-                {
-                    warn!(effect = effect.name(), error = %e, "OnConnect side effect failed");
+                    Ok(result) => {
+                        record_side_effect_metrics(effect.name(), &result);
+                        self.event_emitter.emit(Event::SideEffectTriggered {
+                            timestamp: Utc::now(),
+                            effect_type: effect.name().to_string(),
+                            phase: self.phase_engine.current_phase_name().to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        warn!(
+                            effect = effect.name(),
+                            error = %e,
+                            ?trigger,
+                            "side effect failed"
+                        );
+                    }
                 }
             }
         }
     }
 
     /// Spawns continuous side effects as background tasks.
+    ///
+    /// Each continuous effect runs in its own `tokio::spawn` task, sharing the
+    /// transport via `Arc` and respecting the server's cancellation token.
+    ///
+    /// Implements: TJ-SPEC-004 F-014
     fn spawn_continuous_side_effects(&self) -> Vec<JoinHandle<()>> {
-        // Resolve behavior for a synthetic request to get baseline side effects
         let effective_state = self.phase_engine.effective_state();
         let synthetic_request = JsonRpcRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -421,24 +441,29 @@ impl Server {
             params: None,
             id: json!(0),
         };
-        let resolved = self.behavior_coordinator.resolve(
+        let mut resolved = self.behavior_coordinator.resolve(
             &synthetic_request,
             &effective_state,
             self.transport.transport_type(),
         );
 
-        // We can't move the side effects out of resolved since they're boxed trait objects,
-        // so we log which ones we'd spawn. In practice, continuous effects need the
-        // transport reference to outlive the spawn, which requires Arc<dyn Transport>.
-        // For now, log and skip — continuous effects will be wired with Arc transport later.
-        let handles = Vec::new();
-        for effect in &resolved.side_effects {
-            if effect.trigger() == SideEffectTrigger::Continuous {
-                info!(
-                    effect = effect.name(),
-                    "continuous side effect detected (background spawn deferred)"
-                );
-            }
+        let continuous: Vec<_> = resolved
+            .side_effects
+            .drain(..)
+            .filter(|e| e.trigger() == SideEffectTrigger::Continuous)
+            .collect();
+
+        let mut handles = Vec::new();
+        for effect in continuous {
+            let transport = Arc::clone(&self.transport);
+            let ctx = transport.connection_context();
+            let cancel = self.cancel.child_token();
+            info!(effect = effect.name(), "spawning continuous side effect");
+            handles.push(tokio::spawn(async move {
+                if let Err(e) = effect.execute(transport.as_ref(), &ctx, cancel).await {
+                    warn!(effect = effect.name(), error = %e, "continuous side effect failed");
+                }
+            }));
         }
         handles
     }
@@ -664,12 +689,11 @@ mod tests {
         let config = Arc::new(simple_config());
         let tw = TestWriter::new();
         let emitter = EventEmitter::new(Box::new(tw.clone()));
-        let transport = Box::new(MockTransport::new(vec![make_init_request()]));
+        let transport: Arc<dyn Transport> = Arc::new(MockTransport::new(vec![make_init_request()]));
 
         let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
 
-        let sent = server.transport.as_ref();
         // Can't access sent_messages via trait, so check event output
         let events = tw.contents();
         assert!(events.contains("ServerStarted"));
@@ -685,7 +709,7 @@ mod tests {
         let emitter = EventEmitter::new(Box::new(tw.clone()));
         let mock = MockTransport::new(vec![make_tools_list_request()]);
         let sent_ref = mock.sent_messages.clone();
-        let transport = Box::new(mock);
+        let transport: Arc<dyn Transport> = Arc::new(mock);
 
         let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
@@ -709,7 +733,7 @@ mod tests {
         let emitter = EventEmitter::new(Box::new(tw.clone()));
         let mock = MockTransport::new(vec![make_tool_call_request("calc")]);
         let sent_ref = mock.sent_messages.clone();
-        let transport = Box::new(mock);
+        let transport: Arc<dyn Transport> = Arc::new(mock);
 
         let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
@@ -738,7 +762,7 @@ mod tests {
             id: json!(99),
         })]);
         let sent_ref = mock.sent_messages.clone();
-        let transport = Box::new(mock);
+        let transport: Arc<dyn Transport> = Arc::new(mock);
 
         let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();
@@ -764,7 +788,7 @@ mod tests {
             id: json!(99),
         })]);
         let sent_ref = mock.sent_messages.clone();
-        let transport = Box::new(mock);
+        let transport: Arc<dyn Transport> = Arc::new(mock);
 
         let server = Server::new(config, transport, None, emitter, CancellationToken::new());
         server.run().await.unwrap();

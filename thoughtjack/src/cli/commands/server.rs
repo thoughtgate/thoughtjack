@@ -89,7 +89,7 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         side_effects: None,
     });
 
-    let transport: Box<dyn Transport> = if let Some(ref bind_addr) = args.http {
+    let transport: Arc<dyn Transport> = if let Some(ref bind_addr) = args.http {
         let addr = parse_bind_addr(bind_addr);
         let http_config = HttpConfig {
             bind_addr: addr,
@@ -97,9 +97,9 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         };
         let (http_transport, bound_addr) = HttpTransport::bind(http_config, cancel.clone()).await?;
         tracing::info!(%bound_addr, "HTTP server listening");
-        Box::new(http_transport)
+        Arc::new(http_transport)
     } else {
-        Box::new(StdioTransport::new())
+        Arc::new(StdioTransport::new())
     };
 
     let event_emitter = if let Some(ref path) = args.events_file {
