@@ -13,6 +13,8 @@ use thiserror::Error;
 /// Exit codes for `ThoughtJack` CLI operations.
 ///
 /// These codes follow Unix conventions and TJ-SPEC-007 requirements.
+///
+/// Implements: TJ-SPEC-007 F-009
 pub struct ExitCode;
 
 impl ExitCode {
@@ -55,6 +57,8 @@ impl ExitCode {
 ///
 /// This enum aggregates all domain-specific errors and provides
 /// a unified interface for error handling and exit code mapping.
+///
+/// Implements: TJ-SPEC-007 F-009
 #[derive(Debug, Error)]
 pub enum ThoughtJackError {
     /// Configuration loading or validation error
@@ -95,6 +99,8 @@ impl ThoughtJackError {
     ///
     /// Maps each error variant to its corresponding exit code
     /// as defined in TJ-SPEC-007.
+    ///
+    /// Implements: TJ-SPEC-007 F-009
     #[must_use]
     pub const fn exit_code(&self) -> i32 {
         match self {
@@ -116,6 +122,8 @@ impl ThoughtJackError {
 ///
 /// These errors cover all failure modes during configuration parsing,
 /// validation, and directive processing as specified in TJ-SPEC-006.
+///
+/// Implements: TJ-SPEC-006 F-008
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// YAML parsing failed
@@ -187,6 +195,8 @@ pub enum ConfigError {
 // ============================================================================
 
 /// A single validation issue found during configuration validation.
+///
+/// Implements: TJ-SPEC-006 F-008
 #[derive(Debug, Clone)]
 pub struct ValidationIssue {
     /// JSON path to the problematic field (e.g., "phases[2].advance.trigger")
@@ -208,6 +218,8 @@ impl std::fmt::Display for ValidationIssue {
 }
 
 /// Severity level for validation issues.
+///
+/// Implements: TJ-SPEC-006 F-008
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     /// Error - validation failure that prevents configuration from being used
@@ -221,6 +233,8 @@ pub enum Severity {
 // ============================================================================
 
 /// Transport layer errors for stdio and HTTP transports.
+///
+/// Implements: TJ-SPEC-002 F-007
 #[derive(Debug, Error)]
 pub enum TransportError {
     /// I/O error during transport operations
@@ -262,6 +276,8 @@ pub enum TransportError {
 // ============================================================================
 
 /// Phase engine state machine errors.
+///
+/// Implements: TJ-SPEC-003 F-001
 #[derive(Debug, Error)]
 pub enum PhaseError {
     /// Attempted invalid state transition
@@ -286,6 +302,8 @@ pub enum PhaseError {
 // ============================================================================
 
 /// Behavior execution errors for delivery behaviors and side effects.
+///
+/// Implements: TJ-SPEC-004 F-001
 #[derive(Debug, Error)]
 pub enum BehaviorError {
     /// Behavior execution failed
@@ -318,6 +336,8 @@ impl From<serde_json::Error> for BehaviorError {
 // ============================================================================
 
 /// Payload generator errors.
+///
+/// Implements: TJ-SPEC-005 F-008
 #[derive(Debug, Error)]
 pub enum GeneratorError {
     /// General generation failure

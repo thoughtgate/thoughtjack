@@ -25,6 +25,8 @@ use std::sync::Arc;
 // ============================================================================
 
 /// Options for the configuration loader.
+///
+/// Implements: TJ-SPEC-006 F-001
 #[derive(Debug, Clone)]
 pub struct LoaderOptions {
     /// Root directory for resolving `$include` paths.
@@ -48,6 +50,8 @@ impl Default for LoaderOptions {
 }
 
 /// Limits for configuration size to prevent resource exhaustion.
+///
+/// Implements: TJ-SPEC-006 F-007a
 #[derive(Debug, Clone)]
 pub struct ConfigLimits {
     /// Maximum number of phases.
@@ -83,6 +87,8 @@ impl Default for ConfigLimits {
 }
 
 /// Result of loading a configuration file.
+///
+/// Implements: TJ-SPEC-006 F-008
 #[derive(Debug)]
 pub struct LoadResult {
     /// The loaded and validated configuration.
@@ -93,6 +99,8 @@ pub struct LoadResult {
 }
 
 /// Warning during configuration loading.
+///
+/// Implements: TJ-SPEC-006 F-008
 #[derive(Debug, Clone)]
 pub struct LoadWarning {
     /// Warning message.
@@ -105,6 +113,8 @@ pub struct LoadWarning {
 /// Configuration loader.
 ///
 /// Handles the full loading pipeline from YAML file to frozen `ServerConfig`.
+///
+/// Implements: TJ-SPEC-006 F-001
 #[derive(Debug)]
 pub struct ConfigLoader {
     options: LoaderOptions,
@@ -114,6 +124,8 @@ pub struct ConfigLoader {
 
 impl ConfigLoader {
     /// Creates a new configuration loader with the given options.
+    ///
+    /// Implements: TJ-SPEC-006 F-001
     #[must_use]
     pub fn new(options: LoaderOptions) -> Self {
         Self {
@@ -124,6 +136,8 @@ impl ConfigLoader {
     }
 
     /// Creates a new configuration loader with default options.
+    ///
+    /// Implements: TJ-SPEC-006 F-001
     #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(LoaderOptions::default())
@@ -138,6 +152,8 @@ impl ConfigLoader {
     /// - YAML parsing fails
     /// - Directive resolution fails (circular includes, missing files)
     /// - Validation fails
+    ///
+    /// Implements: TJ-SPEC-006 F-001
     pub fn load(&mut self, path: &Path) -> Result<LoadResult, ConfigError> {
         let mut warnings = Vec::new();
 

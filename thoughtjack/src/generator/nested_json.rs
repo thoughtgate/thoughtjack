@@ -16,6 +16,8 @@ use std::collections::HashMap;
 /// (`[[...]]`), and mixed nesting (alternating objects and arrays).
 ///
 /// Uses an iterative algorithm — safe at any depth without stack overflow.
+///
+/// Implements: TJ-SPEC-005 F-002
 #[derive(Debug)]
 pub struct NestedJsonGenerator {
     depth: usize,
@@ -32,6 +34,8 @@ impl NestedJsonGenerator {
     /// Returns [`GeneratorError::InvalidParameters`] if `depth` is missing.
     /// Returns [`GeneratorError::LimitExceeded`] if depth exceeds
     /// `limits.max_nest_depth` or estimated size exceeds `limits.max_payload_bytes`.
+    ///
+    /// Implements: TJ-SPEC-005 F-002
     pub fn new(
         params: &HashMap<String, Value>,
         limits: &GeneratorLimits,

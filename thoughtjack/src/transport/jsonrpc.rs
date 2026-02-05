@@ -9,9 +9,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// JSON-RPC protocol version string.
+///
+/// Implements: TJ-SPEC-002 F-001
 pub const JSONRPC_VERSION: &str = "2.0";
 
 /// Standard JSON-RPC 2.0 error codes.
+///
+/// Implements: TJ-SPEC-002 F-001
 pub mod error_codes {
     /// Invalid JSON was received by the server.
     pub const PARSE_ERROR: i64 = -32700;
@@ -37,6 +41,8 @@ pub mod error_codes {
 /// Uses custom deserialization to reliably distinguish between variants by
 /// inspecting which JSON keys are present, rather than relying on
 /// `#[serde(untagged)]` which cannot reliably distinguish request from response.
+///
+/// Implements: TJ-SPEC-002 F-001
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::derive_partial_eq_without_eq)] // serde_json::Value does not implement Eq
 pub enum JsonRpcMessage {
@@ -52,6 +58,8 @@ impl JsonRpcMessage {
     /// Returns the message ID, if present.
     ///
     /// Requests and responses have IDs; notifications do not.
+    ///
+    /// Implements: TJ-SPEC-002 F-001
     #[must_use]
     pub const fn id(&self) -> Option<&Value> {
         match self {
@@ -64,6 +72,8 @@ impl JsonRpcMessage {
     /// Returns the method name, if present.
     ///
     /// Requests and notifications have methods; responses do not.
+    ///
+    /// Implements: TJ-SPEC-002 F-001
     #[must_use]
     pub fn method(&self) -> Option<&str> {
         match self {
@@ -120,6 +130,8 @@ impl<'de> Deserialize<'de> for JsonRpcMessage {
 }
 
 /// A JSON-RPC 2.0 request.
+///
+/// Implements: TJ-SPEC-002 F-001
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)] // serde_json::Value fields
 pub struct JsonRpcRequest {
@@ -138,6 +150,8 @@ pub struct JsonRpcRequest {
 }
 
 /// A JSON-RPC 2.0 response.
+///
+/// Implements: TJ-SPEC-002 F-001
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)] // serde_json::Value fields
 pub struct JsonRpcResponse {
@@ -158,6 +172,8 @@ pub struct JsonRpcResponse {
 
 impl JsonRpcResponse {
     /// Creates a successful response.
+    ///
+    /// Implements: TJ-SPEC-002 F-001
     #[must_use]
     pub fn success(id: Value, result: Value) -> Self {
         Self {
@@ -169,6 +185,8 @@ impl JsonRpcResponse {
     }
 
     /// Creates an error response.
+    ///
+    /// Implements: TJ-SPEC-002 F-001
     #[must_use]
     pub fn error(id: Value, code: i64, message: impl Into<String>) -> Self {
         Self {
@@ -185,6 +203,8 @@ impl JsonRpcResponse {
 }
 
 /// A JSON-RPC 2.0 notification (request with no `id`).
+///
+/// Implements: TJ-SPEC-002 F-001
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)] // serde_json::Value fields
 pub struct JsonRpcNotification {
@@ -201,6 +221,8 @@ pub struct JsonRpcNotification {
 
 impl JsonRpcNotification {
     /// Creates a new notification.
+    ///
+    /// Implements: TJ-SPEC-002 F-001
     #[must_use]
     pub fn new(method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
@@ -212,6 +234,8 @@ impl JsonRpcNotification {
 }
 
 /// A JSON-RPC 2.0 error object.
+///
+/// Implements: TJ-SPEC-002 F-001
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)] // serde_json::Value fields
 pub struct JsonRpcError {

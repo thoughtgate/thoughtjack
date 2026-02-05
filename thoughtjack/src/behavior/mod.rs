@@ -21,6 +21,8 @@ use crate::transport::jsonrpc::JsonRpcRequest;
 // ============================================================================
 
 /// A fully resolved behavior for a specific request.
+///
+/// Implements: TJ-SPEC-004 F-013
 pub struct ResolvedBehavior {
     /// Delivery behavior controlling how bytes are transmitted.
     pub delivery: Box<dyn DeliveryBehavior>,
@@ -39,12 +41,16 @@ pub struct ResolvedBehavior {
 /// 2. Item-level behavior (tool, resource, or prompt)
 /// 3. Phase/baseline behavior
 /// 4. Default (Normal delivery, no side effects)
+///
+/// Implements: TJ-SPEC-004 F-013
 pub struct BehaviorCoordinator {
     cli_override: Option<BehaviorConfig>,
 }
 
 impl BehaviorCoordinator {
     /// Creates a new coordinator with an optional CLI override.
+    ///
+    /// Implements: TJ-SPEC-004 F-013
     #[must_use]
     pub const fn new(cli_override: Option<BehaviorConfig>) -> Self {
         Self { cli_override }
@@ -53,6 +59,8 @@ impl BehaviorCoordinator {
     /// Resolves the effective behavior config for a request.
     ///
     /// Applies the scoping chain: CLI > item-level > phase/baseline > default.
+    ///
+    /// Implements: TJ-SPEC-004 F-013
     #[must_use]
     pub fn resolve_config(
         &self,
@@ -82,6 +90,8 @@ impl BehaviorCoordinator {
     }
 
     /// Resolves a request into a fully constructed [`ResolvedBehavior`].
+    ///
+    /// Implements: TJ-SPEC-004 F-013
     #[must_use]
     pub fn resolve(
         &self,
@@ -147,6 +157,8 @@ impl BehaviorCoordinator {
 // ============================================================================
 
 /// Records metrics for a delivery operation.
+///
+/// Implements: TJ-SPEC-004 F-015
 #[allow(clippy::cast_precision_loss)]
 pub fn record_delivery_metrics(name: &str, result: &DeliveryResult) {
     metrics::counter!("behavior.delivery.total", "behavior" => name.to_string()).increment(1);
@@ -157,6 +169,8 @@ pub fn record_delivery_metrics(name: &str, result: &DeliveryResult) {
 }
 
 /// Records metrics for a side effect operation.
+///
+/// Implements: TJ-SPEC-004 F-015
 #[allow(clippy::cast_precision_loss)]
 pub fn record_side_effect_metrics(name: &str, result: &SideEffectResult) {
     metrics::counter!("behavior.side_effect.total", "effect" => name.to_string()).increment(1);

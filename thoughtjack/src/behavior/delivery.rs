@@ -16,6 +16,8 @@ use crate::transport::{Transport, TransportType};
 // ============================================================================
 
 /// Result of a delivery operation.
+///
+/// Implements: TJ-SPEC-004 F-001
 #[derive(Debug, Clone)]
 pub struct DeliveryResult {
     /// Number of bytes sent to the transport.
@@ -31,6 +33,8 @@ pub struct DeliveryResult {
 // ============================================================================
 
 /// Trait for delivery behaviors that control how responses are transmitted.
+///
+/// Implements: TJ-SPEC-004 F-001
 #[async_trait::async_trait]
 pub trait DeliveryBehavior: Send + Sync {
     /// Delivers a JSON-RPC message via the given transport.
@@ -52,6 +56,8 @@ pub trait DeliveryBehavior: Send + Sync {
 // ============================================================================
 
 /// Standard delivery — serialize and send immediately with newline.
+///
+/// Implements: TJ-SPEC-004 F-002
 pub struct NormalDelivery;
 
 #[async_trait::async_trait]
@@ -88,6 +94,8 @@ impl DeliveryBehavior for NormalDelivery {
 // ============================================================================
 
 /// Slow loris — drip bytes with delay between chunks.
+///
+/// Implements: TJ-SPEC-004 F-003
 pub struct SlowLorisDelivery {
     byte_delay: Duration,
     chunk_size: usize,
@@ -95,6 +103,8 @@ pub struct SlowLorisDelivery {
 
 impl SlowLorisDelivery {
     /// Creates a new slow loris delivery.
+    ///
+    /// Implements: TJ-SPEC-004 F-003
     #[must_use]
     pub fn new(byte_delay: Duration, chunk_size: usize) -> Self {
         Self {
@@ -145,6 +155,8 @@ impl DeliveryBehavior for SlowLorisDelivery {
 // ============================================================================
 
 /// Never send newline — keeps sending bytes without `\n`.
+///
+/// Implements: TJ-SPEC-004 F-004
 pub struct UnboundedLineDelivery {
     target_bytes: usize,
     padding_char: char,
@@ -152,6 +164,8 @@ pub struct UnboundedLineDelivery {
 
 impl UnboundedLineDelivery {
     /// Creates a new unbounded line delivery.
+    ///
+    /// Implements: TJ-SPEC-004 F-004
     #[must_use]
     pub const fn new(target_bytes: usize, padding_char: char) -> Self {
         Self {
@@ -213,6 +227,8 @@ impl DeliveryBehavior for UnboundedLineDelivery {
 // ============================================================================
 
 /// Wrap response in deep JSON nesting (iterative, no recursion).
+///
+/// Implements: TJ-SPEC-004 F-005
 pub struct NestedJsonDelivery {
     depth: usize,
     key: String,
@@ -220,6 +236,8 @@ pub struct NestedJsonDelivery {
 
 impl NestedJsonDelivery {
     /// Creates a new nested JSON delivery.
+    ///
+    /// Implements: TJ-SPEC-004 F-005
     #[must_use]
     pub const fn new(depth: usize, key: String) -> Self {
         Self { depth, key }
@@ -275,12 +293,16 @@ impl DeliveryBehavior for NestedJsonDelivery {
 // ============================================================================
 
 /// Delay before responding, then send normally.
+///
+/// Implements: TJ-SPEC-004 F-006
 pub struct ResponseDelayDelivery {
     delay: Duration,
 }
 
 impl ResponseDelayDelivery {
     /// Creates a new response delay delivery.
+    ///
+    /// Implements: TJ-SPEC-004 F-006
     #[must_use]
     pub const fn new(delay: Duration) -> Self {
         Self { delay }
@@ -324,6 +346,8 @@ impl DeliveryBehavior for ResponseDelayDelivery {
 // ============================================================================
 
 /// Creates a delivery behavior from a configuration.
+///
+/// Implements: TJ-SPEC-004 F-001
 #[must_use]
 pub fn create_delivery_behavior(config: &DeliveryConfig) -> Box<dyn DeliveryBehavior> {
     match config {

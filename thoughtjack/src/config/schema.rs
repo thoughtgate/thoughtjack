@@ -18,6 +18,8 @@ use std::path::PathBuf;
 /// - **Phased Server** (F-002): Uses `baseline` and `phases` for temporal attacks
 ///
 /// These forms are mutually exclusive (EC-CFG-016).
+///
+/// Implements: TJ-SPEC-001 F-001, F-002
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ServerConfig {
@@ -62,6 +64,8 @@ pub struct ServerConfig {
 // ============================================================================
 
 /// Server identification and capabilities.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerMetadata {
@@ -82,6 +86,8 @@ pub struct ServerMetadata {
 }
 
 /// Phase state scope - determines how phase state is managed.
+///
+/// Implements: TJ-SPEC-002 F-015
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum StateScope {
@@ -92,7 +98,9 @@ pub enum StateScope {
     Global,
 }
 
-/// MCP server capabilities (F-014).
+/// MCP server capabilities.
+///
+/// Implements: TJ-SPEC-001 F-014
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
@@ -110,6 +118,8 @@ pub struct Capabilities {
 }
 
 /// Tools capability configuration.
+///
+/// Implements: TJ-SPEC-001 F-014
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolsCapability {
@@ -119,6 +129,8 @@ pub struct ToolsCapability {
 }
 
 /// Resources capability configuration.
+///
+/// Implements: TJ-SPEC-001 F-014
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourcesCapability {
@@ -132,6 +144,8 @@ pub struct ResourcesCapability {
 }
 
 /// Prompts capability configuration.
+///
+/// Implements: TJ-SPEC-001 F-014
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptsCapability {
@@ -145,6 +159,8 @@ pub struct PromptsCapability {
 // ============================================================================
 
 /// A tool pattern defining an MCP tool and its response.
+///
+/// Implements: TJ-SPEC-001 F-003
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolPattern {
@@ -160,6 +176,8 @@ pub struct ToolPattern {
 }
 
 /// MCP tool definition sent in tools/list response.
+///
+/// Implements: TJ-SPEC-001 F-003
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDefinition {
@@ -178,6 +196,8 @@ pub struct ToolDefinition {
 // ============================================================================
 
 /// Response configuration for tool calls.
+///
+/// Implements: TJ-SPEC-001 F-004
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseConfig {
@@ -189,9 +209,11 @@ pub struct ResponseConfig {
     pub is_error: Option<bool>,
 }
 
-/// Content item in a response (F-004).
+/// Content item in a response.
 ///
 /// Supports text, image, and embedded resource content types.
+///
+/// Implements: TJ-SPEC-001 F-004
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ContentItem {
@@ -222,6 +244,8 @@ pub enum ContentItem {
 /// Content value supporting static text, generated content, or file references.
 ///
 /// This enum handles the `$generate` and `$file` directives in configuration.
+///
+/// Implements: TJ-SPEC-001 F-004
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContentValue {
@@ -244,6 +268,8 @@ pub enum ContentValue {
 }
 
 /// Embedded resource in a response.
+///
+/// Implements: TJ-SPEC-001 F-004
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddedResource {
@@ -267,7 +293,7 @@ pub struct EmbeddedResource {
 // Generator Configuration (TJ-SPEC-005)
 // ============================================================================
 
-/// Configuration for payload generators (TJ-SPEC-005).
+/// Configuration for payload generators.
 ///
 /// Generators create payloads at configuration load time for deterministic
 /// testing. All generators are seeded for reproducibility.
@@ -279,6 +305,8 @@ pub struct EmbeddedResource {
 ///   depth: 10000
 ///   structure: mixed
 /// ```
+///
+/// Implements: TJ-SPEC-005 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratorConfig {
     /// Generator type
@@ -290,7 +318,9 @@ pub struct GeneratorConfig {
     pub params: GeneratorParams,
 }
 
-/// Generator type identifier (TJ-SPEC-005).
+/// Generator type identifier.
+///
+/// Implements: TJ-SPEC-005 F-001
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GeneratorType {
@@ -322,6 +352,8 @@ pub type GeneratorParams = std::collections::HashMap<String, serde_json::Value>;
 /// Parameters for `nested_json` generator.
 ///
 /// Generates deeply nested JSON to test parser stack limits.
+///
+/// Implements: TJ-SPEC-005 F-002
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NestedJsonParams {
     /// Nesting depth (required)
@@ -341,6 +373,8 @@ pub struct NestedJsonParams {
 }
 
 /// Structure type for nested JSON generation.
+///
+/// Implements: TJ-SPEC-005 F-002
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NestedStructure {
@@ -358,6 +392,8 @@ pub enum NestedStructure {
 /// Parameters for `garbage` generator.
 ///
 /// Generates random bytes to test parser error handling.
+///
+/// Implements: TJ-SPEC-005 F-004
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GarbageParams {
     /// Number of bytes to generate (required)
@@ -373,6 +409,8 @@ pub struct GarbageParams {
 }
 
 /// Character set for garbage generation.
+///
+/// Implements: TJ-SPEC-005 F-004
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Charset {
@@ -396,6 +434,8 @@ pub enum Charset {
 /// Parameters for `batch_notifications` generator.
 ///
 /// Generates arrays of JSON-RPC notifications for batch attacks.
+///
+/// Implements: TJ-SPEC-005 F-003
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BatchNotificationsParams {
     /// Number of notifications to generate (required)
@@ -413,6 +453,8 @@ pub struct BatchNotificationsParams {
 /// Parameters for `repeated_keys` generator.
 ///
 /// Generates JSON objects with repeated keys to trigger hash collisions.
+///
+/// Implements: TJ-SPEC-005 F-005
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepeatedKeysParams {
     /// Number of repeated keys (required)
@@ -430,6 +472,8 @@ pub struct RepeatedKeysParams {
 /// Parameters for `unicode_spam` generator.
 ///
 /// Generates Unicode attack sequences for display/rendering attacks.
+///
+/// Implements: TJ-SPEC-005 F-006
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UnicodeSpamParams {
     /// Number of bytes to generate (required)
@@ -445,6 +489,8 @@ pub struct UnicodeSpamParams {
 }
 
 /// Unicode category for spam generation.
+///
+/// Implements: TJ-SPEC-005 F-006
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnicodeCategory {
@@ -468,6 +514,8 @@ pub enum UnicodeCategory {
 /// Parameters for `ansi_escape` generator.
 ///
 /// Generates ANSI escape sequences for terminal attacks.
+///
+/// Implements: TJ-SPEC-005 F-007
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AnsiEscapeParams {
     /// Types of ANSI sequences to generate
@@ -484,6 +532,8 @@ pub struct AnsiEscapeParams {
 }
 
 /// ANSI escape sequence types for terminal attacks.
+///
+/// Implements: TJ-SPEC-005 F-007
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnsiSequenceType {
@@ -507,13 +557,15 @@ pub enum AnsiSequenceType {
 // Generator Limits (TJ-SPEC-005 F-011)
 // ============================================================================
 
-/// Safety limits for payload generators (TJ-SPEC-005 F-011).
+/// Safety limits for payload generators.
 ///
 /// These limits prevent accidental resource exhaustion during testing.
 /// Can be overridden via environment variables:
 /// - `THOUGHTJACK_MAX_PAYLOAD_BYTES`
 /// - `THOUGHTJACK_MAX_NEST_DEPTH`
 /// - `THOUGHTJACK_MAX_BATCH_SIZE`
+///
+/// Implements: TJ-SPEC-005 F-008
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeneratorLimits {
     /// Maximum payload size in bytes (default: 100MB)
@@ -570,6 +622,8 @@ impl Default for GeneratorLimits {
 ///
 /// Resources represent data that can be read by clients (files, configs, etc.).
 /// They are prime targets for injection attacks.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourcePattern {
@@ -586,6 +640,8 @@ pub struct ResourcePattern {
 }
 
 /// MCP resource definition sent in `resources/list` response.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceDefinition {
@@ -605,6 +661,8 @@ pub struct ResourceDefinition {
 }
 
 /// Response configuration for resource reads.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceResponse {
@@ -620,6 +678,8 @@ pub struct ResourceResponse {
 ///
 /// Prompts are injection vectors because they define system context given to LLMs.
 /// Arguments are interpolated directly into prompt text.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptPattern {
@@ -635,6 +695,8 @@ pub struct PromptPattern {
 }
 
 /// MCP prompt definition sent in `prompts/list` response.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptDefinition {
@@ -651,6 +713,8 @@ pub struct PromptDefinition {
 }
 
 /// Prompt argument definition.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptArgument {
@@ -667,6 +731,8 @@ pub struct PromptArgument {
 }
 
 /// Response configuration for prompts.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptResponse {
@@ -675,6 +741,8 @@ pub struct PromptResponse {
 }
 
 /// A message in a prompt response.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptMessage {
@@ -686,6 +754,8 @@ pub struct PromptMessage {
 }
 
 /// Role in a prompt message.
+///
+/// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -700,6 +770,8 @@ pub enum Role {
 // ============================================================================
 
 /// Baseline state for phased servers.
+///
+/// Implements: TJ-SPEC-001 F-002
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BaselineState {
@@ -728,11 +800,13 @@ pub struct BaselineState {
 // Phase Configuration (F-002, F-007, F-008, F-009)
 // ============================================================================
 
-/// A phase in a phased server (F-002).
+/// A phase in a phased server.
 ///
 /// Phases define temporal attack stages with diff operations that modify
 /// the baseline state. Each phase can replace, add, or remove tools,
 /// resources, and prompts.
+///
+/// Implements: TJ-SPEC-001 F-002, F-007, F-008, F-009
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Phase {
@@ -812,6 +886,8 @@ pub struct Phase {
 /// # File path (for $include resolution)
 /// - tools/calculator/benign.yaml
 /// ```
+///
+/// Implements: TJ-SPEC-001 F-007
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ToolPatternRef {
@@ -822,6 +898,8 @@ pub enum ToolPatternRef {
 }
 
 /// Reference to a resource pattern - either inline or via file path.
+///
+/// Implements: TJ-SPEC-001 F-007
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResourcePatternRef {
@@ -832,6 +910,8 @@ pub enum ResourcePatternRef {
 }
 
 /// Reference to a prompt pattern - either inline or via file path.
+///
+/// Implements: TJ-SPEC-001 F-007
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PromptPatternRef {
@@ -845,13 +925,15 @@ pub enum PromptPatternRef {
 // Trigger Configuration (F-008)
 // ============================================================================
 
-/// Trigger for phase advancement (F-008).
+/// Trigger for phase advancement.
 ///
 /// Supports multiple trigger types:
 /// - Event-based: `on: "tools/call"` with optional `count`
 /// - Specific tool: `on: "tools/call:calculator"`
 /// - Time-based: `after: "30s"`
 /// - Content matching: `match: { args: { path: "/etc/passwd" } }`
+///
+/// Implements: TJ-SPEC-001 F-008
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Trigger {
@@ -881,6 +963,8 @@ pub struct Trigger {
 }
 
 /// Behavior when a timeout is reached.
+///
+/// Implements: TJ-SPEC-001 F-008
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeoutBehavior {
@@ -904,6 +988,8 @@ pub enum TimeoutBehavior {
 ///   args.mode:
 ///     contains: "write"
 /// ```
+///
+/// Implements: TJ-SPEC-001 F-008
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MatchPredicate {
     /// Field matchers keyed by field path (e.g., `"args.path"`)
@@ -914,6 +1000,8 @@ pub struct MatchPredicate {
 /// Matcher for a single field value.
 ///
 /// Supports exact matching or pattern-based matching.
+///
+/// Implements: TJ-SPEC-001 F-008
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FieldMatcher {
@@ -944,7 +1032,7 @@ pub enum FieldMatcher {
 // Entry Actions (F-009)
 // ============================================================================
 
-/// Actions to execute when entering a phase (F-009).
+/// Actions to execute when entering a phase.
 ///
 /// Entry actions run after the phase transition but before processing
 /// new requests. They enable attacks like:
@@ -961,6 +1049,8 @@ pub enum FieldMatcher {
 ///       method: "sampling/createMessage"
 ///       id: 1
 /// ```
+///
+/// Implements: TJ-SPEC-001 F-009
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EntryAction {
@@ -984,6 +1074,8 @@ pub enum EntryAction {
 }
 
 /// Configuration for a `send_request` entry action.
+///
+/// Implements: TJ-SPEC-001 F-009
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendRequestConfig {
     /// Method name
@@ -1002,10 +1094,12 @@ pub struct SendRequestConfig {
 // Behavior Configuration (TJ-SPEC-004)
 // ============================================================================
 
-/// Behavior configuration for delivery and side effects (TJ-SPEC-004).
+/// Behavior configuration for delivery and side effects.
 ///
 /// Behaviors modify how responses are transmitted or trigger additional
 /// actions during request handling.
+///
+/// Implements: TJ-SPEC-001 F-010, F-011
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BehaviorConfig {
@@ -1018,10 +1112,12 @@ pub struct BehaviorConfig {
     pub side_effects: Option<Vec<SideEffectConfig>>,
 }
 
-/// Delivery behavior configuration (TJ-SPEC-004 F-010).
+/// Delivery behavior configuration.
 ///
 /// Controls how response bytes are transmitted to the client.
 /// Can be used for denial-of-service attacks, timeout testing, and parser stress testing.
+///
+/// Implements: TJ-SPEC-001 F-010
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeliveryConfig {
@@ -1082,7 +1178,7 @@ pub enum DeliveryConfig {
 // Side Effect Configuration (TJ-SPEC-004 F-011)
 // ============================================================================
 
-/// Side effect configuration (TJ-SPEC-004 F-011).
+/// Side effect configuration.
 ///
 /// Side effects are actions that occur independently of normal responses.
 /// They can be triggered on connection, on each request, or continuously.
@@ -1098,6 +1194,8 @@ pub enum DeliveryConfig {
 ///     trigger: on_request
 ///     graceful: false
 /// ```
+///
+/// Implements: TJ-SPEC-001 F-011
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SideEffectConfig {
     /// Type of side effect
@@ -1116,7 +1214,9 @@ pub struct SideEffectConfig {
     pub params: std::collections::HashMap<String, serde_json::Value>,
 }
 
-/// Side effect type (TJ-SPEC-004 F-011).
+/// Side effect type.
+///
+/// Implements: TJ-SPEC-001 F-011
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SideEffectType {
@@ -1163,6 +1263,8 @@ pub enum SideEffectType {
 }
 
 /// When to trigger a side effect.
+///
+/// Implements: TJ-SPEC-001 F-011
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SideEffectTrigger {
@@ -1182,6 +1284,8 @@ pub enum SideEffectTrigger {
 // ============================================================================
 
 /// Logging configuration.
+///
+/// Implements: TJ-SPEC-001 F-016
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LoggingConfig {
@@ -1206,7 +1310,9 @@ pub struct LoggingConfig {
 // Unknown Method Handling (F-013)
 // ============================================================================
 
-/// How to handle unknown MCP methods (F-013).
+/// How to handle unknown MCP methods.
+///
+/// Implements: TJ-SPEC-001 F-013
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UnknownMethodHandling {

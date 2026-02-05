@@ -42,17 +42,21 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 /// Streaming threshold: payloads larger than this are streamed (1 MB).
+///
+/// Implements: TJ-SPEC-005 F-009
 pub const STREAMING_THRESHOLD: usize = 1_024 * 1_024;
 
 // ============================================================================
 // Core Traits
 // ============================================================================
 
-/// A payload generator factory (TJ-SPEC-005 F-001).
+/// A payload generator factory.
 ///
 /// Generators are created at config load time but produce bytes only
 /// when `generate()` is called at response time. This prevents OOM
 /// on startup for large payload definitions.
+///
+/// Implements: TJ-SPEC-005 F-001
 pub trait PayloadGenerator: Send + Sync + std::fmt::Debug {
     /// Generate the payload bytes.
     ///
@@ -75,6 +79,8 @@ pub trait PayloadGenerator: Send + Sync + std::fmt::Debug {
 }
 
 /// Generated payload — either fully buffered or streamed in chunks.
+///
+/// Implements: TJ-SPEC-005 F-001
 #[derive(Debug)]
 pub enum GeneratedPayload {
     /// Fully materialized payload bytes.
@@ -89,6 +95,8 @@ impl GeneratedPayload {
     ///
     /// For [`Buffered`](GeneratedPayload::Buffered), returns the exact size.
     /// For [`Streamed`](GeneratedPayload::Streamed), returns the estimated total.
+    ///
+    /// Implements: TJ-SPEC-005 F-001
     #[must_use]
     pub fn size_hint(&self) -> usize {
         match self {
@@ -102,6 +110,8 @@ impl GeneratedPayload {
     /// For buffered payloads, returns the inner vector directly.
     /// For streamed payloads, collects all chunks. Use with caution
     /// on large payloads — prefer streaming where possible.
+    ///
+    /// Implements: TJ-SPEC-005 F-001
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         match self {
@@ -121,6 +131,8 @@ impl GeneratedPayload {
 ///
 /// Produces chunks of bytes until exhausted. Used when the full
 /// payload would exceed [`STREAMING_THRESHOLD`].
+///
+/// Implements: TJ-SPEC-005 F-009
 pub trait PayloadStream: Send + std::fmt::Debug {
     /// Returns the next chunk of bytes, or `None` when exhausted.
     fn next_chunk(&mut self) -> Option<Vec<u8>>;
@@ -178,7 +190,7 @@ pub(crate) fn require_usize(
 // Factory
 // ============================================================================
 
-/// Creates a generator from configuration (TJ-SPEC-005 F-001).
+/// Creates a generator from configuration.
 ///
 /// Dispatches on [`GeneratorType`] to construct the appropriate generator.
 /// Limit validation happens in each generator's constructor, not in `generate()`.
@@ -187,6 +199,8 @@ pub(crate) fn require_usize(
 ///
 /// Returns [`GeneratorError::LimitExceeded`] if parameters exceed limits.
 /// Returns [`GeneratorError::InvalidParameters`] if required params are missing.
+///
+/// Implements: TJ-SPEC-005 F-001
 pub fn create_generator(
     config: &GeneratorConfig,
     limits: &GeneratorLimits,

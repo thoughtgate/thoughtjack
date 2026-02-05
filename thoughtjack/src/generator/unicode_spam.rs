@@ -90,6 +90,8 @@ const fn codepoints_for_category(category: UnicodeCategory) -> &'static [char] {
 ///
 /// Output may be slightly under the `bytes` target due to multi-byte
 /// UTF-8 alignment — this is expected behavior.
+///
+/// Implements: TJ-SPEC-005 F-006
 #[derive(Debug)]
 pub struct UnicodeSpamGenerator {
     bytes: usize,
@@ -106,6 +108,8 @@ impl UnicodeSpamGenerator {
     /// Returns [`GeneratorError::InvalidParameters`] if `bytes` is missing.
     /// Returns [`GeneratorError::LimitExceeded`] if bytes exceeds
     /// `limits.max_payload_bytes`.
+    ///
+    /// Implements: TJ-SPEC-005 F-006
     pub fn new(
         params: &HashMap<String, Value>,
         limits: &GeneratorLimits,

@@ -169,6 +169,28 @@ Fixes #42
 - Prefer `thiserror` for error types
 - Use `tracing` macros, not `println!`
 
+### Requirement Traceability
+
+All public items must include an `Implements:` line in their doc comment linking to the spec requirement they satisfy. This aligns with the ThoughtGate sister project convention.
+
+**Format:**
+```rust
+/// Brief description of the item.
+///
+/// Detailed explanation if needed.
+///
+/// Implements: TJ-SPEC-003 F-001
+```
+
+**Rules:**
+- Place `Implements:` as the **last** doc-comment line (after `# Errors`, `# Panics`, etc.)
+- Use spec ID + requirement ID: `TJ-SPEC-NNN F-NNN`
+- Multiple requirements comma-separated: `TJ-SPEC-008 F-009, EC-OBS-021`
+- Edge cases use `EC-XXX-NNN`, non-functional use `NFR-NNN`
+- Annotate: `pub struct`, `pub enum`, `pub trait`, `pub fn`, `pub const`, `pub type`
+- Skip: enum variants, struct fields, re-exports in `mod.rs`
+- Module-level `//!` doc comments reference the spec but do not need `Implements:`
+
 ### Error Handling
 
 ```rust

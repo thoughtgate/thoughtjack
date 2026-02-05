@@ -24,9 +24,13 @@ use tokio::time::Instant;
 pub type Result<T> = std::result::Result<T, TransportError>;
 
 /// Default maximum message size in bytes (10 MB).
+///
+/// Implements: TJ-SPEC-002 F-008
 pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
 /// Default buffer size for stdio transport (64 KB).
+///
+/// Implements: TJ-SPEC-002 F-002
 pub const DEFAULT_STDIO_BUFFER_SIZE: usize = 64 * 1024;
 
 /// Async transport trait for sending and receiving JSON-RPC messages.
@@ -34,6 +38,8 @@ pub const DEFAULT_STDIO_BUFFER_SIZE: usize = 64 * 1024;
 /// Implementations handle message framing, serialization, and transport-specific
 /// concerns. The trait uses `&self` with interior mutability (via `tokio::sync::Mutex`)
 /// to allow shared ownership while supporting concurrent read/write.
+///
+/// Implements: TJ-SPEC-002 F-001
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
     /// Sends a complete JSON-RPC message with proper framing.
@@ -65,6 +71,8 @@ pub trait Transport: Send + Sync {
 }
 
 /// Transport type identifier.
+///
+/// Implements: TJ-SPEC-002 F-001
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransportType {
     /// NDJSON over stdin/stdout.
@@ -86,6 +94,8 @@ impl fmt::Display for TransportType {
 ///
 /// Provides metadata about the connection for use in side effects,
 /// logging, and connection-scoped state management.
+///
+/// Implements: TJ-SPEC-002 F-016
 #[derive(Debug)]
 pub struct ConnectionContext {
     /// Unique connection identifier.
@@ -107,6 +117,8 @@ pub struct ConnectionContext {
 
 impl ConnectionContext {
     /// Creates a connection context for the stdio transport.
+    ///
+    /// Implements: TJ-SPEC-002 F-002
     #[must_use]
     pub fn stdio() -> Self {
         Self {

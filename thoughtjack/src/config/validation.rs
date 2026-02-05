@@ -20,6 +20,8 @@ use std::collections::HashSet;
 // ============================================================================
 
 /// Result of configuration validation.
+///
+/// Implements: TJ-SPEC-006 F-006
 #[derive(Debug, Default)]
 pub struct ValidationResult {
     /// Validation errors (prevent loading).
@@ -31,12 +33,16 @@ pub struct ValidationResult {
 
 impl ValidationResult {
     /// Returns `true` if there are any errors.
+    ///
+    /// Implements: TJ-SPEC-006 F-006
     #[must_use]
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
 
     /// Returns `true` if validation passed (no errors).
+    ///
+    /// Implements: TJ-SPEC-006 F-006
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
@@ -46,6 +52,8 @@ impl ValidationResult {
 /// Configuration validator.
 ///
 /// Performs schema validation and semantic validation on a `ServerConfig`.
+///
+/// Implements: TJ-SPEC-006 F-006, F-007
 #[derive(Debug, Default)]
 pub struct Validator {
     errors: Vec<ValidationIssue>,
@@ -54,6 +62,8 @@ pub struct Validator {
 
 impl Validator {
     /// Creates a new validator.
+    ///
+    /// Implements: TJ-SPEC-006 F-006
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -63,6 +73,8 @@ impl Validator {
     ///
     /// This method collects all errors and warnings rather than stopping
     /// at the first issue.
+    ///
+    /// Implements: TJ-SPEC-006 F-006, F-007
     pub fn validate(&mut self, config: &ServerConfig, limits: &ConfigLimits) -> ValidationResult {
         self.errors.clear();
         self.warnings.clear();

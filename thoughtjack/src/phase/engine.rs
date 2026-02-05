@@ -18,7 +18,7 @@ use super::effective::EffectiveState;
 use super::state::{EventType, PhaseState, PhaseTransition};
 use super::trigger::{self, TriggerResult};
 
-/// Phase engine managing server state and phase transitions (TJ-SPEC-003).
+/// Phase engine managing server state and phase transitions.
 ///
 /// Coordinates:
 /// - Event recording and counter management
@@ -26,6 +26,8 @@ use super::trigger::{self, TriggerResult};
 /// - Atomic phase advancement via CAS
 /// - Effective state computation
 /// - Background timer task for time-based triggers
+///
+/// Implements: TJ-SPEC-003 F-001
 pub struct PhaseEngine {
     /// Phase configurations from YAML
     phases: Vec<Phase>,
@@ -45,7 +47,9 @@ impl PhaseEngine {
     /// Creates a new `PhaseEngine` with the given phases and baseline.
     ///
     /// If the first phase has no advance trigger, it is marked terminal
-    /// and a warning is logged (EC-PHASE-001).
+    /// and a warning is logged.
+    ///
+    /// Implements: TJ-SPEC-003 F-001, EC-PHASE-001
     #[must_use]
     pub fn new(phases: Vec<Phase>, baseline: BaselineState) -> Self {
         let num_phases = phases.len();
@@ -80,7 +84,9 @@ impl PhaseEngine {
     /// Records an event and evaluates triggers, potentially advancing the phase.
     ///
     /// Returns `Some(PhaseTransition)` if a transition occurred.
-    /// The caller should execute entry actions AFTER sending the response (F-006).
+    /// The caller should execute entry actions AFTER sending the response.
+    ///
+    /// Implements: TJ-SPEC-003 F-006
     pub fn record_event(
         &self,
         event: &EventType,
@@ -155,6 +161,8 @@ impl PhaseEngine {
     }
 
     /// Returns the current effective state (baseline + current phase diff).
+    ///
+    /// Implements: TJ-SPEC-003 F-002
     #[must_use]
     pub fn effective_state(&self) -> EffectiveState {
         let current = self.state.current_phase();
@@ -163,12 +171,16 @@ impl PhaseEngine {
     }
 
     /// Returns the current phase index.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn current_phase(&self) -> usize {
         self.state.current_phase()
     }
 
     /// Returns the current phase name, or `"<none>"` if no phases.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn current_phase_name(&self) -> &str {
         self.phases
@@ -177,23 +189,29 @@ impl PhaseEngine {
     }
 
     /// Returns whether the engine is in a terminal state.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         self.state.is_terminal()
     }
 
     /// Returns a reference to the underlying phase state.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub const fn state(&self) -> &Arc<PhaseState> {
         &self.state
     }
 
-    /// Starts the background timer task for time-based triggers (F-008).
+    /// Starts the background timer task for time-based triggers.
     ///
     /// The task runs every 100ms, checking if any time-based or timeout
     /// triggers have fired. Transitions are sent via the internal channel.
     ///
     /// The task stops when the cancellation token is cancelled.
+    ///
+    /// Implements: TJ-SPEC-003 F-008
     pub fn start_timer_task(self: &Arc<Self>) -> JoinHandle<()> {
         let engine = Arc::clone(self);
         tokio::spawn(async move {
@@ -269,6 +287,8 @@ impl PhaseEngine {
     /// # Errors
     ///
     /// Returns `PhaseError::InvalidTransition` if the receiver lock is poisoned.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     pub async fn recv_transition(&self) -> Result<Option<PhaseTransition>, PhaseError> {
         let mut rx = self.transition_rx.lock().await;
         match rx.try_recv() {
@@ -280,6 +300,8 @@ impl PhaseEngine {
     }
 
     /// Cancels the background timer task.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     pub fn shutdown(&self) {
         self.cancel.cancel();
     }

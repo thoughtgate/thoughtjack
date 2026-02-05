@@ -21,6 +21,8 @@ use crate::transport::{ConnectionContext, Transport, TransportType};
 // ============================================================================
 
 /// Outcome of a side effect execution.
+///
+/// Implements: TJ-SPEC-004 F-007
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SideEffectOutcome {
     /// Side effect completed normally.
@@ -37,6 +39,8 @@ pub enum SideEffectOutcome {
 // ============================================================================
 
 /// Result of a side effect execution.
+///
+/// Implements: TJ-SPEC-004 F-007
 #[derive(Debug, Clone)]
 pub struct SideEffectResult {
     /// Number of messages sent.
@@ -56,6 +60,8 @@ pub struct SideEffectResult {
 // ============================================================================
 
 /// Trait for side effect behaviors.
+///
+/// Implements: TJ-SPEC-004 F-007
 #[async_trait::async_trait]
 pub trait SideEffect: Send + Sync {
     /// Executes the side effect.
@@ -421,6 +427,8 @@ impl SideEffect for DuplicateRequestIds {
 // ============================================================================
 
 /// Creates a side effect from configuration.
+///
+/// Implements: TJ-SPEC-004 F-007
 #[must_use]
 pub fn create_side_effect(config: &SideEffectConfig) -> Box<dyn SideEffect> {
     let trigger_cond = config.trigger;

@@ -16,11 +16,15 @@ use crate::config::schema::EntryAction;
 ///
 /// Wraps event names like `"tools/call"` or `"tools/call:calculator"`
 /// for type-safe event tracking.
+///
+/// Implements: TJ-SPEC-003 F-003
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct EventType(pub String);
 
 impl EventType {
     /// Creates a new `EventType` from a string.
+    ///
+    /// Implements: TJ-SPEC-003 F-003
     #[must_use]
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
@@ -34,6 +38,8 @@ impl std::fmt::Display for EventType {
 }
 
 /// Record of a phase transition for downstream processing.
+///
+/// Implements: TJ-SPEC-003 F-001
 #[derive(Debug, Clone)]
 pub struct PhaseTransition {
     /// Phase index we transitioned from
@@ -46,12 +52,14 @@ pub struct PhaseTransition {
     pub entry_actions: Vec<EntryAction>,
 }
 
-/// Lock-free atomic phase state (TJ-SPEC-003 F-001).
+/// Lock-free atomic phase state.
 ///
 /// Uses `AtomicUsize` for current phase index, `DashMap<EventType, AtomicU64>`
 /// for event counters, and `Mutex<Instant>` for phase entry timestamp.
 ///
-/// Event counters persist across phase transitions (F-003).
+/// Event counters persist across phase transitions.
+///
+/// Implements: TJ-SPEC-003 F-001
 pub struct PhaseState {
     /// Current phase index (0-based), advanced via CAS
     current_phase: AtomicUsize,
@@ -67,6 +75,8 @@ pub struct PhaseState {
 
 impl PhaseState {
     /// Creates a new `PhaseState` starting at phase 0.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn new(num_phases: usize) -> Self {
         Self {
@@ -79,18 +89,24 @@ impl PhaseState {
     }
 
     /// Returns the current phase index.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn current_phase(&self) -> usize {
         self.current_phase.load(Ordering::SeqCst)
     }
 
     /// Returns whether the engine is in a terminal state.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         self.is_terminal.load(Ordering::SeqCst)
     }
 
     /// Returns the total number of phases.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub const fn num_phases(&self) -> usize {
         self.num_phases
@@ -99,7 +115,9 @@ impl PhaseState {
     /// Atomically increments the event counter for the given event type.
     ///
     /// Returns the new count after incrementing.
-    /// Uses saturating add to handle overflow gracefully (F-003).
+    /// Uses saturating add to handle overflow gracefully.
+    ///
+    /// Implements: TJ-SPEC-003 F-003
     pub fn increment_event(&self, event_type: &EventType) -> u64 {
         let prev = self
             .event_counts
@@ -110,6 +128,8 @@ impl PhaseState {
     }
 
     /// Returns the current count for the given event type.
+    ///
+    /// Implements: TJ-SPEC-003 F-003
     #[must_use]
     pub fn event_count(&self, event_type: &EventType) -> u64 {
         self.event_counts
@@ -122,6 +142,8 @@ impl PhaseState {
     /// # Panics
     ///
     /// Panics if the internal mutex is poisoned.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn phase_entered_at(&self) -> Instant {
         *self
@@ -133,9 +155,11 @@ impl PhaseState {
     /// Attempts to atomically advance from `from` to `to` phase.
     ///
     /// Uses compare-and-exchange to ensure exactly-once transition
-    /// under concurrent access (F-012).
+    /// under concurrent access.
     ///
     /// Returns `true` if the transition succeeded.
+    ///
+    /// Implements: TJ-SPEC-003 F-012
     pub fn try_advance(&self, from: usize, to: usize) -> bool {
         self.current_phase
             .compare_exchange(from, to, Ordering::SeqCst, Ordering::SeqCst)
@@ -143,6 +167,8 @@ impl PhaseState {
     }
 
     /// Marks the current phase as terminal (no further transitions).
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     pub fn mark_terminal(&self) {
         self.is_terminal.store(true, Ordering::SeqCst);
     }
@@ -152,6 +178,8 @@ impl PhaseState {
     /// # Panics
     ///
     /// Panics if the internal mutex is poisoned.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
     pub fn reset_phase_timer(&self) {
         let mut entered = self
             .phase_entered_at

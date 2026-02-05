@@ -8,6 +8,8 @@ use clap_complete::Shell as ClapShell;
 use crate::cli::args::{Cli, CompletionsArgs, Shell};
 
 /// Generate and print a shell completion script to stdout.
+///
+/// Implements: TJ-SPEC-007 F-007
 pub fn run(args: &CompletionsArgs) {
     let shell = match args.shell {
         Shell::Bash => ClapShell::Bash,

@@ -20,6 +20,8 @@ use serde::Serialize;
 ///
 /// Each variant is tagged with `"type"` when serialized to JSON so consumers
 /// can dispatch on the event kind.
+///
+/// Implements: TJ-SPEC-008 F-011
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum Event {
@@ -108,6 +110,8 @@ struct EventEnvelope {
 /// counter, serializes the event as a single JSON line, and flushes the
 /// underlying writer.  Serialization or I/O failures are silently dropped
 /// because observability must never crash the server.
+///
+/// Implements: TJ-SPEC-008 F-012
 pub struct EventEmitter {
     writer: Mutex<BufWriter<Box<dyn Write + Send>>>,
     sequence: AtomicU64,
@@ -124,6 +128,8 @@ impl std::fmt::Debug for EventEmitter {
 
 impl EventEmitter {
     /// Creates an emitter that writes to the given writer.
+    ///
+    /// Implements: TJ-SPEC-008 F-012
     #[must_use]
     pub fn new(writer: Box<dyn Write + Send>) -> Self {
         Self {
@@ -133,6 +139,8 @@ impl EventEmitter {
     }
 
     /// Creates an emitter that writes to stdout.
+    ///
+    /// Implements: TJ-SPEC-008 F-012
     #[must_use]
     pub fn stdout() -> Self {
         Self::new(Box::new(std::io::stdout()))
@@ -143,6 +151,8 @@ impl EventEmitter {
     /// # Errors
     ///
     /// Returns an I/O error if the file cannot be created or opened.
+    ///
+    /// Implements: TJ-SPEC-008 F-012
     pub fn from_file(path: &Path) -> std::io::Result<Self> {
         let file = std::fs::File::create(path)?;
         Ok(Self::new(Box::new(file)))
@@ -151,6 +161,8 @@ impl EventEmitter {
     /// Emits an event as a single JSONL line.
     ///
     /// Failures are silently dropped — observability must not crash the server.
+    ///
+    /// Implements: TJ-SPEC-008 F-012, NFR-004
     pub fn emit(&self, event: Event) {
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
         let envelope = EventEnvelope {
@@ -167,6 +179,8 @@ impl EventEmitter {
     }
 
     /// Returns the number of events emitted so far.
+    ///
+    /// Implements: TJ-SPEC-008 F-012
     #[must_use]
     pub fn event_count(&self) -> u64 {
         self.sequence.load(Ordering::Relaxed)

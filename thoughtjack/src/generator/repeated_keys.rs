@@ -19,6 +19,8 @@ use std::fmt::Write;
 /// the JSON is built manually as a raw string.
 ///
 /// Output is fully deterministic (sequential keys, no random component).
+///
+/// Implements: TJ-SPEC-005 F-005
 #[derive(Debug)]
 pub struct RepeatedKeysGenerator {
     count: usize,
@@ -34,6 +36,8 @@ impl RepeatedKeysGenerator {
     /// Returns [`GeneratorError::InvalidParameters`] if `count` is missing.
     /// Returns [`GeneratorError::LimitExceeded`] if count exceeds
     /// `limits.max_batch_size` or estimated size exceeds `limits.max_payload_bytes`.
+    ///
+    /// Implements: TJ-SPEC-005 F-005
     pub fn new(
         params: &HashMap<String, Value>,
         limits: &GeneratorLimits,

@@ -10,6 +10,8 @@ use tracing_subscriber::EnvFilter;
 /// Log output format.
 ///
 /// Controls how log messages are rendered to stderr.
+///
+/// Implements: TJ-SPEC-008 F-002, F-003
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogFormat {
     /// Human-readable format with optional ANSI colors.
@@ -30,6 +32,8 @@ pub enum LogFormat {
 /// If `THOUGHTJACK_LOG_LEVEL` is set it takes precedence over `verbosity`.
 ///
 /// Uses `try_init()` so calling this more than once (e.g. in tests) is safe.
+///
+/// Implements: TJ-SPEC-008 F-001
 pub fn init_logging(format: LogFormat, verbosity: u8) {
     let default_directive = match verbosity {
         0 => "warn",

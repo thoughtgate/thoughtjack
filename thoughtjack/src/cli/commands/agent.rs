@@ -10,6 +10,8 @@ use crate::error::{PhaseError, ThoughtJackError};
 /// # Errors
 ///
 /// Always returns a phase error indicating this command is not yet implemented.
+///
+/// Implements: TJ-SPEC-007 F-006
 #[allow(clippy::unused_async)] // will use async when agent mode is implemented
 pub async fn run(_cmd: &AgentCommand) -> Result<(), ThoughtJackError> {
     eprintln!("agent mode is coming soon");

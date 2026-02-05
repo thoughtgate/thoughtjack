@@ -5,6 +5,8 @@
 use crate::cli::args::{OutputFormat, VersionArgs};
 
 /// Print version and build information.
+///
+/// Implements: TJ-SPEC-007 F-008
 pub fn run(args: &VersionArgs) {
     let name = env!("CARGO_PKG_NAME");
     let version = env!("CARGO_PKG_VERSION");

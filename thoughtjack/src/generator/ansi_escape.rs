@@ -19,6 +19,8 @@ use std::fmt::Write;
 /// Cycles through the configured sequence types for `count` iterations,
 /// using a seeded RNG for random components (cursor positions, colors).
 /// Deterministic: same seed always produces the same output.
+///
+/// Implements: TJ-SPEC-005 F-007
 #[derive(Debug)]
 pub struct AnsiEscapeGenerator {
     sequences: Vec<AnsiSequenceType>,
@@ -34,6 +36,8 @@ impl AnsiEscapeGenerator {
     ///
     /// Returns [`GeneratorError::LimitExceeded`] if estimated size exceeds
     /// `limits.max_payload_bytes`.
+    ///
+    /// Implements: TJ-SPEC-005 F-007
     pub fn new(
         params: &HashMap<String, Value>,
         limits: &GeneratorLimits,

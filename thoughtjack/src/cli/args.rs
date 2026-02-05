@@ -13,6 +13,8 @@ use crate::config::schema::StateScope;
 // ============================================================================
 
 /// Adversarial MCP server for security testing.
+///
+/// Implements: TJ-SPEC-007 F-001
 #[derive(Parser, Debug)]
 #[command(name = "thoughtjack", author, version, about)]
 #[command(propagate_version = true)]
@@ -39,6 +41,8 @@ pub struct Cli {
 // ============================================================================
 
 /// Top-level subcommands.
+///
+/// Implements: TJ-SPEC-007 F-001
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Start or manage the adversarial MCP server.
@@ -59,6 +63,8 @@ pub enum Commands {
 // ============================================================================
 
 /// Server management commands.
+///
+/// Implements: TJ-SPEC-007 F-002
 #[derive(Args, Debug)]
 pub struct ServerCommand {
     /// Server subcommand.
@@ -67,6 +73,8 @@ pub struct ServerCommand {
 }
 
 /// Server subcommands.
+///
+/// Implements: TJ-SPEC-007 F-002
 #[derive(Subcommand, Debug)]
 pub enum ServerSubcommand {
     /// Start the adversarial MCP server.
@@ -80,6 +88,8 @@ pub enum ServerSubcommand {
 }
 
 /// Arguments for `server run`.
+///
+/// Implements: TJ-SPEC-007 F-002
 #[derive(Args, Debug)]
 #[command(group = clap::ArgGroup::new("source").multiple(false))]
 pub struct ServerRunArgs {
@@ -133,6 +143,8 @@ pub struct ServerRunArgs {
 }
 
 /// Arguments for `server validate`.
+///
+/// Implements: TJ-SPEC-007 F-003
 #[derive(Args, Debug)]
 pub struct ServerValidateArgs {
     /// Configuration files to validate.
@@ -153,6 +165,8 @@ pub struct ServerValidateArgs {
 }
 
 /// Arguments for `server list`.
+///
+/// Implements: TJ-SPEC-007 F-004
 #[derive(Args, Debug)]
 pub struct ServerListArgs {
     /// Category to list.
@@ -177,6 +191,8 @@ pub struct ServerListArgs {
 // ============================================================================
 
 /// Agent mode arguments (placeholder).
+///
+/// Implements: TJ-SPEC-007 F-006
 #[derive(Args, Debug)]
 pub struct AgentCommand {
     /// Path to agent configuration file.
@@ -189,6 +205,8 @@ pub struct AgentCommand {
 // ============================================================================
 
 /// Arguments for shell completion generation.
+///
+/// Implements: TJ-SPEC-007 F-007
 #[derive(Args, Debug)]
 pub struct CompletionsArgs {
     /// Target shell for completion script.
@@ -196,6 +214,8 @@ pub struct CompletionsArgs {
 }
 
 /// Arguments for version display.
+///
+/// Implements: TJ-SPEC-007 F-008
 #[derive(Args, Debug)]
 pub struct VersionArgs {
     /// Output format.
@@ -208,6 +228,8 @@ pub struct VersionArgs {
 // ============================================================================
 
 /// Color output choice.
+///
+/// Implements: TJ-SPEC-007 F-012
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum ColorChoice {
     /// Auto-detect terminal support.
@@ -220,6 +242,8 @@ pub enum ColorChoice {
 }
 
 /// Delivery behavior override for CLI.
+///
+/// Implements: TJ-SPEC-007 F-002
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DeliveryMode {
     /// Standard immediate delivery.
@@ -235,6 +259,8 @@ pub enum DeliveryMode {
 }
 
 /// Server profile preset.
+///
+/// Implements: TJ-SPEC-007 F-002
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum ServerProfile {
     /// Balanced defaults.
@@ -247,6 +273,8 @@ pub enum ServerProfile {
 }
 
 /// Output format for structured output.
+///
+/// Implements: TJ-SPEC-007 F-003
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum OutputFormat {
     /// Human-readable output.
@@ -257,6 +285,8 @@ pub enum OutputFormat {
 }
 
 /// Library item category.
+///
+/// Implements: TJ-SPEC-007 F-004
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum ListCategory {
     /// Server configurations.
@@ -275,6 +305,8 @@ pub enum ListCategory {
 }
 
 /// Shell type for completion generation.
+///
+/// Implements: TJ-SPEC-007 F-007
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Shell {
     /// Bash shell.

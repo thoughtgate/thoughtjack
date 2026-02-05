@@ -21,6 +21,8 @@ const STREAM_COUNT_THRESHOLD: usize = 10_000;
 /// Produces a JSON array of identical JSON-RPC notifications, useful for
 /// testing batch processing limits and memory handling. Output is fully
 /// deterministic (no random component).
+///
+/// Implements: TJ-SPEC-005 F-003
 #[derive(Debug)]
 pub struct BatchNotificationsGenerator {
     count: usize,
@@ -36,6 +38,8 @@ impl BatchNotificationsGenerator {
     /// Returns [`GeneratorError::InvalidParameters`] if `count` is missing.
     /// Returns [`GeneratorError::LimitExceeded`] if count exceeds
     /// `limits.max_batch_size` or estimated size exceeds `limits.max_payload_bytes`.
+    ///
+    /// Implements: TJ-SPEC-005 F-003
     pub fn new(
         params: &HashMap<String, Value>,
         limits: &GeneratorLimits,

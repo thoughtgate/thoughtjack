@@ -23,6 +23,8 @@ const ALPHANUMERIC: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX
 /// Uses a seeded RNG for deterministic output: the same seed always
 /// produces the same bytes. Payloads larger than [`STREAMING_THRESHOLD`]
 /// are streamed in 64 KB chunks.
+///
+/// Implements: TJ-SPEC-005 F-004
 #[derive(Debug)]
 pub struct GarbageGenerator {
     bytes: usize,
@@ -38,6 +40,8 @@ impl GarbageGenerator {
     /// Returns [`GeneratorError::InvalidParameters`] if `bytes` is missing.
     /// Returns [`GeneratorError::LimitExceeded`] if bytes exceeds
     /// `limits.max_payload_bytes`.
+    ///
+    /// Implements: TJ-SPEC-005 F-004
     pub fn new(
         params: &HashMap<String, Value>,
         limits: &GeneratorLimits,
@@ -155,6 +159,8 @@ impl PayloadGenerator for GarbageGenerator {
 ///
 /// Emits 64 KB chunks using the same seeded RNG, ensuring the
 /// same seed produces the same byte sequence as the buffered path.
+///
+/// Implements: TJ-SPEC-005 F-004, F-009
 #[derive(Debug)]
 pub struct GarbageStream {
     remaining: usize,
@@ -165,6 +171,8 @@ pub struct GarbageStream {
 
 impl GarbageStream {
     /// Creates a new garbage stream.
+    ///
+    /// Implements: TJ-SPEC-005 F-004, F-009
     #[must_use]
     pub fn new(total: usize, charset: Charset, seed: u64) -> Self {
         Self {

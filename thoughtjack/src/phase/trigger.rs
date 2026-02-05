@@ -14,6 +14,8 @@ use crate::error::PhaseError;
 use super::state::{EventType, PhaseState};
 
 /// Result of evaluating a trigger.
+///
+/// Implements: TJ-SPEC-003 F-004
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriggerResult {
     /// Trigger fired with a human-readable reason
@@ -25,10 +27,12 @@ pub enum TriggerResult {
 /// Evaluates an event-based trigger against current state.
 ///
 /// Checks in order: event name match, count threshold (>=), content match.
-/// All conditions must be true for the trigger to fire (F-004).
+/// All conditions must be true for the trigger to fire.
 ///
 /// Uses `>=` for threshold comparison to prevent skipped triggers
 /// under high concurrency.
+///
+/// Implements: TJ-SPEC-003 F-004
 pub fn evaluate(
     trigger: &Trigger,
     state: &PhaseState,
@@ -74,7 +78,9 @@ pub fn evaluate(
 
 /// Evaluates a time-based trigger against current state.
 ///
-/// Checks the `after` duration against time since phase entry (F-008).
+/// Checks the `after` duration against time since phase entry.
+///
+/// Implements: TJ-SPEC-003 F-008
 pub fn evaluate_time_trigger(trigger: &Trigger, state: &PhaseState) -> TriggerResult {
     let Some(after_str) = &trigger.after else {
         return TriggerResult::NotMet;
@@ -92,9 +98,11 @@ pub fn evaluate_time_trigger(trigger: &Trigger, state: &PhaseState) -> TriggerRe
     }
 }
 
-/// Evaluates a timeout trigger for event-based triggers (F-009).
+/// Evaluates a timeout trigger for event-based triggers.
 ///
 /// Returns `Fired` if the timeout duration has elapsed since phase entry.
+///
+/// Implements: TJ-SPEC-003 F-009
 pub fn evaluate_timeout(trigger: &Trigger, state: &PhaseState) -> TriggerResult {
     let Some(timeout_str) = &trigger.timeout else {
         return TriggerResult::NotMet;
@@ -139,10 +147,12 @@ fn event_matches(event_name: &str, pattern: &str) -> bool {
     false
 }
 
-/// Checks if request parameters match a content predicate (F-005).
+/// Checks if request parameters match a content predicate.
 ///
 /// All conditions in the predicate must match (AND semantics).
 /// Uses dot-notation field paths for nested access.
+///
+/// Implements: TJ-SPEC-003 F-005
 #[must_use]
 pub fn matches_content(predicate: &MatchPredicate, params: &serde_json::Value) -> bool {
     for (path, matcher) in &predicate.conditions {
@@ -223,11 +233,13 @@ fn field_matches(matcher: &FieldMatcher, value: &serde_json::Value) -> bool {
     }
 }
 
-/// Parses a duration string like "30s", "5m", "100ms", "1h" (F-008).
+/// Parses a duration string like "30s", "5m", "100ms", "1h".
 ///
 /// # Errors
 ///
 /// Returns `PhaseError::TriggerError` if the format is invalid.
+///
+/// Implements: TJ-SPEC-003 F-008
 pub fn parse_duration(s: &str) -> Result<Duration, PhaseError> {
     let s = s.trim();
 

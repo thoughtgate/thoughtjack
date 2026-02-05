@@ -18,6 +18,8 @@ use tokio::sync::Mutex;
 ///
 /// Values are read from environment variables with fallback to defaults.
 /// See TJ-SPEC-002 §5.1 for variable names and defaults.
+///
+/// Implements: TJ-SPEC-002 F-002
 #[derive(Debug, Clone, Copy)]
 pub struct StdioConfig {
     /// Maximum message size in bytes.
@@ -33,6 +35,8 @@ impl StdioConfig {
     /// |----------|---------|
     /// | `THOUGHTJACK_MAX_MESSAGE_SIZE` | 10 MB |
     /// | `THOUGHTJACK_STDIO_BUFFER_SIZE` | 64 KB |
+    ///
+    /// Implements: TJ-SPEC-002 F-002
     #[must_use]
     pub fn from_env() -> Self {
         Self {
@@ -64,6 +68,8 @@ impl Default for StdioConfig {
 /// - **EC-TRANS-009**: Empty lines — trimmed empty lines are skipped.
 /// - **EC-TRANS-016**: Multiple JSON objects on one line — parse error, logged and skipped.
 /// - **F-008**: Message size limit — checked after read, oversized messages are logged and skipped.
+///
+/// Implements: TJ-SPEC-002 F-002
 pub struct StdioTransport {
     reader: Mutex<BufReader<tokio::io::Stdin>>,
     writer: Mutex<BufWriter<tokio::io::Stdout>>,
@@ -73,6 +79,8 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     /// Creates a new stdio transport with configuration from environment variables.
+    ///
+    /// Implements: TJ-SPEC-002 F-002
     #[must_use]
     pub fn new() -> Self {
         let config = StdioConfig::from_env();
@@ -91,6 +99,8 @@ impl StdioTransport {
     }
 
     /// Creates a new stdio transport with explicit configuration.
+    ///
+    /// Implements: TJ-SPEC-002 F-002
     #[must_use]
     pub fn with_config(config: StdioConfig) -> Self {
         Self {
@@ -108,6 +118,8 @@ impl StdioTransport {
     }
 
     /// Returns a reference to the connection context.
+    ///
+    /// Implements: TJ-SPEC-002 F-016
     #[must_use]
     pub const fn context(&self) -> &ConnectionContext {
         &self.context

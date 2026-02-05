@@ -15,6 +15,8 @@ use crate::error::ThoughtJackError;
 /// # Errors
 ///
 /// Returns an error if the dispatched command handler fails.
+///
+/// Implements: TJ-SPEC-007 F-001
 pub async fn dispatch(cli: Cli) -> Result<(), ThoughtJackError> {
     match cli.command {
         Commands::Server(cmd) => match cmd.subcommand {

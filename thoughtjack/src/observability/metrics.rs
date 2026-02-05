@@ -34,6 +34,8 @@ const KNOWN_METHODS: [&str; 12] = [
 ///
 /// Returns the original string when it matches a known MCP method,
 /// or `"__unknown__"` otherwise.
+///
+/// Implements: TJ-SPEC-008 F-009, EC-OBS-021, EC-OBS-022
 #[must_use]
 pub fn sanitize_method_label(method: &str) -> &str {
     if KNOWN_METHODS.contains(&method) {
@@ -54,6 +56,8 @@ pub fn sanitize_method_label(method: &str) -> &str {
 ///
 /// Returns `ThoughtJackError::Io` if the recorder or HTTP listener
 /// cannot be installed (e.g. port already in use).
+///
+/// Implements: TJ-SPEC-008 F-010
 pub fn init_metrics(port: Option<u16>) -> Result<(), ThoughtJackError> {
     port.map_or_else(
         || PrometheusBuilder::new().install_recorder().map(|_| ()),
@@ -102,12 +106,16 @@ fn describe_metrics() {
 }
 
 /// Records an incoming MCP request.
+///
+/// Implements: TJ-SPEC-008 F-009
 pub fn record_request(method: &str) {
     let label = sanitize_method_label(method);
     counter!("thoughtjack_requests_total", "method" => label.to_owned()).increment(1);
 }
 
 /// Records an outgoing MCP response.
+///
+/// Implements: TJ-SPEC-008 F-009
 pub fn record_response(method: &str, success: bool) {
     let label = sanitize_method_label(method);
     let status = if success { "success" } else { "error" };
@@ -116,6 +124,8 @@ pub fn record_response(method: &str, success: bool) {
 }
 
 /// Records request processing duration.
+///
+/// Implements: TJ-SPEC-008 F-009
 pub fn record_request_duration(method: &str, duration: Duration) {
     let label = sanitize_method_label(method);
     histogram!("thoughtjack_request_duration_ms", "method" => label.to_owned())
@@ -123,11 +133,15 @@ pub fn record_request_duration(method: &str, duration: Duration) {
 }
 
 /// Records delivery behavior duration.
+///
+/// Implements: TJ-SPEC-008 F-009
 pub fn record_delivery_duration(duration: Duration) {
     histogram!("thoughtjack_delivery_duration_ms").record(duration.as_secs_f64() * 1000.0);
 }
 
 /// Records a phase transition.
+///
+/// Implements: TJ-SPEC-008 F-009
 pub fn record_phase_transition(from: &str, to: &str) {
     counter!(
         "thoughtjack_phase_transitions_total",
@@ -138,11 +152,15 @@ pub fn record_phase_transition(from: &str, to: &str) {
 }
 
 /// Sets the currently active phase gauge.
+///
+/// Implements: TJ-SPEC-008 F-009
 pub fn set_current_phase(phase_name: &str) {
     gauge!("thoughtjack_current_phase", "phase_name" => phase_name.to_owned()).set(1.0);
 }
 
 /// Sets the number of active connections.
+///
+/// Implements: TJ-SPEC-008 F-009
 #[allow(clippy::cast_precision_loss)]
 pub fn set_connections_active(count: u64) {
     gauge!("thoughtjack_connections_active").set(count as f64);

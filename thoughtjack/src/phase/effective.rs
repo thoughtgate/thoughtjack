@@ -15,6 +15,8 @@ use crate::config::schema::{
 ///
 /// Represents the full set of tools, resources, prompts, capabilities,
 /// and behavior that the server should expose in its current phase.
+///
+/// Implements: TJ-SPEC-003 F-002
 #[derive(Debug, Clone)]
 pub struct EffectiveState {
     /// Active tool patterns, keyed by tool name
@@ -32,9 +34,11 @@ pub struct EffectiveState {
 impl EffectiveState {
     /// Computes effective state from baseline + current phase diff.
     ///
-    /// Applies diff operations in order: remove -> replace -> add (F-002).
+    /// Applies diff operations in order: remove -> replace -> add.
     /// Capabilities are merged (not replaced) if present.
     /// Behavior is fully replaced if present.
+    ///
+    /// Implements: TJ-SPEC-003 F-002
     #[must_use]
     pub fn compute(baseline: &BaselineState, current_phase: Option<&Phase>) -> Self {
         let mut tools: IndexMap<String, ToolPattern> = baseline
