@@ -223,6 +223,14 @@ pub enum Severity {
 /// Transport layer errors for stdio and HTTP transports.
 #[derive(Debug, Error)]
 pub enum TransportError {
+    /// I/O error during transport operations
+    #[error("transport I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// JSON serialization/deserialization error
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
     /// Failed to establish connection
     #[error("connection failed: {0}")]
     ConnectionFailed(String),
@@ -238,6 +246,15 @@ pub enum TransportError {
     /// Read or write timeout
     #[error("timeout: {0}")]
     Timeout(String),
+
+    /// Message exceeds size limit
+    #[error("message too large: {size} bytes (limit: {limit})")]
+    MessageTooLarge {
+        /// Actual message size in bytes
+        size: usize,
+        /// Configured size limit in bytes
+        limit: usize,
+    },
 }
 
 // ============================================================================

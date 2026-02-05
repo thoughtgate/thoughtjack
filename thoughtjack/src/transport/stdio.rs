@@ -1,0 +1,274 @@
+//! Stdio transport implementation (TJ-SPEC-002 F-002).
+//!
+//! Implements the [`Transport`] trait for NDJSON (newline-delimited JSON)
+//! communication over stdin/stdout, the standard MCP transport for local
+//! development environments (Claude Desktop, Cursor, VS Code).
+
+use super::{
+    ConnectionContext, DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_STDIO_BUFFER_SIZE, JsonRpcMessage, Result,
+    Transport, TransportType,
+};
+use crate::config::schema::DeliveryConfig;
+
+use std::str::FromStr;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::sync::Mutex;
+
+/// Configuration for the stdio transport.
+///
+/// Values are read from environment variables with fallback to defaults.
+/// See TJ-SPEC-002 §5.1 for variable names and defaults.
+#[derive(Debug, Clone, Copy)]
+pub struct StdioConfig {
+    /// Maximum message size in bytes.
+    pub max_message_size: usize,
+    /// Read/write buffer size in bytes.
+    pub buffer_size: usize,
+}
+
+impl StdioConfig {
+    /// Loads configuration from environment variables with defaults.
+    ///
+    /// | Variable | Default |
+    /// |----------|---------|
+    /// | `THOUGHTJACK_MAX_MESSAGE_SIZE` | 10 MB |
+    /// | `THOUGHTJACK_STDIO_BUFFER_SIZE` | 64 KB |
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            max_message_size: env_or("THOUGHTJACK_MAX_MESSAGE_SIZE", DEFAULT_MAX_MESSAGE_SIZE),
+            buffer_size: env_or("THOUGHTJACK_STDIO_BUFFER_SIZE", DEFAULT_STDIO_BUFFER_SIZE),
+        }
+    }
+}
+
+impl Default for StdioConfig {
+    fn default() -> Self {
+        Self {
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            buffer_size: DEFAULT_STDIO_BUFFER_SIZE,
+        }
+    }
+}
+
+/// NDJSON transport over stdin/stdout.
+///
+/// Uses separate `tokio::sync::Mutex` locks for reader and writer to allow
+/// concurrent read and write operations. The async mutex is required because
+/// the lock is held across `.await` points.
+///
+/// # Edge Cases Handled
+///
+/// - **EC-TRANS-008**: Last line without `\n` — `read_line` returns content,
+///   next call returns 0 bytes (EOF).
+/// - **EC-TRANS-009**: Empty lines — trimmed empty lines are skipped.
+/// - **EC-TRANS-016**: Multiple JSON objects on one line — parse error, logged and skipped.
+/// - **F-008**: Message size limit — checked after read, oversized messages are logged and skipped.
+pub struct StdioTransport {
+    reader: Mutex<BufReader<tokio::io::Stdin>>,
+    writer: Mutex<BufWriter<tokio::io::Stdout>>,
+    config: StdioConfig,
+    context: ConnectionContext,
+}
+
+impl StdioTransport {
+    /// Creates a new stdio transport with configuration from environment variables.
+    #[must_use]
+    pub fn new() -> Self {
+        let config = StdioConfig::from_env();
+        Self {
+            reader: Mutex::new(BufReader::with_capacity(
+                config.buffer_size,
+                tokio::io::stdin(),
+            )),
+            writer: Mutex::new(BufWriter::with_capacity(
+                config.buffer_size,
+                tokio::io::stdout(),
+            )),
+            config,
+            context: ConnectionContext::stdio(),
+        }
+    }
+
+    /// Creates a new stdio transport with explicit configuration.
+    #[must_use]
+    pub fn with_config(config: StdioConfig) -> Self {
+        Self {
+            reader: Mutex::new(BufReader::with_capacity(
+                config.buffer_size,
+                tokio::io::stdin(),
+            )),
+            writer: Mutex::new(BufWriter::with_capacity(
+                config.buffer_size,
+                tokio::io::stdout(),
+            )),
+            config,
+            context: ConnectionContext::stdio(),
+        }
+    }
+
+    /// Returns a reference to the connection context.
+    #[must_use]
+    pub const fn context(&self) -> &ConnectionContext {
+        &self.context
+    }
+}
+
+impl Default for StdioTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for StdioTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StdioTransport")
+            .field("config", &self.config)
+            .field("context", &self.context)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl Transport for StdioTransport {
+    async fn send_message(&self, message: &JsonRpcMessage) -> Result<()> {
+        let serialized = serde_json::to_string(message)?;
+        let mut writer = self.writer.lock().await;
+        writer.write_all(serialized.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await?;
+        drop(writer);
+        Ok(())
+    }
+
+    async fn send_raw(&self, bytes: &[u8]) -> Result<()> {
+        let mut writer = self.writer.lock().await;
+        writer.write_all(bytes).await?;
+        writer.flush().await?;
+        drop(writer);
+        Ok(())
+    }
+
+    #[allow(clippy::significant_drop_tightening)] // reader must be held across the loop
+    async fn receive_message(&self) -> Result<Option<JsonRpcMessage>> {
+        let mut reader = self.reader.lock().await;
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            let bytes_read = reader.read_line(&mut line).await?;
+
+            // EOF
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+
+            let trimmed = line.trim();
+
+            // EC-TRANS-009: Skip empty lines
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // F-008: Check message size limit
+            if trimmed.len() > self.config.max_message_size {
+                tracing::warn!(
+                    size = trimmed.len(),
+                    limit = self.config.max_message_size,
+                    "message exceeds size limit, skipping"
+                );
+                continue;
+            }
+
+            // Parse JSON-RPC message (EC-TRANS-016: invalid NDJSON logged and skipped)
+            match serde_json::from_str::<JsonRpcMessage>(trimmed) {
+                Ok(message) => return Ok(Some(message)),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        line = trimmed,
+                        "invalid JSON-RPC message, skipping"
+                    );
+                }
+            }
+        }
+    }
+
+    fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
+        // stdio supports all delivery behaviors
+        true
+    }
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::Stdio
+    }
+}
+
+/// Reads an environment variable, parsing it to type `T`, or returns the default.
+fn env_or<T: FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stdio_config_default() {
+        let config = StdioConfig::default();
+        assert_eq!(config.max_message_size, DEFAULT_MAX_MESSAGE_SIZE);
+        assert_eq!(config.buffer_size, DEFAULT_STDIO_BUFFER_SIZE);
+    }
+
+    #[test]
+    fn test_env_or_default() {
+        // With a non-existent env var, should return default
+        let result: usize = env_or("THOUGHTJACK_TEST_NONEXISTENT_VAR_12345", 42);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_stdio_transport_debug() {
+        let transport = StdioTransport::new();
+        let debug = format!("{transport:?}");
+        assert!(debug.contains("StdioTransport"));
+        assert!(debug.contains("config"));
+    }
+
+    #[test]
+    fn test_stdio_transport_type() {
+        let transport = StdioTransport::new();
+        assert_eq!(transport.transport_type(), TransportType::Stdio);
+    }
+
+    #[test]
+    fn test_stdio_supports_all_behaviors() {
+        let transport = StdioTransport::new();
+        assert!(transport.supports_behavior(&DeliveryConfig::Normal));
+        assert!(transport.supports_behavior(&DeliveryConfig::SlowLoris {
+            byte_delay_ms: Some(100),
+            chunk_size: Some(1),
+        }));
+        assert!(transport.supports_behavior(&DeliveryConfig::UnboundedLine {
+            target_bytes: Some(1000),
+            padding_char: None,
+        }));
+        assert!(transport.supports_behavior(&DeliveryConfig::NestedJson {
+            depth: 100,
+            key: None,
+        }));
+        assert!(transport.supports_behavior(&DeliveryConfig::ResponseDelay { delay_ms: 1000 }));
+    }
+
+    #[test]
+    fn test_stdio_context() {
+        let transport = StdioTransport::new();
+        let ctx = transport.context();
+        assert_eq!(ctx.connection_id, 0);
+        assert!(ctx.remote_addr.is_none());
+        assert!(ctx.is_exclusive);
+    }
+}
