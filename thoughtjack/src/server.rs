@@ -185,22 +185,27 @@ impl Server {
             // 1. Capture effective state BEFORE transition
             let effective_state = self.phase_engine.effective_state();
 
-            // 2. Build event type and record it — may trigger transition via CAS
-            //    Record both generic ("tools/call") and specific ("tools/call:calc")
-            //    events for dual-counting (TJ-SPEC-003 F-003).
+            // 2. ALWAYS count both generic and specific events (TJ-SPEC-003 F-003)
             let event = EventType::new(&request.method);
+            self.phase_engine.state().increment_event(&event);
+
+            let specific_event = extract_specific_name(&request.method, request.params.as_ref())
+                .map(|name| {
+                    let specific = EventType::new(format!("{}:{name}", request.method));
+                    self.phase_engine.state().increment_event(&specific);
+                    specific
+                });
+
+            // Evaluate triggers: generic first, then specific (only one fires)
             let transition = self
                 .phase_engine
-                .record_event(&event, request.params.as_ref());
-
-            // Only try the specific event if the generic didn't already fire a transition
-            let transition = transition.or_else(|| {
-                extract_specific_name(&request.method, request.params.as_ref()).and_then(|name| {
-                    let specific = EventType::new(format!("{}:{name}", request.method));
-                    self.phase_engine
-                        .record_event(&specific, request.params.as_ref())
-                })
-            });
+                .evaluate_trigger(&event, request.params.as_ref())
+                .or_else(|| {
+                    specific_event.as_ref().and_then(|se| {
+                        self.phase_engine
+                            .evaluate_trigger(se, request.params.as_ref())
+                    })
+                });
 
             // 3. Merge with any timer-triggered transition
             let transition = match transition {

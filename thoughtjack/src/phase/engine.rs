@@ -124,6 +124,44 @@ impl PhaseEngine {
         None
     }
 
+    /// Evaluates triggers for the given event without incrementing counters.
+    ///
+    /// Used for dual-counting: counters are incremented separately for both
+    /// generic and specific events, then triggers are evaluated without
+    /// further incrementing.
+    ///
+    /// Implements: TJ-SPEC-003 F-003
+    pub fn evaluate_trigger(
+        &self,
+        event: &EventType,
+        params: Option<&serde_json::Value>,
+    ) -> Option<PhaseTransition> {
+        if self.state.is_terminal() {
+            return None;
+        }
+
+        let current = self.state.current_phase();
+        if current >= self.phases.len() {
+            return None;
+        }
+
+        let phase = &self.phases[current];
+        let Some(trigger) = &phase.advance else {
+            return None;
+        };
+
+        let result = trigger::evaluate(trigger, &self.state, event, params);
+        if let TriggerResult::Fired(reason) = result {
+            return self.try_transition(current, &reason);
+        }
+
+        if let TriggerResult::Fired(reason) = trigger::evaluate_timeout(trigger, &self.state) {
+            return self.try_transition(current, &reason);
+        }
+
+        None
+    }
+
     /// Attempts to advance the phase via CAS.
     ///
     /// Returns `Some(PhaseTransition)` if this call won the race.
@@ -673,6 +711,49 @@ mod tests {
         let t = engine.record_event(&event, None); // count=4
         assert!(t.is_some());
         assert_eq!(engine.current_phase(), 2);
+    }
+
+    #[test]
+    fn test_specific_event_counted_when_generic_fires() {
+        // Simulate dual-counting: both generic and specific events are
+        // incremented before trigger evaluation. When the generic trigger
+        // fires, the specific counter must still have been incremented.
+        let phases = vec![
+            phase_with_event_trigger("wait", "tools/call", 1),
+            terminal_phase("done"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool());
+
+        let generic = EventType::new("tools/call");
+        let specific = EventType::new("tools/call:calculator");
+
+        // Increment both counters (dual-counting)
+        engine.state().increment_event(&generic);
+        engine.state().increment_event(&specific);
+
+        // Generic trigger fires
+        let transition = engine.evaluate_trigger(&generic, None);
+        assert!(transition.is_some());
+
+        // Specific counter must still be recorded
+        assert_eq!(engine.state().event_count(&specific), 1);
+    }
+
+    #[test]
+    fn test_evaluate_trigger_does_not_increment() {
+        let phases = vec![
+            phase_with_event_trigger("wait", "tools/call", 2),
+            terminal_phase("done"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let event = EventType::new("tools/call");
+
+        // Increment once externally
+        engine.state().increment_event(&event);
+
+        // evaluate_trigger should NOT increment — still at 1, threshold 2
+        assert!(engine.evaluate_trigger(&event, None).is_none());
+        assert_eq!(engine.state().event_count(&event), 1);
     }
 
     #[test]
