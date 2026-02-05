@@ -440,9 +440,9 @@ impl Validator {
                 self.add_error(&format!("{path}.tool.name"), "Tool name is required");
             }
 
-            // Tool name uniqueness
+            // Tool name uniqueness (SPEC-001 F-015: warn, not error)
             if !tool_names.insert(&tool.tool.name) {
-                self.add_error(
+                self.add_warning(
                     &format!("{path}.tool.name"),
                     &format!("Duplicate tool name: '{}'", tool.tool.name),
                 );
@@ -810,12 +810,13 @@ mod tests {
         let mut validator = Validator::new();
         let result = validator.validate(&config, &default_limits());
 
-        assert!(result.has_errors());
+        // SPEC-001 F-015: duplicate tool names produce a warning, not an error
+        assert!(result.is_valid());
         assert!(
             result
-                .errors
+                .warnings
                 .iter()
-                .any(|e| e.message.contains("Duplicate tool name"))
+                .any(|w| w.message.contains("Duplicate tool name"))
         );
     }
 
