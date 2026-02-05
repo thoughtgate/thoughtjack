@@ -501,6 +501,7 @@ pub struct SideEffectResult {
     pub messages_sent: usize,
     pub bytes_sent: usize,
     pub duration: Duration,
+    pub completed: bool,              // false if cancelled
     pub outcome: SideEffectOutcome,
 }
 
@@ -810,6 +811,13 @@ impl SideEffect for PipeDeadlock {
         let mut bytes_sent = 0usize;
 
         while bytes_sent < self.fill_bytes {
+            // Pre-check: handle pre-cancelled tokens deterministically.
+            // tokio::select! randomly picks which branch to poll first,
+            // so a pre-cancelled token may not win the race against
+            // an instantly-completing send.
+            if cancel.is_cancelled() {
+                break;
+            }
             tokio::select! {
                 _ = cancel.cancelled() => {
                     break;
@@ -818,7 +826,6 @@ impl SideEffect for PipeDeadlock {
                     match result {
                         Ok(()) => bytes_sent += chunk.len(),
                         Err(e) => {
-                            // Write blocked or failed - deadlock may be achieved
                             tracing::info!(
                                 bytes_written = bytes_sent,
                                 error = %e,
@@ -835,6 +842,7 @@ impl SideEffect for PipeDeadlock {
             messages_sent: 0,
             bytes_sent,
             duration: start.elapsed(),
+            completed: !cancel.is_cancelled(),
             outcome: SideEffectOutcome::Completed,
         })
     }
