@@ -696,6 +696,15 @@ impl FileResolver {
 
         let path = Path::new(path_str);
 
+        // Reject path traversal attempts
+        if path_str.contains("..") {
+            return Err(ConfigError::InvalidValue {
+                field: "$file".to_string(),
+                value: path_str.to_string(),
+                expected: "path without '..' traversal".to_string(),
+            });
+        }
+
         if path.is_absolute() {
             if path.exists() {
                 return Ok(path.to_path_buf());
@@ -1161,5 +1170,23 @@ mod tests {
     fn test_loader_options_default() {
         let opts = LoaderOptions::default();
         assert_eq!(opts.library_root, PathBuf::from("library"));
+    }
+
+    #[test]
+    fn test_file_resolver_rejects_path_traversal() {
+        let resolver = FileResolver::new(PathBuf::from("/fake/library"));
+        let traversal = Value::String("../../../etc/passwd".to_string());
+        let result = resolver.resolve_path(&traversal, Path::new("/fake/config.yaml"));
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue {
+                field, expected, ..
+            }) => {
+                assert_eq!(field, "$file");
+                assert!(expected.contains(".."));
+            }
+            _ => panic!("Expected InvalidValue error for path traversal"),
+        }
     }
 }
