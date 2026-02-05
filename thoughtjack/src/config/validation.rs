@@ -418,7 +418,7 @@ impl Validator {
             self.add_error(
                 path,
                 &format!(
-                    "Invalid duration '{duration}'. The numeric part must be a positive integer."
+                    "Invalid duration '{duration}'. The numeric part must be a non-negative integer."
                 ),
             );
         }
