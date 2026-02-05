@@ -301,6 +301,18 @@ pub enum BehaviorError {
     InvalidConfig(String),
 }
 
+impl From<TransportError> for BehaviorError {
+    fn from(err: TransportError) -> Self {
+        Self::ExecutionFailed(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for BehaviorError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::ExecutionFailed(err.to_string())
+    }
+}
+
 // ============================================================================
 // Generator Errors
 // ============================================================================
