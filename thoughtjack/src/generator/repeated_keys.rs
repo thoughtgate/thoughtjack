@@ -124,6 +124,10 @@ impl PayloadGenerator for RepeatedKeysGenerator {
     fn name(&self) -> &'static str {
         "repeated_keys"
     }
+
+    fn produces_json(&self) -> bool {
+        true
+    }
 }
 
 // ============================================================================

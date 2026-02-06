@@ -256,6 +256,10 @@ impl ConfigLoader {
 }
 
 /// Validates `$generate` directives without materializing bytes.
+///
+/// In addition to checking estimated sizes against limits, this function
+/// actually creates each generator to catch constructor-level errors
+/// (e.g., invalid parameters, seed validation) at config load time.
 fn validate_generators(value: &Value, limits: &GeneratorLimits) -> Result<(), ConfigError> {
     match value {
         Value::Mapping(map) => {
@@ -278,6 +282,15 @@ fn validate_generators(value: &Value, limits: &GeneratorLimits) -> Result<(), Co
                         expected: format!("at most {} bytes", limits.max_payload_bytes),
                     });
                 }
+
+                // Actually create the generator to catch constructor errors
+                crate::generator::create_generator(&config, limits).map_err(|e| {
+                    ConfigError::InvalidValue {
+                        field: "$generate".to_string(),
+                        value: format!("{:?}", config.type_),
+                        expected: format!("valid generator: {e}"),
+                    }
+                })?;
             } else {
                 // Recurse into map values
                 for (_, v) in map {

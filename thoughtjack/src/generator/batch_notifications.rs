@@ -141,6 +141,10 @@ impl PayloadGenerator for BatchNotificationsGenerator {
     fn name(&self) -> &'static str {
         "batch_notifications"
     }
+
+    fn produces_json(&self) -> bool {
+        true
+    }
 }
 
 /// Streaming batch notifications source.

@@ -189,6 +189,10 @@ impl PayloadGenerator for NestedJsonGenerator {
     fn name(&self) -> &'static str {
         "nested_json"
     }
+
+    fn produces_json(&self) -> bool {
+        true
+    }
 }
 
 // ============================================================================

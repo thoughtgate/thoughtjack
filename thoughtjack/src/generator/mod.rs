@@ -76,6 +76,16 @@ pub trait PayloadGenerator: Send + Sync + std::fmt::Debug {
 
     /// Human-readable name for logging and metrics.
     fn name(&self) -> &'static str;
+
+    /// Whether this generator produces valid JSON output.
+    ///
+    /// Used by the transport layer to set appropriate content types
+    /// and by validation to verify schema compatibility.
+    ///
+    /// Implements: TJ-SPEC-005 F-001
+    fn produces_json(&self) -> bool {
+        false
+    }
 }
 
 /// Generated payload — either fully buffered or streamed in chunks.
