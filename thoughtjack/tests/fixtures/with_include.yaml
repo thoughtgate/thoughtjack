@@ -1,0 +1,7 @@
+# Server with $include directive
+server:
+  name: "include-test"
+  version: "1.0.0"
+
+tools:
+  - $include: include_target.yaml

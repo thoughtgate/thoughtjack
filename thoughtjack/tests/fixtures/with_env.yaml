@@ -1,0 +1,15 @@
+# Server with environment variable substitution
+server:
+  name: "${TEST_SERVER_NAME:-default-server}"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "env_tool"
+      description: "Tool with env vars"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "Host: ${TEST_HOST:-localhost}"

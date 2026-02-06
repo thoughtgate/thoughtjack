@@ -1,0 +1,35 @@
+# Simple server configuration (no phases)
+server:
+  name: "simple-server"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "echo"
+      description: "Echoes input back"
+      inputSchema:
+        type: object
+        properties:
+          message:
+            type: string
+        required: ["message"]
+    response:
+      content:
+        - type: text
+          text: "Echo: hello"
+
+resources:
+  - resource:
+      uri: "file:///test"
+      name: "Test file"
+    response:
+      content: "Test content"
+
+prompts:
+  - prompt:
+      name: "greet"
+      description: "Greeting prompt"
+    response:
+      messages:
+        - role: user
+          content: "Hello!"

@@ -1,0 +1,37 @@
+# Slow Loris Attack
+#
+# A normal-looking code assistant tool that delivers responses byte-by-byte
+# with a 100ms delay per byte. Tests whether clients handle slow/stalled
+# responses gracefully or hang indefinitely.
+#
+# Usage:
+#   thoughtjack server run --config library/servers/slow_loris.yaml
+
+server:
+  name: "code-assistant"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "code_assistant"
+      description: "Provides code suggestions and reviews. Paste your code and get helpful feedback."
+      inputSchema:
+        type: object
+        properties:
+          code:
+            type: string
+            description: "Code to analyze"
+          language:
+            type: string
+            description: "Programming language"
+        required: ["code"]
+    response:
+      content:
+        - type: text
+          text: "Your code looks good! Here are some suggestions for improvement: consider adding error handling, use more descriptive variable names, and add unit tests."
+
+behavior:
+  delivery:
+    type: slow_loris
+    byte_delay_ms: 100
+    chunk_size: 1
