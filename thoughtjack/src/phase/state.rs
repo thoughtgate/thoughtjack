@@ -3,8 +3,8 @@
 //! Lock-free atomic state for tracking current phase, event counts,
 //! and phase timing. Designed for concurrent access in HTTP transport.
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::time::Instant;
 
@@ -160,7 +160,7 @@ impl PhaseState {
     ///
     /// Implements: TJ-SPEC-003 F-001
     #[must_use]
-    pub fn server_started_at(&self) -> Instant {
+    pub const fn server_started_at(&self) -> Instant {
         self.server_started_at
     }
 

@@ -48,7 +48,7 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         tracing::info!(config = %path.display(), "loading configuration");
         let options = LoaderOptions {
             library_root: args.library.clone(),
-            generator_limits: generator_limits.clone(),
+            generator_limits,
             ..LoaderOptions::default()
         };
         let mut loader = ConfigLoader::new(options);
@@ -210,31 +210,33 @@ pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError>
     }
 
     if args.format == OutputFormat::Json {
-        let output = serde_json::json!({
-            "files": results,
-            "summary": {
-                "total": args.files.len(),
-                "valid": valid_count,
-                "invalid": invalid_count,
-            }
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output)
-                .map_err(|e| ThoughtJackError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string()
-                )))?
-        );
-    }
-
-    if invalid_count > 0 && args.format != OutputFormat::Json {
+        print_validation_json(&results, args.files.len(), valid_count, invalid_count)?;
+    } else if invalid_count > 0 {
         return Err(ThoughtJackError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("{invalid_count} file(s) failed validation"),
         )));
     }
 
+    Ok(())
+}
+
+/// Prints JSON validation summary to stdout.
+fn print_validation_json(
+    results: &[serde_json::Value],
+    total: usize,
+    valid: usize,
+    invalid: usize,
+) -> Result<(), ThoughtJackError> {
+    let output = serde_json::json!({
+        "files": results,
+        "summary": { "total": total, "valid": valid, "invalid": invalid }
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output)
+            .map_err(|e| ThoughtJackError::Io(std::io::Error::other(e.to_string())))?
+    );
     Ok(())
 }
 

@@ -41,10 +41,9 @@ pub async fn handle_request(
             server_name,
             server_version,
         ))),
-        "ping" => Ok(Some(JsonRpcResponse::success(
-            request.id.clone(),
-            serde_json::json!({}),
-        ))),
+        "ping" | "resources/subscribe" | "resources/unsubscribe" => Ok(Some(
+            JsonRpcResponse::success(request.id.clone(), serde_json::json!({})),
+        )),
         "tools/list" => Ok(Some(tools::handle_list(request, effective_state))),
         "tools/call" => tools::handle_call(request, effective_state, limits)
             .await
@@ -57,14 +56,6 @@ pub async fn handle_request(
         "prompts/get" => prompts::handle_get(request, effective_state, limits)
             .await
             .map(Some),
-        "resources/subscribe" => Ok(Some(JsonRpcResponse::success(
-            request.id.clone(),
-            serde_json::json!({}),
-        ))),
-        "resources/unsubscribe" => Ok(Some(JsonRpcResponse::success(
-            request.id.clone(),
-            serde_json::json!({}),
-        ))),
         _ => Ok(None),
     }
 }

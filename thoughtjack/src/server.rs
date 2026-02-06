@@ -66,10 +66,7 @@ impl Server {
         cancel: CancellationToken,
     ) -> Self {
         let (baseline, phases) = build_baseline_and_phases(&config);
-        let state_scope = config
-            .server
-            .state_scope
-            .unwrap_or_default();
+        let state_scope = config.server.state_scope.unwrap_or_default();
         let phase_engine = Arc::new(PhaseEngine::new(phases, baseline, state_scope));
         let behavior_coordinator = BehaviorCoordinator::new(cli_behavior);
         let generator_limits = GeneratorLimits::default();

@@ -43,7 +43,7 @@ pub struct PhaseEngine {
     transition_rx: Mutex<mpsc::UnboundedReceiver<PhaseTransition>>,
     /// Cancellation token for the timer task
     cancel: CancellationToken,
-    /// Cached effective state: (phase_index, state). Invalidated on transition.
+    /// Cached effective state: (`phase_index`, state). Invalidated on transition.
     effective_cache: StdMutex<Option<(usize, EffectiveState)>>,
 }
 
@@ -671,7 +671,11 @@ mod tests {
             },
             terminal_phase("done"),
         ];
-        let engine = Arc::new(PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global));
+        let engine = Arc::new(PhaseEngine::new(
+            phases,
+            baseline_with_tool(),
+            StateScope::Global,
+        ));
 
         let handle = engine.start_timer_task();
 
@@ -706,7 +710,11 @@ mod tests {
             },
             terminal_phase("done"),
         ];
-        let engine = Arc::new(PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global));
+        let engine = Arc::new(PhaseEngine::new(
+            phases,
+            baseline_with_tool(),
+            StateScope::Global,
+        ));
 
         let handle = engine.start_timer_task();
         engine.shutdown();
@@ -799,7 +807,11 @@ mod tests {
 
     #[test]
     fn test_debug_output() {
-        let engine = PhaseEngine::new(vec![terminal_phase("only")], baseline_with_tool(), StateScope::Global);
+        let engine = PhaseEngine::new(
+            vec![terminal_phase("only")],
+            baseline_with_tool(),
+            StateScope::Global,
+        );
         let debug = format!("{engine:?}");
         assert!(debug.contains("PhaseEngine"));
     }
@@ -812,7 +824,11 @@ mod tests {
             phase_with_event_trigger("trust", "tools/call", 10),
             terminal_phase("exploit"),
         ];
-        let engine = Arc::new(PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global));
+        let engine = Arc::new(PhaseEngine::new(
+            phases,
+            baseline_with_tool(),
+            StateScope::Global,
+        ));
         let event = EventType::new("tools/call");
 
         // Pre-increment to threshold (10 increments)

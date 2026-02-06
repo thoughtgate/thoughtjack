@@ -97,7 +97,6 @@ pub trait Transport: Send + Sync {
     async fn close(&self, _graceful: bool) -> Result<()> {
         Ok(())
     }
-
 }
 
 /// Sends a message with the given delivery behavior via delegation.
@@ -105,6 +104,10 @@ pub trait Transport: Send + Sync {
 /// This is a convenience function documenting the delegation pattern:
 /// the server calls `behavior.deliver()` directly rather than going through
 /// the transport trait.
+///
+/// # Errors
+///
+/// Returns an error if the delivery behavior fails.
 ///
 /// Implements: TJ-SPEC-002 F-004
 pub async fn send_with_behavior(
@@ -118,7 +121,10 @@ pub async fn send_with_behavior(
 
 /// Executes a side effect on the given transport with compatibility check.
 ///
-/// Returns an error if the effect does not support the transport type.
+/// # Errors
+///
+/// Returns an error if the effect does not support the transport type
+/// or if execution fails.
 ///
 /// Implements: TJ-SPEC-002 F-005
 pub async fn execute_side_effect(

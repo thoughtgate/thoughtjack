@@ -504,7 +504,10 @@ mod tests {
         let delivery = NormalDelivery;
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
 
         let expected_json = serde_json::to_vec(&msg).unwrap();
         // bytes_sent = serialized + newline
@@ -526,7 +529,10 @@ mod tests {
         let delivery = SlowLorisDelivery::new(delay, 1);
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
 
         let serialized = serde_json::to_vec(&msg).unwrap();
         let expected_chunks = serialized.len() + 1; // +1 for newline
@@ -548,7 +554,10 @@ mod tests {
         let delivery = SlowLorisDelivery::new(Duration::ZERO, 1);
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
         assert!(result.duration < Duration::from_millis(100));
         assert!(result.completed);
     }
@@ -564,7 +573,10 @@ mod tests {
         let delivery = NestedJsonDelivery::new(100, "a".to_string());
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
         assert!(result.completed);
 
         // Verify the output is valid JSON (minus trailing newline)
@@ -588,7 +600,10 @@ mod tests {
         let delivery = NestedJsonDelivery::new(1000, "a".to_string());
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
         assert!(result.completed);
 
         let all = transport.all_bytes();
@@ -615,7 +630,10 @@ mod tests {
         let msg = test_message();
 
         // Should complete without stack overflow
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
         assert!(result.completed);
         assert!(result.bytes_sent > 0);
     }
@@ -630,7 +648,10 @@ mod tests {
         let delivery = UnboundedLineDelivery::new(0, 'A');
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
         assert!(result.completed);
 
         let sent = transport.all_bytes();
@@ -643,7 +664,10 @@ mod tests {
         let delivery = UnboundedLineDelivery::new(1000, 'X');
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(result.bytes_sent, 1000);
         assert!(result.completed);
 
@@ -662,7 +686,10 @@ mod tests {
         let delivery = ResponseDelayDelivery::new(delay);
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
         assert!(
             result.duration >= delay,
             "duration {:?} < configured delay {:?}",
