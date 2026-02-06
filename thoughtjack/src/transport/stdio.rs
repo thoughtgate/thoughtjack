@@ -187,6 +187,7 @@ impl Transport for StdioTransport {
                 tracing::warn!(
                     size = trimmed.len(),
                     limit = self.config.max_message_size,
+                    line = %sanitize_for_log(trimmed, 200),
                     "message exceeds size limit, skipping"
                 );
                 continue;
@@ -198,7 +199,7 @@ impl Transport for StdioTransport {
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
-                        line = trimmed,
+                        line = %sanitize_for_log(trimmed, 200),
                         "invalid JSON-RPC message, skipping"
                     );
                 }
@@ -223,6 +224,24 @@ impl Transport for StdioTransport {
     fn connection_context(&self) -> ConnectionContext {
         self.context.clone()
     }
+}
+
+/// Truncates and strips control characters from untrusted input before logging.
+///
+/// Replaces control characters (except tab) with the Unicode replacement
+/// character to prevent log injection attacks via raw stdio input.
+fn sanitize_for_log(input: &str, max_len: usize) -> String {
+    input
+        .chars()
+        .take(max_len)
+        .map(|c| {
+            if c.is_control() && c != '\t' {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// Reads an environment variable, parsing it to type `T`, or returns the default.
