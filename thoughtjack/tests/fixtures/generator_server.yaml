@@ -1,0 +1,32 @@
+# Server with $generate directives for E2E generator tests
+server:
+  name: "generator-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "get_garbage"
+      description: "Returns generated garbage data"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text:
+            $generate:
+              type: garbage
+              bytes: 200
+              charset: ascii
+  - tool:
+      name: "get_nested"
+      description: "Returns nested JSON"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text:
+            $generate:
+              type: nested_json
+              depth: 10
+              structure: object

@@ -21,6 +21,24 @@ pub enum LogFormat {
     Json,
 }
 
+/// Maps a verbosity level to a tracing directive string.
+///
+/// - 0 → `"warn"`
+/// - 1 → `"info"`
+/// - 2 → `"debug"`
+/// - 3+ → `"trace"` (saturates)
+///
+/// Implements: TJ-SPEC-008 F-001
+#[must_use]
+pub const fn verbosity_to_directive(verbosity: u8) -> &'static str {
+    match verbosity {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    }
+}
+
 /// Initializes the global tracing subscriber.
 ///
 /// Verbosity mapping (when `THOUGHTJACK_LOG_LEVEL` is not set):
@@ -35,12 +53,7 @@ pub enum LogFormat {
 ///
 /// Implements: TJ-SPEC-008 F-001
 pub fn init_logging(format: LogFormat, verbosity: u8) {
-    let default_directive = match verbosity {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
-    };
+    let default_directive = verbosity_to_directive(verbosity);
 
     let filter = EnvFilter::try_from_env("THOUGHTJACK_LOG_LEVEL")
         .unwrap_or_else(|_| EnvFilter::new(default_directive));
@@ -80,7 +93,7 @@ mod tests {
     fn log_format_clone_copy_eq() {
         let a = LogFormat::Json;
         let b = a; // Copy
-        let c = a.clone(); // Clone
+        let c = a; // Copy (also tests Clone)
         assert_eq!(a, b);
         assert_eq!(b, c);
         assert_ne!(a, LogFormat::Human);
@@ -91,5 +104,30 @@ mod tests {
         // try_init is idempotent — repeated calls simply return Err and are ignored
         init_logging(LogFormat::Human, 0);
         init_logging(LogFormat::Json, 3);
+    }
+
+    #[test]
+    fn verbosity_0_is_warn() {
+        assert_eq!(verbosity_to_directive(0), "warn");
+    }
+
+    #[test]
+    fn verbosity_1_is_info() {
+        assert_eq!(verbosity_to_directive(1), "info");
+    }
+
+    #[test]
+    fn verbosity_2_is_debug() {
+        assert_eq!(verbosity_to_directive(2), "debug");
+    }
+
+    #[test]
+    fn verbosity_3_is_trace() {
+        assert_eq!(verbosity_to_directive(3), "trace");
+    }
+
+    #[test]
+    fn verbosity_255_is_trace() {
+        assert_eq!(verbosity_to_directive(255), "trace");
     }
 }

@@ -1,0 +1,37 @@
+# Server with time-based phase transition for timer tests
+server:
+  name: "timed-phase-test"
+  version: "1.0.0"
+
+baseline:
+  capabilities:
+    tools:
+      listChanged: true
+  tools:
+    - tool:
+        name: "echo"
+        description: "Echo"
+        inputSchema:
+          type: object
+      response:
+        content:
+          - type: text
+            text: "before"
+
+phases:
+  - name: waiting
+    advance:
+      after: 2s
+  - name: triggered
+    on_enter:
+      - send_notification: "notifications/tools/list_changed"
+    add_tools:
+      - tool:
+          name: "new_tool"
+          description: "Appeared after timer"
+          inputSchema:
+            type: object
+        response:
+          content:
+            - type: text
+              text: "time triggered"

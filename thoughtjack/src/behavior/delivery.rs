@@ -733,6 +733,56 @@ mod tests {
         assert_eq!(behavior.name(), "response_delay");
     }
 
+    #[tokio::test]
+    async fn test_slow_loris_precancelled() {
+        // EC-BEH-002: pre-cancelled token → completed: false
+        // Note: select! may poll both branches; the first chunk's send_raw
+        // may complete before cancellation is noticed, so bytes_sent can be
+        // 0 or chunk_size. The key invariant is completed == false.
+        let transport = MockTransport::new();
+        let delivery = SlowLorisDelivery::new(Duration::from_millis(100), 1);
+        let msg = test_message();
+
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // Pre-cancel
+
+        let result = delivery.deliver(&msg, &transport, cancel).await.unwrap();
+
+        assert!(
+            !result.completed,
+            "should not be completed when pre-cancelled"
+        );
+        // bytes_sent must be less than the full message
+        let full_size = serde_json::to_vec(&msg).unwrap().len() + 1;
+        assert!(
+            result.bytes_sent < full_size,
+            "should not have sent full message ({} >= {full_size})",
+            result.bytes_sent
+        );
+    }
+
+    #[tokio::test]
+    async fn test_response_delay_precancelled() {
+        // EC-BEH-002: pre-cancel → completed: false
+        let transport = MockTransport::new();
+        let delivery = ResponseDelayDelivery::new(Duration::from_secs(60));
+        let msg = test_message();
+
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // Pre-cancel
+
+        let result = delivery.deliver(&msg, &transport, cancel).await.unwrap();
+
+        assert!(
+            !result.completed,
+            "should not be completed when pre-cancelled"
+        );
+        assert_eq!(
+            result.bytes_sent, 0,
+            "should not send any bytes when pre-cancelled"
+        );
+    }
+
     #[test]
     fn test_all_support_stdio() {
         let configs: Vec<DeliveryConfig> = vec![

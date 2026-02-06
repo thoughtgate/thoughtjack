@@ -32,15 +32,24 @@ impl ThoughtJackProcess {
     /// Spawns a new server with the given YAML config.
     #[allow(clippy::missing_panics_doc)]
     pub fn spawn(config_path: &Path) -> Self {
+        Self::spawn_with_args(config_path, &[])
+    }
+
+    /// Spawns a new server with the given YAML config and extra CLI args.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn spawn_with_args(config_path: &Path, extra_args: &[&str]) -> Self {
         let bin = env!("CARGO_BIN_EXE_thoughtjack");
+        let mut args = vec![
+            "server",
+            "run",
+            "--config",
+            config_path.to_str().expect("non-UTF-8 config path"),
+            "--quiet",
+        ];
+        args.extend_from_slice(extra_args);
+
         let mut child = Command::new(bin)
-            .args([
-                "server",
-                "run",
-                "--config",
-                config_path.to_str().expect("non-UTF-8 config path"),
-                "--quiet",
-            ])
+            .args(&args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -196,11 +205,67 @@ impl ThoughtJackProcess {
         }
     }
 
+    /// Drains all pending notifications plus any new ones within `timeout`.
+    ///
+    /// Returns all collected notifications. Useful for side-effect tests
+    /// that need to gather a batch of notifications.
+    #[allow(clippy::missing_panics_doc)]
+    pub async fn drain_notifications(&mut self, timeout: Duration) -> Vec<Value> {
+        let mut collected: Vec<Value> = self.pending_notifications.drain(..).collect();
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, async {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let n = self
+                        .reader
+                        .read_line(&mut line)
+                        .await
+                        .expect("read_line I/O error");
+                    if n == 0 {
+                        return None;
+                    }
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        return Some(serde_json::from_str::<Value>(trimmed).unwrap_or_else(|e| {
+                            panic!("invalid JSON from server: {e}\nline: {line}")
+                        }));
+                    }
+                }
+            })
+            .await
+            {
+                Ok(Some(msg)) => collected.push(msg),
+                Ok(None) | Err(_) => break,
+            }
+        }
+
+        collected
+    }
+
     /// Returns the path to a test fixture.
     #[must_use]
     pub fn fixture_path(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    /// Runs the binary with arbitrary args and returns the completed output.
+    ///
+    /// Not an MCP session — just a one-shot command execution.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn spawn_command(args: &[&str]) -> std::process::Output {
+        let bin = env!("CARGO_BIN_EXE_thoughtjack");
+        std::process::Command::new(bin)
+            .args(args)
+            .output()
+            .expect("failed to run thoughtjack")
     }
 }

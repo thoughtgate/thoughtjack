@@ -1299,4 +1299,53 @@ mod tests {
                 .any(|e| e.message.contains("Duplicate prompt name"))
         );
     }
+
+    #[test]
+    fn test_both_simple_and_phased_form_error() {
+        // EC-CFG-016: config with both top-level tools and baseline → error
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState {
+            tools: vec![make_tool("calc")],
+            resources: vec![],
+            prompts: vec![],
+            capabilities: None,
+            behavior: None,
+        });
+        config.tools = Some(vec![make_tool("echo")]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Cannot have both")),
+            "should error when both simple and phased forms are used"
+        );
+    }
+
+    #[test]
+    fn test_empty_phases_array_valid() {
+        // EC-CFG-001: empty phases array is valid (terminal config)
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState {
+            tools: vec![make_tool("calc")],
+            resources: vec![],
+            prompts: vec![],
+            capabilities: None,
+            behavior: None,
+        });
+        config.phases = Some(vec![]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result.is_valid(),
+            "empty phases array should be valid, got errors: {:?}",
+            result.errors
+        );
+    }
 }

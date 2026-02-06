@@ -879,4 +879,97 @@ mod tests {
         let handle = engine.create_connection_state();
         assert!(matches!(handle, PhaseStateHandle::Owned(_)));
     }
+
+    #[test]
+    fn test_advance_past_terminal_is_noop() {
+        // EC-PHASE-001: advancing past terminal phase should not panic
+        let phases = vec![
+            phase_with_event_trigger("trust", "tools/call", 1),
+            terminal_phase("exploit"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
+        let event = EventType::new("tools/call");
+
+        // Advance to terminal phase
+        let transition = engine.record_event(&event, None);
+        assert!(transition.is_some());
+        assert!(engine.is_terminal());
+        assert_eq!(engine.current_phase(), 1);
+
+        // Further events should be no-ops, no panic
+        assert!(engine.record_event(&event, None).is_none());
+        assert!(engine.record_event(&event, None).is_none());
+        assert_eq!(engine.current_phase(), 1);
+    }
+
+    #[test]
+    fn test_rapid_sequential_transitions() {
+        // EC-PHASE-010: rapid sequential transitions should end at terminal
+        let phases = vec![
+            phase_with_event_trigger("phase0", "tools/call", 1),
+            phase_with_event_trigger("phase1", "tools/call", 2),
+            terminal_phase("phase2"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
+        let event = EventType::new("tools/call");
+
+        // Fire events rapidly — first triggers phase 0→1
+        let t = engine.record_event(&event, None);
+        assert!(t.is_some());
+        assert_eq!(engine.current_phase(), 1);
+
+        // Count is now 1, need 2 for phase 1→2
+        // Second event → count=2 → phase 1→2
+        let t = engine.record_event(&event, None);
+        assert!(t.is_some());
+        assert_eq!(engine.current_phase(), 2);
+        assert!(engine.is_terminal());
+
+        // Further events are no-ops
+        assert!(engine.record_event(&event, None).is_none());
+    }
+
+    #[test]
+    fn test_per_connection_state_independent() {
+        let phases = vec![
+            phase_with_event_trigger("trust", "tools/call", 5),
+            terminal_phase("exploit"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::PerConnection);
+
+        let handle_a = engine.create_connection_state();
+        let handle_b = engine.create_connection_state();
+
+        let event = EventType::new("tools/call");
+
+        // Increment on handle A
+        handle_a.increment_event(&event);
+        handle_a.increment_event(&event);
+
+        // Handle B should be unaffected
+        assert_eq!(handle_a.event_count(&event), 2);
+        assert_eq!(handle_b.event_count(&event), 0);
+    }
+
+    #[test]
+    fn test_global_state_shared() {
+        let phases = vec![
+            phase_with_event_trigger("trust", "tools/call", 5),
+            terminal_phase("exploit"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
+
+        let handle_a = engine.create_connection_state();
+        let handle_b = engine.create_connection_state();
+
+        let event = EventType::new("tools/call");
+
+        // Increment on handle A
+        handle_a.increment_event(&event);
+        handle_a.increment_event(&event);
+
+        // Handle B should see the same count (shared state)
+        assert_eq!(handle_a.event_count(&event), 2);
+        assert_eq!(handle_b.event_count(&event), 2);
+    }
 }

@@ -243,6 +243,13 @@ mod tests {
     }
 
     #[test]
+    fn very_long_method_returns_unknown() {
+        // EC-OBS-022: very long method name should be bucketed as __unknown__
+        let long_method = "x".repeat(10_000);
+        assert_eq!(sanitize_method_label(&long_method), "__unknown__");
+    }
+
+    #[test]
     fn record_functions_do_not_panic_without_recorder() {
         // metrics macros silently no-op when no global recorder is installed
         record_request("tools/call");
