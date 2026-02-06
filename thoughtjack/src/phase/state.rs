@@ -3,7 +3,7 @@
 //! Lock-free atomic state for tracking current phase, event counts,
 //! and phase timing. Designed for concurrent access in HTTP transport.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use tokio::time::Instant;
@@ -71,6 +71,8 @@ pub struct PhaseState {
     is_terminal: AtomicBool,
     /// Total number of phases in the configuration
     num_phases: usize,
+    /// Timestamp when the server was started (state was created)
+    server_started_at: Instant,
 }
 
 impl PhaseState {
@@ -79,12 +81,14 @@ impl PhaseState {
     /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn new(num_phases: usize) -> Self {
+        let now = Instant::now();
         Self {
             current_phase: AtomicUsize::new(0),
             event_counts: DashMap::new(),
-            phase_entered_at: Mutex::new(Instant::now()),
+            phase_entered_at: Mutex::new(now),
             is_terminal: AtomicBool::new(num_phases == 0),
             num_phases,
+            server_started_at: now,
         }
     }
 
@@ -152,6 +156,14 @@ impl PhaseState {
             .expect("phase_entered_at lock poisoned")
     }
 
+    /// Returns the instant when the server was started (state was created).
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    #[must_use]
+    pub fn server_started_at(&self) -> Instant {
+        self.server_started_at
+    }
+
     /// Attempts to atomically advance from `from` to `to` phase.
     ///
     /// Uses compare-and-exchange to ensure exactly-once transition
@@ -186,6 +198,106 @@ impl PhaseState {
             .lock()
             .expect("phase_entered_at lock poisoned");
         *entered = Instant::now();
+    }
+}
+
+/// Handle for phase state — either owned (per-connection) or shared (global).
+///
+/// In `PerConnection` scope, each connection gets its own `PhaseState`.
+/// In `Global` scope, all connections share the same `Arc<PhaseState>`.
+///
+/// Implements: TJ-SPEC-003 F-001
+#[derive(Debug)]
+pub enum PhaseStateHandle {
+    /// Per-connection owned state.
+    Owned(PhaseState),
+    /// Globally shared state.
+    Shared(Arc<PhaseState>),
+}
+
+impl PhaseStateHandle {
+    /// Returns the current phase index.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    #[must_use]
+    pub fn current_phase(&self) -> usize {
+        match self {
+            Self::Owned(s) => s.current_phase(),
+            Self::Shared(s) => s.current_phase(),
+        }
+    }
+
+    /// Atomically increments the event counter for the given event type.
+    ///
+    /// Implements: TJ-SPEC-003 F-003
+    pub fn increment_event(&self, event: &EventType) -> u64 {
+        match self {
+            Self::Owned(s) => s.increment_event(event),
+            Self::Shared(s) => s.increment_event(event),
+        }
+    }
+
+    /// Returns the current count for the given event type.
+    ///
+    /// Implements: TJ-SPEC-003 F-003
+    #[must_use]
+    pub fn event_count(&self, event: &EventType) -> u64 {
+        match self {
+            Self::Owned(s) => s.event_count(event),
+            Self::Shared(s) => s.event_count(event),
+        }
+    }
+
+    /// Returns whether the engine is in a terminal state.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            Self::Owned(s) => s.is_terminal(),
+            Self::Shared(s) => s.is_terminal(),
+        }
+    }
+
+    /// Returns the instant when the current phase was entered.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    #[must_use]
+    pub fn phase_entered_at(&self) -> Instant {
+        match self {
+            Self::Owned(s) => s.phase_entered_at(),
+            Self::Shared(s) => s.phase_entered_at(),
+        }
+    }
+
+    /// Attempts to atomically advance from `from` to `to` phase.
+    ///
+    /// Implements: TJ-SPEC-003 F-012
+    pub fn try_advance(&self, from: usize, to: usize) -> bool {
+        match self {
+            Self::Owned(s) => s.try_advance(from, to),
+            Self::Shared(s) => s.try_advance(from, to),
+        }
+    }
+
+    /// Marks the current phase as terminal.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    pub fn mark_terminal(&self) {
+        match self {
+            Self::Owned(s) => s.mark_terminal(),
+            Self::Shared(s) => s.mark_terminal(),
+        }
+    }
+
+    /// Resets the phase entry timestamp to now.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    pub fn reset_phase_timer(&self) {
+        match self {
+            Self::Owned(s) => s.reset_phase_timer(),
+            Self::Shared(s) => s.reset_phase_timer(),
+        }
     }
 }
 

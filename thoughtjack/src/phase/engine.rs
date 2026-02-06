@@ -11,11 +11,11 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::config::schema::{BaselineState, Phase, TimeoutBehavior};
+use crate::config::schema::{BaselineState, Phase, StateScope, TimeoutBehavior};
 use crate::error::PhaseError;
 
 use super::effective::EffectiveState;
-use super::state::{EventType, PhaseState, PhaseTransition};
+use super::state::{EventType, PhaseState, PhaseStateHandle, PhaseTransition};
 use super::trigger::{self, TriggerResult};
 
 /// Phase engine managing server state and phase transitions.
@@ -35,6 +35,8 @@ pub struct PhaseEngine {
     baseline: BaselineState,
     /// Shared atomic phase state
     state: Arc<PhaseState>,
+    /// State scope (global vs per-connection)
+    scope: StateScope,
     /// Channel sender for timer-triggered transitions
     transition_tx: mpsc::UnboundedSender<PhaseTransition>,
     /// Channel receiver for timer-triggered transitions (wrapped in Mutex for single-consumer)
@@ -46,14 +48,14 @@ pub struct PhaseEngine {
 }
 
 impl PhaseEngine {
-    /// Creates a new `PhaseEngine` with the given phases and baseline.
+    /// Creates a new `PhaseEngine` with the given phases, baseline, and state scope.
     ///
     /// If the first phase has no advance trigger, it is marked terminal
     /// and a warning is logged.
     ///
     /// Implements: TJ-SPEC-003 F-001, EC-PHASE-001
     #[must_use]
-    pub fn new(phases: Vec<Phase>, baseline: BaselineState) -> Self {
+    pub fn new(phases: Vec<Phase>, baseline: BaselineState, scope: StateScope) -> Self {
         let num_phases = phases.len();
         let state = Arc::new(PhaseState::new(num_phases));
 
@@ -77,10 +79,27 @@ impl PhaseEngine {
             phases,
             baseline,
             state,
+            scope,
             transition_tx,
             transition_rx: Mutex::new(transition_rx),
             cancel: CancellationToken::new(),
             effective_cache: StdMutex::new(None),
+        }
+    }
+
+    /// Creates a phase state handle appropriate for the configured scope.
+    ///
+    /// - [`StateScope::Global`]: returns a shared handle wrapping the engine's state
+    /// - [`StateScope::PerConnection`]: returns a new owned state
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    #[must_use]
+    pub fn create_connection_state(&self) -> PhaseStateHandle {
+        match self.scope {
+            StateScope::Global => PhaseStateHandle::Shared(Arc::clone(&self.state)),
+            StateScope::PerConnection => {
+                PhaseStateHandle::Owned(PhaseState::new(self.phases.len()))
+            }
         }
     }
 
@@ -458,7 +477,7 @@ mod tests {
             phase_with_event_trigger("trust", "tools/call", 3),
             terminal_phase("exploit"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
 
         assert_eq!(engine.current_phase(), 0);
         assert_eq!(engine.current_phase_name(), "trust");
@@ -467,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_empty_phases() {
-        let engine = PhaseEngine::new(vec![], baseline_with_tool());
+        let engine = PhaseEngine::new(vec![], baseline_with_tool(), StateScope::Global);
         assert!(engine.is_terminal());
         assert_eq!(engine.current_phase_name(), "<none>");
     }
@@ -475,7 +494,7 @@ mod tests {
     #[test]
     fn test_first_phase_terminal() {
         let phases = vec![terminal_phase("only")];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
         assert!(engine.is_terminal());
         assert_eq!(engine.current_phase_name(), "only");
     }
@@ -486,7 +505,7 @@ mod tests {
             phase_with_event_trigger("trust", "tools/call", 3),
             terminal_phase("exploit"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
         let event = EventType::new("tools/call");
 
         // Below threshold
@@ -506,7 +525,7 @@ mod tests {
     #[test]
     fn test_terminal_stops_advances() {
         let phases = vec![terminal_phase("only")];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
         let event = EventType::new("tools/call");
 
         assert!(engine.record_event(&event, None).is_none());
@@ -520,7 +539,7 @@ mod tests {
             phase_with_event_trigger("phase1", "tools/list", 1),
             terminal_phase("phase2"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
 
         // Phase 0 -> 1
         let call_event = EventType::new("tools/call");
@@ -554,7 +573,7 @@ mod tests {
                 ..terminal_phase("exploit")
             },
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
 
         // Phase 0: baseline tools
         let state0 = engine.effective_state();
@@ -586,7 +605,7 @@ mod tests {
                 ..terminal_phase("trigger")
             },
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
 
         let event = EventType::new("tools/call");
         let transition = engine.record_event(&event, None).unwrap();
@@ -613,7 +632,7 @@ mod tests {
             },
             terminal_phase("exploit"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
         let event = EventType::new("tools/call");
 
         // Non-matching params
@@ -632,7 +651,7 @@ mod tests {
             phase_with_event_trigger("wait", "tools/call", 1),
             terminal_phase("exploit"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
 
         let list_event = EventType::new("tools/list");
         assert!(engine.record_event(&list_event, None).is_none());
@@ -652,7 +671,7 @@ mod tests {
             },
             terminal_phase("done"),
         ];
-        let engine = Arc::new(PhaseEngine::new(phases, baseline_with_tool()));
+        let engine = Arc::new(PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global));
 
         let handle = engine.start_timer_task();
 
@@ -687,7 +706,7 @@ mod tests {
             },
             terminal_phase("done"),
         ];
-        let engine = Arc::new(PhaseEngine::new(phases, baseline_with_tool()));
+        let engine = Arc::new(PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global));
 
         let handle = engine.start_timer_task();
         engine.shutdown();
@@ -704,7 +723,7 @@ mod tests {
             phase_with_event_trigger("wait", "tools/call", 1),
             terminal_phase("done"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
 
         // Specific event should match generic trigger
         let event = EventType::new("tools/call:calculator");
@@ -719,7 +738,7 @@ mod tests {
             phase_with_event_trigger("phase1", "tools/call", 4),
             terminal_phase("phase2"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
         let event = EventType::new("tools/call");
 
         // Increment to 2, advance to phase 1
@@ -744,7 +763,7 @@ mod tests {
             phase_with_event_trigger("wait", "tools/call", 1),
             terminal_phase("done"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
 
         let generic = EventType::new("tools/call");
         let specific = EventType::new("tools/call:calculator");
@@ -767,7 +786,7 @@ mod tests {
             phase_with_event_trigger("wait", "tools/call", 2),
             terminal_phase("done"),
         ];
-        let engine = PhaseEngine::new(phases, baseline_with_tool());
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
         let event = EventType::new("tools/call");
 
         // Increment once externally
@@ -780,8 +799,60 @@ mod tests {
 
     #[test]
     fn test_debug_output() {
-        let engine = PhaseEngine::new(vec![terminal_phase("only")], baseline_with_tool());
+        let engine = PhaseEngine::new(vec![terminal_phase("only")], baseline_with_tool(), StateScope::Global);
         let debug = format!("{engine:?}");
         assert!(debug.contains("PhaseEngine"));
+    }
+
+    #[test]
+    fn test_concurrent_evaluate_trigger_exactly_once() {
+        // Issue #2: 10 threads call evaluate_trigger() when the count
+        // threshold is exactly met. Exactly 1 should get Some(PhaseTransition).
+        let phases = vec![
+            phase_with_event_trigger("trust", "tools/call", 10),
+            terminal_phase("exploit"),
+        ];
+        let engine = Arc::new(PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global));
+        let event = EventType::new("tools/call");
+
+        // Pre-increment to threshold (10 increments)
+        for _ in 0..10 {
+            engine.state().increment_event(&event);
+        }
+
+        // 10 threads all call evaluate_trigger simultaneously
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let eng = Arc::clone(&engine);
+            let ev = event.clone();
+            handles.push(std::thread::spawn(move || eng.evaluate_trigger(&ev, None)));
+        }
+
+        let results: Vec<Option<PhaseTransition>> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let transitions: Vec<_> = results.iter().filter(|r| r.is_some()).collect();
+        assert_eq!(
+            transitions.len(),
+            1,
+            "expected exactly 1 transition, got {}",
+            transitions.len()
+        );
+        assert_eq!(engine.current_phase(), 1);
+    }
+
+    #[test]
+    fn test_create_connection_state_global() {
+        let phases = vec![terminal_phase("only")];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
+        let handle = engine.create_connection_state();
+        assert!(matches!(handle, PhaseStateHandle::Shared(_)));
+    }
+
+    #[test]
+    fn test_create_connection_state_per_connection() {
+        let phases = vec![terminal_phase("only")];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::PerConnection);
+        let handle = engine.create_connection_state();
+        assert!(matches!(handle, PhaseStateHandle::Owned(_)));
     }
 }

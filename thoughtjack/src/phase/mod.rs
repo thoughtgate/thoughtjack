@@ -18,5 +18,5 @@ pub mod trigger;
 
 pub use effective::EffectiveState;
 pub use engine::PhaseEngine;
-pub use state::{EventType, PhaseState, PhaseTransition};
+pub use state::{EventType, PhaseState, PhaseStateHandle, PhaseTransition};
 pub use trigger::TriggerResult;
