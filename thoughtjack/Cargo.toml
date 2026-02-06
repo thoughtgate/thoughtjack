@@ -45,6 +45,7 @@ built = { version = "0.8", features = ["git2", "chrono"] }
 [dev-dependencies]
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
+tempfile = "3.24"
 
 [features]
 default = []

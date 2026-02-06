@@ -10,6 +10,7 @@ pub mod built_info {
 }
 
 pub mod behavior;
+pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod error;

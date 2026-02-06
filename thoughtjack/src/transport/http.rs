@@ -65,10 +65,36 @@ pub struct ConnectionState {
 struct HttpSharedState {
     incoming_tx: mpsc::Sender<IncomingRequest>,
     sse_tx: broadcast::Sender<String>,
-    connections: DashMap<u64, ConnectionState>,
+    connections: Arc<DashMap<u64, ConnectionState>>,
     next_connection_id: AtomicU64,
     max_message_size: usize,
     cancel: CancellationToken,
+}
+
+/// RAII guard that removes a connection from the `DashMap` on drop.
+///
+/// Ensures connection tracking is cleaned up on all exit paths
+/// (success, error, panic) in the HTTP handler pipeline.
+///
+/// Implements: TJ-SPEC-002 F-003
+struct ConnectionGuard {
+    connections: Arc<DashMap<u64, ConnectionState>>,
+    connection_id: u64,
+}
+
+impl ConnectionGuard {
+    const fn new(connections: Arc<DashMap<u64, ConnectionState>>, connection_id: u64) -> Self {
+        Self {
+            connections,
+            connection_id,
+        }
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.connections.remove(&self.connection_id);
+    }
 }
 
 /// HTTP transport implementing the [`Transport`] trait via a channel bridge.
@@ -84,6 +110,8 @@ pub struct HttpTransport {
     current_response:
         tokio::sync::Mutex<Option<mpsc::Sender<std::result::Result<Bytes, io::Error>>>>,
     current_context: std::sync::Mutex<ConnectionContext>,
+    /// RAII guard that cleans up connection tracking on drop.
+    current_guard: std::sync::Mutex<Option<ConnectionGuard>>,
     _server_handle: JoinHandle<()>,
 }
 
@@ -113,7 +141,7 @@ impl HttpTransport {
         let shared = Arc::new(HttpSharedState {
             incoming_tx,
             sse_tx,
-            connections: DashMap::new(),
+            connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: config.max_message_size,
             cancel: cancel.clone(),
@@ -139,6 +167,7 @@ impl HttpTransport {
             incoming_rx: tokio::sync::Mutex::new(incoming_rx),
             current_response: tokio::sync::Mutex::new(None),
             current_context: std::sync::Mutex::new(ConnectionContext::stdio()),
+            current_guard: std::sync::Mutex::new(None),
             _server_handle: server_handle,
         };
 
@@ -185,6 +214,15 @@ impl Transport for HttpTransport {
                 is_exclusive: false,
                 connected_at: Instant::now(),
             };
+        }
+
+        // Create RAII guard for connection cleanup (replaces any previous guard)
+        {
+            let mut guard = self.current_guard.lock().expect("guard mutex poisoned");
+            *guard = Some(ConnectionGuard::new(
+                Arc::clone(&self.shared.connections),
+                req.connection_id,
+            ));
         }
 
         Ok(Some(req.message))
@@ -245,12 +283,12 @@ impl Transport for HttpTransport {
         };
         drop(sender);
 
-        // Remove connection from tracking to prevent memory leaks
-        let connection_id = {
-            let ctx = self.current_context.lock().expect("context mutex poisoned");
-            ctx.connection_id
+        // Drop the RAII guard — removes connection from tracking
+        let guard = {
+            let mut g = self.current_guard.lock().expect("guard mutex poisoned");
+            g.take()
         };
-        self.shared.connections.remove(&connection_id);
+        drop(guard);
 
         Ok(())
     }
@@ -406,7 +444,7 @@ mod tests {
         Arc::new(HttpSharedState {
             incoming_tx,
             sse_tx,
-            connections: DashMap::new(),
+            connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             cancel: CancellationToken::new(),
@@ -486,7 +524,7 @@ mod tests {
         let shared = Arc::new(HttpSharedState {
             incoming_tx,
             sse_tx,
-            connections: DashMap::new(),
+            connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: 10, // tiny limit
             cancel: CancellationToken::new(),
@@ -512,7 +550,7 @@ mod tests {
         let shared = Arc::new(HttpSharedState {
             incoming_tx,
             sse_tx,
-            connections: DashMap::new(),
+            connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             cancel: CancellationToken::new(),
