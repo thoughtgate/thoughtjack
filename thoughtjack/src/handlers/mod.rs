@@ -85,6 +85,13 @@ pub async fn resolve_content(
             Ok(String::from_utf8_lossy(&payload.into_bytes()).into_owned())
         }
         ContentValue::File { path } => {
+            let path_str = path.to_string_lossy();
+            if path.is_absolute() || path_str.contains("..") {
+                return Err(ThoughtJackError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("file path not allowed: {}", path.display()),
+                )));
+            }
             let content = tokio::fs::read_to_string(path).await?;
             Ok(content)
         }
