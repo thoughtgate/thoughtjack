@@ -3,7 +3,7 @@
 //! The `PhaseEngine` coordinates event recording, trigger evaluation,
 //! phase transitions, and timer management for temporal attack scenarios.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use tokio::sync::{Mutex, mpsc};
@@ -41,6 +41,8 @@ pub struct PhaseEngine {
     transition_rx: Mutex<mpsc::UnboundedReceiver<PhaseTransition>>,
     /// Cancellation token for the timer task
     cancel: CancellationToken,
+    /// Cached effective state: (phase_index, state). Invalidated on transition.
+    effective_cache: StdMutex<Option<(usize, EffectiveState)>>,
 }
 
 impl PhaseEngine {
@@ -78,6 +80,7 @@ impl PhaseEngine {
             transition_tx,
             transition_rx: Mutex::new(transition_rx),
             cancel: CancellationToken::new(),
+            effective_cache: StdMutex::new(None),
         }
     }
 
@@ -200,12 +203,31 @@ impl PhaseEngine {
 
     /// Returns the current effective state (baseline + current phase diff).
     ///
+    /// Results are cached and invalidated when the phase index changes.
+    ///
     /// Implements: TJ-SPEC-003 F-002
     #[must_use]
     pub fn effective_state(&self) -> EffectiveState {
         let current = self.state.current_phase();
+
+        // Check cache
+        if let Ok(cache) = self.effective_cache.lock() {
+            if let Some((cached_phase, ref cached_state)) = *cache {
+                if cached_phase == current {
+                    return cached_state.clone();
+                }
+            }
+        }
+
+        // Compute and cache
         let phase = self.phases.get(current);
-        EffectiveState::compute(&self.baseline, phase)
+        let state = EffectiveState::compute(&self.baseline, phase);
+
+        if let Ok(mut cache) = self.effective_cache.lock() {
+            *cache = Some((current, state.clone()));
+        }
+
+        state
     }
 
     /// Returns the current phase index.
