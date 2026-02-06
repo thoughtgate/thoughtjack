@@ -248,11 +248,11 @@ fn print_validation_json(
 ///
 /// Implements: TJ-SPEC-007 F-004
 #[allow(clippy::unused_async)] // will use async when library scanning is wired in
-pub async fn list(args: &ServerListArgs) -> Result<(), ThoughtJackError> {
-    tracing::info!(category = ?args.category, "listing library items");
-
-    // TODO: scan library directory and render output
-    Ok(())
+pub async fn list(_args: &ServerListArgs) -> Result<(), ThoughtJackError> {
+    Err(ThoughtJackError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "server list is not yet implemented",
+    )))
 }
 
 /// Builds [`GeneratorLimits`] from CLI arguments, falling back to defaults.
