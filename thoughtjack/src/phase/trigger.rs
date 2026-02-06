@@ -4,6 +4,8 @@
 //! supporting event matching, count thresholds, content matching,
 //! and time-based triggers.
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use regex::Regex;
@@ -12,6 +14,10 @@ use crate::config::schema::{FieldMatcher, MatchPredicate, Trigger};
 use crate::error::PhaseError;
 
 use super::state::{EventType, PhaseState};
+
+/// Module-level regex cache to avoid recompiling patterns on every trigger evaluation.
+static REGEX_CACHE: LazyLock<Mutex<HashMap<String, Option<Regex>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Result of evaluating a trigger.
 ///
@@ -128,23 +134,16 @@ pub fn evaluate_timeout(trigger: &Trigger, state: &PhaseState) -> TriggerResult 
 /// Checks if an event name matches a trigger pattern.
 ///
 /// Supports both generic (`"tools/call"`) and specific (`"tools/call:calculator"`) patterns.
+/// A specific event `"tools/call:calc"` matches generic trigger `"tools/call"`,
+/// but a generic event `"tools/call"` does NOT match specific trigger `"tools/call:calc"`.
 fn event_matches(event_name: &str, pattern: &str) -> bool {
     if event_name == pattern {
         return true;
     }
-    // A specific event "tools/call:calc" matches generic trigger "tools/call"
-    // But a generic event "tools/call" does NOT match specific trigger "tools/call:calc"
-    if let Some(prefix) = pattern.strip_suffix("") {
-        // If the pattern has no colon, match events that start with pattern + ":"
-        if !pattern.contains(':')
-            && event_name.starts_with(pattern)
-            && event_name[pattern.len()..].starts_with(':')
-        {
-            return true;
-        }
-        let _ = prefix; // suppress unused variable
-    }
-    false
+    // If the pattern has no colon, match events that start with pattern + ":"
+    !pattern.contains(':')
+        && event_name.starts_with(pattern)
+        && event_name[pattern.len()..].starts_with(':')
 }
 
 /// Checks if request parameters match a content predicate.
@@ -212,19 +211,32 @@ fn field_matches(matcher: &FieldMatcher, value: &serde_json::Value) -> bool {
             }
 
             if let Some(pattern) = regex {
-                match Regex::new(pattern) {
-                    Ok(re) => {
+                let cached = get_or_compile_regex(pattern);
+                match cached {
+                    Some(re) => {
                         if !re.is_match(s) {
                             return false;
                         }
                     }
-                    Err(_) => return false,
+                    None => return false,
                 }
             }
 
             true
         }
     }
+}
+
+/// Returns a cached compiled regex, or compiles and caches it on first use.
+///
+/// Returns `None` if the pattern is invalid. Invalid patterns are also cached
+/// to avoid repeated compilation attempts.
+fn get_or_compile_regex(pattern: &str) -> Option<Regex> {
+    let mut cache = REGEX_CACHE.lock().expect("regex cache lock poisoned");
+    cache
+        .entry(pattern.to_string())
+        .or_insert_with(|| Regex::new(pattern).ok())
+        .clone()
 }
 
 /// Parses a duration string like "30s", "5m", "100ms", "1h".
