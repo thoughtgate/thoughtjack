@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -120,11 +120,12 @@ impl HttpTransport {
         });
 
         let router = build_router(Arc::clone(&shared));
+        let service = router.into_make_service_with_connect_info::<SocketAddr>();
 
         let server_cancel = cancel.clone();
         let server_handle = tokio::spawn(async move {
             info!(%bound_addr, "HTTP transport started");
-            axum::serve(listener, router)
+            axum::serve(listener, service)
                 .with_graceful_shutdown(async move {
                     server_cancel.cancelled().await;
                 })
@@ -281,6 +282,7 @@ fn build_router(shared: Arc<HttpSharedState>) -> Router {
 /// when `send_message` / `send_raw` is called.
 async fn handle_post_message(
     State(shared): State<Arc<HttpSharedState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     body: axum::body::Bytes,
 ) -> Response {
     // EC-TRANS-006: empty body
@@ -315,7 +317,7 @@ async fn handle_post_message(
     shared.connections.insert(
         connection_id,
         ConnectionState {
-            remote_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            remote_addr: addr,
             connected_at: Instant::now(),
             request_count: AtomicU64::new(1),
         },
@@ -328,7 +330,7 @@ async fn handle_post_message(
         message,
         response_tx,
         connection_id,
-        remote_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        remote_addr: addr,
     };
 
     // Push into the transport channel
@@ -411,6 +413,13 @@ mod tests {
         })
     }
 
+    use axum::extract::connect_info::MockConnectInfo;
+
+    /// Builds a test router with `ConnectInfo` support.
+    fn test_router(shared: Arc<HttpSharedState>) -> Router {
+        build_router(shared).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))))
+    }
+
     // ------------------------------------------------------------------
     // parse_bind_addr
     // ------------------------------------------------------------------
@@ -442,7 +451,7 @@ mod tests {
     #[tokio::test]
     async fn post_empty_body_returns_400() {
         let shared = test_shared_state();
-        let app = build_router(shared);
+        let app = test_router(shared);
 
         let req = Request::builder()
             .method("POST")
@@ -457,7 +466,7 @@ mod tests {
     #[tokio::test]
     async fn post_invalid_json_returns_400() {
         let shared = test_shared_state();
-        let app = build_router(shared);
+        let app = test_router(shared);
 
         let req = Request::builder()
             .method("POST")
@@ -482,7 +491,7 @@ mod tests {
             max_message_size: 10, // tiny limit
             cancel: CancellationToken::new(),
         });
-        let app = build_router(shared);
+        let app = test_router(shared);
 
         let body = r#"{"jsonrpc":"2.0","method":"test","id":1}"#;
         let req = Request::builder()
@@ -508,7 +517,7 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             cancel: CancellationToken::new(),
         });
-        let app = build_router(shared);
+        let app = test_router(shared);
 
         let body = r#"{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}"#;
         let req = Request::builder()
@@ -538,7 +547,7 @@ mod tests {
     #[tokio::test]
     async fn sse_endpoint_returns_200() {
         let shared = test_shared_state();
-        let app = build_router(shared);
+        let app = test_router(shared);
 
         let req = Request::builder()
             .method("GET")

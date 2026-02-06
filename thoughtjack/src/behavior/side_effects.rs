@@ -516,7 +516,7 @@ pub fn create_side_effect(config: &SideEffectConfig) -> Box<dyn SideEffect> {
             })
         }
         SideEffectType::BatchAmplify => {
-            let batch_size = extract_usize(params, "batch_size", 10000);
+            let batch_size = extract_usize(params, "batch_size", 10000).max(1);
             let method = extract_string(params, "method", "notifications/message");
 
             Box::new(BatchAmplify {

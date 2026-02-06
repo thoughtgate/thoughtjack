@@ -184,17 +184,17 @@ pub fn record_side_effect_metrics(name: &str, result: &SideEffectResult) {
     )
     .increment(1);
     metrics::histogram!(
-        "behavior.side_effect.messages",
+        "thoughtjack_side_effect_messages",
         "effect" => name.to_string()
     )
     .record(result.messages_sent as f64);
     metrics::histogram!(
-        "behavior.side_effect.bytes",
+        "thoughtjack_side_effect_bytes",
         "effect" => name.to_string()
     )
     .record(result.bytes_sent as f64);
     metrics::histogram!(
-        "behavior.side_effect.duration_ms",
+        "thoughtjack_side_effect_duration_ms",
         "effect" => name.to_string()
     )
     .record(result.duration.as_secs_f64() * 1000.0);

@@ -105,6 +105,18 @@ fn describe_metrics() {
     );
     describe_counter!("thoughtjack_delivery_bytes_total", "Bytes delivered");
     describe_counter!("thoughtjack_side_effects_total", "Side effects executed");
+    describe_histogram!(
+        "thoughtjack_side_effect_messages",
+        "Messages sent per side effect execution"
+    );
+    describe_histogram!(
+        "thoughtjack_side_effect_bytes",
+        "Bytes sent per side effect execution"
+    );
+    describe_histogram!(
+        "thoughtjack_side_effect_duration_ms",
+        "Side effect execution duration in milliseconds"
+    );
     describe_gauge!("thoughtjack_event_counts", "Current event counts");
 }
 
