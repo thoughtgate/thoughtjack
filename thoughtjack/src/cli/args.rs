@@ -155,6 +155,18 @@ pub struct ServerRunArgs {
     /// Allow external handler scripts.
     #[arg(long, env = "THOUGHTJACK_ALLOW_EXTERNAL_HANDLERS")]
     pub allow_external_handlers: bool,
+
+    /// Maximum nesting depth for generators.
+    #[arg(long, env = "THOUGHTJACK_MAX_NEST_DEPTH")]
+    pub max_nest_depth: Option<usize>,
+
+    /// Maximum payload size in bytes for generators.
+    #[arg(long, env = "THOUGHTJACK_MAX_PAYLOAD_BYTES")]
+    pub max_payload_bytes: Option<usize>,
+
+    /// Maximum batch size for generators.
+    #[arg(long, env = "THOUGHTJACK_MAX_BATCH_SIZE")]
+    pub max_batch_size: Option<usize>,
 }
 
 /// Arguments for `server validate`.

@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::args::{DeliveryMode, ServerListArgs, ServerRunArgs, ServerValidateArgs};
+use crate::cli::args::{
+    DeliveryMode, OutputFormat, ServerListArgs, ServerRunArgs, ServerValidateArgs,
+};
 use crate::config::loader::{ConfigLoader, LoaderOptions};
 use crate::config::schema::{
     BehaviorConfig, DeliveryConfig, GeneratorLimits, ServerConfig, ServerMetadata, ToolPattern,
@@ -40,11 +42,13 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         tracing::info!(port, "Prometheus metrics endpoint started");
     }
 
+    let generator_limits = build_generator_limits(args);
+
     let config = if let Some(ref path) = args.config {
         tracing::info!(config = %path.display(), "loading configuration");
         let options = LoaderOptions {
             library_root: args.library.clone(),
-            generator_limits: GeneratorLimits::default(),
+            generator_limits: generator_limits.clone(),
             ..LoaderOptions::default()
         };
         let mut loader = ConfigLoader::new(options);
@@ -122,8 +126,22 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
 /// Implements: TJ-SPEC-007 F-003
 #[allow(clippy::unused_async)] // will use async when config loader gains async support
 pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError> {
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut valid_count: usize = 0;
+    let mut invalid_count: usize = 0;
+
     for path in &args.files {
         if !path.exists() {
+            if args.format == OutputFormat::Json {
+                results.push(serde_json::json!({
+                    "path": path.display().to_string(),
+                    "valid": false,
+                    "error": format!("file not found: {}", path.display()),
+                    "warnings": [],
+                }));
+                invalid_count += 1;
+                continue;
+            }
             return Err(ThoughtJackError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("file not found: {}", path.display()),
@@ -136,17 +154,85 @@ pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError>
             ..LoaderOptions::default()
         };
         let mut loader = ConfigLoader::new(options);
-        let load_result = loader.load(path)?;
 
-        for warning in &load_result.warnings {
-            tracing::warn!(
-                location = warning.location.as_deref().unwrap_or("<unknown>"),
-                "{}",
-                warning.message
-            );
+        match loader.load(path) {
+            Ok(load_result) => {
+                let warnings: Vec<String> = load_result
+                    .warnings
+                    .iter()
+                    .map(|w| w.message.clone())
+                    .collect();
+
+                for warning in &load_result.warnings {
+                    tracing::warn!(
+                        location = warning.location.as_deref().unwrap_or("<unknown>"),
+                        "{}",
+                        warning.message
+                    );
+                }
+
+                if args.strict && !warnings.is_empty() {
+                    invalid_count += 1;
+                    if args.format == OutputFormat::Json {
+                        results.push(serde_json::json!({
+                            "path": path.display().to_string(),
+                            "valid": false,
+                            "error": "strict mode: warnings present",
+                            "warnings": warnings,
+                        }));
+                    }
+                } else {
+                    valid_count += 1;
+                    tracing::info!(file = %path.display(), "configuration valid");
+                    if args.format == OutputFormat::Json {
+                        results.push(serde_json::json!({
+                            "path": path.display().to_string(),
+                            "valid": true,
+                            "warnings": warnings,
+                        }));
+                    }
+                }
+            }
+            Err(e) => {
+                invalid_count += 1;
+                if args.format == OutputFormat::Json {
+                    results.push(serde_json::json!({
+                        "path": path.display().to_string(),
+                        "valid": false,
+                        "error": e.to_string(),
+                        "warnings": [],
+                    }));
+                } else {
+                    return Err(e.into());
+                }
+            }
         }
+    }
 
-        tracing::info!(file = %path.display(), "configuration valid");
+    if args.format == OutputFormat::Json {
+        let output = serde_json::json!({
+            "files": results,
+            "summary": {
+                "total": args.files.len(),
+                "valid": valid_count,
+                "invalid": invalid_count,
+            }
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .map_err(|e| ThoughtJackError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string()
+                )))?
+        );
+    }
+
+    if invalid_count > 0 && args.format != OutputFormat::Json {
+        return Err(ThoughtJackError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{invalid_count} file(s) failed validation"),
+        )));
     }
 
     Ok(())
@@ -165,6 +251,16 @@ pub async fn list(args: &ServerListArgs) -> Result<(), ThoughtJackError> {
 
     // TODO: scan library directory and render output
     Ok(())
+}
+
+/// Builds [`GeneratorLimits`] from CLI arguments, falling back to defaults.
+fn build_generator_limits(args: &ServerRunArgs) -> GeneratorLimits {
+    let defaults = GeneratorLimits::default();
+    GeneratorLimits {
+        max_nest_depth: args.max_nest_depth.unwrap_or(defaults.max_nest_depth),
+        max_payload_bytes: args.max_payload_bytes.unwrap_or(defaults.max_payload_bytes),
+        max_batch_size: args.max_batch_size.unwrap_or(defaults.max_batch_size),
+    }
 }
 
 /// Converts a CLI `DeliveryMode` to a `DeliveryConfig`.

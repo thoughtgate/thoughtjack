@@ -57,6 +57,14 @@ pub async fn handle_request(
         "prompts/get" => prompts::handle_get(request, effective_state, limits)
             .await
             .map(Some),
+        "resources/subscribe" => Ok(Some(JsonRpcResponse::success(
+            request.id.clone(),
+            serde_json::json!({}),
+        ))),
+        "resources/unsubscribe" => Ok(Some(JsonRpcResponse::success(
+            request.id.clone(),
+            serde_json::json!({}),
+        ))),
         _ => Ok(None),
     }
 }
