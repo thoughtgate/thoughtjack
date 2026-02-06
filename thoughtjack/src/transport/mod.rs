@@ -86,6 +86,55 @@ pub trait Transport: Send + Sync {
     ///
     /// Implements: TJ-SPEC-002 F-016
     fn connection_context(&self) -> ConnectionContext;
+
+    /// Closes the transport.
+    ///
+    /// When `graceful` is `true`, waits for in-flight operations to complete.
+    /// For stdio: no-op (stdin/stdout are process-scoped).
+    /// For HTTP: cancels the server; if `!graceful`, drops active connections.
+    ///
+    /// Implements: TJ-SPEC-002 F-001
+    async fn close(&self, _graceful: bool) -> Result<()> {
+        Ok(())
+    }
+
+}
+
+/// Sends a message with the given delivery behavior via delegation.
+///
+/// This is a convenience function documenting the delegation pattern:
+/// the server calls `behavior.deliver()` directly rather than going through
+/// the transport trait.
+///
+/// Implements: TJ-SPEC-002 F-004
+pub async fn send_with_behavior(
+    transport: &dyn Transport,
+    message: &JsonRpcMessage,
+    behavior: &dyn crate::behavior::DeliveryBehavior,
+    cancel: tokio_util::sync::CancellationToken,
+) -> std::result::Result<crate::behavior::DeliveryResult, crate::error::BehaviorError> {
+    behavior.deliver(message, transport, cancel).await
+}
+
+/// Executes a side effect on the given transport with compatibility check.
+///
+/// Returns an error if the effect does not support the transport type.
+///
+/// Implements: TJ-SPEC-002 F-005
+pub async fn execute_side_effect(
+    transport: &dyn Transport,
+    effect: &dyn crate::behavior::SideEffect,
+    connection: &ConnectionContext,
+    cancel: tokio_util::sync::CancellationToken,
+) -> std::result::Result<crate::behavior::SideEffectResult, crate::error::BehaviorError> {
+    if !effect.supports_transport(transport.transport_type()) {
+        return Err(crate::error::BehaviorError::ExecutionFailed(format!(
+            "behavior not supported on {}: {}",
+            transport.transport_type(),
+            effect.name()
+        )));
+    }
+    effect.execute(transport, connection, cancel).await
 }
 
 /// Transport type identifier.

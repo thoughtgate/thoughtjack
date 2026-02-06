@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::config::schema::DeliveryConfig;
 use crate::error::BehaviorError;
 use crate::transport::jsonrpc::JsonRpcMessage;
@@ -38,10 +40,14 @@ pub struct DeliveryResult {
 #[async_trait::async_trait]
 pub trait DeliveryBehavior: Send + Sync {
     /// Delivers a JSON-RPC message via the given transport.
+    ///
+    /// The `cancel` token allows cooperative cancellation of
+    /// long-running deliveries (e.g., slow loris byte dripping).
     async fn deliver(
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError>;
 
     /// Whether this behavior supports the given transport type.
@@ -66,6 +72,7 @@ impl DeliveryBehavior for NormalDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        _cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = std::time::Instant::now();
         let serialized = serde_json::to_vec(message)?;
@@ -120,17 +127,38 @@ impl DeliveryBehavior for SlowLorisDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = std::time::Instant::now();
         let serialized = serde_json::to_vec(message)?;
         let mut buf = serialized;
         buf.push(b'\n');
         let total = buf.len();
+        let mut sent_so_far = 0;
 
         for chunk in buf.chunks(self.chunk_size) {
-            transport.send_raw(chunk).await?;
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    return Ok(DeliveryResult {
+                        bytes_sent: sent_so_far,
+                        duration: start.elapsed(),
+                        completed: false,
+                    });
+                }
+                result = transport.send_raw(chunk) => { result?; }
+            }
+            sent_so_far += chunk.len();
             if self.byte_delay > Duration::ZERO {
-                tokio::time::sleep(self.byte_delay).await;
+                tokio::select! {
+                    () = cancel.cancelled() => {
+                        return Ok(DeliveryResult {
+                            bytes_sent: sent_so_far,
+                            duration: start.elapsed(),
+                            completed: false,
+                        });
+                    }
+                    () = tokio::time::sleep(self.byte_delay) => {}
+                }
             }
         }
 
@@ -181,6 +209,7 @@ impl DeliveryBehavior for UnboundedLineDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        _cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = std::time::Instant::now();
         let serialized = serde_json::to_vec(message)?;
@@ -250,6 +279,7 @@ impl DeliveryBehavior for NestedJsonDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        _cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = std::time::Instant::now();
         let inner_bytes = serde_json::to_vec(message)?;
@@ -315,9 +345,19 @@ impl DeliveryBehavior for ResponseDelayDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = std::time::Instant::now();
-        tokio::time::sleep(self.delay).await;
+        tokio::select! {
+            () = cancel.cancelled() => {
+                return Ok(DeliveryResult {
+                    bytes_sent: 0,
+                    duration: start.elapsed(),
+                    completed: false,
+                });
+            }
+            () = tokio::time::sleep(self.delay) => {}
+        }
 
         let serialized = serde_json::to_vec(message)?;
         let len = serialized.len();
@@ -464,7 +504,7 @@ mod tests {
         let delivery = NormalDelivery;
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
 
         let expected_json = serde_json::to_vec(&msg).unwrap();
         // bytes_sent = serialized + newline
@@ -486,7 +526,7 @@ mod tests {
         let delivery = SlowLorisDelivery::new(delay, 1);
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
 
         let serialized = serde_json::to_vec(&msg).unwrap();
         let expected_chunks = serialized.len() + 1; // +1 for newline
@@ -508,7 +548,7 @@ mod tests {
         let delivery = SlowLorisDelivery::new(Duration::ZERO, 1);
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
         assert!(result.duration < Duration::from_millis(100));
         assert!(result.completed);
     }
@@ -524,7 +564,7 @@ mod tests {
         let delivery = NestedJsonDelivery::new(100, "a".to_string());
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
         assert!(result.completed);
 
         // Verify the output is valid JSON (minus trailing newline)
@@ -548,7 +588,7 @@ mod tests {
         let delivery = NestedJsonDelivery::new(1000, "a".to_string());
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
         assert!(result.completed);
 
         let all = transport.all_bytes();
@@ -575,7 +615,7 @@ mod tests {
         let msg = test_message();
 
         // Should complete without stack overflow
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
         assert!(result.completed);
         assert!(result.bytes_sent > 0);
     }
@@ -590,7 +630,7 @@ mod tests {
         let delivery = UnboundedLineDelivery::new(0, 'A');
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
         assert!(result.completed);
 
         let sent = transport.all_bytes();
@@ -603,7 +643,7 @@ mod tests {
         let delivery = UnboundedLineDelivery::new(1000, 'X');
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
         assert_eq!(result.bytes_sent, 1000);
         assert!(result.completed);
 
@@ -622,7 +662,7 @@ mod tests {
         let delivery = ResponseDelayDelivery::new(delay);
         let msg = test_message();
 
-        let result = delivery.deliver(&msg, &transport).await.unwrap();
+        let result = delivery.deliver(&msg, &transport, CancellationToken::new()).await.unwrap();
         assert!(
             result.duration >= delay,
             "duration {:?} < configured delay {:?}",

@@ -269,6 +269,15 @@ pub enum TransportError {
         /// Configured size limit in bytes
         limit: usize,
     },
+
+    /// Behavior not supported on this transport
+    #[error("behavior not supported on {transport}: {behavior}")]
+    UnsupportedBehavior {
+        /// Transport type name
+        transport: String,
+        /// Behavior name
+        behavior: String,
+    },
 }
 
 // ============================================================================

@@ -331,7 +331,7 @@ impl Server {
 
         match resolved
             .delivery
-            .deliver(&message, self.transport.as_ref())
+            .deliver(&message, self.transport.as_ref(), self.cancel.child_token())
             .await
         {
             Ok(result) => {
