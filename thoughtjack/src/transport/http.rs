@@ -109,10 +109,15 @@ pub struct HttpTransport {
     incoming_rx: tokio::sync::Mutex<mpsc::Receiver<IncomingRequest>>,
     current_response:
         tokio::sync::Mutex<Option<mpsc::Sender<std::result::Result<Bytes, io::Error>>>>,
+    // std::sync::Mutex is intentional: held briefly for field access, never across .await points.
+    // Per tokio docs, std::sync::Mutex is preferred when the critical section is short and synchronous.
     current_context: std::sync::Mutex<ConnectionContext>,
     /// RAII guard that cleans up connection tracking on drop.
+    // std::sync::Mutex: same rationale as current_context — brief, synchronous access only.
     current_guard: std::sync::Mutex<Option<ConnectionGuard>>,
     _server_handle: JoinHandle<()>,
+    // TODO(v0.2): add per-connection rate limiting
+    // TODO(v0.2): add configurable request timeout
 }
 
 impl HttpTransport {
@@ -206,6 +211,8 @@ impl Transport for HttpTransport {
         }
 
         // Update connection context
+        // Poisoned mutex means a thread panicked while holding the lock — data is
+        // corrupt, so panicking here is the correct response.
         {
             let mut ctx = self.current_context.lock().expect("context mutex poisoned");
             *ctx = ConnectionContext {

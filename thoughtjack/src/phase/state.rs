@@ -65,7 +65,10 @@ pub struct PhaseState {
     current_phase: AtomicUsize,
     /// Event counts per event type, using atomic increments
     event_counts: DashMap<EventType, AtomicU64>,
-    /// Timestamp when current phase was entered
+    /// Timestamp when current phase was entered.
+    // std::sync::Mutex is intentional: held briefly for Instant read/write, never
+    // across .await points. Per tokio docs this is preferred over tokio::sync::Mutex
+    // for short synchronous critical sections.
     phase_entered_at: Mutex<Instant>,
     /// Whether the current phase is terminal (no more transitions)
     is_terminal: AtomicBool,

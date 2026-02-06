@@ -46,6 +46,8 @@ struct CaptureEntry<'a> {
 ///
 /// Implements: TJ-SPEC-007 F-002
 pub struct CaptureWriter {
+    // std::sync::Mutex is intentional: held briefly for buffered write + flush,
+    // never across .await points.
     writer: Mutex<BufWriter<File>>,
     path: PathBuf,
 }
@@ -63,6 +65,12 @@ impl CaptureWriter {
     ///
     /// Implements: TJ-SPEC-007 F-002
     pub fn new(capture_dir: &Path) -> Result<Self, ThoughtJackError> {
+        if capture_dir.as_os_str().is_empty() {
+            return Err(ThoughtJackError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "capture directory path is empty",
+            )));
+        }
         fs::create_dir_all(capture_dir)?;
 
         let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
