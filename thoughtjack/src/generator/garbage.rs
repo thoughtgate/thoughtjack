@@ -99,7 +99,15 @@ fn generate_byte(rng: &mut StdRng, charset: Charset) -> u8 {
 fn generate_utf8_bytes(rng: &mut StdRng, target: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(target);
     while buf.len() < target {
-        let codepoint = rng.random_range(0x20..0xD800_u32);
+        // Include BMP (0x20..0xD800) and supplementary planes (0xE000..0x110000)
+        // to cover emoji (U+1F600+), CJK Extension B (U+20000+), etc.
+        let codepoint = loop {
+            let cp = rng.random_range(0x20..0x11_0000_u32);
+            // Skip surrogate range (0xD800..0xE000) — not valid Unicode scalar values
+            if !(0xD800..0xE000).contains(&cp) {
+                break cp;
+            }
+        };
         if let Some(ch) = char::from_u32(codepoint) {
             let mut encode_buf = [0u8; 4];
             let encoded = ch.encode_utf8(&mut encode_buf);

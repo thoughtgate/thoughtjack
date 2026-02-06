@@ -48,7 +48,16 @@ impl AnsiEscapeGenerator {
             .map(|arr| {
                 arr.iter()
                     .filter_map(Value::as_str)
-                    .filter_map(parse_sequence_type)
+                    .filter_map(|name| {
+                        let parsed = parse_sequence_type(name);
+                        if parsed.is_none() {
+                            tracing::warn!(
+                                sequence_type = name,
+                                "unknown ANSI sequence type, ignoring"
+                            );
+                        }
+                        parsed
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
