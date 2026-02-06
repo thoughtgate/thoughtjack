@@ -232,7 +232,7 @@ impl Server {
                     Some(JsonRpcResponse::error(
                         request.id.clone(),
                         error_codes::INTERNAL_ERROR,
-                        format!("internal error: {e}"),
+                        "internal error".to_string(),
                     ))
                 }
             };
@@ -276,7 +276,7 @@ impl Server {
 
             // 6. THEN execute entry actions (response-before-transition guarantee)
             if let Some(ref trans) = transition {
-                let from_name = self.phase_engine.current_phase_name().to_string();
+                let to_name = self.phase_engine.phase_name_at(trans.to_phase).to_string();
 
                 metrics::record_phase_transition(
                     &trans.from_phase.to_string(),
@@ -288,7 +288,7 @@ impl Server {
 
                 self.event_emitter.emit(Event::PhaseEntered {
                     timestamp: Utc::now(),
-                    phase_name: from_name,
+                    phase_name: to_name,
                     phase_index: trans.to_phase,
                 });
             }
