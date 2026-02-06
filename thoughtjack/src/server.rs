@@ -137,7 +137,6 @@ impl Server {
     }
 
     /// Core message loop.
-    #[allow(clippy::too_many_lines)]
     async fn main_loop(
         &self,
         server_name: &str,
@@ -186,33 +185,8 @@ impl Server {
             // 1. Capture effective state BEFORE transition
             let effective_state = self.phase_engine.effective_state();
 
-            // 2. ALWAYS count both generic and specific events (TJ-SPEC-003 F-003)
-            let event = EventType::new(&request.method);
-            self.phase_engine.state().increment_event(&event);
-
-            let specific_event = extract_specific_name(&request.method, request.params.as_ref())
-                .map(|name| {
-                    let specific = EventType::new(format!("{}:{name}", request.method));
-                    self.phase_engine.state().increment_event(&specific);
-                    specific
-                });
-
-            // Evaluate triggers: generic first, then specific (only one fires)
-            let transition = self
-                .phase_engine
-                .evaluate_trigger(&event, request.params.as_ref())
-                .or_else(|| {
-                    specific_event.as_ref().and_then(|se| {
-                        self.phase_engine
-                            .evaluate_trigger(se, request.params.as_ref())
-                    })
-                });
-
-            // 3. Merge with any timer-triggered transition
-            let transition = match transition {
-                Some(t) => Some(t),
-                None => self.phase_engine.recv_transition().await.unwrap_or(None),
-            };
+            // 2–3. Count events and evaluate triggers
+            let transition = self.evaluate_transitions(&request).await;
 
             // 4. Route to handler (uses PRE-transition effective state)
             let handler_result = handlers::handle_request(
@@ -237,66 +211,123 @@ impl Server {
                 }
             };
 
-            // 5. Deliver response via resolved behavior
+            // 5. Deliver response and execute side effects
             if let Some(ref resp) = response {
-                let resolved = self.behavior_coordinator.resolve(
-                    &request,
-                    &effective_state,
-                    self.transport.transport_type(),
-                );
-
-                self.deliver_response(resp, &resolved, &request, start)
+                self.deliver_and_finalize(resp, &request, &effective_state, start, initialized)
                     .await;
-
-                // Finalize the HTTP response (no-op for stdio)
-                if let Err(e) = self.transport.finalize_response().await {
-                    warn!(error = %e, "failed to finalize response");
-                }
-
-                // Execute OnRequest side effects after delivery
-                self.execute_triggered_effects(&resolved, SideEffectTrigger::OnRequest)
-                    .await;
-
-                // If this was a successful initialize, run OnConnect effects
-                if !*initialized && request.method == "initialize" && resp.error.is_none() {
-                    *initialized = true;
-                    self.execute_triggered_effects(&resolved, SideEffectTrigger::OnConnect)
-                        .await;
-                }
-
-                // Subscription triggers (TJ-SPEC-004 F-014)
-                if request.method == "resources/subscribe" {
-                    self.execute_triggered_effects(&resolved, SideEffectTrigger::OnSubscribe)
-                        .await;
-                } else if request.method == "resources/unsubscribe" {
-                    self.execute_triggered_effects(&resolved, SideEffectTrigger::OnUnsubscribe)
-                        .await;
-                }
             }
 
             // 6. THEN execute entry actions (response-before-transition guarantee)
             if let Some(ref trans) = transition {
-                let to_name = self.phase_engine.phase_name_at(trans.to_phase).to_string();
-
-                metrics::record_phase_transition(
-                    &trans.from_phase.to_string(),
-                    &trans.to_phase.to_string(),
-                );
-                metrics::set_current_phase(self.phase_engine.current_phase_name());
-
-                self.execute_entry_actions(&trans.entry_actions).await;
-
-                self.event_emitter.emit(Event::PhaseEntered {
-                    timestamp: Utc::now(),
-                    phase_name: to_name,
-                    phase_index: trans.to_phase,
-                });
+                self.apply_transition(trans).await;
             }
 
             metrics::record_request_duration(&request.method, start.elapsed());
         }
 
         Ok(())
+    }
+
+    /// Counts events and evaluates triggers for a request.
+    ///
+    /// Increments both generic and specific event counters, then evaluates
+    /// triggers in order: generic first, then specific, then timer-based.
+    /// Returns the first transition that fires (if any).
+    async fn evaluate_transitions(
+        &self,
+        request: &JsonRpcRequest,
+    ) -> Option<crate::phase::state::PhaseTransition> {
+        // ALWAYS count both generic and specific events (TJ-SPEC-003 F-003)
+        let event = EventType::new(&request.method);
+        self.phase_engine.state().increment_event(&event);
+
+        let specific_event = extract_specific_name(&request.method, request.params.as_ref()).map(
+            |name| {
+                let specific = EventType::new(format!("{}:{name}", request.method));
+                self.phase_engine.state().increment_event(&specific);
+                specific
+            },
+        );
+
+        // Evaluate triggers: generic first, then specific (only one fires)
+        let transition = self
+            .phase_engine
+            .evaluate_trigger(&event, request.params.as_ref())
+            .or_else(|| {
+                specific_event.as_ref().and_then(|se| {
+                    self.phase_engine
+                        .evaluate_trigger(se, request.params.as_ref())
+                })
+            });
+
+        // Merge with any timer-triggered transition
+        match transition {
+            Some(t) => Some(t),
+            None => self.phase_engine.recv_transition().await.unwrap_or(None),
+        }
+    }
+
+    /// Delivers a response, finalizes the HTTP body, and runs side effects.
+    async fn deliver_and_finalize(
+        &self,
+        resp: &JsonRpcResponse,
+        request: &JsonRpcRequest,
+        effective_state: &crate::phase::EffectiveState,
+        start: Instant,
+        initialized: &mut bool,
+    ) {
+        let resolved = self.behavior_coordinator.resolve(
+            request,
+            effective_state,
+            self.transport.transport_type(),
+        );
+
+        self.deliver_response(resp, &resolved, request, start)
+            .await;
+
+        // Finalize the HTTP response (no-op for stdio)
+        if let Err(e) = self.transport.finalize_response().await {
+            warn!(error = %e, "failed to finalize response");
+        }
+
+        // Execute OnRequest side effects after delivery
+        self.execute_triggered_effects(&resolved, SideEffectTrigger::OnRequest)
+            .await;
+
+        // If this was a successful initialize, run OnConnect effects
+        if !*initialized && request.method == "initialize" && resp.error.is_none() {
+            *initialized = true;
+            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnConnect)
+                .await;
+        }
+
+        // Subscription triggers (TJ-SPEC-004 F-014)
+        if request.method == "resources/subscribe" {
+            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnSubscribe)
+                .await;
+        } else if request.method == "resources/unsubscribe" {
+            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnUnsubscribe)
+                .await;
+        }
+    }
+
+    /// Records metrics and executes entry actions for a phase transition.
+    async fn apply_transition(&self, trans: &crate::phase::state::PhaseTransition) {
+        let to_name = self.phase_engine.phase_name_at(trans.to_phase).to_string();
+
+        metrics::record_phase_transition(
+            &trans.from_phase.to_string(),
+            &trans.to_phase.to_string(),
+        );
+        metrics::set_current_phase(self.phase_engine.current_phase_name());
+
+        self.execute_entry_actions(&trans.entry_actions).await;
+
+        self.event_emitter.emit(Event::PhaseEntered {
+            timestamp: Utc::now(),
+            phase_name: to_name,
+            phase_index: trans.to_phase,
+        });
     }
 
     /// Handles an unknown method per the config's `unknown_methods` setting.
