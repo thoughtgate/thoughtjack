@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::capture::CaptureWriter;
 use crate::cli::args::{
-    DeliveryMode, OutputFormat, ServerListArgs, ServerRunArgs, ServerValidateArgs,
+    DeliveryMode, ListCategory, OutputFormat, ServerListArgs, ServerRunArgs, ServerValidateArgs,
 };
 use crate::config::loader::{ConfigLoader, LoaderOptions};
 use crate::config::schema::{
@@ -15,7 +16,7 @@ use crate::config::schema::{
 };
 use crate::error::ThoughtJackError;
 use crate::observability::events::EventEmitter;
-use crate::server::Server;
+use crate::server::{Server, ServerOptions};
 use crate::transport::http::{HttpConfig, parse_bind_addr};
 use crate::transport::{DEFAULT_MAX_MESSAGE_SIZE, HttpTransport, StdioTransport, Transport};
 
@@ -112,7 +113,30 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         EventEmitter::stderr()
     };
 
-    let server = Server::new(config, transport, cli_behavior, event_emitter, cancel);
+    let capture = args
+        .capture_dir
+        .as_ref()
+        .map(|dir| CaptureWriter::new(dir, args.capture_redact))
+        .transpose()?;
+
+    if args.allow_external_handlers {
+        tracing::warn!(
+            "--allow-external-handlers is set but no external handler \
+             types are currently supported; flag reserved for future use"
+        );
+    }
+
+    let server = Server::new(ServerOptions {
+        config,
+        transport,
+        cli_behavior,
+        event_emitter,
+        generator_limits,
+        capture,
+        cli_state_scope: args.state_scope,
+        spoof_client: args.spoof_client.clone(),
+        cancel,
+    });
     server.run().await
 }
 
@@ -242,17 +266,162 @@ fn print_validation_json(
 
 /// List available attack patterns from the library.
 ///
+/// Scans the library directory for YAML files in category subdirectories
+/// (`servers/`, `tools/`, `resources/`, `prompts/`, `behaviors/`).
+///
 /// # Errors
 ///
 /// Returns an I/O error if the library directory is inaccessible.
 ///
 /// Implements: TJ-SPEC-007 F-004
-#[allow(clippy::unused_async)] // will use async when library scanning is wired in
-pub async fn list(_args: &ServerListArgs) -> Result<(), ThoughtJackError> {
-    Err(ThoughtJackError::Io(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "server list is not yet implemented",
-    )))
+#[allow(clippy::unused_async)]
+pub async fn list(args: &ServerListArgs) -> Result<(), ThoughtJackError> {
+    if !args.library.exists() {
+        println!("No library directory found at {}", args.library.display());
+        return Ok(());
+    }
+
+    let categories: Vec<(&str, ListCategory)> = vec![
+        ("servers", ListCategory::Servers),
+        ("tools", ListCategory::Tools),
+        ("resources", ListCategory::Resources),
+        ("prompts", ListCategory::Prompts),
+        ("behaviors", ListCategory::Behaviors),
+    ];
+
+    let mut entries: Vec<LibraryEntry> = Vec::new();
+
+    for (subdir, category) in &categories {
+        if args.category != ListCategory::All && args.category != *category {
+            continue;
+        }
+
+        let dir = args.library.join(subdir);
+        if !dir.is_dir() {
+            continue;
+        }
+
+        let read_dir = std::fs::read_dir(&dir)?;
+        for entry in read_dir {
+            let entry = entry?;
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str());
+            if !matches!(ext, Some("yaml" | "yml")) {
+                continue;
+            }
+
+            let (name, description, tags) = read_library_metadata(&path);
+
+            if let Some(ref filter_tag) = args.tag {
+                if !tags.iter().any(|t| t == filter_tag) {
+                    continue;
+                }
+            }
+
+            entries.push(LibraryEntry {
+                category: subdir.to_string(),
+                name,
+                path: path.display().to_string(),
+                description,
+            });
+        }
+    }
+
+    match args.format {
+        OutputFormat::Json => {
+            let json_entries: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "category": e.category,
+                        "name": e.name,
+                        "path": e.path,
+                        "description": e.description,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json_entries)
+                    .map_err(|e| ThoughtJackError::Io(std::io::Error::other(e.to_string())))?
+            );
+        }
+        OutputFormat::Human => {
+            if entries.is_empty() {
+                println!("No patterns found in {}", args.library.display());
+            } else {
+                let mut current_category = String::new();
+                for entry in &entries {
+                    if entry.category != current_category {
+                        if !current_category.is_empty() {
+                            println!();
+                        }
+                        println!("{}:", entry.category);
+                        current_category.clone_from(&entry.category);
+                    }
+                    println!(
+                        "  {} - {}",
+                        entry.name,
+                        entry.description.as_deref().unwrap_or("(no description)")
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// A single library entry for display.
+struct LibraryEntry {
+    category: String,
+    name: String,
+    path: String,
+    description: Option<String>,
+}
+
+/// Reads top-level metadata from a library YAML file.
+///
+/// Extracts `name`, `description`, and `tags` from the first level of
+/// the YAML document.  Returns defaults if the file cannot be parsed.
+fn read_library_metadata(path: &std::path::Path) -> (String, Option<String>, Vec<String>) {
+    let default_name = path.file_stem().map_or_else(
+        || "unknown".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return (default_name, None, vec![]);
+    };
+
+    let Ok(doc) = serde_yaml::from_str::<serde_json::Value>(&content) else {
+        return (default_name, None, vec![]);
+    };
+
+    let name = doc
+        .get("name")
+        .or_else(|| doc.get("server").and_then(|s| s.get("name")))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or(default_name);
+
+    let description = doc
+        .get("description")
+        .or_else(|| doc.get("server").and_then(|s| s.get("description")))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let tags = doc
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    (name, description, tags)
 }
 
 /// Builds [`GeneratorLimits`] from CLI arguments, falling back to defaults.
