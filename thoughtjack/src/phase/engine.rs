@@ -272,9 +272,7 @@ impl PhaseEngine {
     /// Implements: TJ-SPEC-003 F-001
     #[must_use]
     pub fn phase_name_at(&self, index: usize) -> &str {
-        self.phases
-            .get(index)
-            .map_or("<none>", |p| p.name.as_str())
+        self.phases.get(index).map_or("<none>", |p| p.name.as_str())
     }
 
     /// Returns whether the engine is in a terminal state.

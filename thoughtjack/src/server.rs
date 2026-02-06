@@ -241,13 +241,12 @@ impl Server {
         let event = EventType::new(&request.method);
         self.phase_engine.state().increment_event(&event);
 
-        let specific_event = extract_specific_name(&request.method, request.params.as_ref()).map(
-            |name| {
+        let specific_event =
+            extract_specific_name(&request.method, request.params.as_ref()).map(|name| {
                 let specific = EventType::new(format!("{}:{name}", request.method));
                 self.phase_engine.state().increment_event(&specific);
                 specific
-            },
-        );
+            });
 
         // Evaluate triggers: generic first, then specific (only one fires)
         let transition = self
@@ -282,8 +281,7 @@ impl Server {
             self.transport.transport_type(),
         );
 
-        self.deliver_response(resp, &resolved, request, start)
-            .await;
+        self.deliver_response(resp, &resolved, request, start).await;
 
         // Finalize the HTTP response (no-op for stdio)
         if let Err(e) = self.transport.finalize_response().await {
