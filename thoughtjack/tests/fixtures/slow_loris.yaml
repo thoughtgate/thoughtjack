@@ -1,0 +1,21 @@
+# Slow loris test fixture: delays response delivery byte-by-byte
+server:
+  name: "slow-loris-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "greet"
+      description: "Returns a greeting"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "hello"
+
+behavior:
+  delivery:
+    type: slow_loris
+    byte_delay_ms: 5
+    chunk_size: 1
