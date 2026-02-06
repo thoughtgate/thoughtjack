@@ -15,9 +15,10 @@ use tracing::{debug, error, info, warn};
 use crate::behavior::{
     BehaviorCoordinator, ResolvedBehavior, record_delivery_metrics, record_side_effect_metrics,
 };
+use crate::capture::{CaptureDirection, CaptureWriter};
 use crate::config::schema::{
     BaselineState, BehaviorConfig, EntryAction, GeneratorLimits, ServerConfig, SideEffectTrigger,
-    UnknownMethodHandling,
+    StateScope, UnknownMethodHandling,
 };
 use crate::error::ThoughtJackError;
 use crate::handlers;
@@ -30,6 +31,33 @@ use crate::transport::jsonrpc::{
     JSONRPC_VERSION, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     error_codes,
 };
+
+/// Options for constructing a [`Server`].
+///
+/// Groups the many parameters that `Server::new` needs, avoiding a
+/// function signature with too many arguments.
+///
+/// Implements: TJ-SPEC-002 F-001
+pub struct ServerOptions {
+    /// Parsed server configuration.
+    pub config: Arc<ServerConfig>,
+    /// Transport implementation (stdio or HTTP).
+    pub transport: Arc<dyn Transport>,
+    /// CLI-level delivery behavior override.
+    pub cli_behavior: Option<BehaviorConfig>,
+    /// Event emitter for structured events.
+    pub event_emitter: EventEmitter,
+    /// Limits applied to payload generators.
+    pub generator_limits: GeneratorLimits,
+    /// Traffic capture writer (if `--capture-dir` is set).
+    pub capture: Option<CaptureWriter>,
+    /// CLI override for phase state scope.
+    pub cli_state_scope: Option<StateScope>,
+    /// Spoofed server name for MCP initialization.
+    pub spoof_client: Option<String>,
+    /// Token for cooperative shutdown.
+    pub cancel: CancellationToken,
+}
 
 /// MCP server runtime.
 ///
@@ -44,11 +72,13 @@ pub struct Server {
     behavior_coordinator: BehaviorCoordinator,
     event_emitter: EventEmitter,
     generator_limits: GeneratorLimits,
+    capture: Option<Arc<CaptureWriter>>,
+    spoof_client: Option<String>,
     cancel: CancellationToken,
 }
 
 impl Server {
-    /// Creates a new server from configuration and transport.
+    /// Creates a new server from the given options.
     ///
     /// Converts the `ServerConfig` into a baseline + phases pair and
     /// initialises all subsystems. The `cli_behavior` override (if
@@ -56,29 +86,30 @@ impl Server {
     /// The `cancel` token is used for cooperative shutdown — cancelling it
     /// stops the server's main loop.
     ///
+    /// When `cli_state_scope` is `Some`, it overrides whatever the config
+    /// file specifies. When `None`, the config value (or its default) is
+    /// used.
+    ///
     /// Implements: TJ-SPEC-002 F-001
     #[must_use]
-    pub fn new(
-        config: Arc<ServerConfig>,
-        transport: Arc<dyn Transport>,
-        cli_behavior: Option<BehaviorConfig>,
-        event_emitter: EventEmitter,
-        cancel: CancellationToken,
-    ) -> Self {
-        let (baseline, phases) = build_baseline_and_phases(&config);
-        let state_scope = config.server.state_scope.unwrap_or_default();
+    pub fn new(opts: ServerOptions) -> Self {
+        let (baseline, phases) = build_baseline_and_phases(&opts.config);
+        let state_scope = opts
+            .cli_state_scope
+            .unwrap_or_else(|| opts.config.server.state_scope.unwrap_or_default());
         let phase_engine = Arc::new(PhaseEngine::new(phases, baseline, state_scope));
-        let behavior_coordinator = BehaviorCoordinator::new(cli_behavior);
-        let generator_limits = GeneratorLimits::default();
+        let behavior_coordinator = BehaviorCoordinator::new(opts.cli_behavior);
 
         Self {
-            config,
-            transport,
+            config: opts.config,
+            transport: opts.transport,
             phase_engine,
             behavior_coordinator,
-            event_emitter,
-            generator_limits,
-            cancel,
+            event_emitter: opts.event_emitter,
+            generator_limits: opts.generator_limits,
+            capture: opts.capture.map(Arc::new),
+            spoof_client: opts.spoof_client,
+            cancel: opts.cancel,
         }
     }
 
@@ -96,18 +127,22 @@ impl Server {
     ///
     /// Implements: TJ-SPEC-002 F-001
     pub async fn run(&self) -> Result<(), ThoughtJackError> {
-        let server_name = &self.config.server.name;
+        let effective_name = self
+            .spoof_client
+            .as_deref()
+            .unwrap_or(&self.config.server.name);
         let server_version = self.config.server.version.as_deref().unwrap_or("0.0.0");
         let transport_type = self.transport.transport_type();
 
         // Emit startup event
         self.event_emitter.emit(Event::ServerStarted {
             timestamp: Utc::now(),
-            server_name: server_name.clone(),
+            server_name: effective_name.to_string(),
             transport: transport_type.to_string(),
         });
 
         metrics::set_current_phase(self.phase_engine.current_phase_name());
+        metrics::set_connections_active(1);
 
         // Start background timer task for time-based triggers
         let timer_handle = self.phase_engine.start_timer_task();
@@ -118,12 +153,13 @@ impl Server {
         let mut initialized = false;
 
         let result = self
-            .main_loop(server_name, server_version, &mut initialized)
+            .main_loop(effective_name, server_version, &mut initialized)
             .await;
 
         // Shutdown
         self.phase_engine.shutdown();
         timer_handle.abort();
+        metrics::set_connections_active(0);
 
         self.event_emitter.emit(Event::ServerStopped {
             timestamp: Utc::now(),
@@ -170,6 +206,15 @@ impl Server {
                     continue;
                 }
             };
+
+            // Capture incoming request
+            if let Some(ref capture) = self.capture {
+                if let Ok(data) = serde_json::to_value(&request) {
+                    if let Err(e) = capture.record(CaptureDirection::Request, &data) {
+                        warn!(error = %e, "failed to capture request");
+                    }
+                }
+            }
 
             let start = Instant::now();
 
@@ -275,6 +320,15 @@ impl Server {
         start: Instant,
         initialized: &mut bool,
     ) {
+        // Capture outgoing response
+        if let Some(ref capture) = self.capture {
+            if let Ok(data) = serde_json::to_value(resp) {
+                if let Err(e) = capture.record(CaptureDirection::Response, &data) {
+                    warn!(error = %e, "failed to capture response");
+                }
+            }
+        }
+
         let resolved = self.behavior_coordinator.resolve(
             request,
             effective_state,
@@ -737,7 +791,17 @@ mod tests {
         let emitter = EventEmitter::new(Box::new(tw.clone()));
         let transport: Arc<dyn Transport> = Arc::new(MockTransport::new(vec![make_init_request()]));
 
-        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
+        let server = Server::new(ServerOptions {
+            config,
+            transport,
+            cli_behavior: None,
+            event_emitter: emitter,
+            generator_limits: GeneratorLimits::default(),
+            capture: None,
+            cli_state_scope: None,
+            spoof_client: None,
+            cancel: CancellationToken::new(),
+        });
         server.run().await.unwrap();
 
         // Can't access sent_messages via trait, so check event output
@@ -757,7 +821,17 @@ mod tests {
         let sent_ref = mock.sent_messages.clone();
         let transport: Arc<dyn Transport> = Arc::new(mock);
 
-        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
+        let server = Server::new(ServerOptions {
+            config,
+            transport,
+            cli_behavior: None,
+            event_emitter: emitter,
+            generator_limits: GeneratorLimits::default(),
+            capture: None,
+            cli_state_scope: None,
+            spoof_client: None,
+            cancel: CancellationToken::new(),
+        });
         server.run().await.unwrap();
 
         // Find the response in sent bytes
@@ -781,7 +855,17 @@ mod tests {
         let sent_ref = mock.sent_messages.clone();
         let transport: Arc<dyn Transport> = Arc::new(mock);
 
-        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
+        let server = Server::new(ServerOptions {
+            config,
+            transport,
+            cli_behavior: None,
+            event_emitter: emitter,
+            generator_limits: GeneratorLimits::default(),
+            capture: None,
+            cli_state_scope: None,
+            spoof_client: None,
+            cancel: CancellationToken::new(),
+        });
         server.run().await.unwrap();
 
         let sent = sent_ref.lock().unwrap();
@@ -810,7 +894,17 @@ mod tests {
         let sent_ref = mock.sent_messages.clone();
         let transport: Arc<dyn Transport> = Arc::new(mock);
 
-        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
+        let server = Server::new(ServerOptions {
+            config,
+            transport,
+            cli_behavior: None,
+            event_emitter: emitter,
+            generator_limits: GeneratorLimits::default(),
+            capture: None,
+            cli_state_scope: None,
+            spoof_client: None,
+            cancel: CancellationToken::new(),
+        });
         server.run().await.unwrap();
 
         let sent = sent_ref.lock().unwrap();
@@ -836,7 +930,17 @@ mod tests {
         let sent_ref = mock.sent_messages.clone();
         let transport: Arc<dyn Transport> = Arc::new(mock);
 
-        let server = Server::new(config, transport, None, emitter, CancellationToken::new());
+        let server = Server::new(ServerOptions {
+            config,
+            transport,
+            cli_behavior: None,
+            event_emitter: emitter,
+            generator_limits: GeneratorLimits::default(),
+            capture: None,
+            cli_state_scope: None,
+            spoof_client: None,
+            cancel: CancellationToken::new(),
+        });
         server.run().await.unwrap();
 
         // No response should be sent for Drop mode
