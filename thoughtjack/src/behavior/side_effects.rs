@@ -823,9 +823,11 @@ mod tests {
             .execute(&transport, &connection, cancel)
             .await
             .unwrap();
-        // With a pre-cancelled token, select! may pick either branch;
-        // just verify we get a result without error.
-        assert!(result.completed || !result.completed);
+        // The .unwrap() above is the real assertion — no error from
+        // executing with a pre-cancelled token.  The outcome is
+        // non-deterministic (select! may pick either branch), so we only
+        // verify the messages_sent counter is consistent with completion.
+        assert!(result.messages_sent == 0 || result.completed);
     }
 
     #[tokio::test]
