@@ -572,7 +572,7 @@ impl IncludeResolver {
 
         let path = Path::new(path_str);
 
-        // Reject path traversal attempts
+        // Reject path traversal attempts (string-level check)
         if path_str.contains("..") {
             return Err(ConfigError::InvalidValue {
                 field: "$include".to_string(),
@@ -593,11 +593,14 @@ impl IncludeResolver {
         // $include paths are relative to library root
         let resolved = self.library_root.join(path);
 
-        if resolved.exists() {
-            Ok(resolved)
-        } else {
-            Err(ConfigError::MissingFile { path: resolved })
+        if !resolved.exists() {
+            return Err(ConfigError::MissingFile { path: resolved });
         }
+
+        // Canonicalize and verify the path stays within the library root
+        verify_within_base(&resolved, &self.library_root, "$include")?;
+
+        Ok(resolved)
     }
 
     /// Loads a file with caching.
@@ -709,7 +712,7 @@ impl FileResolver {
 
         let path = Path::new(path_str);
 
-        // Reject path traversal attempts
+        // Reject path traversal attempts (string-level check)
         if path_str.contains("..") {
             return Err(ConfigError::InvalidValue {
                 field: "$file".to_string(),
@@ -732,12 +735,15 @@ impl FileResolver {
         let resolved = base_dir.join(path);
 
         if resolved.exists() {
+            // Verify resolved path stays within either base_dir or library_root
+            verify_within_base(&resolved, base_dir, "$file")?;
             return Ok(resolved);
         }
 
         // Fall back to library root
         let resolved = self.library_root.join(path);
         if resolved.exists() {
+            verify_within_base(&resolved, &self.library_root, "$file")?;
             return Ok(resolved);
         }
 
@@ -802,6 +808,28 @@ impl FileResolver {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Verifies that a resolved path stays within the given base directory.
+///
+/// Canonicalizes both paths and checks that the resolved path is a
+/// descendant of the base. This prevents symlink-based path traversal
+/// that would bypass the string-level `..` check.
+fn verify_within_base(resolved: &Path, base: &Path, directive: &str) -> Result<(), ConfigError> {
+    let canonical = resolved.canonicalize().map_err(|_| ConfigError::MissingFile {
+        path: resolved.to_path_buf(),
+    })?;
+    let canonical_base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+
+    if !canonical.starts_with(&canonical_base) {
+        return Err(ConfigError::InvalidValue {
+            field: directive.to_string(),
+            value: resolved.display().to_string(),
+            expected: format!("path within {}", canonical_base.display()),
+        });
+    }
+
+    Ok(())
+}
 
 /// Parses an environment variable with a default value.
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {

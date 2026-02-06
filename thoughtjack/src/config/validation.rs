@@ -465,6 +465,11 @@ impl Validator {
                     &format!("{path}.tool.inputSchema"),
                     "inputSchema must be a JSON object",
                 );
+            } else if tool.tool.input_schema.get("type").is_none() {
+                self.add_warning(
+                    &format!("{path}.tool.inputSchema"),
+                    "inputSchema should have a \"type\" field (e.g., \"object\")",
+                );
             }
 
             // Response content must not be empty
