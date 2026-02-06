@@ -20,6 +20,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Maximum recursion depth for recursive value traversal (validators, file resolver).
+const MAX_RECURSION_DEPTH: usize = 64;
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -214,11 +217,11 @@ impl ConfigLoader {
 
         // Stage 4: $file resolution
         let file_resolver = FileResolver::new(self.options.library_root.clone());
-        file_resolver.resolve(&mut root, path, &mut self.file_cache)?;
+        file_resolver.resolve(&mut root, path, &mut self.file_cache, 0)?;
 
         // Stage 5: $generate validation (stores GeneratorConfig, not bytes)
         // Note: We don't actually generate bytes here, just validate the config
-        validate_generators(&root, &self.options.generator_limits)?;
+        validate_generators(&root, &self.options.generator_limits, 0)?;
 
         // Stage 6: Deserialize to typed config
         let config: ServerConfig =
@@ -260,7 +263,22 @@ impl ConfigLoader {
 /// In addition to checking estimated sizes against limits, this function
 /// actually creates each generator to catch constructor-level errors
 /// (e.g., invalid parameters, seed validation) at config load time.
-fn validate_generators(value: &Value, limits: &GeneratorLimits) -> Result<(), ConfigError> {
+///
+/// The `depth` parameter guards against unbounded recursion in deeply
+/// nested YAML structures.
+fn validate_generators(
+    value: &Value,
+    limits: &GeneratorLimits,
+    depth: usize,
+) -> Result<(), ConfigError> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(ConfigError::InvalidValue {
+            field: "$generate validation".to_string(),
+            value: format!("{depth} levels"),
+            expected: format!("at most {MAX_RECURSION_DEPTH} levels of nesting"),
+        });
+    }
+
     match value {
         Value::Mapping(map) => {
             // Check if this is a $generate directive
@@ -294,13 +312,13 @@ fn validate_generators(value: &Value, limits: &GeneratorLimits) -> Result<(), Co
             } else {
                 // Recurse into map values
                 for (_, v) in map {
-                    validate_generators(v, limits)?;
+                    validate_generators(v, limits, depth + 1)?;
                 }
             }
         }
         Value::Sequence(seq) => {
             for item in seq {
-                validate_generators(item, limits)?;
+                validate_generators(item, limits, depth + 1)?;
             }
         }
         _ => {}
@@ -655,12 +673,24 @@ impl FileResolver {
     }
 
     /// Resolves all `$file` directives in the given value.
+    ///
+    /// The `depth` parameter guards against unbounded recursion in deeply
+    /// nested YAML structures.
     fn resolve(
         &self,
         value: &mut Value,
         current_file: &Path,
         cache: &mut HashMap<PathBuf, FileContent>,
+        depth: usize,
     ) -> Result<(), ConfigError> {
+        if depth > MAX_RECURSION_DEPTH {
+            return Err(ConfigError::InvalidValue {
+                field: "$file resolution".to_string(),
+                value: format!("{depth} levels"),
+                expected: format!("at most {MAX_RECURSION_DEPTH} levels of nesting"),
+            });
+        }
+
         match value {
             Value::Mapping(map) => {
                 let file_key = Value::String("$file".to_string());
@@ -680,14 +710,14 @@ impl FileResolver {
                     let keys: Vec<Value> = map.keys().cloned().collect();
                     for key in keys {
                         if let Some(v) = map.get_mut(&key) {
-                            self.resolve(v, current_file, cache)?;
+                            self.resolve(v, current_file, cache, depth + 1)?;
                         }
                     }
                 }
             }
             Value::Sequence(seq) => {
                 for item in seq {
-                    self.resolve(item, current_file, cache)?;
+                    self.resolve(item, current_file, cache, depth + 1)?;
                 }
             }
             _ => {}
