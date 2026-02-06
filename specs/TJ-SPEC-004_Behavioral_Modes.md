@@ -85,17 +85,18 @@ The system SHALL define a common interface for delivery behaviors.
 ```rust
 #[async_trait]
 pub trait DeliveryBehavior: Send + Sync {
-    /// Deliver a JSON-RPC message using this behavior
+    /// Deliver a JSON-RPC message using this behavior.
+    ///
+    /// The `cancel` token allows cooperative cancellation during delivery
+    /// (e.g., aborting a slow loris drip on server shutdown).
     async fn deliver(
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError>;
-    
-    /// Check if this behavior is supported on the given transport
-    fn supports_transport(&self, transport_type: TransportType) -> bool;
-    
-    /// Get behavior name for logging/metrics
+
+    /// Get behavior name for logging/metrics.
     fn name(&self) -> &'static str;
 }
 
@@ -132,21 +133,18 @@ impl DeliveryBehavior for NormalDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        _cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = Instant::now();
         let bytes = transport.send_message(message).await?;
-        
+
         Ok(DeliveryResult {
             bytes_sent: bytes,
             duration: start.elapsed(),
             completed: true,
         })
     }
-    
-    fn supports_transport(&self, _: TransportType) -> bool {
-        true  // Normal delivery works on all transports
-    }
-    
+
     fn name(&self) -> &'static str {
         "normal"
     }
@@ -209,34 +207,38 @@ impl DeliveryBehavior for SlowLorisDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = Instant::now();
         let serialized = serde_json::to_vec(message)?;
         let mut bytes_sent = 0;
-        
+
         for chunk in serialized.chunks(self.chunk_size) {
+            if cancel.is_cancelled() {
+                return Ok(DeliveryResult {
+                    bytes_sent,
+                    duration: start.elapsed(),
+                    completed: false,
+                });
+            }
             transport.send_raw(chunk).await?;
             bytes_sent += chunk.len();
             tokio::time::sleep(self.byte_delay).await;
         }
-        
+
         // Send terminator (newline for stdio)
         if transport.transport_type() == TransportType::Stdio {
             transport.send_raw(b"\n").await?;
             bytes_sent += 1;
         }
-        
+
         Ok(DeliveryResult {
             bytes_sent,
             duration: start.elapsed(),
             completed: true,
         })
     }
-    
-    fn supports_transport(&self, _: TransportType) -> bool {
-        true  // Works on both transports (with different mechanics)
-    }
-    
+
     fn name(&self) -> &'static str {
         "slow_loris"
     }
@@ -282,14 +284,15 @@ impl DeliveryBehavior for UnboundedLineDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        _cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = Instant::now();
         let serialized = serde_json::to_vec(message)?;
         let mut bytes_sent = serialized.len();
-        
+
         // Send the message
         transport.send_raw(&serialized).await?;
-        
+
         // Send padding if target_bytes specified
         if self.target_bytes > serialized.len() {
             let padding_needed = self.target_bytes - serialized.len();
@@ -297,21 +300,17 @@ impl DeliveryBehavior for UnboundedLineDelivery {
             transport.send_raw(&padding).await?;
             bytes_sent += padding_needed;
         }
-        
+
         // Deliberately DO NOT send newline (stdio) or close response (HTTP)
         // This is the attack!
-        
+
         Ok(DeliveryResult {
             bytes_sent,
             duration: start.elapsed(),
             completed: true,  // We completed our part; client is stuck
         })
     }
-    
-    fn supports_transport(&self, _: TransportType) -> bool {
-        true
-    }
-    
+
     fn name(&self) -> &'static str {
         "unbounded_line"
     }
@@ -357,31 +356,28 @@ impl DeliveryBehavior for NestedJsonDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        _cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = Instant::now();
-        
+
         // Build nested structure
         let inner = serde_json::to_value(message)?;
         let mut wrapped = inner;
-        
+
         for _ in 0..self.depth {
             wrapped = serde_json::json!({ &self.key: wrapped });
         }
-        
+
         let serialized = serde_json::to_vec(&wrapped)?;
         let bytes_sent = transport.send_message_raw(&serialized).await?;
-        
+
         Ok(DeliveryResult {
             bytes_sent,
             duration: start.elapsed(),
             completed: true,
         })
     }
-    
-    fn supports_transport(&self, _: TransportType) -> bool {
-        true
-    }
-    
+
     fn name(&self) -> &'static str {
         "nested_json"
     }
@@ -423,26 +419,23 @@ impl DeliveryBehavior for ResponseDelayDelivery {
         &self,
         message: &JsonRpcMessage,
         transport: &dyn Transport,
+        _cancel: CancellationToken,
     ) -> Result<DeliveryResult, BehaviorError> {
         let start = Instant::now();
-        
+
         // Wait before sending
         tokio::time::sleep(self.delay).await;
-        
+
         // Then send normally
         let bytes_sent = transport.send_message(message).await?;
-        
+
         Ok(DeliveryResult {
             bytes_sent,
             duration: start.elapsed(),
             completed: true,
         })
     }
-    
-    fn supports_transport(&self, _: TransportType) -> bool {
-        true
-    }
-    
+
     fn name(&self) -> &'static str {
         "response_delay"
     }
@@ -615,6 +608,7 @@ impl SideEffect for NotificationFlood {
     async fn execute(
         &self,
         transport: &dyn Transport,
+        _connection: &ConnectionContext,
         cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = Instant::now();
@@ -712,6 +706,7 @@ impl SideEffect for BatchAmplify {
     async fn execute(
         &self,
         transport: &dyn Transport,
+        _connection: &ConnectionContext,
         _cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = Instant::now();
@@ -921,6 +916,7 @@ impl SideEffect for CloseConnection {
     async fn execute(
         &self,
         transport: &dyn Transport,
+        _connection: &ConnectionContext,
         _cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = Instant::now();
@@ -1003,6 +999,7 @@ impl SideEffect for DuplicateRequestIds {
     async fn execute(
         &self,
         transport: &dyn Transport,
+        _connection: &ConnectionContext,
         _cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = Instant::now();

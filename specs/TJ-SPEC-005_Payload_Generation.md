@@ -99,33 +99,34 @@ Response Time:
 pub trait PayloadGenerator: Send + Sync {
     /// Generate the payload - called at RESPONSE TIME, not config load
     fn generate(&self) -> Result<GeneratedPayload, GeneratorError>;
-    
+
     /// Estimate output size without generating (for limit checking at load time)
     fn estimated_size(&self) -> usize;
-    
+
     /// Get generator name for logging
     fn name(&self) -> &'static str;
-    
-    /// Whether this generator produces valid JSON
-    fn produces_json(&self) -> bool;
+
+    /// Whether this generator produces valid JSON (default: false)
+    fn produces_json(&self) -> bool {
+        false
+    }
 }
 
 pub enum GeneratedPayload {
     /// Small payload, fully buffered
     Buffered(Vec<u8>),
-    
-    /// Large payload, streamed on demand
-    Streamed(Box<dyn PayloadStream>),
+
+    // Deferred to v0.2: streaming generation
+    // /// Large payload, streamed on demand
+    // Streamed(Box<dyn PayloadStream>),
 }
 
-#[async_trait]
-pub trait PayloadStream: Send {
-    /// Read next chunk of payload
-    async fn next_chunk(&mut self) -> Option<Result<Vec<u8>, GeneratorError>>;
-    
-    /// Total size (if known)
-    fn total_size(&self) -> Option<usize>;
-}
+// Deferred to v0.2: PayloadStream trait for streaming generation
+// #[async_trait]
+// pub trait PayloadStream: Send {
+//     async fn next_chunk(&mut self) -> Option<Result<Vec<u8>, GeneratorError>>;
+//     fn total_size(&self) -> Option<usize>;
+// }
 ```
 
 **Config Loader Integration (see TJ-SPEC-006):**

@@ -85,31 +85,30 @@ The system SHALL define a `Transport` trait that abstracts message sending and r
 pub trait Transport: Send + Sync {
     /// Send a complete JSON-RPC message
     async fn send_message(&self, message: &JsonRpcMessage) -> Result<(), TransportError>;
-    
+
     /// Send raw bytes (for behavioral attacks that manipulate framing)
     async fn send_raw(&self, bytes: &[u8]) -> Result<(), TransportError>;
-    
-    /// Receive the next JSON-RPC message
-    async fn receive_message(&self) -> Result<JsonRpcMessage, TransportError>;
-    
-    /// Apply a delivery behavior to a message
-    async fn send_with_behavior(
-        &self,
-        message: &JsonRpcMessage,
-        behavior: &DeliveryBehavior,
-    ) -> Result<(), TransportError>;
-    
-    /// Check if a side effect is supported on this transport
-    fn supports_side_effect(&self, effect: &SideEffectType) -> bool;
-    
-    /// Execute a side effect
-    async fn execute_side_effect(&self, effect: &SideEffect) -> Result<(), TransportError>;
-    
-    /// Close the connection
-    async fn close(&self, graceful: bool) -> Result<(), TransportError>;
-    
+
+    /// Receive the next JSON-RPC message (None on EOF)
+    async fn receive_message(&self) -> Result<Option<JsonRpcMessage>, TransportError>;
+
+    /// Check if this transport supports a given delivery behavior
+    fn supports_behavior(&self, behavior: &DeliveryConfig) -> bool;
+
     /// Get transport type for logging/metrics
     fn transport_type(&self) -> TransportType;
+
+    /// Signal that the current response delivery is complete.
+    /// For HTTP: drops the response body sender. For stdio: no-op.
+    async fn finalize_response(&self) -> Result<(), TransportError>;
+
+    /// Returns the connection context for the current request.
+    fn connection_context(&self) -> ConnectionContext;
+
+    /// Close the transport (default: no-op).
+    async fn close(&self, _graceful: bool) -> Result<(), TransportError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +116,29 @@ pub enum TransportType {
     Stdio,
     Http,
 }
+```
+
+**Free functions for behavior/side-effect dispatch:**
+
+`send_with_behavior()` and `execute_side_effect()` are **free functions**, not trait
+methods, because they compose `Transport` with `DeliveryBehavior` / `SideEffect`:
+
+```rust
+/// Deliver a message through a behavior, using the transport for I/O.
+pub async fn send_with_behavior(
+    transport: &dyn Transport,
+    message: &JsonRpcMessage,
+    behavior: &dyn DeliveryBehavior,
+    cancel: CancellationToken,
+) -> Result<DeliveryResult, BehaviorError>;
+
+/// Execute a side effect against the transport.
+pub async fn execute_side_effect(
+    transport: &dyn Transport,
+    effect: &dyn SideEffect,
+    connection: &ConnectionContext,
+    cancel: CancellationToken,
+) -> Result<SideEffectResult, BehaviorError>;
 ```
 
 ### F-002: stdio Transport Implementation
