@@ -189,14 +189,38 @@ pub fn set_connections_active(count: u64) {
 
 /// Records the current count for an event type.
 ///
-/// The event name is sanitized via [`sanitize_method_label`] to prevent
-/// label cardinality explosion from unknown event types.
+/// Event names are derived from `EventType` internally (not from
+/// raw attacker-controlled input), so we sanitize by extracting
+/// the method prefix (before `:`) and validating it against known
+/// methods. Specific events like `"tools/call:calc"` use the full
+/// string as the label when the prefix is recognized.
 ///
 /// Implements: TJ-SPEC-008 F-009
 #[allow(clippy::cast_precision_loss)]
 pub fn record_event_count(event: &str, count: u64) {
-    let label = sanitize_method_label(event);
+    let label = sanitize_event_label(event);
     gauge!("thoughtjack_event_counts", "event" => label.to_owned()).set(count as f64);
+}
+
+/// Sanitizes an event label, handling both generic and specific forms.
+///
+/// Generic events like `"tools/call"` are validated directly.
+/// Specific events like `"tools/call:calc"` are accepted when the
+/// prefix before `:` is a known method. Unknown prefixes are bucketed
+/// as `"__unknown__"`.
+#[must_use]
+fn sanitize_event_label(event: &str) -> &str {
+    // Check the full event name first (handles generic events)
+    if KNOWN_METHODS.contains(&event) {
+        return event;
+    }
+    // For specific events like "tools/call:calc", validate the prefix
+    if let Some(prefix) = event.split(':').next() {
+        if KNOWN_METHODS.contains(&prefix) {
+            return event;
+        }
+    }
+    "__unknown__"
 }
 
 #[cfg(test)]
