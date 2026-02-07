@@ -265,7 +265,7 @@ pub struct ServerRunArgs {
 }
 ```
 
-**Config Loading Path:**
+**Config Loading Path (TJ-SPEC-010 B31):**
 
 ```rust
 fn load_config(args: &ServerRunArgs) -> Result<ServerConfig, ConfigError> {
@@ -277,12 +277,20 @@ fn load_config(args: &ServerRunArgs) -> Result<ServerConfig, ConfigError> {
                 available: list_scenario_names(),
             })?;
 
-        // Parse embedded YAML through standard loader
-        // with $include/$file resolution disabled
-        let loader = ConfigLoader::new_embedded();
-        loader.parse_str(scenario.yaml)
+        // B31: Use LoaderOptions with embedded: true to reject $include/$file
+        let options = LoaderOptions {
+            embedded: true,  // Reject filesystem directives
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        loader.load_from_str(scenario.yaml)
     } else if let Some(config_path) = &args.config {
-        let loader = ConfigLoader::new(&args.library);
+        let options = LoaderOptions {
+            library_root: args.library.clone(),
+            embedded: false,  // Standard mode
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
         loader.load(config_path)
     } else if let Some(tool_path) = &args.tool {
         load_single_tool(tool_path, &args.library)
@@ -606,36 +614,52 @@ Built-in scenarios must be self-contained. File references would break because t
 
 **Implementation:**
 
+TJ-SPEC-010 B31: Loader integration uses `LoaderOptions` struct pattern rather than
+a separate `LoaderMode` enum:
+
 ```rust
+/// Options for the configuration loader (TJ-SPEC-006 F-001, TJ-SPEC-010 B31)
+pub struct LoaderOptions {
+    pub library_root: PathBuf,
+    pub generator_limits: GeneratorLimits,
+    pub config_limits: ConfigLimits,
+    /// B31: When true, reject $include and $file directives (for embedded scenarios)
+    pub embedded: bool,
+}
+
+impl Default for LoaderOptions {
+    fn default() -> Self {
+        Self {
+            library_root: PathBuf::from("library"),
+            generator_limits: GeneratorLimits::default(),
+            config_limits: ConfigLimits::default(),
+            embedded: false,  // Standard mode by default
+        }
+    }
+}
+
 pub struct ConfigLoader {
-    mode: LoaderMode,
-    library_root: Option<PathBuf>,
+    options: LoaderOptions,
     // ...
 }
 
-pub enum LoaderMode {
-    /// Standard mode — resolve $include, $file from library root
-    FileSystem { library_root: PathBuf },
-    /// Embedded mode — reject $include, $file directives
-    Embedded,
-}
-
 impl ConfigLoader {
-    pub fn new(library_root: &Path) -> Self {
+    pub fn new(options: LoaderOptions) -> Self {
         Self {
-            mode: LoaderMode::FileSystem {
-                library_root: library_root.to_path_buf(),
-            },
-        }
-    }
-
-    pub fn new_embedded() -> Self {
-        Self {
-            mode: LoaderMode::Embedded,
+            options,
+            include_cache: HashMap::new(),
+            file_cache: HashMap::new(),
         }
     }
 }
 ```
+
+When `embedded: true` in `LoaderOptions`:
+- `$include` directives are rejected during validation
+- `$file` directives are rejected during validation
+- Environment variable substitution (`${VAR}`) is skipped to avoid conflicts
+  with runtime template interpolation syntax
+- All other config validation applies normally
 
 ---
 

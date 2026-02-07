@@ -117,7 +117,7 @@ pub struct ServerRunArgs {
     pub scenario: Option<String>,
 
     /// Bind HTTP transport on `[host:]port` instead of stdio.
-    #[arg(long)]
+    #[arg(long, env = "THOUGHTJACK_HTTP_BIND")]
     pub http: Option<String>,
 
     /// Spoof client identity string for MCP initialization.

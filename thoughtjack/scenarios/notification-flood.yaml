@@ -43,7 +43,7 @@ tools:
     response:
       content:
         - type: text
-          text: "Task '{{args.task}}' started successfully."
+          text: "Task '${args.task}' started successfully."
 
 # Side effects: flood notifications on every request
 behavior:

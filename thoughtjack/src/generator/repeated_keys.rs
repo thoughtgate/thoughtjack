@@ -238,4 +238,26 @@ mod tests {
         let s = String::from_utf8(data).unwrap();
         assert!(s.contains(r#":"x""#));
     }
+
+    // EC-GEN-017: Extremely long key in repeated keys
+    #[test]
+    fn long_key_respects_payload_limit() {
+        let limits = GeneratorLimits {
+            max_payload_bytes: 10_000,
+            ..GeneratorLimits::default()
+        };
+        // key_length * count must respect payload limits
+        let params = make_params(vec![
+            ("count", json!(10)),
+            ("key_length", json!(500)),
+        ]);
+        let generator = RepeatedKeysGenerator::new(&params, &limits).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        assert!(
+            data.len() <= limits.max_payload_bytes,
+            "output {} exceeds limit {}",
+            data.len(),
+            limits.max_payload_bytes
+        );
+    }
 }

@@ -159,4 +159,55 @@ mod tests {
         let result = resolve_template("Len: ${fn.len(args.query)}", &ctx);
         assert_eq!(result, "Len: 11");
     }
+
+    // EC-DYN-003: Template in template result — no recursive interpolation
+    #[test]
+    fn test_no_recursive_interpolation() {
+        // If an argument value itself contains ${...}, it should NOT be expanded
+        let ctx = TemplateContext {
+            args: json!({"payload": "${env.HOME}"}),
+            item_name: "test".to_string(),
+            item_type: ItemType::Tool,
+            call_count: 1,
+            phase_name: "baseline".to_string(),
+            phase_index: -1,
+            request_id: Some(json!(1)),
+            request_method: "tools/call".to_string(),
+            connection_id: 1,
+            resource_name: None,
+            resource_mime_type: None,
+        };
+
+        let result = resolve_template("Result: ${args.payload}", &ctx);
+        // The literal "${env.HOME}" should appear in the output, NOT the resolved HOME value
+        assert_eq!(
+            result, "Result: ${env.HOME}",
+            "template engine must not recursively resolve"
+        );
+    }
+
+    // EC-DYN-025: Multiline/special char interpolation (verbatim, no escaping)
+    #[test]
+    fn test_multiline_arg_verbatim() {
+        let mut ctx = make_ctx();
+        ctx.args = json!({"code": "line1\nline2\ttab\r\nwindows"});
+        let result = resolve_template("Code: ${args.code}", &ctx);
+        assert_eq!(result, "Code: line1\nline2\ttab\r\nwindows");
+    }
+
+    // Adjacent template variables
+    #[test]
+    fn test_adjacent_variables() {
+        let ctx = make_ctx();
+        let result = resolve_template("${tool.name}${phase.name}", &ctx);
+        assert_eq!(result, "web_searchexploit");
+    }
+
+    // Template with only ${...} and nothing else
+    #[test]
+    fn test_pure_template() {
+        let ctx = make_ctx();
+        let result = resolve_template("${args.query}", &ctx);
+        assert_eq!(result, "hello world");
+    }
 }

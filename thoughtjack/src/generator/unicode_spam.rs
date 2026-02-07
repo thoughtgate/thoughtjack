@@ -378,4 +378,21 @@ mod tests {
             || s.contains('\u{1F600}');
         assert!(has_emoji, "expected emoji characters in output");
     }
+
+    // EC-GEN-014: Unicode spam with empty carrier (pure unicode, no carrier text)
+    #[test]
+    fn empty_carrier_produces_output() {
+        let params = make_params(vec![
+            ("bytes", json!(200)),
+            ("category", json!("rtl")),
+            ("carrier", json!("")),
+            ("seed", json!(42)),
+        ]);
+        let generator = UnicodeSpamGenerator::new(&params, &default_limits()).unwrap();
+        let payload = generator.generate().unwrap();
+        let data = payload.into_bytes();
+        assert!(!data.is_empty(), "empty carrier should still produce output");
+        // Should be valid UTF-8
+        String::from_utf8(data).expect("output should be valid UTF-8");
+    }
 }

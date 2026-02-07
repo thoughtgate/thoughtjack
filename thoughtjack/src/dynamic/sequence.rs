@@ -246,4 +246,40 @@ mod tests {
         // Should saturate
         assert_eq!(tracker.increment("key"), u64::MAX);
     }
+
+    // EC-DYN-015: concurrent requests to same tool
+    #[test]
+    fn test_concurrent_increment() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let tracker = Arc::new(CallTracker::new());
+        let threads: Vec<_> = (0..10)
+            .map(|_| {
+                let tracker = Arc::clone(&tracker);
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        tracker.increment("concurrent_key");
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        // 10 threads × 100 increments = 1000
+        assert_eq!(tracker.get("concurrent_key"), 1000);
+    }
+
+    // Sequence with call_count = 0 (first call is 1, so 0 means "before first call")
+    #[test]
+    fn test_sequence_call_count_zero() {
+        // call_count 0 underflows to index wrapping via saturating_sub(1)
+        let result = resolve_sequence_index(3, 0, ExhaustedBehavior::Last).unwrap();
+        // saturating_sub(1) on 0 gives 0, wrapping to 0 with u64::MAX
+        // Actually 0u64.saturating_sub(1) = 0, so index = 0
+        assert_eq!(result, 0);
+    }
 }

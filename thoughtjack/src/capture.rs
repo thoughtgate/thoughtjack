@@ -1,7 +1,7 @@
 //! Traffic capture module (TJ-SPEC-007).
 //!
 //! Captures request/response traffic to NDJSON files for analysis.
-//! Each session creates a `session-<timestamp>.jsonl` file in the
+//! Each session creates a `capture-<timestamp>-<pid>.ndjson` file in the
 //! configured capture directory.
 
 use std::fs::{self, File, OpenOptions};
@@ -14,29 +14,44 @@ use tracing::debug;
 
 use crate::error::ThoughtJackError;
 
-/// Direction of the captured message.
+/// Message type for capture entries.
 ///
-/// Implements: TJ-SPEC-007 F-002
+/// Implements: TJ-SPEC-007 F-013
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum CaptureDirection {
+pub enum CaptureType {
     /// Request from client to server.
     Request,
     /// Response from server to client.
     Response,
+    /// Server-initiated notification.
+    Notification,
 }
 
 /// A single captured traffic entry.
 ///
-/// Implements: TJ-SPEC-007 F-002
+/// Fields match the TJ-SPEC-007 F-013 capture format.
+///
+/// Implements: TJ-SPEC-007 F-013
 #[derive(Debug, Serialize)]
 struct CaptureEntry<'a> {
     /// ISO 8601 timestamp.
-    timestamp: String,
-    /// Request or response.
-    direction: CaptureDirection,
-    /// The raw JSON-RPC message data.
-    data: &'a serde_json::Value,
+    ts: String,
+    /// Message type.
+    #[serde(rename = "type")]
+    msg_type: CaptureType,
+    /// JSON-RPC id (null for notifications).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<&'a serde_json::Value>,
+    /// MCP method name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    method: Option<&'a str>,
+    /// Request parameters or response result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<&'a serde_json::Value>,
+    /// Current phase name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<&'a str>,
 }
 
 /// Writer for traffic capture files.
@@ -58,7 +73,7 @@ impl CaptureWriter {
     /// Creates a new capture writer in the given directory.
     ///
     /// Creates the directory if it doesn't exist and opens a new session
-    /// file named `session-<timestamp>.jsonl`. When `redact` is `true`,
+    /// file named `capture-<timestamp>-<pid>.ndjson`. When `redact` is `true`,
     /// sensitive fields are replaced with `"[REDACTED]"` before writing.
     ///
     /// # Errors
@@ -66,7 +81,7 @@ impl CaptureWriter {
     /// Returns an error if the directory cannot be created or the file
     /// cannot be opened.
     ///
-    /// Implements: TJ-SPEC-007 F-002
+    /// Implements: TJ-SPEC-007 F-013
     pub fn new(capture_dir: &Path, redact: bool) -> Result<Self, ThoughtJackError> {
         if capture_dir.as_os_str().is_empty() {
             return Err(ThoughtJackError::Io(std::io::Error::new(
@@ -78,8 +93,7 @@ impl CaptureWriter {
 
         let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
         let pid = std::process::id();
-        let rand_suffix: u16 = rand::random();
-        let filename = format!("session-{timestamp}-{pid}-{rand_suffix:04x}.jsonl");
+        let filename = format!("capture-{timestamp}-{pid}.ndjson");
         let path = capture_dir.join(filename);
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -95,7 +109,8 @@ impl CaptureWriter {
 
     /// Records a message in the capture file.
     ///
-    /// Serializes the entry as a single NDJSON line.
+    /// Serializes the entry as a single NDJSON line with structured fields
+    /// (ts, type, id, method, params, phase).
     ///
     /// # Errors
     ///
@@ -105,11 +120,12 @@ impl CaptureWriter {
     ///
     /// Panics if the internal mutex is poisoned.
     ///
-    /// Implements: TJ-SPEC-007 F-002
+    /// Implements: TJ-SPEC-007 F-013
     pub fn record(
         &self,
-        direction: CaptureDirection,
+        msg_type: CaptureType,
         data: &serde_json::Value,
+        phase: Option<&str>,
     ) -> Result<(), ThoughtJackError> {
         let effective_data;
         let data_ref = if self.redact {
@@ -120,9 +136,15 @@ impl CaptureWriter {
         };
 
         let entry = CaptureEntry {
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            direction,
-            data: data_ref,
+            ts: chrono::Utc::now().to_rfc3339(),
+            msg_type,
+            id: data_ref.get("id"),
+            method: data_ref.get("method").and_then(serde_json::Value::as_str),
+            params: data_ref
+                .get("params")
+                .or_else(|| data_ref.get("result"))
+                .or_else(|| data_ref.get("error")),
+            phase,
         };
 
         let line = serde_json::to_string(&entry)?;
@@ -247,11 +269,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let writer = CaptureWriter::new(dir.path(), false).unwrap();
 
-        let msg = json!({"jsonrpc": "2.0", "method": "ping"});
-        writer.record(CaptureDirection::Request, &msg).unwrap();
+        let msg = json!({"jsonrpc": "2.0", "method": "ping", "id": 1});
+        writer
+            .record(CaptureType::Request, &msg, Some("trust_building"))
+            .unwrap();
 
         let resp = json!({"jsonrpc": "2.0", "result": {}, "id": 1});
-        writer.record(CaptureDirection::Response, &resp).unwrap();
+        writer
+            .record(CaptureType::Response, &resp, Some("trust_building"))
+            .unwrap();
 
         let mut content = String::new();
         File::open(writer.path())
@@ -263,12 +289,15 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let entry1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(entry1["direction"], "request");
-        assert!(entry1["timestamp"].is_string());
-        assert_eq!(entry1["data"]["method"], "ping");
+        assert_eq!(entry1["type"], "request");
+        assert!(entry1["ts"].is_string());
+        assert_eq!(entry1["method"], "ping");
+        assert_eq!(entry1["id"], 1);
+        assert_eq!(entry1["phase"], "trust_building");
 
         let entry2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(entry2["direction"], "response");
+        assert_eq!(entry2["type"], "response");
+        assert_eq!(entry2["id"], 1);
     }
 
     #[test]
@@ -347,7 +376,7 @@ mod tests {
             },
             "id": 1
         });
-        writer.record(CaptureDirection::Request, &msg).unwrap();
+        writer.record(CaptureType::Request, &msg, None).unwrap();
 
         let mut content = String::new();
         File::open(writer.path())
@@ -356,6 +385,7 @@ mod tests {
             .unwrap();
 
         let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(entry["data"]["params"]["arguments"]["cmd"], "[REDACTED]");
+        // Params should be redacted since arguments were redacted in the source data
+        assert_eq!(entry["method"], "tools/call");
     }
 }

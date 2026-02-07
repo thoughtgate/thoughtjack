@@ -130,17 +130,12 @@ impl PhaseState {
     }
 }
 
+/// Event type identifier using MCP method strings (e.g., "initialize", "tools/call:calc").
+///
+/// Uses a newtype `String` for flexibility — supports arbitrary event patterns
+/// including method-specific targeting like "tools/call:tool_name".
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub enum EventType {
-    Initialize,
-    Initialized,
-    ToolsList,
-    ToolsCall { tool_name: Option<String> },
-    ResourcesList,
-    ResourcesRead { uri: Option<String> },
-    PromptsList,
-    PromptsGet { prompt_name: Option<String> },
-}
+pub struct EventType(pub String);
 ```
 
 > ⚠️ **Concurrency Requirement: Atomic Counters**
@@ -155,37 +150,53 @@ The system SHALL compute effective server state by applying phase diffs to basel
 - Baseline defines initial tools, resources, prompts, capabilities, behavior
 - Each phase defines zero or more diff operations
 - Effective state = baseline + current phase diff
-- Diff operations: replace, add, remove (for tools/resources/prompts)
+- Diff operations: remove, replace, add (for tools/resources/prompts)
 - Capabilities and behavior are fully replaced, not merged
+
+**EffectiveState Uses IndexMap (B14):**
+
+The `EffectiveState` struct uses `IndexMap` instead of `HashMap` for tools, resources, and prompts collections. This ensures deterministic iteration order, which is important for:
+- Reproducible test behavior (tools/list always returns items in the same order)
+- Consistent serialization output
+- Predictable debugging and logging
+
+**Diff Operation Order (B37):**
+
+Diff operations are applied in the order: **remove → replace → add**. This ordering is logical:
+1. **Remove** frees up names/URIs by removing items from the baseline
+2. **Replace** modifies items that still exist (or were just freed)
+3. **Add** introduces new items that don't conflict with the current state
+
+This ensures that operations like "remove X, then add a new X" work correctly without name conflicts.
 
 **Algorithm:**
 ```
 compute_effective_state(baseline, phases, current_phase_index):
     state = deep_clone(baseline)
-    
+
     if current_phase_index >= 0:
         phase = phases[current_phase_index]
-        
-        # Apply tool diffs
+
+        # Apply tool diffs: remove -> replace -> add
+        for name in phase.remove_tools:
+            state.tools.remove(name)
         for (name, path) in phase.replace_tools:
             state.tools[name] = load(path)
         for path in phase.add_tools:
             tool = load(path)
             state.tools[tool.name] = tool
-        for name in phase.remove_tools:
-            state.tools.remove(name)
-        
+
         # Apply resource diffs (same pattern)
         # Apply prompt diffs (same pattern)
-        
+
         # Replace capabilities if specified
         if phase.replace_capabilities:
             state.capabilities = merge(state.capabilities, phase.replace_capabilities)
-        
+
         # Replace behavior if specified
         if phase.behavior:
             state.behavior = phase.behavior
-    
+
     return state
 ```
 
@@ -208,6 +219,18 @@ Event types use a string-based newtype wrapper for simplicity:
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct EventType(pub String);
 ```
+
+**Event Type Cardinality Limit (B12):**
+
+To prevent unbounded memory growth from arbitrary event names (e.g., a malicious client generating unique event type strings), the system enforces a maximum cardinality of `MAX_EVENT_TYPE_CARDINALITY = 10,000` distinct event types.
+
+When this limit is reached:
+- New event types are silently dropped
+- A warning is logged
+- Existing event counters continue to function normally
+- The event is not recorded (returns count 0)
+
+This prevents denial-of-service attacks via event map exhaustion while allowing legitimate use cases with reasonable event type diversity.
 
 **Event Classification:**
 | MCP Method | Event Type(s) Incremented |
@@ -551,6 +574,10 @@ The system SHALL execute phase transitions atomically.
 11. Ready for next request with NEW phase state
 ```
 
+**PhaseTransition Carries Entry Actions (B13):**
+
+The `PhaseTransition` record returned by transition logic includes `entry_actions: Vec<EntryAction>` for the new phase. This simplifies the server loop by making entry actions immediately available with the transition, eliminating the need for a separate lookup of the new phase configuration to retrieve its `on_enter` actions.
+
 ### F-007: Entry Action Execution
 
 The system SHALL execute entry actions when entering a phase.
@@ -714,24 +741,31 @@ The phase engine supports two state scoping modes (configured via `server.state_
 | `per_connection` (default) | Each connection owns independent `PhaseEngine` | Deterministic testing |
 | `global` | Single `Arc<PhaseState>` with lock-free atomics shared by all | Cross-client attacks |
 
-**Canonical PhaseEngine Definition:**
+**Canonical PhaseEngine Definition (B38):**
 
-The phase engine uses a unified struct that handles both scoping modes via an internal enum:
+The phase engine uses a single constructor with a factory method for state handle creation:
 
 ```rust
 /// Phase engine manages server state and phase transitions.
 ///
 /// This is the CANONICAL definition - see TJ-SPEC-003 Section 5.1 for full API.
 pub struct PhaseEngine {
-    /// Immutable configuration (phases, triggers, diffs)
-    config: Arc<PhaseConfig>,
-    /// Mutable state - scoped per-connection or global
-    state_handle: PhaseStateHandle,
+    /// Phase configurations from YAML
+    phases: Vec<Phase>,
+    /// Baseline server state
+    baseline: BaselineState,
+    /// Shared atomic phase state (used in global scope or as template for per-connection)
+    state: Arc<PhaseState>,
+    /// State scope (global vs per-connection)
+    scope: StateScope,
     /// Cached effective state (tools, resources, prompts after applying diffs)
     /// Invalidated on phase transitions, recomputed on next access
-    effective_state: StdMutex<Option<(usize, EffectiveState)>>,
-    /// Broadcast channel for transition events
-    transition_tx: broadcast::Sender<TransitionEvent>,
+    effective_cache: StdMutex<Option<(usize, EffectiveState)>>,
+    /// Channel for timer-triggered transitions
+    transition_tx: mpsc::UnboundedSender<PhaseTransition>,
+    transition_rx: Mutex<mpsc::UnboundedReceiver<PhaseTransition>>,
+    /// Cancellation token for timer task
+    cancel: CancellationToken,
 }
 
 /// State handle abstracts over per-connection vs global scoping
@@ -745,94 +779,51 @@ pub enum PhaseStateHandle {
 }
 
 impl PhaseEngine {
-    /// Create engine for per-connection mode (owned state)
-    pub fn new_per_connection(config: Arc<PhaseConfig>) -> Result<Self, PhaseError> {
-        let state = PhaseState::new(&config);
-        let effective = EffectiveState::from_baseline(&config.baseline);
-        let (tx, _) = broadcast::channel(16);
+    /// Creates a new `PhaseEngine` with the given phases, baseline, and state scope.
+    ///
+    /// This is the single constructor. State handles for individual connections
+    /// are created via `create_connection_state()`.
+    pub fn new(phases: Vec<Phase>, baseline: BaselineState, scope: StateScope) -> Self {
+        let num_phases = phases.len();
+        let state = Arc::new(PhaseState::new(num_phases));
+        let (transition_tx, transition_rx) = mpsc::unbounded_channel();
 
-        Ok(Self {
-            config,
-            state_handle: PhaseStateHandle::Owned(state),
-            effective_state: StdMutex::new(Some((0, effective))),
-            transition_tx: tx,
-        })
+        Self {
+            phases,
+            baseline,
+            state,
+            scope,
+            transition_tx,
+            transition_rx: Mutex::new(transition_rx),
+            cancel: CancellationToken::new(),
+            effective_cache: StdMutex::new(None),
+        }
     }
 
-    /// Create engine for global mode (shared state)
-    pub fn new_global(
-        config: Arc<PhaseConfig>,
-        shared_state: Arc<PhaseState>,
-    ) -> Result<Self, PhaseError> {
-        let effective = EffectiveState::from_baseline(&config.baseline);
-        let (tx, _) = broadcast::channel(16);
-
-        Ok(Self {
-            config,
-            state_handle: PhaseStateHandle::Shared(shared_state),
-            effective_state: StdMutex::new(Some((0, effective))),
-            transition_tx: tx,
-        })
-    }
-
-    /// Process an incoming event, potentially triggering phase transition
-    pub async fn process_event(&self, event: &McpEvent) -> Result<(), PhaseError> {
-        // Dispatch based on state handle type
-        match &self.state_handle {
-            PhaseStateHandle::Owned(state) => {
-                self.process_event_owned(state, event).await
-            }
-            PhaseStateHandle::Shared(state) => {
-                self.process_event_shared(state, event).await
+    /// Creates a phase state handle appropriate for the configured scope.
+    ///
+    /// - StateScope::Global: returns a shared handle wrapping the engine's state
+    /// - StateScope::PerConnection: returns a new owned state
+    pub fn create_connection_state(&self) -> PhaseStateHandle {
+        match self.scope {
+            StateScope::Global => PhaseStateHandle::Shared(Arc::clone(&self.state)),
+            StateScope::PerConnection => {
+                PhaseStateHandle::Owned(PhaseState::new(self.phases.len()))
             }
         }
     }
-    
-    /// Process event with owned state (no contention)
-    async fn process_event_owned(
+
+    /// Records an event and evaluates triggers, potentially advancing the phase.
+    ///
+    /// Returns `Some(PhaseTransition)` if a transition occurred, which includes
+    /// the entry actions to execute (B13).
+    pub fn record_event(
         &self,
-        state: &PhaseState,
-        event: &McpEvent,
-    ) -> Result<(), PhaseError> {
-        let phase_at_start = state.current_phase.load(Ordering::SeqCst);
-        state.increment_event(event);
-
-        if let Some(transition) = self.evaluate_trigger(&state, event, phase_at_start) {
-            let next_phase = phase_at_start + 1;
-            // No CAS needed for owned state - we're the only writer
-            state.current_phase.store(next_phase, Ordering::SeqCst);
-            self.execute_transition(next_phase).await?;
-        }
-        Ok(())
-    }
-
-    /// Process event with shared state (optimized for concurrency)
-    async fn process_event_shared(
-        &self,
-        state: &Arc<PhaseState>,
-        event: &McpEvent,
-    ) -> Result<(), PhaseError> {
-        let phase_at_start = state.current_phase.load(Ordering::SeqCst);
-
-        // Atomic increment (lock-free)
-        state.increment_event(event);
-
-        // Evaluate trigger
-        let should_advance = self.evaluate_trigger(&state, event, phase_at_start).is_some();
-
-        // CAS-based transition if needed
-        if should_advance {
-            let next_phase = phase_at_start + 1;
-            match state.try_advance(phase_at_start, next_phase) {
-                Ok(()) => {
-                    self.execute_transition(next_phase).await?;
-                }
-                Err(_) => {
-                    // Another thread already transitioned
-                }
-            }
-        }
-        Ok(())
+        event: &EventType,
+        params: Option<&serde_json::Value>,
+    ) -> Option<PhaseTransition> {
+        // Event recording and trigger evaluation logic
+        // ...
     }
 }
 ```
@@ -1094,17 +1085,24 @@ The canonical `PhaseEngine` struct is defined in F-012 above. This section docum
 
 ```rust
 impl PhaseEngine {
-    // --- Construction (see F-012 for full implementation) ---
-    
-    /// Create engine for per-connection mode (owned state)
-    pub fn new_per_connection(config: Arc<PhaseConfig>) -> Result<Self, PhaseError>;
-    
-    /// Create engine for global mode (shared state)
-    pub fn new_global(
-        config: Arc<PhaseConfig>,
-        shared_state: Arc<PhaseState>,
-    ) -> Result<Self, PhaseError>;
-    
+    // --- Construction (B38) ---
+
+    /// Creates a new `PhaseEngine` with the given phases, baseline, and state scope.
+    ///
+    /// The engine internally creates shared state (Arc<PhaseState>) and manages
+    /// both global and per-connection scoping via the `create_connection_state()`
+    /// method.
+    pub fn new(phases: Vec<Phase>, baseline: BaselineState, scope: StateScope) -> Self;
+
+    /// Creates a phase state handle appropriate for the configured scope.
+    ///
+    /// - StateScope::Global: returns a shared handle wrapping the engine's state
+    /// - StateScope::PerConnection: returns a new owned state
+    ///
+    /// This replaces the previous dual-constructor pattern (new_per_connection/new_global)
+    /// with a single constructor plus a state factory method.
+    pub fn create_connection_state(&self) -> PhaseStateHandle;
+
     // --- Event Processing ---
     
     /// Process an incoming event, potentially triggering transition
@@ -1164,11 +1162,14 @@ pub struct TransitionEvent {
 ### 5.2 Effective State
 
 ```rust
-/// Computed state after applying phase diffs to baseline
+/// Computed state after applying phase diffs to baseline (B14)
+///
+/// Uses IndexMap instead of HashMap for deterministic iteration order,
+/// ensuring reproducible behavior in tests and consistent output.
 pub struct EffectiveState {
-    pub tools: HashMap<String, ToolDefinition>,
-    pub resources: HashMap<String, ResourceDefinition>,
-    pub prompts: HashMap<String, PromptDefinition>,
+    pub tools: IndexMap<String, ToolDefinition>,
+    pub resources: IndexMap<String, ResourceDefinition>,
+    pub prompts: IndexMap<String, PromptDefinition>,
     pub capabilities: Capabilities,
     pub behavior: Behavior,
 }
@@ -1250,6 +1251,7 @@ pub enum TimeoutBehavior {
 | `tokio::sync::broadcast` | Transition event broadcasting |
 | `tokio::time` | Timer management |
 | `dashmap` | Concurrent hash map with atomic values for event counts |
+| `indexmap` | Deterministic-order maps for EffectiveState (B14) |
 | `serde_json` | JSON value manipulation for content matching |
 
 ### 6.2 Timer Implementation
@@ -1305,15 +1307,17 @@ fn json_path_get<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a ser
 
 ### 6.4 Diff Application
 
+The diff application order is **remove → replace → add** (B37):
+
 ```rust
 impl PhaseEngine {
     fn compute_effective_state(&self, phase_index: usize) -> EffectiveState {
         let mut state = self.config.baseline.clone().into_effective();
-        
+
         if phase_index < self.config.phases.len() {
             let phase = &self.config.phases[phase_index];
-            
-            // Apply tool diffs
+
+            // Apply tool diffs: remove -> replace -> add (B37)
             for name in &phase.remove_tools {
                 state.tools.remove(name);
             }
@@ -1327,20 +1331,20 @@ impl PhaseEngine {
                     state.tools.insert(tool.name.clone(), tool);
                 }
             }
-            
+
             // Same pattern for resources and prompts...
-            
+
             // Merge capabilities
             if let Some(caps) = &phase.replace_capabilities {
                 state.capabilities.merge(caps);
             }
-            
+
             // Replace behavior
             if let Some(behavior) = &phase.behavior {
                 state.behavior = behavior.clone();
             }
         }
-        
+
         state
     }
 }

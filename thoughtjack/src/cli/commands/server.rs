@@ -267,7 +267,7 @@ pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError>
                         "warnings": [],
                     }));
                 } else {
-                    return Err(e.into());
+                    tracing::error!(file = %path.display(), "{e}");
                 }
             }
         }
@@ -276,10 +276,10 @@ pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError>
     if args.format == OutputFormat::Json {
         print_validation_json(&results, args.files.len(), valid_count, invalid_count)?;
     } else if invalid_count > 0 {
-        return Err(ThoughtJackError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("{invalid_count} file(s) failed validation"),
-        )));
+        return Err(crate::error::ConfigError::ValidationFailed {
+            count: invalid_count,
+        }
+        .into());
     }
 
     Ok(())

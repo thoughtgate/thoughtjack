@@ -433,4 +433,43 @@ mod tests {
 
         assert_eq!(buffered, streamed);
     }
+
+    // EC-GEN-011: Same seed different sizes — first N bytes identical
+    #[test]
+    fn same_seed_prefix_identical() {
+        let seed = 42u64;
+        let params_small = make_params(vec![
+            ("bytes", json!(100)),
+            ("charset", json!("ascii")),
+            ("seed", json!(seed)),
+        ]);
+        let params_large = make_params(vec![
+            ("bytes", json!(500)),
+            ("charset", json!("ascii")),
+            ("seed", json!(seed)),
+        ]);
+        let gen_small = GarbageGenerator::new(&params_small, &default_limits()).unwrap();
+        let gen_large = GarbageGenerator::new(&params_large, &default_limits()).unwrap();
+        let small = gen_small.generate().unwrap().into_bytes();
+        let large = gen_large.generate().unwrap().into_bytes();
+        assert_eq!(&small[..], &large[..100]);
+    }
+
+    // EC-GEN-005: UTF-8 output with various charsets produces valid bytes
+    #[test]
+    fn all_charsets_produce_correct_output() {
+        for charset in &["ascii", "binary", "numeric", "alphanumeric", "utf8"] {
+            let params = make_params(vec![
+                ("bytes", json!(500)),
+                ("charset", json!(charset)),
+                ("seed", json!(0)),
+            ]);
+            let generator = GarbageGenerator::new(&params, &default_limits()).unwrap();
+            let data = generator.generate().unwrap().into_bytes();
+            assert!(
+                !data.is_empty(),
+                "charset '{charset}' produced empty output"
+            );
+        }
+    }
 }

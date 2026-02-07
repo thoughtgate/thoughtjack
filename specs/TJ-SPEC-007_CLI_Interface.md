@@ -44,6 +44,10 @@ thoughtjack
 │   ├── validate        # Validate configuration
 │   └── list            # List available patterns
 │
+├── scenarios           # List and inspect built-in attack scenarios
+│   ├── list            # List available scenarios
+│   └── show            # Display scenario YAML configuration
+│
 ├── agent               # (Future) Run adversarial A2A agent
 │   └── ...
 │
@@ -160,12 +164,14 @@ thoughtjack server run [OPTIONS]
 Options:
   -c, --config <PATH>        Server configuration file [env: THOUGHTJACK_CONFIG]
   -t, --tool <PATH>          Single tool pattern (creates minimal server)
+  -s, --scenario <NAME>      Built-in scenario name (see `scenarios list`)
       --http <ADDR>          Enable HTTP transport [default: stdio]
       --spoof-client <NAME>  Override client name in initialize [env: THOUGHTJACK_SPOOF_CLIENT]
       --behavior <MODE>      Override delivery behavior [env: THOUGHTJACK_BEHAVIOR]
       --state-scope <SCOPE>  Phase state scope for HTTP [default: per-connection]
                              [env: THOUGHTJACK_STATE_SCOPE] [values: per-connection, global]
       --library <PATH>       Library root directory [default: ./library] [env: THOUGHTJACK_LIBRARY]
+      --metrics-port <PORT>  Start Prometheus metrics exporter on port [env: THOUGHTJACK_METRICS_PORT]
       --capture-dir <PATH>   Capture request/response pairs [env: THOUGHTJACK_CAPTURE_DIR]
       --capture-redact       Redact sensitive fields in captures
       --allow-external-handlers  Enable HTTP/command handlers (SECURITY RISK)
@@ -213,18 +219,24 @@ thoughtjack server run --config attack.yaml --behavior response_delay
   # Run single tool for quick testing
   thoughtjack server run --tool library/tools/calculator/injection.yaml
 
+  # Run built-in scenario
+  thoughtjack server run --scenario rug-pull
+
   # Run with HTTP transport
   thoughtjack server run --config attack.yaml --http :8080
 
   # Spoof client name (for scanner evasion testing)
   thoughtjack server run --config attack.yaml --spoof-client "mcp-scan"
-  
+
+  # Start Prometheus metrics exporter on port 9090
+  thoughtjack server run --config attack.yaml --metrics-port 9090
+
   # Capture all requests/responses for debugging
   thoughtjack server run --config attack.yaml --capture-dir ./captures
-  
+
   # Capture with sensitive field redaction
   thoughtjack server run --config attack.yaml --capture-dir ./captures --capture-redact
-  
+
   # Enable external handlers (required for HTTP/command handlers in config)
   thoughtjack server run --config llm-injection.yaml --allow-external-handlers
 ```
@@ -240,7 +252,11 @@ pub struct ServerRunArgs {
     /// Single tool pattern (creates minimal server)
     #[arg(short, long, group = "source")]
     pub tool: Option<PathBuf>,
-    
+
+    /// Built-in scenario name (see `scenarios list` for options)
+    #[arg(short = 's', long, group = "source")]
+    pub scenario: Option<String>,
+
     /// Enable HTTP transport on specified address
     #[arg(long, value_name = "ADDR")]
     pub http: Option<String>,
@@ -264,7 +280,11 @@ pub struct ServerRunArgs {
     /// Library root directory
     #[arg(long, default_value = "./library", env = "THOUGHTJACK_LIBRARY")]
     pub library: PathBuf,
-    
+
+    /// Start Prometheus metrics exporter on specified port
+    #[arg(long, env = "THOUGHTJACK_METRICS_PORT")]
+    pub metrics_port: Option<u16>,
+
     /// Directory to write request/response capture files
     #[arg(long, env = "THOUGHTJACK_CAPTURE_DIR")]
     pub capture_dir: Option<PathBuf>,
@@ -500,6 +520,94 @@ pub enum ListCategory {
 }
 ```
 
+### F-004a: Scenarios Command
+
+The system SHALL provide `thoughtjack scenarios` to list and inspect built-in attack scenarios.
+
+**Acceptance Criteria:**
+- Lists all built-in scenarios with descriptions
+- Shows full YAML configuration for a specific scenario
+- Supports filtering by category and tag
+- Supports JSON output
+
+**Usage:**
+```bash
+thoughtjack scenarios list [OPTIONS]
+
+Options:
+      --category <CATEGORY>  Filter by category [possible values: injection, temporal, resource, protocol]
+      --tag <TAG>            Filter by tag
+      --format <FORMAT>      Output format [default: human] [possible values: human, json]
+  -h, --help                 Print help
+
+Examples:
+  # List all scenarios
+  thoughtjack scenarios list
+
+  # List scenarios in the injection category
+  thoughtjack scenarios list --category injection
+
+  # Show full YAML for a specific scenario
+  thoughtjack scenarios show rug-pull
+```
+
+**Output (human):**
+```
+Built-in Attack Scenarios
+
+Temporal Attacks (3 scenarios)
+  rug-pull             Classic rug-pull: helpful → malicious after trust building
+  sleeper-agent        Dormant malicious behavior until specific trigger
+  time-bomb            Malicious activation after time delay
+
+Injection Attacks (2 scenarios)
+  prompt-injection     Tool responses contain prompt injection payloads
+  resource-injection   Resource URIs include path traversal attempts
+
+Use 'scenarios show <name>' to view full configuration
+```
+
+**Implementation:**
+```rust
+#[derive(Args, Debug)]
+pub struct ScenariosCommand {
+    #[command(subcommand)]
+    pub subcommand: ScenariosSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScenariosSubcommand {
+    /// List available built-in scenarios
+    List(ScenariosListArgs),
+
+    /// Display the YAML configuration for a built-in scenario
+    Show(ScenariosShowArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ScenariosListArgs {
+    /// Filter by category
+    #[arg(long)]
+    pub category: Option<ScenarioCategory>,
+
+    /// Filter by tag
+    #[arg(long)]
+    pub tag: Option<String>,
+
+    /// Output format
+    #[arg(long, default_value = "human")]
+    pub format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+pub struct ScenariosShowArgs {
+    /// Scenario name to display
+    pub name: String,
+}
+```
+
+See TJ-SPEC-010 for complete scenario specification.
+
 ### F-005: Server Default Subcommand
 
 The system SHALL treat `run` as the default server subcommand.
@@ -698,36 +806,42 @@ The system SHALL use consistent exit codes.
 | 2 | `CONFIG_ERROR` | Configuration validation failed |
 | 3 | `IO_ERROR` | File or network I/O error |
 | 4 | `TRANSPORT_ERROR` | Transport layer error |
-| 5 | `NOT_IMPLEMENTED` | Feature not yet implemented |
+| 5 | `PHASE_ERROR` | Phase engine failure (invalid transition, trigger error) |
+| 10 | `GENERATOR_ERROR` | Generator error (limit exceeded, generation failed) |
+| 11 | `HANDLER_ERROR` | Handler error (external handler failed) |
 | 64 | `USAGE_ERROR` | Invalid command-line usage |
-| 130 | `INTERRUPTED` | Interrupted by signal (Ctrl+C) |
+| 130 | `INTERRUPTED` | Interrupted by SIGINT (Ctrl+C) |
+| 143 | `TERMINATED` | Terminated by SIGTERM |
 
 **Implementation:**
 ```rust
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum ExitCode {
-    Success = 0,
-    GeneralError = 1,
-    ConfigError = 2,
-    IoError = 3,
-    TransportError = 4,
-    NotImplemented = 5,
-    UsageError = 64,
-    Interrupted = 130,
+pub struct ExitCode;
+
+impl ExitCode {
+    pub const SUCCESS: i32 = 0;
+    pub const ERROR: i32 = 1;
+    pub const CONFIG_ERROR: i32 = 2;
+    pub const IO_ERROR: i32 = 3;
+    pub const TRANSPORT_ERROR: i32 = 4;
+    pub const PHASE_ERROR: i32 = 5;
+    pub const GENERATOR_ERROR: i32 = 10;
+    pub const HANDLER_ERROR: i32 = 11;
+    pub const USAGE_ERROR: i32 = 64;
+    pub const INTERRUPTED: i32 = 130;
+    pub const TERMINATED: i32 = 143;
 }
 
-impl From<ThoughtJackError> for ExitCode {
-    fn from(err: ThoughtJackError) -> Self {
-        // Use ThoughtJackError.exit_code() method to determine appropriate exit code
-        match err.exit_code() {
-            2 => ExitCode::ConfigError,
-            3 => ExitCode::IoError,
-            4 => ExitCode::TransportError,
-            5 => ExitCode::NotImplemented,
-            64 => ExitCode::UsageError,
-            130 => ExitCode::Interrupted,
-            _ => ExitCode::GeneralError,
+impl ThoughtJackError {
+    pub const fn exit_code(&self) -> i32 {
+        match self {
+            Self::Config(_) | Self::Json(_) | Self::Yaml(_) => ExitCode::CONFIG_ERROR,
+            Self::Transport(_) => ExitCode::TRANSPORT_ERROR,
+            Self::Phase(_) => ExitCode::PHASE_ERROR,
+            Self::Generator(_) => ExitCode::GENERATOR_ERROR,
+            Self::Handler(_) => ExitCode::HANDLER_ERROR,
+            Self::Behavior(_) => ExitCode::ERROR,
+            Self::Io(_) => ExitCode::IO_ERROR,
+            Self::Usage(_) => ExitCode::USAGE_ERROR,
         }
     }
 }
@@ -752,6 +866,7 @@ The system SHALL support environment variable alternatives for all flags.
 | `THOUGHTJACK_SPOOF_CLIENT` | `--spoof-client` | Client name override |
 | `THOUGHTJACK_BEHAVIOR` | `--behavior` | Delivery behavior override |
 | `THOUGHTJACK_STATE_SCOPE` | `--state-scope` | Phase state scope (per-connection, global) |
+| `THOUGHTJACK_METRICS_PORT` | `--metrics-port` | Prometheus metrics exporter port |
 | `THOUGHTJACK_CAPTURE_DIR` | `--capture-dir` | Request/response capture directory |
 | `THOUGHTJACK_ALLOW_EXTERNAL_HANDLERS` | `--allow-external-handlers` | Enable external handlers |
 | `THOUGHTJACK_LOG_LEVEL` | `-v` | Logging verbosity |
@@ -918,34 +1033,69 @@ impl CaptureWriter {
 
 ### F-014: Signal Handling
 
-The system SHALL handle signals gracefully.
+The system SHALL handle signals gracefully using cooperative cancellation.
 
 **Acceptance Criteria:**
 - SIGINT (Ctrl+C) triggers graceful shutdown
 - SIGTERM triggers graceful shutdown
-- Second SIGINT forces immediate exit
-- Exit code 130 for interrupted
+- Second SIGINT/SIGTERM forces immediate exit
+- Exit code 130 for SIGINT, 143 for SIGTERM
+- Uses `tokio_util::sync::CancellationToken` for cooperative shutdown
+- Cancellation propagates through all async tasks
 
 **Implementation:**
 ```rust
-async fn run_with_signals(server: Server) -> Result<(), ThoughtJackError> {
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_clone = shutdown.clone();
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
 
-    ctrlc::set_handler(move || {
-        if shutdown_clone.swap(true, Ordering::SeqCst) {
-            // Second signal - force exit
-            eprintln!("\nForced shutdown");
-            std::process::exit(130);
+    // Create a single cancellation token shared across the entire process
+    let cancel = CancellationToken::new();
+    let cancel_for_signal = cancel.clone();
+
+    // Spawn signal handler for graceful shutdown
+    tokio::spawn(async move {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
         }
+
+        cancel_for_signal.cancel();
         eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
-    })?;
+
+        // Second signal forces exit
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => std::process::exit(ExitCode::INTERRUPTED),
+            _ = sigterm.recv() => std::process::exit(ExitCode::TERMINATED),
+        }
+    });
+
+    let result = commands::dispatch(cli, cancel).await;
+
+    match result {
+        Ok(()) => std::process::exit(ExitCode::SUCCESS),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(e.exit_code());
+        }
+    }
+}
+```
+
+The `CancellationToken` is passed to all commands and the server runtime, allowing cooperative shutdown:
+
+```rust
+async fn run_server(config: Config, cancel: CancellationToken) -> Result<()> {
+    let server = Server::new(config);
 
     tokio::select! {
         result = server.run() => result,
-        _ = wait_for_shutdown(&shutdown) => {
+        _ = cancel.cancelled() => {
             server.shutdown().await;
-            Err(ThoughtJackError::Interrupted)
+            Ok(())
         }
     }
 }
@@ -1122,11 +1272,13 @@ thoughtjack
 │   ├── run [default]               Start server
 │   │   ├── -c, --config <PATH>     Configuration file
 │   │   ├── -t, --tool <PATH>       Single tool pattern
+│   │   ├── -s, --scenario <NAME>   Built-in scenario name
 │   │   ├── --http <ADDR>           HTTP transport address
 │   │   ├── --spoof-client <NAME>   Override client name
 │   │   ├── --behavior <MODE>       Override delivery behavior
 │   │   ├── --state-scope <SCOPE>   Phase state scope
-│   │   └── --library <PATH>        Library root directory
+│   │   ├── --library <PATH>        Library root directory
+│   │   └── --metrics-port <PORT>   Prometheus metrics port
 │   │
 │   ├── validate                    Validate configuration
 │   │   ├── <FILES>...              Files to validate
@@ -1139,6 +1291,15 @@ thoughtjack
 │       ├── --tag <TAG>             Filter by tag
 │       ├── --format <FORMAT>       Output format
 │       └── --library <PATH>        Library root directory
+│
+├── scenarios                       Built-in attack scenarios
+│   │
+│   ├── list                        List available scenarios
+│   │   ├── --category <CATEGORY>   Filter by category
+│   │   ├── --tag <TAG>             Filter by tag
+│   │   └── --format <FORMAT>       Output format
+│   │
+│   └── show <NAME>                 Display scenario YAML
 │
 ├── agent                           Run adversarial A2A agent
 │   └── (coming soon)
@@ -1174,7 +1335,7 @@ thoughtjack
 | `colored` | Terminal colors |
 | `indicatif` | Progress indicators |
 | `atty` | TTY detection |
-| `ctrlc` | Signal handling |
+| `tokio` / `tokio_util` | Signal handling and cancellation |
 | `tracing` / `tracing-subscriber` | Logging |
 
 ### 6.2 Project Structure
@@ -1302,6 +1463,7 @@ Usage: thoughtjack [OPTIONS] <COMMAND>
 
 Commands:
   server       Run an adversarial MCP server
+  scenarios    List and inspect built-in attack scenarios
   agent        Run an adversarial A2A agent (coming soon)
   completions  Generate shell completions
   version      Show version information
@@ -1317,6 +1479,12 @@ Options:
 Examples:
   # Run a rug-pull attack server
   thoughtjack server --config attacks/rug_pull.yaml
+
+  # Run a built-in scenario
+  thoughtjack server --scenario rug-pull
+
+  # List all built-in scenarios
+  thoughtjack scenarios list
 
   # Validate all attack configurations
   thoughtjack server validate attacks/*.yaml
@@ -1386,9 +1554,12 @@ Options:
 | 2 | `CONFIG_ERROR` | Configuration invalid |
 | 3 | `IO_ERROR` | File not found, permission denied, network error |
 | 4 | `TRANSPORT_ERROR` | stdio or HTTP transport failure |
-| 5 | `NOT_IMPLEMENTED` | Feature not yet available |
+| 5 | `PHASE_ERROR` | Phase engine failure (invalid transition, trigger error) |
+| 10 | `GENERATOR_ERROR` | Generator error (limit exceeded, generation failed) |
+| 11 | `HANDLER_ERROR` | Handler error (external handler failed) |
 | 64 | `USAGE_ERROR` | Invalid arguments or flags |
-| 130 | `INTERRUPTED` | Ctrl+C or SIGTERM |
+| 130 | `INTERRUPTED` | Interrupted by SIGINT (Ctrl+C) |
+| 143 | `TERMINATED` | Terminated by SIGTERM |
 
 ---
 

@@ -525,4 +525,68 @@ mod tests {
         let ctx = make_ctx();
         assert_eq!(block.evaluate(&ctx), Some(1));
     }
+
+    // EC-DYN-018: Glob with literal brackets
+    #[test]
+    fn test_glob_literal_brackets() {
+        // Square brackets in glob are character classes, not literals
+        let cond =
+            MatchCondition::compile(&MatchConditionConfig::Single("file[1].txt".into())).unwrap();
+        // [1] is a character class matching just '1'
+        assert!(cond.matches(Some("file1.txt")));
+        // The brackets are NOT treated as literal
+        assert!(!cond.matches(Some("file[1].txt")));
+    }
+
+    // EC-DYN-014: special characters in match value
+    #[test]
+    fn test_special_chars_in_value() {
+        let cond = MatchCondition::compile(&MatchConditionConfig::Operator {
+            contains: Some("<script>".into()),
+            prefix: None,
+            suffix: None,
+            exists: None,
+            gt: None,
+            lt: None,
+            any_of: None,
+        })
+        .unwrap();
+        assert!(cond.matches(Some("<script>alert(1)</script>")));
+        assert!(!cond.matches(Some("normal text")));
+    }
+
+    // EC-DYN-011: match on missing variable
+    #[test]
+    fn test_match_missing_variable_with_exists_false() {
+        let cond = MatchCondition::compile(&MatchConditionConfig::Operator {
+            contains: None,
+            prefix: None,
+            suffix: None,
+            exists: Some(false),
+            gt: None,
+            lt: None,
+            any_of: None,
+        })
+        .unwrap();
+        // exists=false matches when value is None
+        assert!(cond.matches(None));
+        assert!(!cond.matches(Some("present")));
+    }
+
+    // Numeric comparison with non-numeric string
+    #[test]
+    fn test_gt_non_numeric_returns_false() {
+        let cond = MatchCondition::compile(&MatchConditionConfig::Operator {
+            contains: None,
+            prefix: None,
+            suffix: None,
+            exists: None,
+            gt: Some(5.0),
+            lt: None,
+            any_of: None,
+        })
+        .unwrap();
+        assert!(!cond.matches(Some("not a number")));
+        assert!(!cond.matches(None));
+    }
 }

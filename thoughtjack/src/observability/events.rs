@@ -13,6 +13,60 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
+// Supporting types
+// ---------------------------------------------------------------------------
+
+/// Why the server stopped.
+///
+/// Implements: TJ-SPEC-008 F-011
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// Normal shutdown (completed, no more work).
+    Completed,
+    /// Interrupted by SIGINT.
+    Interrupted,
+    /// Terminated by SIGTERM.
+    Terminated,
+    /// Terminal phase reached.
+    TerminalPhase,
+    /// Unrecoverable error.
+    Error,
+}
+
+/// Summary statistics emitted when the server stops.
+///
+/// Implements: TJ-SPEC-008 F-011
+#[derive(Debug, Clone, Serialize)]
+pub struct RunSummary {
+    /// Total requests processed.
+    pub requests_handled: u64,
+    /// Total responses sent.
+    pub responses_sent: u64,
+    /// Number of phase transitions.
+    pub phase_transitions: u64,
+    /// Number of attacks triggered.
+    pub attacks_triggered: u64,
+    /// Uptime in seconds.
+    pub uptime_secs: f64,
+}
+
+/// Information about the trigger that caused a phase transition.
+///
+/// Implements: TJ-SPEC-008 F-006
+#[derive(Debug, Clone, Serialize)]
+pub struct TriggerInfo {
+    /// Trigger kind (e.g. `"event"`, `"timer"`, `"timeout"`).
+    pub kind: String,
+    /// The event or timer that matched, if applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// Event count at the time of the trigger.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
 // Event variants
 // ---------------------------------------------------------------------------
 
@@ -39,8 +93,11 @@ pub enum Event {
     ServerStopped {
         /// When the server stopped.
         timestamp: DateTime<Utc>,
-        /// Human-readable stop reason.
-        reason: String,
+        /// Why the server stopped.
+        reason: StopReason,
+        /// Run summary statistics.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<RunSummary>,
     },
 
     /// A new phase has been entered.
@@ -51,6 +108,21 @@ pub enum Event {
         phase_name: String,
         /// Zero-based index of the phase.
         phase_index: usize,
+        /// What caused the transition.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger: Option<TriggerInfo>,
+    },
+
+    /// An attack behavior was triggered (delivery or side effect).
+    AttackTriggered {
+        /// When the attack was triggered.
+        timestamp: DateTime<Utc>,
+        /// Attack type (e.g. `"prompt_injection"`, `"rug_pull"`, `"slow_loris"`).
+        attack_type: String,
+        /// Additional context about the attack.
+        details: String,
+        /// Phase during which the attack was triggered.
+        phase: String,
     },
 
     /// An MCP request was received.
@@ -298,7 +370,8 @@ mod tests {
         emitter.emit(sample_event());
         emitter.emit(Event::ServerStopped {
             timestamp: Utc::now(),
-            reason: "done".to_owned(),
+            reason: StopReason::Completed,
+            summary: None,
         });
 
         assert_eq!(emitter.event_count(), 2);
@@ -323,12 +396,30 @@ mod tests {
             },
             Event::ServerStopped {
                 timestamp: now,
-                reason: "shutdown".to_owned(),
+                reason: StopReason::Interrupted,
+                summary: Some(RunSummary {
+                    requests_handled: 10,
+                    responses_sent: 10,
+                    phase_transitions: 2,
+                    attacks_triggered: 1,
+                    uptime_secs: 5.5,
+                }),
             },
             Event::PhaseEntered {
                 timestamp: now,
                 phase_name: "exploit".to_owned(),
                 phase_index: 2,
+                trigger: Some(TriggerInfo {
+                    kind: "event".to_owned(),
+                    event: Some("tools/call".to_owned()),
+                    count: Some(5),
+                }),
+            },
+            Event::AttackTriggered {
+                timestamp: now,
+                attack_type: "prompt_injection".to_owned(),
+                details: "Injected instructions in search results".to_owned(),
+                phase: "exploit".to_owned(),
             },
             Event::RequestReceived {
                 timestamp: now,
@@ -382,7 +473,8 @@ mod tests {
         emitter.emit(sample_event());
         emitter.emit(Event::ServerStopped {
             timestamp: Utc::now(),
-            reason: "test".to_owned(),
+            reason: StopReason::Completed,
+            summary: None,
         });
 
         assert_eq!(emitter.event_count(), 2);

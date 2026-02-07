@@ -4,18 +4,18 @@
 //! coordinator, and handler dispatch into a running MCP server.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chrono::Utc;
 use serde_json::json;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::behavior::{
-    BehaviorCoordinator, ResolvedBehavior, record_delivery_metrics, record_side_effect_metrics,
+    BehaviorCoordinator, ResolvedBehavior, SideEffectManager, SideEffectOutcome,
+    record_delivery_metrics,
 };
-use crate::capture::{CaptureDirection, CaptureWriter};
+use crate::capture::{CaptureType, CaptureWriter};
 use crate::config::schema::{
     BaselineState, BehaviorConfig, EntryAction, GeneratorLimits, ServerConfig, SideEffectTrigger,
     StateScope, UnknownMethodHandling,
@@ -24,7 +24,7 @@ use crate::dynamic::sequence::CallTracker;
 use crate::error::ThoughtJackError;
 use crate::handlers;
 use crate::handlers::RequestContext;
-use crate::observability::events::{Event, EventEmitter};
+use crate::observability::events::{Event, EventEmitter, StopReason};
 use crate::observability::metrics;
 use crate::phase::engine::PhaseEngine;
 use crate::phase::state::EventType;
@@ -157,36 +157,35 @@ impl Server {
         // Start background timer task for time-based triggers
         let timer_handle = self.phase_engine.start_timer_task();
 
-        // Spawn continuous side effects (if any in the initial effective state)
-        let continuous_handles = self.spawn_continuous_side_effects();
+        // Initialize side effect manager and spawn continuous effects
+        let mut side_effect_mgr =
+            SideEffectManager::new(Arc::clone(&self.transport), self.cancel.clone());
+        self.start_continuous_effects(&mut side_effect_mgr);
 
         let mut initialized = false;
 
         let result = self
-            .main_loop(effective_name, server_version, &mut initialized)
+            .main_loop(
+                effective_name,
+                server_version,
+                &mut initialized,
+                &side_effect_mgr,
+            )
             .await;
 
         // Shutdown
         self.phase_engine.shutdown();
         timer_handle.abort();
-
-        // Wait for continuous side effect tasks to finish gracefully
-        for handle in continuous_handles {
-            match tokio::time::timeout(Duration::from_secs(2), handle).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) if e.is_cancelled() => {}
-                Ok(Err(e)) => tracing::warn!(error = %e, "continuous side effect task panicked"),
-                Err(_) => tracing::warn!("continuous side effect task did not finish within 2s"),
-            }
-        }
+        side_effect_mgr.shutdown().await;
         metrics::set_connections_active(0);
 
         self.event_emitter.emit(Event::ServerStopped {
             timestamp: Utc::now(),
             reason: match &result {
-                Ok(()) => "EOF".to_string(),
-                Err(e) => format!("error: {e}"),
+                Ok(()) => StopReason::Completed,
+                Err(_) => StopReason::Error,
             },
+            summary: None,
         });
         self.event_emitter.flush();
 
@@ -194,11 +193,13 @@ impl Server {
     }
 
     /// Core message loop.
+    #[allow(clippy::too_many_lines)]
     async fn main_loop(
         &self,
         server_name: &str,
         server_version: &str,
         initialized: &mut bool,
+        side_effect_mgr: &SideEffectManager,
     ) -> Result<(), ThoughtJackError> {
         loop {
             // Wait for next message or cancellation
@@ -240,7 +241,7 @@ impl Server {
             // Capture incoming request
             if let Some(ref capture) = self.capture {
                 if let Ok(data) = serde_json::to_value(&request) {
-                    if let Err(e) = capture.record(CaptureDirection::Request, &data) {
+                    if let Err(e) = capture.record(CaptureType::Request, &data, None) {
                         warn!(error = %e, "failed to capture request");
                     }
                 }
@@ -308,8 +309,15 @@ impl Server {
 
             // 5. Deliver response and execute side effects
             if let Some(ref resp) = response {
-                self.deliver_and_finalize(resp, &request, &effective_state, start, initialized)
-                    .await;
+                self.deliver_and_finalize(
+                    resp,
+                    &request,
+                    &effective_state,
+                    start,
+                    initialized,
+                    side_effect_mgr,
+                )
+                .await;
             }
 
             // 6. THEN execute entry actions (response-before-transition guarantee)
@@ -384,11 +392,12 @@ impl Server {
         effective_state: &crate::phase::EffectiveState,
         start: Instant,
         initialized: &mut bool,
+        side_effect_mgr: &SideEffectManager,
     ) {
         // Capture outgoing response
         if let Some(ref capture) = self.capture {
             if let Ok(data) = serde_json::to_value(resp) {
-                if let Err(e) = capture.record(CaptureDirection::Response, &data) {
+                if let Err(e) = capture.record(CaptureType::Response, &data, None) {
                     warn!(error = %e, "failed to capture response");
                 }
             }
@@ -408,23 +417,27 @@ impl Server {
         }
 
         // Execute OnRequest side effects after delivery
-        self.execute_triggered_effects(&resolved, SideEffectTrigger::OnRequest)
+        self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnRequest)
             .await;
 
         // If this was a successful initialize, run OnConnect effects
         if !*initialized && request.method == "initialize" && resp.error.is_none() {
             *initialized = true;
-            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnConnect)
+            self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnConnect)
                 .await;
         }
 
         // Subscription triggers (TJ-SPEC-004 F-014)
         if request.method == "resources/subscribe" {
-            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnSubscribe)
+            self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnSubscribe)
                 .await;
         } else if request.method == "resources/unsubscribe" {
-            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnUnsubscribe)
-                .await;
+            self.fire_side_effects(
+                side_effect_mgr,
+                &resolved,
+                SideEffectTrigger::OnUnsubscribe,
+            )
+            .await;
         }
     }
 
@@ -442,6 +455,7 @@ impl Server {
             timestamp: Utc::now(),
             phase_name: to_name,
             phase_index: trans.to_phase,
+            trigger: None,
         });
     }
 
@@ -540,7 +554,7 @@ impl Server {
         }
     }
 
-    /// Executes side effects matching the given trigger.
+    /// Fires side effects matching the given trigger via the [`SideEffectManager`].
     ///
     /// Emits a [`SideEffectTriggered`](Event::SideEffectTriggered) event for
     /// each successfully executed effect (TJ-SPEC-008 F-011).
@@ -548,67 +562,37 @@ impl Server {
     /// When a side effect returns [`SideEffectOutcome::CloseConnection`],
     /// the server's cancellation token is cancelled to initiate shutdown
     /// (TJ-SPEC-004 F-007).
-    async fn execute_triggered_effects(
+    async fn fire_side_effects(
         &self,
+        mgr: &SideEffectManager,
         resolved: &ResolvedBehavior,
         trigger: SideEffectTrigger,
     ) {
-        for effect in &resolved.side_effects {
-            if effect.trigger() == trigger {
-                if !effect.supports_transport(self.transport.transport_type()) {
-                    warn!(
-                        effect = effect.name(),
-                        transport = ?self.transport.transport_type(),
-                        "side effect not supported on this transport, skipping"
-                    );
-                    continue;
-                }
-                let cancel = self.cancel.child_token();
-                match effect
-                    .execute(
-                        self.transport.as_ref(),
-                        &self.transport.connection_context(),
-                        cancel,
-                    )
-                    .await
-                {
-                    Ok(result) => {
-                        record_side_effect_metrics(effect.name(), &result);
-                        self.event_emitter.emit(Event::SideEffectTriggered {
-                            timestamp: Utc::now(),
-                            effect_type: effect.name().to_string(),
-                            phase: self.phase_engine.current_phase_name().to_string(),
-                        });
+        let results = mgr.trigger(&resolved.side_effects, trigger).await;
 
-                        // Handle close_connection outcome (TJ-SPEC-004 F-007)
-                        if let crate::behavior::SideEffectOutcome::CloseConnection { graceful } =
-                            result.outcome
-                        {
-                            info!(graceful, "close_connection side effect triggered shutdown");
-                            self.cancel.cancel();
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            effect = effect.name(),
-                            error = %e,
-                            ?trigger,
-                            "side effect failed"
-                        );
-                    }
-                }
+        for (name, result) in results {
+            self.event_emitter.emit(Event::SideEffectTriggered {
+                timestamp: Utc::now(),
+                effect_type: name.clone(),
+                phase: self.phase_engine.current_phase_name().to_string(),
+            });
+
+            // Handle close_connection outcome (TJ-SPEC-004 F-007)
+            if let SideEffectOutcome::CloseConnection { graceful } = result.outcome {
+                info!(graceful, "close_connection side effect triggered shutdown");
+                self.cancel.cancel();
+                return;
             }
         }
     }
 
-    /// Spawns continuous side effects as background tasks.
+    /// Starts continuous side effects via the [`SideEffectManager`].
     ///
-    /// Each continuous effect runs in its own `tokio::spawn` task, sharing the
-    /// transport via `Arc` and respecting the server's cancellation token.
+    /// Resolves the initial effective state and spawns any continuous effects
+    /// as background tasks managed by the side effect manager.
     ///
     /// Implements: TJ-SPEC-004 F-014
-    fn spawn_continuous_side_effects(&self) -> Vec<JoinHandle<()>> {
+    fn start_continuous_effects(&self, mgr: &mut SideEffectManager) {
         let effective_state = self.phase_engine.effective_state();
         let synthetic_request = JsonRpcRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -623,27 +607,15 @@ impl Server {
         );
 
         let transport_type = self.transport.transport_type();
-        let continuous: Vec<_> = resolved
-            .side_effects
-            .drain(..)
-            .filter(|e| {
-                e.trigger() == SideEffectTrigger::Continuous && e.supports_transport(transport_type)
-            })
-            .collect();
 
-        let mut handles = Vec::new();
-        for effect in continuous {
-            let transport = Arc::clone(&self.transport);
-            let ctx = transport.connection_context();
-            let cancel = self.cancel.child_token();
-            info!(effect = effect.name(), "spawning continuous side effect");
-            handles.push(tokio::spawn(async move {
-                if let Err(e) = effect.execute(transport.as_ref(), &ctx, cancel).await {
-                    warn!(effect = effect.name(), error = %e, "continuous side effect failed");
-                }
-            }));
+        // Drain continuous effects from the resolved behavior and spawn them
+        for effect in resolved.side_effects.drain(..) {
+            if effect.trigger() == SideEffectTrigger::Continuous
+                && effect.supports_transport(transport_type)
+            {
+                mgr.spawn(effect);
+            }
         }
-        handles
     }
 }
 

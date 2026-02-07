@@ -360,4 +360,43 @@ mod tests {
         let cursor_moves = s.matches(';').count(); // row;col pairs
         assert_eq!(cursor_moves, 2);
     }
+
+    // EC-GEN-008: ANSI escape with empty sequences list
+    #[test]
+    fn empty_sequences_produces_empty() {
+        let params = make_params(vec![("sequences", json!([])), ("count", json!(10))]);
+        let generator = AnsiEscapeGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        assert!(data.is_empty());
+    }
+
+    // EC-GEN-018: Output contains actual escape characters
+    #[test]
+    fn output_contains_escape_chars() {
+        let params = make_params(vec![
+            ("sequences", json!(["cursor_move", "color", "title", "hyperlink", "clear"])),
+            ("count", json!(10)),
+            ("seed", json!(0)),
+        ]);
+        let generator = AnsiEscapeGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        // All ANSI sequences start with ESC (0x1B)
+        let esc_count = data.iter().filter(|&&b| b == 0x1B).count();
+        assert!(esc_count >= 10, "expected >= 10 ESC chars, got {esc_count}");
+    }
+
+    // Unknown sequence types are silently ignored
+    #[test]
+    fn unknown_sequence_type_ignored() {
+        let params = make_params(vec![
+            ("sequences", json!(["unknown_type", "cursor_move"])),
+            ("count", json!(2)),
+            ("seed", json!(0)),
+        ]);
+        let generator = AnsiEscapeGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        let s = String::from_utf8(data).unwrap();
+        // Only cursor_move sequences should be present (unknown is filtered out)
+        assert!(s.contains("\x1B["), "should have cursor_move sequence");
+    }
 }

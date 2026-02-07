@@ -1482,6 +1482,14 @@ pub struct LoggingConfig {
     /// Log outgoing responses
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_response: Option<bool>,
+
+    /// Log trigger matches during phase evaluation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_trigger_match: Option<bool>,
+
+    /// Output destination: `"stderr"`, `"stdout"`, or a file path
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 // ============================================================================
@@ -2473,6 +2481,8 @@ level: debug
 on_phase_change: true
 on_request: true
 on_response: false
+on_trigger_match: true
+output: /tmp/thoughtjack.log
 ";
 
         let config: LoggingConfig = serde_yaml::from_str(yaml).unwrap();
@@ -2480,6 +2490,8 @@ on_response: false
         assert_eq!(config.on_phase_change, Some(true));
         assert_eq!(config.on_request, Some(true));
         assert_eq!(config.on_response, Some(false));
+        assert_eq!(config.on_trigger_match, Some(true));
+        assert_eq!(config.output, Some("/tmp/thoughtjack.log".to_string()));
     }
 
     #[test]
@@ -2489,6 +2501,8 @@ on_response: false
         assert!(config.on_phase_change.is_none());
         assert!(config.on_request.is_none());
         assert!(config.on_response.is_none());
+        assert!(config.on_trigger_match.is_none());
+        assert!(config.output.is_none());
     }
 
     #[test]

@@ -337,4 +337,78 @@ mod tests {
         let actual = generator.generate().unwrap().into_bytes().len();
         assert_eq!(estimated, actual);
     }
+
+    // EC-GEN-007: Nested JSON with large inner value
+    #[test]
+    fn large_inner_value_plus_nesting() {
+        let big_inner = "x".repeat(1000);
+        let limits = GeneratorLimits {
+            max_payload_bytes: 100_000,
+            max_nest_depth: 50,
+            ..GeneratorLimits::default()
+        };
+        let params = make_params(vec![
+            ("depth", json!(10)),
+            ("inner", json!(big_inner)),
+        ]);
+        let generator = NestedJsonGenerator::new(&params, &limits).unwrap();
+        let payload = generator.generate().unwrap().into_bytes();
+        let s = String::from_utf8(payload).unwrap();
+        // Should contain the full inner value
+        assert!(s.contains(&big_inner));
+        // Should be valid JSON
+        let _parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+    }
+
+    // EC-GEN-019: Mixed nested structure at odd depth
+    #[test]
+    fn mixed_structure_odd_depth() {
+        let params = make_params(vec![
+            ("depth", json!(3)),
+            ("structure", json!("mixed")),
+            ("key", json!("k")),
+            ("inner", json!(true)),
+        ]);
+        let generator = NestedJsonGenerator::new(&params, &default_limits()).unwrap();
+        let payload = generator.generate().unwrap().into_bytes();
+        let s = String::from_utf8(payload).unwrap();
+        // depth 3: level 0=obj, 1=arr, 2=obj
+        assert_eq!(s, r#"{"k":[{"k":true}]}"#);
+    }
+
+    // EC-GEN-002: Depth exceeds limit
+    #[test]
+    fn rejects_depth_exceeding_max() {
+        let limits = GeneratorLimits {
+            max_nest_depth: 100,
+            ..GeneratorLimits::default()
+        };
+        let params = make_params(vec![("depth", json!(101))]);
+        let err = NestedJsonGenerator::new(&params, &limits).unwrap_err();
+        assert!(matches!(err, GeneratorError::LimitExceeded(_)));
+    }
+
+    // EC-GEN-012: Object nesting vs array nesting size difference
+    #[test]
+    fn object_larger_than_array_due_to_keys() {
+        let params_obj = make_params(vec![
+            ("depth", json!(20)),
+            ("structure", json!("object")),
+        ]);
+        let params_arr = make_params(vec![
+            ("depth", json!(20)),
+            ("structure", json!("array")),
+        ]);
+        let limits = default_limits();
+        let gen_obj = NestedJsonGenerator::new(&params_obj, &limits).unwrap();
+        let gen_arr = NestedJsonGenerator::new(&params_arr, &limits).unwrap();
+
+        let size_obj = gen_obj.estimated_size();
+        let size_arr = gen_arr.estimated_size();
+
+        assert!(
+            size_obj > size_arr,
+            "object ({size_obj}) should be larger than array ({size_arr}) due to key overhead"
+        );
+    }
 }

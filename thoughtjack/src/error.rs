@@ -192,6 +192,15 @@ pub enum ConfigError {
         /// Location in the configuration where it was referenced
         location: String,
     },
+
+    /// One or more configuration files failed validation.
+    ///
+    /// Implements: TJ-SPEC-007 EC-CLI-016
+    #[error("{count} file(s) failed validation")]
+    ValidationFailed {
+        /// Number of files that failed validation.
+        count: usize,
+    },
 }
 
 // ============================================================================

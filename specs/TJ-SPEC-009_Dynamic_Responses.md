@@ -195,43 +195,62 @@ field[-1]       → last array element (negative indexing)
 
 **Implementation:**
 ```rust
+/// The type of MCP item being handled (TJ-SPEC-009 B29).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemType {
+    Tool,      // tools/call
+    Resource,  // resources/read
+    Prompt,    // prompts/get
+}
+
 pub struct TemplateContext {
     pub args: serde_json::Value,
-    pub tool_name: String,
-    pub tool_call_count: u64,
+    pub item_name: String,        // B29: Generalized from tool_name
+    pub item_type: ItemType,       // B29: Discriminates Tool/Resource/Prompt
+    pub call_count: u64,           // B29: Generalized from tool_call_count
     pub phase_name: String,
     pub phase_index: i32,
-    pub request_id: Option<serde_json::Value>,  // None for notifications
-    pub connection_id: u64,
+    pub request_id: Option<serde_json::Value>,  // B29: None for notifications
+    pub request_method: String,    // B29: JSON-RPC method name
+    pub connection_id: u64,        // B29: Connection identifier
+    pub resource_name: Option<String>,      // B29: Resource display name
+    pub resource_mime_type: Option<String>, // B29: Resource MIME type
 }
 
 impl TemplateContext {
     pub fn resolve(&self, template: &str) -> String {
         let mut result = template.to_string();
-        
+
         // Handle escaped $${
         let escaped_marker = "\x00ESCAPED_DOLLAR\x00";
         result = result.replace("$${", escaped_marker);
-        
+
         // Resolve variables
         let re = Regex::new(r"\$\{([^}]+)\}").unwrap();
         result = re.replace_all(&result, |caps: &Captures| {
             self.get_variable(&caps[1]).unwrap_or_default()
         }).to_string();
-        
+
         // Restore escaped
         result = result.replace(escaped_marker, "${");
-        
+
         result
     }
-    
+
     fn get_variable(&self, path: &str) -> Option<String> {
         match path {
-            "tool.name" => Some(self.tool_name.clone()),
-            "tool.call_count" => Some(self.tool_call_count.to_string()),
+            "tool.name" if self.item_type == ItemType::Tool => Some(self.item_name.clone()),
+            "tool.call_count" if self.item_type == ItemType::Tool => Some(self.call_count.to_string()),
+            "resource.uri" if self.item_type == ItemType::Resource => Some(self.item_name.clone()),
+            "resource.name" if self.item_type == ItemType::Resource => self.resource_name.clone(),
+            "resource.mimeType" if self.item_type == ItemType::Resource => self.resource_mime_type.clone(),
+            "resource.call_count" if self.item_type == ItemType::Resource => Some(self.call_count.to_string()),
+            "prompt.name" if self.item_type == ItemType::Prompt => Some(self.item_name.clone()),
+            "prompt.call_count" if self.item_type == ItemType::Prompt => Some(self.call_count.to_string()),
             "phase.name" => Some(self.phase_name.clone()),
             "phase.index" => Some(self.phase_index.to_string()),
             "request.id" => self.request_id.as_ref().map(|id| id.to_string()),
+            "request.method" => Some(self.request_method.clone()),
             "connection.id" => Some(self.connection_id.to_string()),
             "args" => Some(self.args.to_string()),
             path if path.starts_with("args.") => {
@@ -541,7 +560,10 @@ response:
   "text": "Just return text directly"
 }
 
-// Error response
+// Error response (TJ-SPEC-009 B30)
+// Uses serde_json::Value for error object, not a typed JsonRpcError struct.
+// This provides flexibility for passing through arbitrary error structures
+// from external handlers.
 {
   "error": {
     "code": -32000,
@@ -607,7 +629,8 @@ impl HttpHandler {
 pub enum HandlerResponse {
     Full { content: Vec<ContentItem> },
     Simple { text: String },
-    Error { error: JsonRpcError },
+    // B30: Error uses serde_json::Value for flexibility
+    Error { error: serde_json::Value },
 }
 
 impl HandlerResponse {

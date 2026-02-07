@@ -907,4 +907,67 @@ mod tests {
         assert!(!result.completed);
         assert_eq!(result.messages_sent, 0);
     }
+
+    // ========================================================================
+    // EC-BEH-003: Nested JSON depth clamping
+    // ========================================================================
+
+    #[test]
+    fn test_nested_json_clamping() {
+        // EC-BEH-003: extreme depth is clamped to MAX_NESTED_JSON_DEPTH
+        use crate::behavior::delivery::create_delivery_behavior;
+        let delivery = create_delivery_behavior(&DeliveryConfig::NestedJson {
+            depth: 999_999,
+            key: Some("k".repeat(5000)),
+        });
+        // Should create without panic — limits are enforced internally
+        assert_eq!(delivery.name(), "nested_json");
+    }
+
+    // ========================================================================
+    // EC-BEH-005: Notification flood rate clamping
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_notification_flood_rate_clamped() {
+        // EC-BEH-005: very high rate_per_sec doesn't cause issues
+        let config = SideEffectConfig {
+            type_: SideEffectType::NotificationFlood,
+            trigger: SideEffectTrigger::Continuous,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("rate_per_sec".to_string(), serde_json::json!(1_000_000));
+                m.insert("duration_sec".to_string(), serde_json::json!(0.01));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+
+        // Should complete without panic or OOM
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+        assert!(result.completed);
+    }
+
+    // ========================================================================
+    // EC-BEH-020: Close connection with on_connect trigger
+    // ========================================================================
+
+    #[test]
+    fn test_close_connection_on_connect_trigger() {
+        // EC-BEH-020: close_connection with trigger: on_connect
+        let config = SideEffectConfig {
+            type_: SideEffectType::CloseConnection,
+            trigger: SideEffectTrigger::OnConnect,
+            params: HashMap::new(),
+        };
+        let effect = create_side_effect(&config);
+        assert_eq!(effect.trigger(), SideEffectTrigger::OnConnect);
+        assert_eq!(effect.name(), "close_connection");
+    }
 }

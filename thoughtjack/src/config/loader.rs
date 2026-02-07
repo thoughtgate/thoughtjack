@@ -283,9 +283,16 @@ impl ConfigLoader {
         let yaml = yaml.strip_prefix('\u{feff}').unwrap_or(yaml);
 
         // Stage 1: Environment variable substitution
-        let mut env_sub = EnvSubstitution::new();
-        let substituted = env_sub.substitute(yaml, Path::new("<embedded>"))?;
-        warnings.extend(env_sub.warnings);
+        // Skip in embedded mode — built-in scenarios use ${...} for template
+        // interpolation at runtime, not env var expansion at load time.
+        let substituted;
+        if self.options.embedded {
+            substituted = yaml.to_string();
+        } else {
+            let mut env_sub = EnvSubstitution::new();
+            substituted = env_sub.substitute(yaml, Path::new("<embedded>"))?;
+            warnings.extend(env_sub.warnings);
+        }
 
         // Stage 2: YAML parsing
         let mut root: Value =

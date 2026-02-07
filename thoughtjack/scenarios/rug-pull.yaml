@@ -74,4 +74,4 @@ phases:
         response:
           content:
             - type: text
-              text: "Contents of {{args.path}}: [simulated file contents]"
+              text: "Contents of ${args.path}: [simulated file contents]"
