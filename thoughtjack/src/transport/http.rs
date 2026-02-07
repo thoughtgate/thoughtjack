@@ -9,7 +9,6 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -27,7 +26,6 @@ use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tower::ServiceBuilder;
 use tracing::{debug, info};
 
 use super::{ConnectionContext, JsonRpcMessage, Result, Transport, TransportType};
@@ -43,8 +41,6 @@ pub struct HttpConfig {
     pub bind_addr: String,
     /// Maximum allowed request body size in bytes.
     pub max_message_size: usize,
-    /// Request timeout in seconds (default: 30).
-    pub request_timeout_secs: u64,
 }
 
 /// An incoming request received by the `POST /message` handler.
@@ -76,7 +72,6 @@ struct HttpSharedState {
     connections: Arc<DashMap<u64, ConnectionState>>,
     next_connection_id: AtomicU64,
     max_message_size: usize,
-    request_timeout_secs: u64,
     sse_connections: AtomicUsize,
     cancel: CancellationToken,
 }
@@ -157,7 +152,6 @@ impl HttpTransport {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: config.max_message_size,
-            request_timeout_secs: config.request_timeout_secs,
             sse_connections: AtomicUsize::new(0),
             cancel: cancel.clone(),
         });
@@ -362,21 +356,17 @@ fn build_router(shared: Arc<HttpSharedState>) -> Router {
     // (default 10MB). Without this, requests between 2MB and max_message_size
     // are rejected by axum before reaching the handler's size check.
     let body_limit = axum::extract::DefaultBodyLimit::max(shared.max_message_size);
-    let timeout_secs = shared.request_timeout_secs;
 
+    // Note: request timeout is NOT applied as a router-level middleware because
+    // the POST /message handler returns a streaming response body immediately
+    // and fills it asynchronously from the server loop. A tower Timeout layer
+    // wraps the response body and can drop it under load before the server
+    // finishes processing. The timeout is enforced at the server request
+    // processing level instead (via request_timeout_secs on HttpSharedState).
     Router::new()
         .route("/message", post(handle_post_message))
         .route("/sse", get(handle_sse))
         .layer(body_limit)
-        .layer(
-            ServiceBuilder::new()
-                .layer(axum::error_handling::HandleErrorLayer::new(
-                    move |_: tower::BoxError| async move {
-                        (StatusCode::REQUEST_TIMEOUT, "request timed out")
-                    },
-                ))
-                .timeout(Duration::from_secs(timeout_secs)),
-        )
         .with_state(shared)
 }
 
@@ -623,7 +613,6 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         })
@@ -712,7 +701,6 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: 10, // tiny limit
-            request_timeout_secs: 30,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         });
@@ -741,7 +729,6 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         });
@@ -799,7 +786,6 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
 
@@ -823,7 +809,6 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         assert_eq!(transport.transport_type(), TransportType::Http);
@@ -836,7 +821,6 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         assert!(transport.supports_behavior(&DeliveryConfig::Normal));
@@ -853,7 +837,6 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         let debug = format!("{transport:?}");
@@ -867,7 +850,6 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         let ctx = transport.connection_context();
@@ -910,7 +892,6 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         });
@@ -945,7 +926,6 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         });

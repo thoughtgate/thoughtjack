@@ -107,7 +107,6 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         let http_config = HttpConfig {
             bind_addr: addr,
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            request_timeout_secs: 30,
         };
         let (http_transport, bound_addr) = HttpTransport::bind(http_config, cancel.clone()).await?;
         tracing::info!(%bound_addr, "HTTP server listening");
