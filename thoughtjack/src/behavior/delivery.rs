@@ -267,6 +267,12 @@ impl DeliveryBehavior for UnboundedLineDelivery {
 // NestedJsonDelivery
 // ============================================================================
 
+/// Maximum nesting depth for `NestedJsonDelivery`.
+///
+/// Prevents OOM from extreme depth values that would produce
+/// multi-gigabyte allocations via `Vec::with_capacity`.
+const MAX_NESTED_JSON_DEPTH: usize = 100_000;
+
 /// Wrap response in deep JSON nesting (iterative, no recursion).
 ///
 /// Implements: TJ-SPEC-004 F-005
@@ -278,10 +284,15 @@ pub struct NestedJsonDelivery {
 impl NestedJsonDelivery {
     /// Creates a new nested JSON delivery.
     ///
+    /// Depth is clamped to [`MAX_NESTED_JSON_DEPTH`] (100,000).
+    ///
     /// Implements: TJ-SPEC-004 F-005
     #[must_use]
-    pub const fn new(depth: usize, key: String) -> Self {
-        Self { depth, key }
+    pub fn new(depth: usize, key: String) -> Self {
+        Self {
+            depth: depth.min(MAX_NESTED_JSON_DEPTH),
+            key,
+        }
     }
 }
 
