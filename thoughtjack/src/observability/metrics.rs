@@ -156,12 +156,15 @@ pub fn record_delivery_duration(duration: Duration) {
 
 /// Records a phase transition.
 ///
+/// Phase names are sanitized to prevent label cardinality explosion
+/// from user-controlled configuration values.
+///
 /// Implements: TJ-SPEC-008 F-009
 pub fn record_phase_transition(from: &str, to: &str) {
     counter!(
         "thoughtjack_phase_transitions_total",
-        "from" => from.to_owned(),
-        "to" => to.to_owned()
+        "from" => sanitize_phase_label(from),
+        "to" => sanitize_phase_label(to)
     )
     .increment(1);
 }
@@ -174,9 +177,9 @@ pub fn record_phase_transition(from: &str, to: &str) {
 /// Implements: TJ-SPEC-008 F-009
 pub fn set_current_phase(phase_name: &str, previous_phase: Option<&str>) {
     if let Some(prev) = previous_phase {
-        gauge!("thoughtjack_current_phase", "phase_name" => prev.to_owned()).set(0.0);
+        gauge!("thoughtjack_current_phase", "phase_name" => sanitize_phase_label(prev)).set(0.0);
     }
-    gauge!("thoughtjack_current_phase", "phase_name" => phase_name.to_owned()).set(1.0);
+    gauge!("thoughtjack_current_phase", "phase_name" => sanitize_phase_label(phase_name)).set(1.0);
 }
 
 /// Sets the number of active connections.
@@ -200,6 +203,29 @@ pub fn set_connections_active(count: u64) {
 pub fn record_event_count(event: &str, count: u64) {
     let label = sanitize_event_label(event);
     gauge!("thoughtjack_event_counts", "event" => label.to_owned()).set(count as f64);
+}
+
+/// Maximum length for phase name labels.
+///
+/// Phase names come from user config and are used directly as Prometheus
+/// labels. This caps the label length to prevent cardinality issues.
+const MAX_PHASE_LABEL_LEN: usize = 64;
+
+/// Sanitizes a phase name for use as a metrics label.
+///
+/// Truncates to [`MAX_PHASE_LABEL_LEN`] characters and replaces any
+/// characters invalid in Prometheus labels with underscores.
+fn sanitize_phase_label(name: &str) -> String {
+    name.chars()
+        .take(MAX_PHASE_LABEL_LEN)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Sanitizes an event label, handling both generic and specific forms.
