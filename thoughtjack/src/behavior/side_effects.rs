@@ -228,7 +228,8 @@ impl SideEffect for BatchAmplify {
             .map(|_| JsonRpcNotification::new(self.method.clone(), None))
             .collect();
 
-        let serialized = serde_json::to_vec(&notifications)?;
+        let mut serialized = serde_json::to_vec(&notifications)?;
+        serialized.push(b'\n'); // Trailing newline for line-delimited framing
         let bytes_sent = serialized.len();
 
         tokio::select! {
