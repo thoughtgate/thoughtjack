@@ -850,7 +850,9 @@ fn verify_within_base(resolved: &Path, base: &Path, directive: &str) -> Result<(
         .map_err(|_| ConfigError::MissingFile {
             path: resolved.to_path_buf(),
         })?;
-    let canonical_base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let canonical_base = base.canonicalize().map_err(|_| ConfigError::MissingFile {
+        path: base.to_path_buf(),
+    })?;
 
     if !canonical.starts_with(&canonical_base) {
         return Err(ConfigError::InvalidValue {
