@@ -197,10 +197,9 @@ impl PayloadStream for BatchNotificationsStream {
             return Some(chunk);
         }
 
-        if self.remaining == 0 {
-            self.finished = true;
-            return Some(b"]".to_vec());
-        }
+        // remaining > 0 here: if it were 0, the first chunk would have set
+        // finished=true and we would have returned None above.
+        debug_assert!(self.remaining > 0);
 
         let batch_size = self.remaining.min(1000);
         let mut chunk = Vec::with_capacity(batch_size * (self.single_notification.len() + 1));

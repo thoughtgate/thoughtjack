@@ -1025,9 +1025,9 @@ impl AnyOfValue {
             (Self::String(s), serde_json::Value::String(js)) => s == js,
             (Self::Bool(b), serde_json::Value::Bool(jb)) => b == jb,
             (Self::Int(i), serde_json::Value::Number(n)) => n.as_i64() == Some(*i),
-            // TODO(v0.2): exact float equality is fragile for computed values;
-            // acceptable for JSON-sourced constants but consider epsilon for v0.2.
-            (Self::Float(f), serde_json::Value::Number(n)) => n.as_f64() == Some(*f),
+            (Self::Float(f), serde_json::Value::Number(n)) => n
+                .as_f64()
+                .is_some_and(|nf| (nf - f).abs() < f64::EPSILON * 100.0),
             _ => false,
         }
     }

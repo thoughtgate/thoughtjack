@@ -248,6 +248,10 @@ pub enum TransportError {
     /// Connection was closed unexpectedly
     #[error("connection closed: {0}")]
     ConnectionClosed(String),
+
+    /// Internal transport error (e.g. poisoned mutex)
+    #[error("internal transport error: {0}")]
+    InternalError(String),
 }
 
 // ============================================================================

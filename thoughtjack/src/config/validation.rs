@@ -218,6 +218,11 @@ impl Validator {
         baseline_resources: &HashSet<String>,
         baseline_prompts: &HashSet<String>,
     ) {
+        // Track cumulative state across phases for validation
+        let mut cumulative_tools = baseline_tools.clone();
+        let mut cumulative_resources = baseline_resources.clone();
+        let mut cumulative_prompts = baseline_prompts.clone();
+
         // Check for duplicate phase names
         let mut phase_names = HashSet::new();
         for (idx, phase) in phases.iter().enumerate() {
@@ -253,91 +258,91 @@ impl Validator {
                 );
             }
 
-            // TODO(v0.2): validate replace/remove targets against cumulative state
-            // (baseline + previous phases' add_* fields) instead of just baseline,
-            // so phases that build on earlier additions can be validated correctly.
+            // Validate replace/remove targets against cumulative state
+            self.validate_phase_targets(
+                phase,
+                &path,
+                &cumulative_tools,
+                &cumulative_resources,
+                &cumulative_prompts,
+            );
 
-            // Validate replace_tools targets exist in baseline
-            if let Some(replace_tools) = &phase.replace_tools {
-                for tool_name in replace_tools.keys() {
-                    if !baseline_tools.contains(tool_name) {
-                        self.add_error(
-                            &format!("{path}.replace_tools.{tool_name}"),
-                            &format!(
-                                "Cannot replace unknown tool '{tool_name}'. Tool not found in baseline."
-                            ),
-                        );
-                    }
+            // Update cumulative state for next phase
+            update_cumulative_state(
+                phase,
+                &mut cumulative_tools,
+                &mut cumulative_resources,
+                &mut cumulative_prompts,
+            );
+        }
+    }
+
+    /// Validates that phase replace/remove targets exist in the cumulative state.
+    fn validate_phase_targets(
+        &mut self,
+        phase: &Phase,
+        path: &str,
+        cumulative_tools: &HashSet<String>,
+        cumulative_resources: &HashSet<String>,
+        cumulative_prompts: &HashSet<String>,
+    ) {
+        if let Some(replace_tools) = &phase.replace_tools {
+            for tool_name in replace_tools.keys() {
+                if !cumulative_tools.contains(tool_name) {
+                    self.add_error(
+                        &format!("{path}.replace_tools.{tool_name}"),
+                        &format!("Cannot replace unknown tool '{tool_name}'. Tool not found in cumulative state."),
+                    );
                 }
             }
-
-            // Validate remove_tools targets exist in baseline
-            if let Some(remove_tools) = &phase.remove_tools {
-                for tool_name in remove_tools {
-                    if !baseline_tools.contains(tool_name) {
-                        self.add_error(
-                            &format!("{path}.remove_tools"),
-                            &format!(
-                                "Cannot remove unknown tool '{tool_name}'. Tool not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(remove_tools) = &phase.remove_tools {
+            for tool_name in remove_tools {
+                if !cumulative_tools.contains(tool_name) {
+                    self.add_error(
+                        &format!("{path}.remove_tools"),
+                        &format!("Cannot remove unknown tool '{tool_name}'. Tool not found in cumulative state."),
+                    );
                 }
             }
-
-            // Validate replace_resources targets exist in baseline
-            if let Some(replace_resources) = &phase.replace_resources {
-                for uri in replace_resources.keys() {
-                    if !baseline_resources.contains(uri) {
-                        self.add_error(
-                            &format!("{path}.replace_resources.{uri}"),
-                            &format!(
-                                "Cannot replace unknown resource '{uri}'. Resource not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(replace_resources) = &phase.replace_resources {
+            for uri in replace_resources.keys() {
+                if !cumulative_resources.contains(uri) {
+                    self.add_error(
+                        &format!("{path}.replace_resources.{uri}"),
+                        &format!("Cannot replace unknown resource '{uri}'. Resource not found in cumulative state."),
+                    );
                 }
             }
-
-            // Validate remove_resources targets exist in baseline
-            if let Some(remove_resources) = &phase.remove_resources {
-                for uri in remove_resources {
-                    if !baseline_resources.contains(uri) {
-                        self.add_error(
-                            &format!("{path}.remove_resources"),
-                            &format!(
-                                "Cannot remove unknown resource '{uri}'. Resource not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(remove_resources) = &phase.remove_resources {
+            for uri in remove_resources {
+                if !cumulative_resources.contains(uri) {
+                    self.add_error(
+                        &format!("{path}.remove_resources"),
+                        &format!("Cannot remove unknown resource '{uri}'. Resource not found in cumulative state."),
+                    );
                 }
             }
-
-            // Validate replace_prompts targets exist in baseline
-            if let Some(replace_prompts) = &phase.replace_prompts {
-                for name in replace_prompts.keys() {
-                    if !baseline_prompts.contains(name) {
-                        self.add_error(
-                            &format!("{path}.replace_prompts.{name}"),
-                            &format!(
-                                "Cannot replace unknown prompt '{name}'. Prompt not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(replace_prompts) = &phase.replace_prompts {
+            for name in replace_prompts.keys() {
+                if !cumulative_prompts.contains(name) {
+                    self.add_error(
+                        &format!("{path}.replace_prompts.{name}"),
+                        &format!("Cannot replace unknown prompt '{name}'. Prompt not found in cumulative state."),
+                    );
                 }
             }
-
-            // Validate remove_prompts targets exist in baseline
-            if let Some(remove_prompts) = &phase.remove_prompts {
-                for name in remove_prompts {
-                    if !baseline_prompts.contains(name) {
-                        self.add_error(
-                            &format!("{path}.remove_prompts"),
-                            &format!(
-                                "Cannot remove unknown prompt '{name}'. Prompt not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(remove_prompts) = &phase.remove_prompts {
+            for name in remove_prompts {
+                if !cumulative_prompts.contains(name) {
+                    self.add_error(
+                        &format!("{path}.remove_prompts"),
+                        &format!("Cannot remove unknown prompt '{name}'. Prompt not found in cumulative state."),
+                    );
                 }
             }
         }
@@ -702,6 +707,51 @@ impl Validator {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Updates cumulative tool/resource/prompt sets after processing a phase.
+fn update_cumulative_state(
+    phase: &Phase,
+    tools: &mut HashSet<String>,
+    resources: &mut HashSet<String>,
+    prompts: &mut HashSet<String>,
+) {
+    if let Some(add_tools) = &phase.add_tools {
+        for t in add_tools {
+            if let crate::config::schema::ToolPatternRef::Inline(tp) = t {
+                tools.insert(tp.tool.name.clone());
+            }
+        }
+    }
+    if let Some(remove_tools) = &phase.remove_tools {
+        for name in remove_tools {
+            tools.remove(name);
+        }
+    }
+    if let Some(add_resources) = &phase.add_resources {
+        for r in add_resources {
+            if let crate::config::schema::ResourcePatternRef::Inline(rp) = r {
+                resources.insert(rp.resource.uri.clone());
+            }
+        }
+    }
+    if let Some(remove_resources) = &phase.remove_resources {
+        for uri in remove_resources {
+            resources.remove(uri);
+        }
+    }
+    if let Some(add_prompts) = &phase.add_prompts {
+        for p in add_prompts {
+            if let crate::config::schema::PromptPatternRef::Inline(pp) = p {
+                prompts.insert(pp.prompt.name.clone());
+            }
+        }
+    }
+    if let Some(remove_prompts) = &phase.remove_prompts {
+        for name in remove_prompts {
+            prompts.remove(name);
+        }
+    }
+}
 
 /// Collects tool names from baseline.
 fn collect_baseline_tool_names(baseline: Option<&BaselineState>) -> HashSet<String> {

@@ -139,11 +139,17 @@ pub fn record_request(method: &str) {
 /// Records an outgoing MCP response.
 ///
 /// Implements: TJ-SPEC-008 F-009
-pub fn record_response(method: &str, success: bool) {
+pub fn record_response(method: &str, success: bool, error_code: Option<i64>) {
     let label = sanitize_method_label(method);
     let status = if success { "success" } else { "error" };
-    counter!("thoughtjack_responses_total", "method" => label.to_owned(), "status" => status)
-        .increment(1);
+    let code = error_code.map_or_else(String::new, |c| c.to_string());
+    counter!(
+        "thoughtjack_responses_total",
+        "method" => label.to_owned(),
+        "status" => status,
+        "error_code" => code,
+    )
+    .increment(1);
 }
 
 /// Records request processing duration.
@@ -294,7 +300,7 @@ mod tests {
     fn record_functions_do_not_panic_without_recorder() {
         // metrics macros silently no-op when no global recorder is installed
         record_request("tools/call");
-        record_response("tools/call", true);
+        record_response("tools/call", true, None);
         record_request_duration("tools/call", Duration::from_millis(42));
         record_delivery_duration(Duration::from_secs(1));
         record_phase_transition("trust_building", "exploit");

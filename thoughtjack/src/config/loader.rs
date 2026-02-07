@@ -79,12 +79,13 @@ pub struct ConfigLimits {
 impl Default for ConfigLimits {
     fn default() -> Self {
         Self {
-            max_phases: env_or("THOUGHTJACK_MAX_PHASES", 100),
-            max_tools: env_or("THOUGHTJACK_MAX_TOOLS", 1000),
-            max_resources: env_or("THOUGHTJACK_MAX_RESOURCES", 1000),
-            max_prompts: env_or("THOUGHTJACK_MAX_PROMPTS", 500),
-            max_include_depth: env_or("THOUGHTJACK_MAX_INCLUDE_DEPTH", 10),
-            max_config_size: env_or("THOUGHTJACK_MAX_CONFIG_SIZE", 10 * 1024 * 1024),
+            max_phases: env_or("THOUGHTJACK_MAX_PHASES", 100).min(10_000),
+            max_tools: env_or("THOUGHTJACK_MAX_TOOLS", 1000).min(100_000),
+            max_resources: env_or("THOUGHTJACK_MAX_RESOURCES", 1000).min(100_000),
+            max_prompts: env_or("THOUGHTJACK_MAX_PROMPTS", 500).min(50_000),
+            max_include_depth: env_or("THOUGHTJACK_MAX_INCLUDE_DEPTH", 10).min(100),
+            max_config_size: env_or("THOUGHTJACK_MAX_CONFIG_SIZE", 10 * 1024 * 1024)
+                .min(100 * 1024 * 1024),
         }
     }
 }
@@ -373,7 +374,10 @@ impl EnvSubstitution {
                             Self::parse_var_spec(&mut chars, &mut position)?;
 
                         match std::env::var(&var_name) {
-                            Ok(value) => result.push_str(&value),
+                            Ok(value) => {
+                                tracing::debug!(var = %var_name, "expanding environment variable");
+                                result.push_str(&value);
+                            }
                             Err(_) => {
                                 if let Some(default_val) = default {
                                     result.push_str(&default_val);

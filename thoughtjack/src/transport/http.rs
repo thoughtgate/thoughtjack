@@ -8,7 +8,8 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -26,6 +27,7 @@ use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
+use tower::ServiceBuilder;
 use tracing::{debug, info};
 
 use super::{ConnectionContext, JsonRpcMessage, Result, Transport, TransportType};
@@ -41,6 +43,8 @@ pub struct HttpConfig {
     pub bind_addr: String,
     /// Maximum allowed request body size in bytes.
     pub max_message_size: usize,
+    /// Request timeout in seconds (default: 30).
+    pub request_timeout_secs: u64,
 }
 
 /// An incoming request received by the `POST /message` handler.
@@ -62,6 +66,9 @@ pub struct ConnectionState {
     pub request_count: AtomicU64,
 }
 
+/// Maximum number of concurrent SSE connections.
+const MAX_SSE_CONNECTIONS: usize = 16;
+
 /// Shared state between the axum handlers and `HttpTransport`.
 struct HttpSharedState {
     incoming_tx: mpsc::Sender<IncomingRequest>,
@@ -69,6 +76,8 @@ struct HttpSharedState {
     connections: Arc<DashMap<u64, ConnectionState>>,
     next_connection_id: AtomicU64,
     max_message_size: usize,
+    request_timeout_secs: u64,
+    sse_connections: AtomicUsize,
     cancel: CancellationToken,
 }
 
@@ -117,10 +126,6 @@ pub struct HttpTransport {
     // std::sync::Mutex: same rationale as current_context — brief, synchronous access only.
     current_guard: std::sync::Mutex<Option<ConnectionGuard>>,
     _server_handle: JoinHandle<()>,
-    // TODO(v0.2): add per-connection rate limiting
-    // TODO(v0.2): add configurable request timeout — without one, slow clients
-    // hold response channels indefinitely; ~32 concurrent slow requests can DoS
-    // the transport by filling the incoming channel (P1 issue #11)
 }
 
 impl HttpTransport {
@@ -152,6 +157,8 @@ impl HttpTransport {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: config.max_message_size,
+            request_timeout_secs: config.request_timeout_secs,
+            sse_connections: AtomicUsize::new(0),
             cancel: cancel.clone(),
         });
 
@@ -231,10 +238,11 @@ impl Transport for HttpTransport {
         );
 
         // Update connection context using the timestamp captured in the handler
-        // Poisoned mutex means a thread panicked while holding the lock — data is
-        // corrupt, so panicking here is the correct response.
         {
-            let mut ctx = self.current_context.lock().expect("context mutex poisoned");
+            let mut ctx = self
+                .current_context
+                .lock()
+                .map_err(|_| TransportError::InternalError("context mutex poisoned".into()))?;
             *ctx = ConnectionContext {
                 connection_id: req.connection_id,
                 remote_addr: Some(req.remote_addr),
@@ -245,7 +253,10 @@ impl Transport for HttpTransport {
 
         // Create RAII guard for connection cleanup (replaces any previous guard)
         {
-            let mut guard = self.current_guard.lock().expect("guard mutex poisoned");
+            let mut guard = self
+                .current_guard
+                .lock()
+                .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))?;
             *guard = Some(ConnectionGuard::new(
                 Arc::clone(&self.shared.connections),
                 req.connection_id,
@@ -319,7 +330,10 @@ impl Transport for HttpTransport {
 
         // Drop the RAII guard — removes connection from tracking
         let guard = {
-            let mut g = self.current_guard.lock().expect("guard mutex poisoned");
+            let mut g = self
+                .current_guard
+                .lock()
+                .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))?;
             g.take()
         };
         drop(guard);
@@ -330,7 +344,10 @@ impl Transport for HttpTransport {
     fn connection_context(&self) -> ConnectionContext {
         self.current_context
             .lock()
-            .expect("context mutex poisoned")
+            .unwrap_or_else(|e| {
+                tracing::error!("context mutex poisoned, using default");
+                e.into_inner()
+            })
             .clone()
     }
 }
@@ -345,12 +362,54 @@ fn build_router(shared: Arc<HttpSharedState>) -> Router {
     // (default 10MB). Without this, requests between 2MB and max_message_size
     // are rejected by axum before reaching the handler's size check.
     let body_limit = axum::extract::DefaultBodyLimit::max(shared.max_message_size);
+    let timeout_secs = shared.request_timeout_secs;
 
     Router::new()
         .route("/message", post(handle_post_message))
         .route("/sse", get(handle_sse))
         .layer(body_limit)
+        .layer(
+            ServiceBuilder::new()
+                .layer(axum::error_handling::HandleErrorLayer::new(
+                    move |_: tower::BoxError| async move {
+                        (StatusCode::REQUEST_TIMEOUT, "request timed out")
+                    },
+                ))
+                .timeout(Duration::from_secs(timeout_secs)),
+        )
         .with_state(shared)
+}
+
+/// Validates that the request originates from a local address.
+///
+/// Rejects requests with no `Origin` or `Host` header, or with a header
+/// pointing to a non-local hostname. Comparison is case-insensitive.
+///
+/// Implements: TJ-SPEC-002 F-003
+#[allow(clippy::result_large_err)]
+fn validate_local_origin(headers: &axum::http::HeaderMap) -> std::result::Result<(), Response> {
+    let origin = headers
+        .get("origin")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok());
+    let Some(header_value) = origin else {
+        return Err((StatusCode::FORBIDDEN, "missing Origin or Host header").into_response());
+    };
+    let host_part = header_value
+        .strip_prefix("http://")
+        .or_else(|| header_value.strip_prefix("https://"))
+        .unwrap_or(header_value);
+    // Strip port suffix (handles both IPv4 `host:port` and bare hostnames)
+    let hostname = host_part.split(':').next().unwrap_or(host_part);
+    let hostname = hostname.to_ascii_lowercase();
+    let hostname = hostname.as_str();
+    if !matches!(
+        hostname,
+        "localhost" | "127.0.0.1" | "[::1]" | "::1" | "0.0.0.0"
+    ) {
+        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
+    }
+    Ok(())
 }
 
 /// `POST /message` handler.
@@ -365,20 +424,8 @@ async fn handle_post_message(
     body: axum::body::Bytes,
 ) -> Response {
     // DNS rebinding protection: validate Origin or Host header
-    let origin = headers
-        .get("origin")
-        .or_else(|| headers.get("host"))
-        .and_then(|v| v.to_str().ok());
-    if let Some(header_value) = origin {
-        let host_part = header_value
-            .strip_prefix("http://")
-            .or_else(|| header_value.strip_prefix("https://"))
-            .unwrap_or(header_value);
-        // Strip port suffix (handles both IPv4 `host:port` and bare hostnames)
-        let hostname = host_part.split(':').next().unwrap_or(host_part);
-        if !matches!(hostname, "localhost" | "127.0.0.1" | "[::1]" | "::1") {
-            return (StatusCode::FORBIDDEN, "dns rebinding rejected").into_response();
-        }
+    if let Err(resp) = validate_local_origin(&headers) {
+        return resp;
     }
 
     // EC-TRANS-006: empty body
@@ -446,22 +493,81 @@ async fn handle_post_message(
 /// `GET /sse` handler.
 ///
 /// Returns a Server-Sent Events stream that broadcasts all server-initiated
-/// notifications and requests.
+/// notifications and requests. Enforces DNS rebinding protection and limits
+/// the number of concurrent SSE connections.
 async fn handle_sse(
     State(shared): State<Arc<HttpSharedState>>,
-) -> Sse<impl tokio_stream::Stream<Item = std::result::Result<SseEvent, std::convert::Infallible>>>
-{
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // DNS rebinding protection (same check as POST /message)
+    if let Err(resp) = validate_local_origin(&headers) {
+        return resp;
+    }
+
+    // Enforce SSE connection limit
+    let current = shared.sse_connections.fetch_add(1, Ordering::SeqCst);
+    if current >= MAX_SSE_CONNECTIONS {
+        shared.sse_connections.fetch_sub(1, Ordering::SeqCst);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("too many SSE connections (limit: {MAX_SSE_CONNECTIONS})"),
+        )
+            .into_response();
+    }
+
     let rx = shared.sse_tx.subscribe();
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-        |result: std::result::Result<String, _>| match result {
-            Ok(data) => Some(Ok(SseEvent::default().data(data))),
+    let cancel = shared.cancel.clone();
+
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
+        .take_while(move |_| !cancel.is_cancelled())
+        .filter_map(|result: std::result::Result<String, _>| match result {
+            Ok(data) => {
+                let event: std::result::Result<SseEvent, std::convert::Infallible> =
+                    Ok(SseEvent::default().data(data));
+                Some(event)
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "SSE subscriber lagged, dropping missed messages");
                 None
             }
-        },
-    );
-    Sse::new(stream).keep_alive(KeepAlive::default())
+        });
+
+    // Wrap in a stream that decrements the counter on drop
+    let shared_for_drop = Arc::clone(&shared);
+    let stream = SseCountedStream {
+        inner: Box::pin(stream),
+        shared: shared_for_drop,
+    };
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// Wrapper stream that decrements the SSE connection counter on drop.
+struct SseCountedStream<S> {
+    inner: std::pin::Pin<Box<S>>,
+    shared: Arc<HttpSharedState>,
+}
+
+impl<S> tokio_stream::Stream for SseCountedStream<S>
+where
+    S: tokio_stream::Stream + Unpin,
+{
+    type Item = S::Item;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+
+impl<S> Drop for SseCountedStream<S> {
+    fn drop(&mut self) {
+        self.shared.sse_connections.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 // ============================================================================
@@ -517,6 +623,8 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
+            sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         })
     }
@@ -569,6 +677,7 @@ mod tests {
         let req = Request::builder()
             .method("POST")
             .uri("/message")
+            .header("host", "localhost:3000")
             .body(Body::empty())
             .unwrap();
 
@@ -585,6 +694,7 @@ mod tests {
             .method("POST")
             .uri("/message")
             .header("content-type", "application/json")
+            .header("host", "localhost:3000")
             .body(Body::from("not json"))
             .unwrap();
 
@@ -602,6 +712,8 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: 10, // tiny limit
+            request_timeout_secs: 30,
+            sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         });
         let app = test_router(shared);
@@ -611,6 +723,7 @@ mod tests {
             .method("POST")
             .uri("/message")
             .header("content-type", "application/json")
+            .header("host", "localhost:3000")
             .body(Body::from(body))
             .unwrap();
 
@@ -628,6 +741,8 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
+            sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         });
         let app = test_router(shared);
@@ -637,6 +752,7 @@ mod tests {
             .method("POST")
             .uri("/message")
             .header("content-type", "application/json")
+            .header("host", "localhost:3000")
             .body(Body::from(body))
             .unwrap();
 
@@ -665,6 +781,7 @@ mod tests {
         let req = Request::builder()
             .method("GET")
             .uri("/sse")
+            .header("host", "localhost:3000")
             .body(Body::empty())
             .unwrap();
 
@@ -682,6 +799,7 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
 
@@ -705,6 +823,7 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         assert_eq!(transport.transport_type(), TransportType::Http);
@@ -717,6 +836,7 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         assert!(transport.supports_behavior(&DeliveryConfig::Normal));
@@ -733,6 +853,7 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         let debug = format!("{transport:?}");
@@ -746,6 +867,7 @@ mod tests {
         let config = HttpConfig {
             bind_addr: "127.0.0.1:0".to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         let ctx = transport.connection_context();
@@ -788,6 +910,8 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
+            sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         });
         let app = test_router(shared);
@@ -821,6 +945,8 @@ mod tests {
             connections: Arc::new(DashMap::new()),
             next_connection_id: AtomicU64::new(1),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            request_timeout_secs: 30,
+            sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
         });
         let app = test_router(shared);
@@ -844,25 +970,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dns_rebinding_no_header_allowed() {
-        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
-        let (sse_tx, _) = broadcast::channel(256);
-        let shared = Arc::new(HttpSharedState {
-            incoming_tx,
-            sse_tx,
-            connections: Arc::new(DashMap::new()),
-            next_connection_id: AtomicU64::new(1),
-            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            cancel: CancellationToken::new(),
-        });
+    async fn dns_rebinding_no_header_rejected() {
+        let shared = test_shared_state();
         let app = test_router(shared);
-
-        tokio::spawn(async move {
-            if let Some(incoming) = incoming_rx.recv().await {
-                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
-            }
-        });
 
         let req = Request::builder()
             .method("POST")
@@ -871,6 +981,6 @@ mod tests {
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 }

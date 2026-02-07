@@ -4,7 +4,7 @@
 //! coordinator, and handler dispatch into a running MCP server.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde_json::json;
@@ -159,8 +159,15 @@ impl Server {
         // Shutdown
         self.phase_engine.shutdown();
         timer_handle.abort();
-        for handle in &continuous_handles {
-            handle.abort();
+
+        // Wait for continuous side effect tasks to finish gracefully
+        for handle in continuous_handles {
+            match tokio::time::timeout(Duration::from_secs(2), handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if e.is_cancelled() => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "continuous side effect task panicked"),
+                Err(_) => tracing::warn!("continuous side effect task did not finish within 2s"),
+            }
         }
         metrics::set_connections_active(0);
 
@@ -446,7 +453,8 @@ impl Server {
         {
             Ok(result) => {
                 record_delivery_metrics(resolved.delivery.name(), &result);
-                metrics::record_response(&request.method, success);
+                let error_code = response.error.as_ref().map(|e| e.code);
+                metrics::record_response(&request.method, success, error_code);
                 metrics::record_delivery_duration(result.duration);
 
                 self.event_emitter.emit(Event::ResponseSent {

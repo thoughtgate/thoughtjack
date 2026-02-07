@@ -77,7 +77,9 @@ impl CaptureWriter {
         fs::create_dir_all(capture_dir)?;
 
         let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-        let filename = format!("session-{timestamp}.jsonl");
+        let pid = std::process::id();
+        let rand_suffix: u16 = rand::random();
+        let filename = format!("session-{timestamp}-{pid}-{rand_suffix:04x}.jsonl");
         let path = capture_dir.join(filename);
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -141,13 +143,35 @@ impl CaptureWriter {
     }
 }
 
+/// Recursively redacts all string values in a JSON tree.
+fn redact_deep(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for val in map.values_mut() {
+                redact_deep(val);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                redact_deep(item);
+            }
+        }
+        serde_json::Value::String(s) if !s.is_empty() => {
+            *value = serde_json::Value::String("[REDACTED]".to_string());
+        }
+        _ => {} // preserve nulls, booleans, numbers
+    }
+}
+
 /// Redacts sensitive fields from a JSON-RPC message.
 ///
 /// Replaces:
-/// - `params.arguments.*` → `"[REDACTED]"`
+/// - `params.arguments` (deep) → `"[REDACTED]"`
 /// - `params.uri` → `"[REDACTED]"`
 /// - `result.content[*].text` → `"[REDACTED]"`
 /// - `result.content[*].data` → `"[REDACTED]"`
+/// - `result.messages[*].content` (deep) → `"[REDACTED]"`
+/// - `result.contents[*].text` (deep) → `"[REDACTED]"`
 ///
 /// Implements: TJ-SPEC-007 F-002
 fn redact_value(value: &serde_json::Value) -> serde_json::Value {
@@ -155,13 +179,9 @@ fn redact_value(value: &serde_json::Value) -> serde_json::Value {
 
     // Redact request params
     if let Some(params) = redacted.get_mut("params") {
-        // params.arguments.* → redact all values
+        // params.arguments → deep redact all values
         if let Some(arguments) = params.get_mut("arguments") {
-            if let Some(obj) = arguments.as_object_mut() {
-                for val in obj.values_mut() {
-                    *val = serde_json::Value::String("[REDACTED]".to_string());
-                }
-            }
+            redact_deep(arguments);
         }
         // params.uri → redact
         if params.get("uri").is_some() {
@@ -179,6 +199,26 @@ fn redact_value(value: &serde_json::Value) -> serde_json::Value {
                     }
                     if item.get("data").is_some() {
                         item["data"] = serde_json::Value::String("[REDACTED]".to_string());
+                    }
+                }
+            }
+        }
+        // result.messages[].content → deep redact (prompt responses)
+        if let Some(messages) = result.get_mut("messages") {
+            if let Some(arr) = messages.as_array_mut() {
+                for msg in arr {
+                    if let Some(content) = msg.get_mut("content") {
+                        redact_deep(content);
+                    }
+                }
+            }
+        }
+        // result.contents[].text → deep redact (resource responses)
+        if let Some(contents) = result.get_mut("contents") {
+            if let Some(arr) = contents.as_array_mut() {
+                for item in arr {
+                    if let Some(text) = item.get_mut("text") {
+                        redact_deep(text);
                     }
                 }
             }

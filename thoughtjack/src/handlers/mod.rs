@@ -88,7 +88,10 @@ pub async fn resolve_content(
         ContentValue::Generated { generator } => {
             let generator_impl: Box<dyn PayloadGenerator> = create_generator(generator, limits)?;
             let payload = generator_impl.generate()?;
-            Ok(String::from_utf8_lossy(&payload.into_bytes()).into_owned())
+            let bytes = payload.into_bytes();
+            // Avoid unnecessary allocation when bytes are already valid UTF-8
+            Ok(String::from_utf8(bytes)
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
         }
         ContentValue::File { path } => {
             let path_str = path.to_string_lossy();
@@ -98,7 +101,18 @@ pub async fn resolve_content(
                     format!("file path not allowed: {}", path.display()),
                 )));
             }
-            let content = tokio::fs::read_to_string(path).await?;
+            // Resolve symlinks and verify the file stays within the working directory
+            let canonical = tokio::fs::canonicalize(path)
+                .await
+                .map_err(ThoughtJackError::Io)?;
+            let base = std::env::current_dir().map_err(ThoughtJackError::Io)?;
+            if !canonical.starts_with(&base) {
+                return Err(ThoughtJackError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("file path escapes base directory: {}", path.display()),
+                )));
+            }
+            let content = tokio::fs::read_to_string(&canonical).await?;
             Ok(content)
         }
     }

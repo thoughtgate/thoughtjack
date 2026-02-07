@@ -207,10 +207,15 @@ impl PayloadStream for GarbageStream {
         let data = generate_chunk(&mut self.rng, self.charset, chunk_size);
         let actual_len = data.len();
         if actual_len == 0 {
-            // UTF-8 charset: remaining bytes < min character width.
-            // Terminate the stream rather than looping forever.
+            // UTF-8 charset: remaining bytes < min multi-byte character width.
+            // Fall back to ASCII to fill the exact remaining count.
+            let ascii_data = generate_chunk(&mut self.rng, Charset::Ascii, self.remaining);
             self.remaining = 0;
-            return None;
+            return if ascii_data.is_empty() {
+                None
+            } else {
+                Some(ascii_data)
+            };
         }
         self.remaining = self.remaining.saturating_sub(actual_len);
         Some(data)
