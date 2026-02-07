@@ -143,8 +143,10 @@ impl SideEffect for NotificationFlood {
         cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = std::time::Instant::now();
-        // Clamp to minimum 1 req/sec to prevent a busy loop from Duration::ZERO
-        let effective_rate = self.rate_per_sec.max(1);
+        // Clamp rate to [1, 10_000] req/sec to prevent busy loops from tiny intervals.
+        // At 10k/sec the interval is 100μs — below that, tokio timer resolution
+        // and serialization overhead make higher rates unreliable anyway.
+        let effective_rate = self.rate_per_sec.clamp(1, 10_000);
         let interval = Duration::from_nanos(1_000_000_000 / effective_rate);
 
         let mut messages_sent: usize = 0;
