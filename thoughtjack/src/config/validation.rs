@@ -9,9 +9,9 @@
 
 use crate::config::loader::ConfigLimits;
 use crate::config::schema::{
-    BaselineState, ContentItem, ContentValue, FieldMatcher, HandlerConfig, MatchBranchConfig,
-    MatchConditionConfig, Phase, PromptPattern, ResourcePattern, SequenceEntryConfig, ServerConfig,
-    ToolPattern,
+    BaselineState, BehaviorConfig, ContentItem, ContentValue, FieldMatcher, HandlerConfig,
+    MatchBranchConfig, MatchConditionConfig, Phase, PromptPattern, ResourcePattern,
+    SequenceEntryConfig, ServerConfig, SideEffectConfig, SideEffectType, ToolPattern,
 };
 use crate::error::{Severity, ValidationIssue};
 
@@ -175,6 +175,10 @@ impl Validator {
         if let Some(prompts) = &config.prompts {
             self.validate_prompts(prompts, "prompts");
         }
+
+        if let Some(behavior) = &config.behavior {
+            self.validate_behavior(behavior, "behavior");
+        }
     }
 
     // ========================================================================
@@ -210,6 +214,9 @@ impl Validator {
         self.validate_tools(&baseline.tools, "baseline.tools");
         self.validate_resources(&baseline.resources, "baseline.resources");
         self.validate_prompts(&baseline.prompts, "baseline.prompts");
+        if let Some(behavior) = &baseline.behavior {
+            self.validate_behavior(behavior, "baseline.behavior");
+        }
     }
 
     /// Validates phases and their cross-references.
@@ -279,6 +286,11 @@ impl Validator {
                 baseline_prompts,
             );
 
+            // Validate phase-level behavior/side_effects
+            if let Some(behavior) = &phase.behavior {
+                self.validate_behavior(behavior, &format!("{path}.behavior"));
+            }
+
             // Update cumulative state for next phase
             update_cumulative_state(
                 phase,
@@ -294,7 +306,7 @@ impl Validator {
     /// Also warns when a target exists in the cumulative state (added by a
     /// preceding phase) but not in the original baseline, because at runtime
     /// each phase is applied independently (baseline + current diff).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn validate_phase_targets(
         &mut self,
         phase: &Phase,
@@ -647,6 +659,11 @@ impl Validator {
                     );
                 }
             }
+
+            // Validate behavior/side_effects
+            if let Some(behavior) = &tool.behavior {
+                self.validate_behavior(behavior, &format!("{path}.behavior"));
+            }
         }
     }
 
@@ -689,6 +706,11 @@ impl Validator {
                 if let ContentValue::Static(s) = &resp.content {
                     self.validate_template_syntax(s, &format!("{path}.response.content"));
                 }
+            }
+
+            // Validate behavior/side_effects
+            if let Some(behavior) = &resource.behavior {
+                self.validate_behavior(behavior, &format!("{path}.behavior"));
             }
         }
     }
@@ -735,6 +757,11 @@ impl Validator {
                 if let ContentValue::Static(s) = &msg.content {
                     self.validate_template_syntax(s, &format!("{path}.response.messages"));
                 }
+            }
+
+            // Validate behavior/side_effects
+            if let Some(behavior) = &prompt.behavior {
+                self.validate_behavior(behavior, &format!("{path}.behavior"));
             }
         }
     }
@@ -1026,6 +1053,95 @@ impl Validator {
     }
 
     // ========================================================================
+    // Behavior / Side Effect Validation
+    // ========================================================================
+
+    /// Validates a behavior configuration, including its side effects.
+    fn validate_behavior(&mut self, behavior: &BehaviorConfig, path: &str) {
+        if let Some(effects) = &behavior.side_effects {
+            for (idx, effect) in effects.iter().enumerate() {
+                self.validate_side_effect_params(effect, &format!("{path}.side_effects[{idx}]"));
+            }
+        }
+    }
+
+    /// Validates side effect parameters against expected keys for each type.
+    ///
+    /// Emits warnings (not errors) for:
+    /// - Unknown parameter keys (likely typos)
+    /// - Wrong parameter types (e.g. string where u64 expected)
+    ///
+    /// Does not warn on missing params since they have runtime defaults.
+    fn validate_side_effect_params(&mut self, config: &SideEffectConfig, path: &str) {
+        let expected: &[(&str, ParamType)] = match config.type_ {
+            SideEffectType::NotificationFlood => &[
+                ("rate_per_sec", ParamType::U64),
+                ("duration_sec", ParamType::U64),
+                ("method", ParamType::Str),
+                ("params", ParamType::Any),
+            ],
+            SideEffectType::BatchAmplify => &[
+                ("batch_size", ParamType::U64),
+                ("method", ParamType::Str),
+            ],
+            SideEffectType::PipeDeadlock => &[("fill_bytes", ParamType::U64)],
+            SideEffectType::CloseConnection => &[
+                ("graceful", ParamType::Bool),
+                ("delay_ms", ParamType::U64),
+            ],
+            SideEffectType::DuplicateRequestIds => &[
+                ("count", ParamType::U64),
+                ("id", ParamType::Any),
+                ("method", ParamType::Str),
+                ("params", ParamType::Any),
+            ],
+        };
+
+        let known_keys: HashSet<&str> = expected.iter().map(|(k, _)| *k).collect();
+        // `trigger` is handled by SideEffectConfig directly, not in params
+        let reserved_keys: HashSet<&str> = ["type", "trigger"].iter().copied().collect();
+
+        for (key, value) in &config.params {
+            if reserved_keys.contains(key.as_str()) {
+                continue;
+            }
+
+            if !known_keys.contains(key.as_str()) {
+                self.add_warning(
+                    &format!("{path}.{key}"),
+                    &format!(
+                        "Unknown parameter '{key}' for side effect type '{:?}' — \
+                         possible typo",
+                        config.type_
+                    ),
+                );
+                continue;
+            }
+
+            // Check type
+            if let Some((_, expected_type)) = expected.iter().find(|(k, _)| *k == key.as_str()) {
+                let type_ok = match expected_type {
+                    ParamType::U64 => value.is_u64(),
+                    ParamType::Bool => value.is_boolean(),
+                    ParamType::Str => value.is_string(),
+                    ParamType::Any => true,
+                };
+
+                if !type_ok {
+                    self.add_warning(
+                        &format!("{path}.{key}"),
+                        &format!(
+                            "Parameter '{key}' expects {expected_type}, got {actual}",
+                            expected_type = expected_type.label(),
+                            actual = json_type_label(value),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    // ========================================================================
     // Helper Methods
     // ========================================================================
 
@@ -1158,6 +1274,42 @@ fn count_total_prompts(config: &ServerConfig) -> usize {
     });
 
     baseline_count + simple_count + phase_added
+}
+
+// ============================================================================
+// Side Effect Parameter Type Helpers
+// ============================================================================
+
+/// Expected parameter type for side effect validation.
+#[derive(Debug, Clone, Copy)]
+enum ParamType {
+    U64,
+    Bool,
+    Str,
+    Any,
+}
+
+impl ParamType {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::U64 => "a number (u64)",
+            Self::Bool => "a boolean",
+            Self::Str => "a string",
+            Self::Any => "any type",
+        }
+    }
+}
+
+/// Returns a human-readable label for a JSON value type.
+const fn json_type_label(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 // ============================================================================
@@ -1784,8 +1936,8 @@ mod tests {
             result
                 .warnings
                 .iter()
-                .any(|w| w.path == "logging" && w.message.contains("not yet implemented")),
-            "expected warning about unimplemented logging config"
+                .any(|w| w.path == "logging" && w.message.contains("not yet consumed")),
+            "expected warning about logging config not consumed at runtime"
         );
     }
 
@@ -2317,6 +2469,156 @@ mod tests {
                 .iter()
                 .any(|e| e.message.contains("Invalid glob")),
             "expected invalid glob error"
+        );
+    }
+
+    // ====================================================================
+    // Side Effect Parameter Validation
+    // ====================================================================
+
+    fn make_side_effect(
+        type_: SideEffectType,
+        params: Vec<(&str, serde_json::Value)>,
+    ) -> SideEffectConfig {
+        SideEffectConfig {
+            type_,
+            trigger: Default::default(),
+            params: params
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_side_effect_valid_params_no_warnings() {
+        let mut validator = Validator::new();
+        let effect = make_side_effect(
+            SideEffectType::NotificationFlood,
+            vec![
+                ("rate_per_sec", serde_json::json!(100)),
+                ("duration_sec", serde_json::json!(5)),
+                ("method", serde_json::json!("notifications/message")),
+            ],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator.warnings.is_empty(),
+            "valid params should produce no warnings: {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_unknown_param_warns() {
+        let mut validator = Validator::new();
+        let effect = make_side_effect(
+            SideEffectType::CloseConnection,
+            vec![("dealy_ms", serde_json::json!(100))],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unknown parameter 'dealy_ms'")
+                    && w.message.contains("typo")),
+            "expected typo warning for 'dealy_ms': {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_wrong_type_warns() {
+        let mut validator = Validator::new();
+        let effect = make_side_effect(
+            SideEffectType::CloseConnection,
+            vec![("delay_ms", serde_json::json!("not_a_number"))],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("delay_ms") && w.message.contains("expects")),
+            "expected type mismatch warning for 'delay_ms': {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_missing_params_no_warning() {
+        let mut validator = Validator::new();
+        // Empty params is fine — all have defaults
+        let effect = make_side_effect(SideEffectType::PipeDeadlock, vec![]);
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator.warnings.is_empty(),
+            "missing params should not warn: {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_reserved_keys_ignored() {
+        let mut validator = Validator::new();
+        // `type` and `trigger` are handled by serde, not params
+        let effect = make_side_effect(
+            SideEffectType::BatchAmplify,
+            vec![
+                ("type", serde_json::json!("batch_amplify")),
+                ("trigger", serde_json::json!("on_request")),
+                ("batch_size", serde_json::json!(10)),
+            ],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator.warnings.is_empty(),
+            "reserved keys should not produce warnings: {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_any_type_accepts_all() {
+        let mut validator = Validator::new();
+        let effect = make_side_effect(
+            SideEffectType::DuplicateRequestIds,
+            vec![
+                ("id", serde_json::json!(42)),
+                ("params", serde_json::json!({"key": "value"})),
+            ],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator.warnings.is_empty(),
+            "Any-typed params should accept all values: {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_behavior_validation_wired_through() {
+        let mut config = minimal_config();
+        let mut tool = make_tool("calc");
+        tool.behavior = Some(BehaviorConfig {
+            delivery: None,
+            side_effects: Some(vec![make_side_effect(
+                SideEffectType::CloseConnection,
+                vec![("typo_param", serde_json::json!(true))],
+            )]),
+        });
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unknown parameter 'typo_param'")),
+            "tool-level side effect param validation should produce warning: {:?}",
+            result.warnings
         );
     }
 }
