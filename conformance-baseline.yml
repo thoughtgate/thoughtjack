@@ -22,3 +22,5 @@ server:
   - prompts-get-with-image
   # Argument substitution in prompts (requires template engine)
   - prompts-get-with-args
+  # SSE multiple streams (0 passed, 0 failed — no assertions, but CI treats as failure)
+  - server-sse-multiple-streams
