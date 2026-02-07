@@ -439,9 +439,10 @@ impl EnvSubstitution {
                         }
                         _ => {
                             tracing::warn!(
-                                "env var reference '${{{var_name}:...' has ':' not \
-                                 followed by '-' or '?'; did you mean '${{VAR:-default}}' \
-                                 or '${{VAR:?error}}'?"
+                                "env var reference '${{{}:...' has ':' not \
+                                 followed by '-' or '?'; did you mean '${{{{VAR:-default}}}}' \
+                                 or '${{{{VAR:?error}}}}'?",
+                                var_name
                             );
                             var_name.push(':');
                         }

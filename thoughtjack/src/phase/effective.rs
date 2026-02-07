@@ -40,6 +40,7 @@ impl EffectiveState {
     ///
     /// Implements: TJ-SPEC-003 F-002
     #[must_use]
+    #[allow(clippy::cognitive_complexity)]
     pub fn compute(baseline: &BaselineState, current_phase: Option<&Phase>) -> Self {
         let mut tools: IndexMap<String, ToolPattern> = baseline
             .tools

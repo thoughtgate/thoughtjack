@@ -327,7 +327,7 @@ pub async fn list(args: &ServerListArgs) -> Result<(), ThoughtJackError> {
             }
 
             entries.push(LibraryEntry {
-                category: subdir.to_string(),
+                category: (*subdir).to_string(),
                 name,
                 path: path.display().to_string(),
                 description,

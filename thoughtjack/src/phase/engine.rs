@@ -188,6 +188,7 @@ impl PhaseEngine {
     /// Attempts to advance the phase via CAS.
     ///
     /// Returns `Some(PhaseTransition)` if this call won the race.
+    #[allow(clippy::cognitive_complexity)]
     fn try_transition(&self, from: usize, reason: &str) -> Option<PhaseTransition> {
         let to = from + 1;
 
