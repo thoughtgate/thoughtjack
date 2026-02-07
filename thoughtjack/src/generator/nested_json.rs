@@ -347,10 +347,7 @@ mod tests {
             max_nest_depth: 50,
             ..GeneratorLimits::default()
         };
-        let params = make_params(vec![
-            ("depth", json!(10)),
-            ("inner", json!(big_inner)),
-        ]);
+        let params = make_params(vec![("depth", json!(10)), ("inner", json!(big_inner))]);
         let generator = NestedJsonGenerator::new(&params, &limits).unwrap();
         let payload = generator.generate().unwrap().into_bytes();
         let s = String::from_utf8(payload).unwrap();
@@ -391,14 +388,8 @@ mod tests {
     // EC-GEN-012: Object nesting vs array nesting size difference
     #[test]
     fn object_larger_than_array_due_to_keys() {
-        let params_obj = make_params(vec![
-            ("depth", json!(20)),
-            ("structure", json!("object")),
-        ]);
-        let params_arr = make_params(vec![
-            ("depth", json!(20)),
-            ("structure", json!("array")),
-        ]);
+        let params_obj = make_params(vec![("depth", json!(20)), ("structure", json!("object"))]);
+        let params_arr = make_params(vec![("depth", json!(20)), ("structure", json!("array"))]);
         let limits = default_limits();
         let gen_obj = NestedJsonGenerator::new(&params_obj, &limits).unwrap();
         let gen_arr = NestedJsonGenerator::new(&params_arr, &limits).unwrap();

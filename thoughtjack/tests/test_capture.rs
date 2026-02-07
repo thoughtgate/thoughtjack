@@ -108,11 +108,9 @@ async fn capture_redact_mode() {
         .collect();
 
     // Find the tools/call request capture line
-    let tool_call_capture = lines.iter().find(|l| {
-        l.get("method")
-            .and_then(serde_json::Value::as_str)
-            == Some("tools/call")
-    });
+    let tool_call_capture = lines
+        .iter()
+        .find(|l| l.get("method").and_then(serde_json::Value::as_str) == Some("tools/call"));
 
     assert!(
         tool_call_capture.is_some(),

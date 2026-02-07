@@ -374,7 +374,10 @@ mod tests {
     #[test]
     fn output_contains_escape_chars() {
         let params = make_params(vec![
-            ("sequences", json!(["cursor_move", "color", "title", "hyperlink", "clear"])),
+            (
+                "sequences",
+                json!(["cursor_move", "color", "title", "hyperlink", "clear"]),
+            ),
             ("count", json!(10)),
             ("seed", json!(0)),
         ]);

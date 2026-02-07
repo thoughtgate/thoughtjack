@@ -340,10 +340,7 @@ mod tests {
                 }
             }
         });
-        let params = make_params(vec![
-            ("count", json!(5)),
-            ("params", nested_params.clone()),
-        ]);
+        let params = make_params(vec![("count", json!(5)), ("params", nested_params.clone())]);
         let generator = BatchNotificationsGenerator::new(&params, &default_limits()).unwrap();
         let data = generator.generate().unwrap().into_bytes();
         let parsed: Value = serde_json::from_slice(&data).unwrap();

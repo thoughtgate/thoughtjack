@@ -145,14 +145,14 @@ impl PhaseEngine {
     fn resolve_state(&self, connection_id: u64) -> ResolvedState<'_> {
         match self.scope {
             StateScope::Global => ResolvedState::Global(&self.state),
-            StateScope::PerConnection => self
-                .connection_states
-                .get(&connection_id)
-                .map_or(ResolvedState::Global(&self.state), |guard| {
+            StateScope::PerConnection => self.connection_states.get(&connection_id).map_or(
+                ResolvedState::Global(&self.state),
+                |guard| {
                     // SAFETY: We need to work with the phase state through the DashMap guard.
                     // The guard holds a read lock on the shard, keeping the reference valid.
                     ResolvedState::PerConnection(guard)
-                }),
+                },
+            ),
         }
     }
 
@@ -477,19 +477,18 @@ impl PhaseEngine {
                 for entry in &self.connection_states {
                     let connection_id = *entry.key();
                     let state = entry.value().as_phase_state();
-                    self.check_time_triggers_on(state, self.cache_key(connection_id), connection_id);
+                    self.check_time_triggers_on(
+                        state,
+                        self.cache_key(connection_id),
+                        connection_id,
+                    );
                 }
             }
         }
     }
 
     /// Checks time-based triggers on a specific `PhaseState`.
-    fn check_time_triggers_on(
-        &self,
-        state: &PhaseState,
-        cache_key: u64,
-        connection_id: u64,
-    ) {
+    fn check_time_triggers_on(&self, state: &PhaseState, cache_key: u64, connection_id: u64) {
         if state.is_terminal() {
             return;
         }
@@ -505,9 +504,7 @@ impl PhaseEngine {
         };
 
         // Check time-based trigger (after)
-        if let TriggerResult::Fired(reason) =
-            trigger::evaluate_time_trigger(trigger, state)
-        {
+        if let TriggerResult::Fired(reason) = trigger::evaluate_time_trigger(trigger, state) {
             if let Some(transition) =
                 self.try_transition_on(state, cache_key, connection_id, current, &reason)
             {
@@ -1046,7 +1043,9 @@ mod tests {
         for _ in 0..10 {
             let eng = Arc::clone(&engine);
             let ev = event.clone();
-            handles.push(std::thread::spawn(move || eng.evaluate_trigger(0, &ev, None)));
+            handles.push(std::thread::spawn(move || {
+                eng.evaluate_trigger(0, &ev, None)
+            }));
         }
 
         let results: Vec<Option<PhaseTransition>> =

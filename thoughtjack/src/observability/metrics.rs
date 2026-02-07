@@ -134,10 +134,7 @@ fn describe_metrics() {
         "thoughtjack_payload_size_bytes",
         "Payload size in bytes by generator type"
     );
-    describe_gauge!(
-        "thoughtjack_uptime_seconds",
-        "Server uptime in seconds"
-    );
+    describe_gauge!("thoughtjack_uptime_seconds", "Server uptime in seconds");
 }
 
 /// Records an incoming MCP request.
@@ -227,7 +224,12 @@ pub fn record_delivery_bytes(bytes: u64) {
 ///
 /// Implements: TJ-SPEC-008 F-009
 #[allow(clippy::cast_precision_loss)]
-pub fn record_side_effect(effect_type: &str, messages_sent: u64, bytes_sent: u64, duration: Duration) {
+pub fn record_side_effect(
+    effect_type: &str,
+    messages_sent: u64,
+    bytes_sent: u64,
+    duration: Duration,
+) {
     counter!("thoughtjack_side_effects_total", "effect_type" => effect_type.to_owned())
         .increment(1);
     histogram!("thoughtjack_side_effect_messages", "effect_type" => effect_type.to_owned())

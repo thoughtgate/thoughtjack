@@ -437,12 +437,8 @@ impl Server {
             self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnSubscribe)
                 .await;
         } else if request.method == "resources/unsubscribe" {
-            self.fire_side_effects(
-                side_effect_mgr,
-                &resolved,
-                SideEffectTrigger::OnUnsubscribe,
-            )
-            .await;
+            self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnUnsubscribe)
+                .await;
         }
     }
 

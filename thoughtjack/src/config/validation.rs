@@ -1080,15 +1080,13 @@ impl Validator {
                 ("method", ParamType::Str),
                 ("params", ParamType::Any),
             ],
-            SideEffectType::BatchAmplify => &[
-                ("batch_size", ParamType::U64),
-                ("method", ParamType::Str),
-            ],
+            SideEffectType::BatchAmplify => {
+                &[("batch_size", ParamType::U64), ("method", ParamType::Str)]
+            }
             SideEffectType::PipeDeadlock => &[("fill_bytes", ParamType::U64)],
-            SideEffectType::CloseConnection => &[
-                ("graceful", ParamType::Bool),
-                ("delay_ms", ParamType::U64),
-            ],
+            SideEffectType::CloseConnection => {
+                &[("graceful", ParamType::Bool), ("delay_ms", ParamType::U64)]
+            }
             SideEffectType::DuplicateRequestIds => &[
                 ("count", ParamType::U64),
                 ("id", ParamType::Any),

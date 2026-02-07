@@ -925,9 +925,9 @@ mod tests {
     #[test]
     fn test_batch_amplify_zero_clamped() {
         // EC-BEH-012: batch_size 0 is clamped to 1 (max(1))
-        use crate::config::schema::{SideEffectConfig, SideEffectType, SideEffectTrigger};
-        use std::collections::HashMap;
         use crate::behavior::side_effects::create_side_effect;
+        use crate::config::schema::{SideEffectConfig, SideEffectTrigger, SideEffectType};
+        use std::collections::HashMap;
 
         let config = SideEffectConfig {
             type_: SideEffectType::BatchAmplify,

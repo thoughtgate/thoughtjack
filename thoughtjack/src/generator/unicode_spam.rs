@@ -391,7 +391,10 @@ mod tests {
         let generator = UnicodeSpamGenerator::new(&params, &default_limits()).unwrap();
         let payload = generator.generate().unwrap();
         let data = payload.into_bytes();
-        assert!(!data.is_empty(), "empty carrier should still produce output");
+        assert!(
+            !data.is_empty(),
+            "empty carrier should still produce output"
+        );
         // Should be valid UTF-8
         String::from_utf8(data).expect("output should be valid UTF-8");
     }

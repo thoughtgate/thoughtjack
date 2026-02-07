@@ -61,10 +61,7 @@ async fn events_file_writes_jsonl() {
     }
 
     // Verify expected event types in order
-    let types: Vec<&str> = lines
-        .iter()
-        .map(|l| l["type"].as_str().unwrap())
-        .collect();
+    let types: Vec<&str> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
     assert_eq!(types[0], "ServerStarted");
     assert!(types.contains(&"RequestReceived"));
     assert!(types.contains(&"ResponseSent"));
@@ -76,10 +73,8 @@ async fn metrics_endpoint_serves_prometheus() {
     // Use a high port unlikely to conflict
     let port = 19876_u16;
     let config = ThoughtJackProcess::fixture_path("simple_server.yaml");
-    let mut proc = ThoughtJackProcess::spawn_with_args(
-        &config,
-        &["--metrics-port", &port.to_string()],
-    );
+    let mut proc =
+        ThoughtJackProcess::spawn_with_args(&config, &["--metrics-port", &port.to_string()]);
 
     // Wait for the metrics endpoint to start
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -101,7 +96,10 @@ async fn metrics_endpoint_serves_prometheus() {
         .await
         .expect("metrics endpoint should respond");
 
-    assert!(resp.status().is_success(), "metrics endpoint returned error");
+    assert!(
+        resp.status().is_success(),
+        "metrics endpoint returned error"
+    );
 
     let body = resp.text().await.expect("should read body");
 

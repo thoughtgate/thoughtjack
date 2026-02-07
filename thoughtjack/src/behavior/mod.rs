@@ -19,8 +19,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::schema::{BehaviorConfig, DeliveryConfig, SideEffectTrigger};
 use crate::phase::EffectiveState;
-use crate::transport::{Transport, TransportType};
 use crate::transport::jsonrpc::JsonRpcRequest;
+use crate::transport::{Transport, TransportType};
 
 // ============================================================================
 // ResolvedBehavior
@@ -697,9 +697,7 @@ mod tests {
                 Ok(())
             }
 
-            async fn receive_message(
-                &self,
-            ) -> crate::transport::Result<Option<JsonRpcMessage>> {
+            async fn receive_message(&self) -> crate::transport::Result<Option<JsonRpcMessage>> {
                 Ok(None)
             }
 
@@ -726,13 +724,11 @@ mod tests {
             let cancel = CancellationToken::new();
             let mgr = SideEffectManager::new(transport, cancel);
 
-            let effects: Vec<Box<dyn SideEffect>> = vec![create_side_effect(
-                &SideEffectConfig {
-                    type_: SideEffectType::CloseConnection,
-                    trigger: SideEffectTrigger::OnRequest,
-                    params: HashMap::new(),
-                },
-            )];
+            let effects: Vec<Box<dyn SideEffect>> = vec![create_side_effect(&SideEffectConfig {
+                type_: SideEffectType::CloseConnection,
+                trigger: SideEffectTrigger::OnRequest,
+                params: HashMap::new(),
+            })];
 
             let results = mgr.trigger(&effects, SideEffectTrigger::OnRequest).await;
             assert_eq!(results.len(), 1);
@@ -745,13 +741,11 @@ mod tests {
             let cancel = CancellationToken::new();
             let mgr = SideEffectManager::new(transport, cancel);
 
-            let effects: Vec<Box<dyn SideEffect>> = vec![create_side_effect(
-                &SideEffectConfig {
-                    type_: SideEffectType::CloseConnection,
-                    trigger: SideEffectTrigger::OnRequest,
-                    params: HashMap::new(),
-                },
-            )];
+            let effects: Vec<Box<dyn SideEffect>> = vec![create_side_effect(&SideEffectConfig {
+                type_: SideEffectType::CloseConnection,
+                trigger: SideEffectTrigger::OnRequest,
+                params: HashMap::new(),
+            })];
 
             // Trigger with OnConnect should return no results
             let results = mgr.trigger(&effects, SideEffectTrigger::OnConnect).await;

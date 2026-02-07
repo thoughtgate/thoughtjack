@@ -130,7 +130,11 @@ pub struct Capabilities {
 #[serde(rename_all = "camelCase")]
 pub struct ToolsCapability {
     /// Whether the server supports `tools/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "list_changed"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -145,7 +149,11 @@ pub struct ResourcesCapability {
     pub subscribe: Option<bool>,
 
     /// Whether the server supports `resources/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "list_changed"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -156,7 +164,11 @@ pub struct ResourcesCapability {
 #[serde(rename_all = "camelCase")]
 pub struct PromptsCapability {
     /// Whether the server supports `prompts/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "list_changed"
+    )]
     pub list_changed: Option<bool>,
 }
 
