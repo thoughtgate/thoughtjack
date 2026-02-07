@@ -213,6 +213,13 @@ impl Validator {
     }
 
     /// Validates phases and their cross-references.
+    ///
+    /// Uses **cumulative** state (baseline + all preceding phase additions)
+    /// as a design-time aid for sequential phase designs, even though the
+    /// runtime (`effective.rs`) applies each phase independently as
+    /// baseline + current-phase-diff.  This means a tool added in phase A
+    /// will satisfy a replace/remove in phase B here but may not resolve at
+    /// runtime.  We emit a targeted warning for such cases.
     fn validate_phases(
         &mut self,
         phases: &[Phase],
@@ -267,6 +274,9 @@ impl Validator {
                 &cumulative_tools,
                 &cumulative_resources,
                 &cumulative_prompts,
+                baseline_tools,
+                baseline_resources,
+                baseline_prompts,
             );
 
             // Update cumulative state for next phase
@@ -280,6 +290,11 @@ impl Validator {
     }
 
     /// Validates that phase replace/remove targets exist in the cumulative state.
+    ///
+    /// Also warns when a target exists in the cumulative state (added by a
+    /// preceding phase) but not in the original baseline, because at runtime
+    /// each phase is applied independently (baseline + current diff).
+    #[allow(clippy::too_many_arguments)]
     fn validate_phase_targets(
         &mut self,
         phase: &Phase,
@@ -287,6 +302,9 @@ impl Validator {
         cumulative_tools: &HashSet<String>,
         cumulative_resources: &HashSet<String>,
         cumulative_prompts: &HashSet<String>,
+        baseline_tools: &HashSet<String>,
+        baseline_resources: &HashSet<String>,
+        baseline_prompts: &HashSet<String>,
     ) {
         if let Some(replace_tools) = &phase.replace_tools {
             for tool_name in replace_tools.keys() {
@@ -294,6 +312,14 @@ impl Validator {
                     self.add_error(
                         &format!("{path}.replace_tools.{tool_name}"),
                         &format!("Cannot replace unknown tool '{tool_name}'. Tool not found in cumulative state."),
+                    );
+                } else if !baseline_tools.contains(tool_name) {
+                    self.add_warning(
+                        &format!("{path}.replace_tools.{tool_name}"),
+                        &format!(
+                            "Tool '{tool_name}' exists via an earlier phase but phases apply \
+                             independently at runtime — this replace may not resolve as expected"
+                        ),
                     );
                 }
             }
@@ -305,6 +331,14 @@ impl Validator {
                         &format!("{path}.remove_tools"),
                         &format!("Cannot remove unknown tool '{tool_name}'. Tool not found in cumulative state."),
                     );
+                } else if !baseline_tools.contains(tool_name) {
+                    self.add_warning(
+                        &format!("{path}.remove_tools"),
+                        &format!(
+                            "Tool '{tool_name}' exists via an earlier phase but phases apply \
+                             independently at runtime — this remove may not resolve as expected"
+                        ),
+                    );
                 }
             }
         }
@@ -314,6 +348,14 @@ impl Validator {
                     self.add_error(
                         &format!("{path}.replace_resources.{uri}"),
                         &format!("Cannot replace unknown resource '{uri}'. Resource not found in cumulative state."),
+                    );
+                } else if !baseline_resources.contains(uri) {
+                    self.add_warning(
+                        &format!("{path}.replace_resources.{uri}"),
+                        &format!(
+                            "Resource '{uri}' exists via an earlier phase but phases apply \
+                             independently at runtime — this replace may not resolve as expected"
+                        ),
                     );
                 }
             }
@@ -325,6 +367,14 @@ impl Validator {
                         &format!("{path}.remove_resources"),
                         &format!("Cannot remove unknown resource '{uri}'. Resource not found in cumulative state."),
                     );
+                } else if !baseline_resources.contains(uri) {
+                    self.add_warning(
+                        &format!("{path}.remove_resources"),
+                        &format!(
+                            "Resource '{uri}' exists via an earlier phase but phases apply \
+                             independently at runtime — this remove may not resolve as expected"
+                        ),
+                    );
                 }
             }
         }
@@ -335,6 +385,14 @@ impl Validator {
                         &format!("{path}.replace_prompts.{name}"),
                         &format!("Cannot replace unknown prompt '{name}'. Prompt not found in cumulative state."),
                     );
+                } else if !baseline_prompts.contains(name) {
+                    self.add_warning(
+                        &format!("{path}.replace_prompts.{name}"),
+                        &format!(
+                            "Prompt '{name}' exists via an earlier phase but phases apply \
+                             independently at runtime — this replace may not resolve as expected"
+                        ),
+                    );
                 }
             }
         }
@@ -344,6 +402,14 @@ impl Validator {
                     self.add_error(
                         &format!("{path}.remove_prompts"),
                         &format!("Cannot remove unknown prompt '{name}'. Prompt not found in cumulative state."),
+                    );
+                } else if !baseline_prompts.contains(name) {
+                    self.add_warning(
+                        &format!("{path}.remove_prompts"),
+                        &format!(
+                            "Prompt '{name}' exists via an earlier phase but phases apply \
+                             independently at runtime — this remove may not resolve as expected"
+                        ),
                     );
                 }
             }
