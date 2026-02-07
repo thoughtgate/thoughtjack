@@ -334,9 +334,15 @@ impl Transport for HttpTransport {
 
 /// Builds the axum router with `POST /message` and `GET /sse` routes.
 fn build_router(shared: Arc<HttpSharedState>) -> Router {
+    // Override axum's default 2MB body limit with the configured max_message_size
+    // (default 10MB). Without this, requests between 2MB and max_message_size
+    // are rejected by axum before reaching the handler's size check.
+    let body_limit = axum::extract::DefaultBodyLimit::max(shared.max_message_size);
+
     Router::new()
         .route("/message", post(handle_post_message))
         .route("/sse", get(handle_sse))
+        .layer(body_limit)
         .with_state(shared)
 }
 
