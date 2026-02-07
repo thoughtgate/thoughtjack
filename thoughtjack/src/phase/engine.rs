@@ -202,6 +202,8 @@ impl PhaseEngine {
         // Invalidate effective state cache immediately after CAS success
         if let Ok(mut cache) = self.effective_cache.lock() {
             *cache = None;
+        } else {
+            tracing::warn!("effective_cache mutex poisoned during invalidation");
         }
 
         // Reset phase entry timer
@@ -235,7 +237,7 @@ impl PhaseEngine {
     pub fn effective_state(&self) -> EffectiveState {
         let current = self.state.current_phase();
 
-        // Check cache
+        // Check cache (skip on poison — just recompute)
         if let Ok(cache) = self.effective_cache.lock() {
             if let Some((cached_phase, ref cached_state)) = *cache {
                 if cached_phase == current {
@@ -250,6 +252,8 @@ impl PhaseEngine {
 
         if let Ok(mut cache) = self.effective_cache.lock() {
             *cache = Some((current, state.clone()));
+        } else {
+            tracing::warn!("effective_cache mutex poisoned, skipping cache update");
         }
 
         state
