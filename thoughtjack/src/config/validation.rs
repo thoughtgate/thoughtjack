@@ -382,19 +382,38 @@ impl Validator {
             self.validate_duration(timeout, &format!("{path}.timeout"));
         }
 
-        // EC-PHASE-023: validate regex patterns at config load time
+        // EC-PHASE-023: validate regex patterns and empty pattern matchers
         if let Some(match_cond) = &trigger.match_condition {
             for (field, matcher) in &match_cond.conditions {
                 if let FieldMatcher::Pattern {
-                    regex: Some(pattern),
-                    ..
+                    contains,
+                    prefix,
+                    suffix,
+                    regex,
                 } = matcher
                 {
-                    if regex::Regex::new(pattern).is_err() {
+                    // Reject Pattern with all None fields — this almost always
+                    // indicates a serde untagged deserialization gotcha where an
+                    // exact-match object was swallowed as an empty Pattern.
+                    if contains.is_none()
+                        && prefix.is_none()
+                        && suffix.is_none()
+                        && regex.is_none()
+                    {
                         self.add_error(
-                            &format!("{path}.match.{field}.regex"),
-                            &format!("Invalid regex pattern: '{pattern}'"),
+                            &format!("{path}.match.{field}"),
+                            "Pattern matcher has no conditions (all fields are None); \
+                             use an exact value or specify contains/prefix/suffix/regex",
                         );
+                    }
+
+                    if let Some(pattern) = regex {
+                        if regex::Regex::new(pattern).is_err() {
+                            self.add_error(
+                                &format!("{path}.match.{field}.regex"),
+                                &format!("Invalid regex pattern: '{pattern}'"),
+                            );
+                        }
                     }
                 }
             }
