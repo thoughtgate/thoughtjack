@@ -211,6 +211,15 @@ impl Server {
                 }
             };
 
+            // Validate JSON-RPC version
+            if request.jsonrpc != JSONRPC_VERSION {
+                warn!(
+                    version = %request.jsonrpc,
+                    expected = JSONRPC_VERSION,
+                    "invalid JSON-RPC version"
+                );
+            }
+
             // Capture incoming request
             if let Some(ref capture) = self.capture {
                 if let Ok(data) = serde_json::to_value(&request) {
