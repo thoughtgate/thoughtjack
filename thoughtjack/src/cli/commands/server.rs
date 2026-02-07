@@ -104,7 +104,7 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
     });
 
     let transport: Arc<dyn Transport> = if let Some(ref bind_addr) = args.http {
-        let addr = parse_bind_addr(bind_addr);
+        let addr = parse_bind_addr(bind_addr)?;
         let http_config = HttpConfig {
             bind_addr: addr,
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,

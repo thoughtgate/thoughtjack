@@ -435,18 +435,27 @@ async fn handle_sse(
 /// Accepts:
 /// - `:8080` → `0.0.0.0:8080`
 /// - `8080` → `0.0.0.0:8080`
-/// - `1.2.3.4:8080` → `1.2.3.4:8080`
+/// - `1.2.3.4:8080` → as-is
 ///
-/// Implements: TJ-SPEC-007 F-002
-#[must_use]
-pub fn parse_bind_addr(input: &str) -> String {
-    if input.starts_with(':') {
+/// # Errors
+///
+/// Returns [`TransportError::ConnectionFailed`] if the result cannot be
+/// parsed as a valid socket address.
+///
+/// Implements: TJ-SPEC-002 F-003
+pub fn parse_bind_addr(input: &str) -> std::result::Result<String, TransportError> {
+    let addr = if input.starts_with(':') {
         format!("0.0.0.0{input}")
     } else if input.parse::<u16>().is_ok() {
         format!("0.0.0.0:{input}")
     } else {
         input.to_string()
-    }
+    };
+    // Validate it can be parsed as a socket address
+    addr.parse::<SocketAddr>().map_err(|e| {
+        TransportError::ConnectionFailed(format!("invalid bind address \"{input}\": {e}"))
+    })?;
+    Ok(addr)
 }
 
 // ============================================================================
@@ -487,22 +496,27 @@ mod tests {
 
     #[test]
     fn parse_bind_addr_colon_port() {
-        assert_eq!(parse_bind_addr(":8080"), "0.0.0.0:8080");
+        assert_eq!(parse_bind_addr(":8080").unwrap(), "0.0.0.0:8080");
     }
 
     #[test]
     fn parse_bind_addr_port_only() {
-        assert_eq!(parse_bind_addr("8080"), "0.0.0.0:8080");
+        assert_eq!(parse_bind_addr("8080").unwrap(), "0.0.0.0:8080");
     }
 
     #[test]
     fn parse_bind_addr_full() {
-        assert_eq!(parse_bind_addr("1.2.3.4:8080"), "1.2.3.4:8080");
+        assert_eq!(parse_bind_addr("1.2.3.4:8080").unwrap(), "1.2.3.4:8080");
     }
 
     #[test]
     fn parse_bind_addr_localhost() {
-        assert_eq!(parse_bind_addr("127.0.0.1:3000"), "127.0.0.1:3000");
+        assert_eq!(parse_bind_addr("127.0.0.1:3000").unwrap(), "127.0.0.1:3000");
+    }
+
+    #[test]
+    fn parse_bind_addr_invalid() {
+        assert!(parse_bind_addr("not-an-address").is_err());
     }
 
     // ------------------------------------------------------------------
