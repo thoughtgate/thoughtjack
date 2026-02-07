@@ -11,8 +11,8 @@ pub mod sequence;
 pub mod template;
 
 use crate::config::schema::{
-    ContentItem, ContentValue, ExhaustedBehavior, HandlerConfig, MatchBranchConfig,
-    PromptMessage, ResourceContentConfig, SequenceEntryConfig,
+    ContentItem, ContentValue, ExhaustedBehavior, HandlerConfig, MatchBranchConfig, PromptMessage,
+    ResourceContentConfig, SequenceEntryConfig,
 };
 use crate::error::ThoughtJackError;
 
@@ -122,8 +122,20 @@ pub async fn resolve_prompt_content(
             if let Some(idx) = compiled.evaluate(ctx) {
                 let branch = &branches[idx];
                 let branch_messages = match branch {
-                    MatchBranchConfig::When { messages: msgs, sequence: seq, on_exhausted: oe, handler: h, .. } |
-                    MatchBranchConfig::Default { messages: msgs, sequence: seq, on_exhausted: oe, handler: h, .. } => {
+                    MatchBranchConfig::When {
+                        messages: msgs,
+                        sequence: seq,
+                        on_exhausted: oe,
+                        handler: h,
+                        ..
+                    }
+                    | MatchBranchConfig::Default {
+                        messages: msgs,
+                        sequence: seq,
+                        on_exhausted: oe,
+                        handler: h,
+                        ..
+                    } => {
                         // Handler in branch
                         if let Some(handler_config) = h {
                             let handler_content = execute_handler(
@@ -136,7 +148,9 @@ pub async fn resolve_prompt_content(
                             .await?;
                             // Convert handler content to prompt messages
                             let converted = content_to_messages(&handler_content);
-                            return Ok(ResolvedPrompt { messages: converted });
+                            return Ok(ResolvedPrompt {
+                                messages: converted,
+                            });
                         }
                         // Sequence in branch
                         if let Some(seq_entries) = seq {
@@ -148,7 +162,9 @@ pub async fn resolve_prompt_content(
                     }
                 };
                 let interpolated = interpolate_messages(&branch_messages, ctx);
-                return Ok(ResolvedPrompt { messages: interpolated });
+                return Ok(ResolvedPrompt {
+                    messages: interpolated,
+                });
             }
         }
     }
@@ -157,7 +173,9 @@ pub async fn resolve_prompt_content(
     if let Some(seq) = sequence {
         let resolved_msgs = resolve_sequence_messages(seq, on_exhausted, ctx)?;
         let interpolated = interpolate_messages(&resolved_msgs, ctx);
-        return Ok(ResolvedPrompt { messages: interpolated });
+        return Ok(ResolvedPrompt {
+            messages: interpolated,
+        });
     }
 
     // Step 3: Handler delegation (top-level)
@@ -171,12 +189,16 @@ pub async fn resolve_prompt_content(
         )
         .await?;
         let converted = content_to_messages(&handler_content);
-        return Ok(ResolvedPrompt { messages: converted });
+        return Ok(ResolvedPrompt {
+            messages: converted,
+        });
     }
 
     // Step 4: Template interpolation on static messages
     let interpolated = interpolate_messages(messages, ctx);
-    Ok(ResolvedPrompt { messages: interpolated })
+    Ok(ResolvedPrompt {
+        messages: interpolated,
+    })
 }
 
 /// Resolves resource-specific content entries from match branches.
@@ -308,12 +330,11 @@ fn resolve_sequence_content(
     on_exhausted: ExhaustedBehavior,
     ctx: &TemplateContext,
 ) -> Result<Vec<ContentItem>, ThoughtJackError> {
-    let index = resolve_sequence_index(sequence.len(), ctx.call_count, on_exhausted)
-        .map_err(|SequenceExhausted| {
-            crate::error::HandlerError::InvalidResponse(
-                "response sequence exhausted".to_string(),
-            )
-        })?;
+    let index = resolve_sequence_index(sequence.len(), ctx.call_count, on_exhausted).map_err(
+        |SequenceExhausted| {
+            crate::error::HandlerError::InvalidResponse("response sequence exhausted".to_string())
+        },
+    )?;
     Ok(sequence[index].content.clone())
 }
 
@@ -323,12 +344,11 @@ fn resolve_sequence_messages(
     on_exhausted: ExhaustedBehavior,
     ctx: &TemplateContext,
 ) -> Result<Vec<PromptMessage>, ThoughtJackError> {
-    let index = resolve_sequence_index(sequence.len(), ctx.call_count, on_exhausted)
-        .map_err(|SequenceExhausted| {
-            crate::error::HandlerError::InvalidResponse(
-                "response sequence exhausted".to_string(),
-            )
-        })?;
+    let index = resolve_sequence_index(sequence.len(), ctx.call_count, on_exhausted).map_err(
+        |SequenceExhausted| {
+            crate::error::HandlerError::InvalidResponse("response sequence exhausted".to_string())
+        },
+    )?;
     Ok(sequence[index].messages.clone())
 }
 
@@ -403,9 +423,7 @@ fn interpolate_messages(messages: &[PromptMessage], ctx: &TemplateContext) -> Ve
         .iter()
         .map(|msg| {
             let content = match &msg.content {
-                ContentValue::Static(s) => {
-                    ContentValue::Static(resolve_template(s, ctx))
-                }
+                ContentValue::Static(s) => ContentValue::Static(resolve_template(s, ctx)),
                 other => other.clone(),
             };
             PromptMessage {
@@ -634,7 +652,10 @@ mod tests {
         }];
 
         let result = resolve_resource_match_contents(&branches, &ctx).unwrap();
-        assert!(result.is_none(), "handler should take priority over contents");
+        assert!(
+            result.is_none(),
+            "handler should take priority over contents"
+        );
     }
 
     #[test]

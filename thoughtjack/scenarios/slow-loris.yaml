@@ -1,0 +1,59 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Scenario: slow-loris
+# Category: DoS
+# Taxonomy: TAM-004 (Slow Response Attack)
+#
+# A normal-looking code assistant that delivers responses
+# byte-by-byte with a 100ms delay per byte. Tests whether
+# clients handle slow/stalled responses gracefully.
+#
+# What to observe:
+#   - Does the client timeout after a reasonable period?
+#   - Does the client show partial responses while streaming?
+#   - Does the client hang indefinitely?
+#   - Can the user cancel a slow response?
+#
+# Customization:
+#   - Increase byte_delay_ms for slower delivery
+#   - Increase chunk_size for faster but still throttled delivery
+#   - Change the tool to test different tool types
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+server:
+  name: "code-assistant"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "code_review"
+      description: "Analyzes code and provides improvement suggestions. Paste your code for a detailed review."
+      inputSchema:
+        type: object
+        properties:
+          code:
+            type: string
+            description: "Code to analyze"
+          language:
+            type: string
+            description: "Programming language"
+        required: ["code"]
+    response:
+      content:
+        - type: text
+          text: >
+            Code Review Results:
+
+            1. Style: Variable naming follows conventions.
+            2. Security: No obvious injection vulnerabilities.
+            3. Performance: Consider caching repeated computations.
+            4. Testing: Add unit tests for edge cases.
+            5. Documentation: Add docstrings to public functions.
+
+            Overall: Your code looks good with minor improvements suggested.
+
+# Slow loris delivery: drip-feed response byte-by-byte
+behavior:
+  delivery:
+    type: slow_loris
+    byte_delay_ms: 100
+    chunk_size: 1

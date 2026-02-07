@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 use crate::config::schema::StateScope;
+use crate::scenarios::ScenarioCategory;
 
 // ============================================================================
 // Root CLI
@@ -47,6 +48,9 @@ pub struct Cli {
 pub enum Commands {
     /// Start or manage the adversarial MCP server.
     Server(Box<ServerCommand>),
+
+    /// List and inspect built-in attack scenarios.
+    Scenarios(ScenariosCommand),
 
     /// Run as an MCP client agent (coming soon).
     Agent(AgentCommand),
@@ -107,6 +111,10 @@ pub struct ServerRunArgs {
     /// Path to a single tool definition file (quick-start mode).
     #[arg(short, long, group = "source")]
     pub tool: Option<PathBuf>,
+
+    /// Built-in scenario name (see `scenarios list` for options).
+    #[arg(short = 's', long, group = "source")]
+    pub scenario: Option<String>,
 
     /// Bind HTTP transport on `[host:]port` instead of stdio.
     #[arg(long)]
@@ -203,6 +211,59 @@ pub struct ServerListArgs {
     /// Path to the attack pattern library directory.
     #[arg(long, default_value = "./library")]
     pub library: PathBuf,
+}
+
+// ============================================================================
+// Scenarios Command
+// ============================================================================
+
+/// Built-in attack scenario commands.
+///
+/// Implements: TJ-SPEC-010 F-004, F-005, F-008
+#[derive(Args, Debug)]
+pub struct ScenariosCommand {
+    /// Scenarios subcommand.
+    #[command(subcommand)]
+    pub subcommand: ScenariosSubcommand,
+}
+
+/// Scenarios subcommands.
+///
+/// Implements: TJ-SPEC-010 F-004, F-005
+#[derive(Subcommand, Debug)]
+pub enum ScenariosSubcommand {
+    /// List available built-in scenarios.
+    List(ScenariosListArgs),
+
+    /// Display the YAML configuration for a built-in scenario.
+    Show(ScenariosShowArgs),
+}
+
+/// Arguments for `scenarios list`.
+///
+/// Implements: TJ-SPEC-010 F-004
+#[derive(Args, Debug)]
+pub struct ScenariosListArgs {
+    /// Filter by category.
+    #[arg(long)]
+    pub category: Option<ScenarioCategory>,
+
+    /// Filter by tag.
+    #[arg(long)]
+    pub tag: Option<String>,
+
+    /// Output format.
+    #[arg(long, default_value = "human")]
+    pub format: OutputFormat,
+}
+
+/// Arguments for `scenarios show`.
+///
+/// Implements: TJ-SPEC-010 F-005
+#[derive(Args, Debug)]
+pub struct ScenariosShowArgs {
+    /// Scenario name to display.
+    pub name: String,
 }
 
 // ============================================================================
@@ -508,6 +569,64 @@ mod tests {
         } else {
             panic!("Expected Server command");
         }
+    }
+
+    #[test]
+    fn test_server_run_with_scenario() {
+        let cli = Cli::try_parse_from(["thoughtjack", "server", "run", "--scenario", "rug-pull"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    #[test]
+    fn test_scenario_and_config_mutually_exclusive() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "server",
+            "run",
+            "--scenario",
+            "rug-pull",
+            "--config",
+            "c.yaml",
+        ]);
+        assert!(cli.is_err(), "Expected mutual exclusion error");
+    }
+
+    #[test]
+    fn test_scenario_and_tool_mutually_exclusive() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "server",
+            "run",
+            "--scenario",
+            "rug-pull",
+            "--tool",
+            "t.yaml",
+        ]);
+        assert!(cli.is_err(), "Expected mutual exclusion error");
+    }
+
+    #[test]
+    fn test_scenarios_list_command() {
+        let cli = Cli::try_parse_from(["thoughtjack", "scenarios", "list"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    #[test]
+    fn test_scenarios_list_with_category() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "scenarios",
+            "list",
+            "--category",
+            "injection",
+        ]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    #[test]
+    fn test_scenarios_show_command() {
+        let cli = Cli::try_parse_from(["thoughtjack", "scenarios", "show", "rug-pull"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 
     #[test]

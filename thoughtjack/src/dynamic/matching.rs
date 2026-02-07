@@ -59,10 +59,8 @@ impl MatchCondition {
             } => {
                 // any_of in operator form
                 if let Some(patterns) = any_of {
-                    let conditions: Result<Vec<_>, _> = patterns
-                        .iter()
-                        .map(|p| compile_single_string(p))
-                        .collect();
+                    let conditions: Result<Vec<_>, _> =
+                        patterns.iter().map(|p| compile_single_string(p)).collect();
                     return Ok(Self::AnyOf(conditions?));
                 }
                 if let Some(val) = exists {
@@ -87,10 +85,8 @@ impl MatchCondition {
                 Ok(Self::Exists(true))
             }
             MatchConditionConfig::GlobList(patterns) => {
-                let conditions: Result<Vec<_>, _> = patterns
-                    .iter()
-                    .map(|p| compile_single_string(p))
-                    .collect();
+                let conditions: Result<Vec<_>, _> =
+                    patterns.iter().map(|p| compile_single_string(p)).collect();
                 Ok(Self::AnyOf(conditions?))
             }
             MatchConditionConfig::Single(pattern) => compile_single_string(pattern),
@@ -429,10 +425,7 @@ mod tests {
     fn test_when_clause_and() {
         let clause = WhenClause {
             conditions: vec![
-                (
-                    "args.path".into(),
-                    MatchCondition::Prefix("/etc/".into()),
-                ),
+                ("args.path".into(), MatchCondition::Prefix("/etc/".into())),
                 (
                     "args.query".into(),
                     MatchCondition::Contains("secret".into()),
@@ -447,10 +440,7 @@ mod tests {
     fn test_when_clause_and_fails() {
         let clause = WhenClause {
             conditions: vec![
-                (
-                    "args.path".into(),
-                    MatchCondition::Prefix("/var/".into()),
-                ),
+                ("args.path".into(), MatchCondition::Prefix("/var/".into())),
                 (
                     "args.query".into(),
                     MatchCondition::Contains("secret".into()),

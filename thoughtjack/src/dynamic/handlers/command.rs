@@ -17,7 +17,7 @@ use crate::error::HandlerError;
 use crate::dynamic::context::TemplateContext;
 use crate::dynamic::template::resolve_template;
 
-use super::{HandlerResponse, DEFAULT_TIMEOUT_MS, MAX_RESPONSE_SIZE, build_handler_body};
+use super::{DEFAULT_TIMEOUT_MS, HandlerResponse, MAX_RESPONSE_SIZE, build_handler_body};
 
 /// Executes a command handler subprocess.
 ///
@@ -50,17 +50,15 @@ pub async fn execute_command_handler(
     }
 
     if cmd.is_empty() {
-        return Err(HandlerError::SpawnFailed(
-            "empty command array".to_string(),
-        ));
+        return Err(HandlerError::SpawnFailed("empty command array".to_string()));
     }
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
 
     let body = build_handler_body(item_type_str, ctx);
 
-    let body_bytes = serde_json::to_vec(&body)
-        .map_err(|e| HandlerError::InvalidResponse(e.to_string()))?;
+    let body_bytes =
+        serde_json::to_vec(&body).map_err(|e| HandlerError::InvalidResponse(e.to_string()))?;
 
     debug!(cmd = ?cmd, "executing command handler");
 
@@ -89,9 +87,10 @@ pub async fn execute_command_handler(
 
     // Write body to stdin
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(&body_bytes).await.map_err(|e| {
-            HandlerError::SpawnFailed(format!("failed to write to stdin: {e}"))
-        })?;
+        stdin
+            .write_all(&body_bytes)
+            .await
+            .map_err(|e| HandlerError::SpawnFailed(format!("failed to write to stdin: {e}")))?;
         drop(stdin);
     }
 
@@ -163,32 +162,16 @@ mod tests {
     #[tokio::test]
     async fn test_not_enabled() {
         let ctx = make_ctx();
-        let result = execute_command_handler(
-            &["echo".to_string()],
-            None,
-            None,
-            None,
-            &ctx,
-            "tool",
-            false,
-        )
-        .await;
+        let result =
+            execute_command_handler(&["echo".to_string()], None, None, None, &ctx, "tool", false)
+                .await;
         assert!(matches!(result.unwrap_err(), HandlerError::NotEnabled));
     }
 
     #[tokio::test]
     async fn test_empty_cmd() {
         let ctx = make_ctx();
-        let result = execute_command_handler(
-            &[],
-            None,
-            None,
-            None,
-            &ctx,
-            "tool",
-            true,
-        )
-        .await;
+        let result = execute_command_handler(&[], None, None, None, &ctx, "tool", true).await;
         assert!(matches!(result.unwrap_err(), HandlerError::SpawnFailed(_)));
     }
 
@@ -196,16 +179,9 @@ mod tests {
     #[tokio::test]
     async fn test_nonzero_exit() {
         let ctx = make_ctx();
-        let result = execute_command_handler(
-            &["false".to_string()],
-            None,
-            None,
-            None,
-            &ctx,
-            "tool",
-            true,
-        )
-        .await;
+        let result =
+            execute_command_handler(&["false".to_string()], None, None, None, &ctx, "tool", true)
+                .await;
         assert!(matches!(
             result.unwrap_err(),
             HandlerError::NonZeroExit { .. }

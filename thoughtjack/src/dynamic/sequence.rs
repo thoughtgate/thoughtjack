@@ -177,23 +177,50 @@ mod tests {
 
     #[test]
     fn test_sequence_within_range() {
-        assert_eq!(resolve_sequence_index(3, 1, ExhaustedBehavior::Last).unwrap(), 0);
-        assert_eq!(resolve_sequence_index(3, 2, ExhaustedBehavior::Last).unwrap(), 1);
-        assert_eq!(resolve_sequence_index(3, 3, ExhaustedBehavior::Last).unwrap(), 2);
+        assert_eq!(
+            resolve_sequence_index(3, 1, ExhaustedBehavior::Last).unwrap(),
+            0
+        );
+        assert_eq!(
+            resolve_sequence_index(3, 2, ExhaustedBehavior::Last).unwrap(),
+            1
+        );
+        assert_eq!(
+            resolve_sequence_index(3, 3, ExhaustedBehavior::Last).unwrap(),
+            2
+        );
     }
 
     #[test]
     fn test_sequence_cycle() {
-        assert_eq!(resolve_sequence_index(3, 4, ExhaustedBehavior::Cycle).unwrap(), 0);
-        assert_eq!(resolve_sequence_index(3, 5, ExhaustedBehavior::Cycle).unwrap(), 1);
-        assert_eq!(resolve_sequence_index(3, 6, ExhaustedBehavior::Cycle).unwrap(), 2);
-        assert_eq!(resolve_sequence_index(3, 7, ExhaustedBehavior::Cycle).unwrap(), 0);
+        assert_eq!(
+            resolve_sequence_index(3, 4, ExhaustedBehavior::Cycle).unwrap(),
+            0
+        );
+        assert_eq!(
+            resolve_sequence_index(3, 5, ExhaustedBehavior::Cycle).unwrap(),
+            1
+        );
+        assert_eq!(
+            resolve_sequence_index(3, 6, ExhaustedBehavior::Cycle).unwrap(),
+            2
+        );
+        assert_eq!(
+            resolve_sequence_index(3, 7, ExhaustedBehavior::Cycle).unwrap(),
+            0
+        );
     }
 
     #[test]
     fn test_sequence_last() {
-        assert_eq!(resolve_sequence_index(3, 4, ExhaustedBehavior::Last).unwrap(), 2);
-        assert_eq!(resolve_sequence_index(3, 100, ExhaustedBehavior::Last).unwrap(), 2);
+        assert_eq!(
+            resolve_sequence_index(3, 4, ExhaustedBehavior::Last).unwrap(),
+            2
+        );
+        assert_eq!(
+            resolve_sequence_index(3, 100, ExhaustedBehavior::Last).unwrap(),
+            2
+        );
     }
 
     #[test]
@@ -212,7 +239,9 @@ mod tests {
     fn test_counter_saturation() {
         let tracker = CallTracker::new();
         // Manually set to near max
-        tracker.counters.insert("key".to_string(), AtomicU64::new(u64::MAX - 1));
+        tracker
+            .counters
+            .insert("key".to_string(), AtomicU64::new(u64::MAX - 1));
         assert_eq!(tracker.increment("key"), u64::MAX);
         // Should saturate
         assert_eq!(tracker.increment("key"), u64::MAX);

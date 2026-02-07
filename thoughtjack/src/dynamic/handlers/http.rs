@@ -15,7 +15,7 @@ use crate::error::HandlerError;
 use crate::dynamic::context::TemplateContext;
 use crate::dynamic::template::resolve_template;
 
-use super::{HandlerResponse, DEFAULT_TIMEOUT_MS, MAX_RESPONSE_SIZE, build_handler_body};
+use super::{DEFAULT_TIMEOUT_MS, HandlerResponse, MAX_RESPONSE_SIZE, build_handler_body};
 
 /// Creates a shared HTTP client for handler requests.
 ///
@@ -90,13 +90,10 @@ pub async fn execute_http_handler(
     }
 
     // Read body with size limit
-    let bytes = tokio::time::timeout(
-        timeout,
-        response.bytes(),
-    )
-    .await
-    .map_err(|_| HandlerError::Timeout)?
-    .map_err(|e| HandlerError::Network(e.to_string()))?;
+    let bytes = tokio::time::timeout(timeout, response.bytes())
+        .await
+        .map_err(|_| HandlerError::Timeout)?
+        .map_err(|e| HandlerError::Network(e.to_string()))?;
 
     if bytes.len() > MAX_RESPONSE_SIZE {
         return Err(HandlerError::InvalidResponse(format!(
@@ -104,8 +101,8 @@ pub async fn execute_http_handler(
         )));
     }
 
-    let handler_response: HandlerResponse = serde_json::from_slice(&bytes)
-        .map_err(|e| HandlerError::InvalidResponse(e.to_string()))?;
+    let handler_response: HandlerResponse =
+        serde_json::from_slice(&bytes).map_err(|e| HandlerError::InvalidResponse(e.to_string()))?;
 
     parse_handler_response(handler_response)
 }
@@ -113,9 +110,7 @@ pub async fn execute_http_handler(
 /// Parses a `HandlerResponse` into content items.
 ///
 /// Implements: TJ-SPEC-009 F-003
-fn parse_handler_response(
-    response: HandlerResponse,
-) -> Result<Vec<ContentItem>, HandlerError> {
+fn parse_handler_response(response: HandlerResponse) -> Result<Vec<ContentItem>, HandlerError> {
     match response {
         HandlerResponse::Full { content } => Ok(content),
         HandlerResponse::Simple { text } => Ok(vec![ContentItem::Text {

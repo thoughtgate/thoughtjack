@@ -266,11 +266,12 @@ impl Server {
             // 4. Route to handler (uses PRE-transition effective state)
             let phase_index = self.phase_engine.current_phase();
             #[allow(clippy::cast_possible_wrap)]
-            let phase_index_signed = if self.phase_engine.is_terminal() && self.config.phases.is_none() {
-                -1_i64
-            } else {
-                phase_index as i64
-            };
+            let phase_index_signed =
+                if self.phase_engine.is_terminal() && self.config.phases.is_none() {
+                    -1_i64
+                } else {
+                    phase_index as i64
+                };
 
             let request_ctx = RequestContext {
                 limits: &self.generator_limits,

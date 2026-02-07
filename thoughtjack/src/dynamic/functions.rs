@@ -15,30 +15,23 @@ pub fn evaluate_function(name: &str, args: &[String]) -> Option<String> {
     match name {
         "upper" => args.first().map(|s| s.to_uppercase()),
         "lower" => args.first().map(|s| s.to_lowercase()),
-        "base64" => args.first().map(|s| {
-            base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
-        }),
-        "json" => args.first().map(|s| {
-            serde_json::to_string(s).unwrap_or_default()
-        }),
+        "base64" => args
+            .first()
+            .map(|s| base64::engine::general_purpose::STANDARD.encode(s.as_bytes())),
+        "json" => args
+            .first()
+            .map(|s| serde_json::to_string(s).unwrap_or_default()),
         "len" => args.first().map(|s| s.len().to_string()),
         "default" => {
             let first = args.first().filter(|s| !s.is_empty());
-            Some(
-                first
-                    .or_else(|| args.get(1))
-                    .cloned()
-                    .unwrap_or_default(),
-            )
+            Some(first.or_else(|| args.get(1)).cloned().unwrap_or_default())
         }
         "truncate" => {
             let s = args.first()?;
             let len: usize = args.get(1)?.parse().ok()?;
             Some(s.chars().take(len).collect())
         }
-        "timestamp" => {
-            Some(chrono::Utc::now().timestamp().to_string())
-        }
+        "timestamp" => Some(chrono::Utc::now().timestamp().to_string()),
         "uuid" => Some(uuid::Uuid::new_v4().to_string()),
         _ => None,
     }

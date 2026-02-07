@@ -19,5 +19,6 @@ pub mod generator;
 pub mod handlers;
 pub mod observability;
 pub mod phase;
+pub mod scenarios;
 pub mod server;
 pub mod transport;

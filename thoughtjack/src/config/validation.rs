@@ -751,10 +751,7 @@ impl Validator {
         }
         if let Some(seq) = sequence {
             if seq.is_empty() {
-                self.add_warning(
-                    &format!("{base_path}.sequence"),
-                    "Empty response sequence",
-                );
+                self.add_warning(&format!("{base_path}.sequence"), "Empty response sequence");
             }
         }
         if let Some(h) = handler {
@@ -781,16 +778,10 @@ impl Validator {
                 }
                 MatchBranchConfig::When { when, .. } => {
                     if found_default {
-                        self.add_warning(
-                            &branch_path,
-                            "Unreachable match branch after 'default'",
-                        );
+                        self.add_warning(&branch_path, "Unreachable match branch after 'default'");
                     }
                     for (field, cond) in when {
-                        self.validate_match_condition(
-                            cond,
-                            &format!("{branch_path}.when.{field}"),
-                        );
+                        self.validate_match_condition(cond, &format!("{branch_path}.when.{field}"));
                     }
                 }
             }
@@ -826,10 +817,7 @@ impl Validator {
                     }
                     for msg in messages {
                         if let ContentValue::Static(s) = &msg.content {
-                            self.validate_template_syntax(
-                                s,
-                                &format!("{branch_path}.messages"),
-                            );
+                            self.validate_template_syntax(s, &format!("{branch_path}.messages"));
                         }
                     }
                     if let Some(entries) = contents {
@@ -868,10 +856,7 @@ impl Validator {
             MatchConditionConfig::Single(s) => {
                 if let Some(pattern) = s.strip_prefix("regex:") {
                     if regex::Regex::new(pattern).is_err() {
-                        self.add_error(
-                            path,
-                            &format!("Invalid regex pattern: '{pattern}'"),
-                        );
+                        self.add_error(path, &format!("Invalid regex pattern: '{pattern}'"));
                     }
                 } else if glob::Pattern::new(s).is_err() {
                     self.add_error(path, &format!("Invalid glob pattern: '{s}'"));
@@ -924,14 +909,18 @@ impl Validator {
                     if let Some(fn_name) = var_name.strip_prefix("fn.") {
                         let fn_name = fn_name.split('(').next().unwrap_or(fn_name);
                         let known_fns = [
-                            "upper", "lower", "base64", "json", "len", "default",
-                            "truncate", "timestamp", "uuid",
+                            "upper",
+                            "lower",
+                            "base64",
+                            "json",
+                            "len",
+                            "default",
+                            "truncate",
+                            "timestamp",
+                            "uuid",
                         ];
                         if !known_fns.contains(&fn_name) {
-                            self.add_warning(
-                                path,
-                                &format!("Unknown function '{fn_name}'"),
-                            );
+                            self.add_warning(path, &format!("Unknown function '{fn_name}'"));
                         }
                     }
                     i = i + 2 + close + 1;
@@ -964,10 +953,7 @@ impl Validator {
             }
             HandlerConfig::Command { cmd, .. } => {
                 if cmd.is_empty() {
-                    self.add_error(
-                        &format!("{path}.cmd"),
-                        "Handler command cannot be empty",
-                    );
+                    self.add_error(&format!("{path}.cmd"), "Handler command cannot be empty");
                 }
             }
         }
@@ -2049,10 +2035,9 @@ mod tests {
         let result = validator.validate(&config, &default_limits());
 
         assert!(
-            !result
-                .errors
-                .iter()
-                .any(|e| e.message.contains("Prompt response messages cannot be empty")),
+            !result.errors.iter().any(|e| e
+                .message
+                .contains("Prompt response messages cannot be empty")),
             "empty messages with handler should not be an error"
         );
     }

@@ -9,8 +9,8 @@ use crate::config::schema::ContentValue;
 use crate::dynamic::context::{ItemType, TemplateContext};
 use crate::dynamic::sequence::CallTracker;
 use crate::error::ThoughtJackError;
-use crate::handlers::resolve_content;
 use crate::handlers::RequestContext;
+use crate::handlers::resolve_content;
 use crate::phase::EffectiveState;
 use crate::transport::jsonrpc::{JsonRpcRequest, JsonRpcResponse, error_codes};
 
@@ -99,12 +99,7 @@ pub async fn handle_get(
         .unwrap_or_else(|| json!({}));
 
     // Increment call counter
-    let tracker_key = CallTracker::make_key(
-        rctx.connection_id,
-        rctx.state_scope,
-        "prompt",
-        name,
-    );
+    let tracker_key = CallTracker::make_key(rctx.connection_id, rctx.state_scope, "prompt", name);
     let call_count = rctx.call_tracker.increment(&tracker_key);
 
     let resp = &prompt.response;

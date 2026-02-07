@@ -66,20 +66,14 @@ impl TemplateContext {
             "args" => Some(self.args.to_string()),
 
             // Tool namespace
-            "tool.name" if self.item_type == ItemType::Tool => {
-                Some(self.item_name.clone())
-            }
+            "tool.name" if self.item_type == ItemType::Tool => Some(self.item_name.clone()),
             "tool.call_count" if self.item_type == ItemType::Tool => {
                 Some(self.call_count.to_string())
             }
 
             // Resource namespace
-            "resource.uri" if self.item_type == ItemType::Resource => {
-                Some(self.item_name.clone())
-            }
-            "resource.name" if self.item_type == ItemType::Resource => {
-                self.resource_name.clone()
-            }
+            "resource.uri" if self.item_type == ItemType::Resource => Some(self.item_name.clone()),
+            "resource.name" if self.item_type == ItemType::Resource => self.resource_name.clone(),
             "resource.mimeType" if self.item_type == ItemType::Resource => {
                 self.resource_mime_type.clone()
             }
@@ -88,9 +82,7 @@ impl TemplateContext {
             }
 
             // Prompt namespace
-            "prompt.name" if self.item_type == ItemType::Prompt => {
-                Some(self.item_name.clone())
-            }
+            "prompt.name" if self.item_type == ItemType::Prompt => Some(self.item_name.clone()),
             "prompt.call_count" if self.item_type == ItemType::Prompt => {
                 Some(self.call_count.to_string())
             }
@@ -236,15 +228,24 @@ mod tests {
     #[test]
     fn test_tool_variables() {
         let ctx = make_tool_context();
-        assert_eq!(ctx.get_variable("tool.name"), Some("web_search".to_string()));
+        assert_eq!(
+            ctx.get_variable("tool.name"),
+            Some("web_search".to_string())
+        );
         assert_eq!(ctx.get_variable("tool.call_count"), Some("3".to_string()));
     }
 
     #[test]
     fn test_args_resolution() {
         let ctx = make_tool_context();
-        assert_eq!(ctx.get_variable("args.query"), Some("test search".to_string()));
-        assert_eq!(ctx.get_variable("args.path"), Some("/etc/passwd".to_string()));
+        assert_eq!(
+            ctx.get_variable("args.query"),
+            Some("test search".to_string())
+        );
+        assert_eq!(
+            ctx.get_variable("args.path"),
+            Some("/etc/passwd".to_string())
+        );
         assert_eq!(ctx.get_variable("args.items[0].id"), Some("1".to_string()));
         assert_eq!(ctx.get_variable("args.items[1].id"), Some("2".to_string()));
     }
@@ -266,8 +267,14 @@ mod tests {
     #[test]
     fn test_request_variables() {
         let ctx = make_tool_context();
-        assert_eq!(ctx.get_variable("request.id"), Some("\"req-123\"".to_string()));
-        assert_eq!(ctx.get_variable("request.method"), Some("tools/call".to_string()));
+        assert_eq!(
+            ctx.get_variable("request.id"),
+            Some("\"req-123\"".to_string())
+        );
+        assert_eq!(
+            ctx.get_variable("request.method"),
+            Some("tools/call".to_string())
+        );
     }
 
     #[test]
@@ -279,10 +286,22 @@ mod tests {
     #[test]
     fn test_resource_variables() {
         let ctx = make_resource_context();
-        assert_eq!(ctx.get_variable("resource.uri"), Some("file:///etc/passwd".to_string()));
-        assert_eq!(ctx.get_variable("resource.name"), Some("Password file".to_string()));
-        assert_eq!(ctx.get_variable("resource.mimeType"), Some("text/plain".to_string()));
-        assert_eq!(ctx.get_variable("resource.call_count"), Some("1".to_string()));
+        assert_eq!(
+            ctx.get_variable("resource.uri"),
+            Some("file:///etc/passwd".to_string())
+        );
+        assert_eq!(
+            ctx.get_variable("resource.name"),
+            Some("Password file".to_string())
+        );
+        assert_eq!(
+            ctx.get_variable("resource.mimeType"),
+            Some("text/plain".to_string())
+        );
+        assert_eq!(
+            ctx.get_variable("resource.call_count"),
+            Some("1".to_string())
+        );
     }
 
     #[test]

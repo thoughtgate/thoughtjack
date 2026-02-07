@@ -77,10 +77,7 @@ mod tests {
     #[test]
     fn test_multiple_variables() {
         let ctx = make_ctx();
-        let result = resolve_template(
-            "Tool: ${tool.name}, Phase: ${phase.name}",
-            &ctx,
-        );
+        let result = resolve_template("Tool: ${tool.name}, Phase: ${phase.name}", &ctx);
         assert_eq!(result, "Tool: web_search, Phase: exploit");
     }
 

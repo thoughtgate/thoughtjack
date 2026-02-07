@@ -348,7 +348,9 @@ mod tests {
             name: "attack".to_string(),
             remove_tools: Some(vec!["old".to_string()]),
             replace_tools: Some(replace_tools),
-            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool("new", "New tool")))]),
+            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool(
+                "new", "New tool",
+            )))]),
             ..default_phase()
         };
 
