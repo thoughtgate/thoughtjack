@@ -174,7 +174,12 @@ impl HttpTransport {
             shared,
             incoming_rx: tokio::sync::Mutex::new(incoming_rx),
             current_response: tokio::sync::Mutex::new(None),
-            current_context: std::sync::Mutex::new(ConnectionContext::stdio()),
+            current_context: std::sync::Mutex::new(ConnectionContext {
+                connection_id: 0,
+                remote_addr: None,
+                is_exclusive: false,
+                connected_at: Instant::now(),
+            }),
             current_guard: std::sync::Mutex::new(None),
             _server_handle: server_handle,
         };
@@ -427,8 +432,12 @@ async fn handle_sse(
 {
     let rx = shared.sse_tx.subscribe();
     let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-        |result: std::result::Result<String, _>| {
-            result.ok().map(|data| Ok(SseEvent::default().data(data)))
+        |result: std::result::Result<String, _>| match result {
+            Ok(data) => Some(Ok(SseEvent::default().data(data))),
+            Err(e) => {
+                tracing::warn!(error = %e, "SSE subscriber lagged, dropping missed messages");
+                None
+            }
         },
     );
     Sse::new(stream).keep_alive(KeepAlive::default())
