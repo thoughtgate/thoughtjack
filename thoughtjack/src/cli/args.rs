@@ -53,6 +53,7 @@ pub enum Commands {
     Scenarios(ScenariosCommand),
 
     /// Run as an MCP client agent (coming soon).
+    #[command(hide = true)]
     Agent(AgentCommand),
 
     /// Generate shell completion scripts.
