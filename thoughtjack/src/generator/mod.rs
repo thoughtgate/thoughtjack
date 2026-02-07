@@ -240,10 +240,10 @@ pub(crate) fn require_usize(
 /// Returns [`GeneratorError::LimitExceeded`] if parameters exceed limits.
 /// Returns [`GeneratorError::InvalidParameters`] if required params are missing.
 ///
-// TODO(TJ-SPEC-005 F-010): Add generator caching with memory limits.
-// Currently generators are created per-call which is correct but suboptimal
-// for repeated identical configs. A cache keyed by GeneratorConfig with
-// LRU eviction and memory budget tracking would improve performance.
+// TODO(TJ-SPEC-005 F-010): Add generator caching with LRU eviction and
+// memory budget tracking. Currently generators are created per-call which
+// is correct but suboptimal for repeated identical configs.
+// Tracked for v0.3 milestone.
 ///
 /// Implements: TJ-SPEC-005 F-001
 pub fn create_generator(

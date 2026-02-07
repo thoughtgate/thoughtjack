@@ -171,7 +171,8 @@ impl PayloadGenerator for GarbageGenerator {
 /// buffered path for the same seed. Chunk boundaries cause the RNG to
 /// advance differently because `generate_utf8_bytes` discards characters
 /// that don't fit in the remaining chunk space. A character-level streaming
-/// approach is needed to fix this determinism mismatch (P1 issue #6).
+/// approach is needed to fix this determinism mismatch.
+/// Workaround: use `Charset::Ascii` for deterministic streaming.
 ///
 /// Implements: TJ-SPEC-005 F-004, F-009
 #[derive(Debug)]
