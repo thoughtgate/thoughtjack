@@ -175,7 +175,10 @@ impl EventEmitter {
     ///
     /// Implements: TJ-SPEC-008 F-012
     pub fn from_file(path: &Path) -> std::io::Result<Self> {
-        let file = std::fs::File::create(path)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
         Ok(Self::new(Box::new(file)))
     }
 
