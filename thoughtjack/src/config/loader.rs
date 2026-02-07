@@ -437,7 +437,14 @@ impl EnvSubstitution {
                             let msg = Self::read_until_close(chars, position)?;
                             return Ok((var_name, None, Some(msg)));
                         }
-                        _ => var_name.push(':'),
+                        _ => {
+                            tracing::warn!(
+                                "env var reference '${{{var_name}:...' has ':' not \
+                                 followed by '-' or '?'; did you mean '${{VAR:-default}}' \
+                                 or '${{VAR:?error}}'?"
+                            );
+                            var_name.push(':');
+                        }
                     }
                 }
                 _ => {
