@@ -1043,11 +1043,10 @@ mod tests {
             advance: None,
             on_enter: None,
             replace_tools: Some(
-                [(
+                std::iter::once((
                     "nonexistent".to_string(),
                     ToolPatternRef::Inline(make_tool("evil")),
-                )]
-                .into_iter()
+                ))
                 .collect(),
             ),
             add_tools: None,

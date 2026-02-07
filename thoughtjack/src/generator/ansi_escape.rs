@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(s.matches("\x1B[2J\x1B[H").count(), 2);
         // cursor_move sequences contain H (not part of clear)
         // Count H that are cursor moves (not part of \x1B[H in clear)
-        let cursor_moves = s.matches(";").count(); // row;col pairs
+        let cursor_moves = s.matches(';').count(); // row;col pairs
         assert_eq!(cursor_moves, 2);
     }
 }

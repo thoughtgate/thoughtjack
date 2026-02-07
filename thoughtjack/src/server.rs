@@ -880,6 +880,7 @@ mod tests {
             response_bytes.is_some(),
             "Expected tools/list response with 'calc'"
         );
+        drop(sent);
     }
 
     #[tokio::test]
@@ -912,6 +913,7 @@ mod tests {
             response_bytes.is_some(),
             "Expected tool/call response with '42'"
         );
+        drop(sent);
     }
 
     #[tokio::test]
@@ -948,6 +950,7 @@ mod tests {
             .iter()
             .find(|b| String::from_utf8_lossy(b).contains("-32601"));
         assert!(response_bytes.is_some(), "Expected METHOD_NOT_FOUND error");
+        drop(sent);
     }
 
     #[tokio::test]
@@ -986,6 +989,7 @@ mod tests {
             "Expected no response for Drop mode, got {} messages",
             sent.len()
         );
+        drop(sent);
     }
 
     #[test]

@@ -571,6 +571,7 @@ mod tests {
 
         let serialized = serde_json::to_vec(&msg).unwrap();
         let expected_chunks = serialized.len() + 1; // +1 for newline
+        #[allow(clippy::cast_possible_truncation)]
         let expected_min = delay * (expected_chunks as u32) * 9 / 10; // 90% tolerance
 
         assert!(

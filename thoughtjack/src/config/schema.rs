@@ -1437,7 +1437,6 @@ pub enum UnknownMethodHandling {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_simple_server_config_deserialize() {
@@ -1541,13 +1540,13 @@ text: "Hello, world!"
 
     #[test]
     fn test_content_value_generated() {
-        let yaml = r#"
+        let yaml = r"
 type: text
 text:
   $generate:
     type: nested_json
     depth: 100
-"#;
+";
 
         let item: ContentItem = serde_yaml::from_str(yaml).unwrap();
         match item {
@@ -1567,11 +1566,11 @@ text:
 
     #[test]
     fn test_delivery_config() {
-        let yaml = r#"
+        let yaml = r"
 type: slow_loris
 byte_delay_ms: 100
 chunk_size: 1
-"#;
+";
 
         let config: DeliveryConfig = serde_yaml::from_str(yaml).unwrap();
         match config {
@@ -1599,13 +1598,13 @@ chunk_size: 1
 
     #[test]
     fn test_capabilities() {
-        let yaml = r#"
+        let yaml = r"
 tools:
   listChanged: true
 resources:
   subscribe: true
   listChanged: false
-"#;
+";
 
         let caps: Capabilities = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(caps.tools.unwrap().list_changed, Some(true));
@@ -1616,10 +1615,10 @@ resources:
 
     #[test]
     fn test_trigger_event_based() {
-        let yaml = r#"
+        let yaml = r"
 on: tools/call
 count: 3
-"#;
+";
 
         let trigger: Trigger = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(trigger.on, Some("tools/call".to_string()));
@@ -1629,9 +1628,9 @@ count: 3
 
     #[test]
     fn test_trigger_time_based() {
-        let yaml = r#"
+        let yaml = r"
 after: 30s
-"#;
+";
 
         let trigger: Trigger = serde_yaml::from_str(yaml).unwrap();
         assert!(trigger.on.is_none());
@@ -1640,11 +1639,11 @@ after: 30s
 
     #[test]
     fn test_trigger_with_timeout() {
-        let yaml = r#"
+        let yaml = r"
 on: tools/call:read_file
 timeout: 60s
 on_timeout: abort
-"#;
+";
 
         let trigger: Trigger = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(trigger.on, Some("tools/call:read_file".to_string()));
@@ -1805,22 +1804,22 @@ response:
             ToolPatternRef::Inline(pattern) => {
                 assert_eq!(pattern.tool.name, "test");
             }
-            _ => panic!("Expected inline pattern"),
+            ToolPatternRef::Path(_) => panic!("Expected inline pattern"),
         }
     }
 
     #[test]
     fn test_tool_pattern_ref_path() {
-        let yaml = r#"
+        let yaml = r"
 tools/calculator/benign.yaml
-"#;
+";
 
         let pattern_ref: ToolPatternRef = serde_yaml::from_str(yaml).unwrap();
         match pattern_ref {
             ToolPatternRef::Path(path) => {
                 assert_eq!(path.to_string_lossy(), "tools/calculator/benign.yaml");
             }
-            _ => panic!("Expected path"),
+            ToolPatternRef::Inline(_) => panic!("Expected path"),
         }
     }
 
@@ -1844,9 +1843,9 @@ on_enter:
 
     #[test]
     fn test_phase_terminal() {
-        let yaml = r#"
+        let yaml = r"
 name: final
-"#;
+";
 
         let phase: Phase = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(phase.name, "final");
@@ -1900,10 +1899,10 @@ padding_char: "x"
 
     #[test]
     fn test_delivery_config_response_delay() {
-        let yaml = r#"
+        let yaml = r"
 type: response_delay
 delay_ms: 5000
-"#;
+";
 
         let config: DeliveryConfig = serde_yaml::from_str(yaml).unwrap();
         match config {
@@ -1916,12 +1915,12 @@ delay_ms: 5000
 
     #[test]
     fn test_side_effect_config() {
-        let yaml = r#"
+        let yaml = r"
 type: notification_flood
 trigger: on_connect
 rate_per_sec: 100
 duration_sec: 10
-"#;
+";
 
         let config: SideEffectConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.type_, SideEffectType::NotificationFlood);
@@ -1938,11 +1937,11 @@ duration_sec: 10
 
     #[test]
     fn test_side_effect_close_connection() {
-        let yaml = r#"
+        let yaml = r"
 type: close_connection
 trigger: on_request
 graceful: false
-"#;
+";
 
         let config: SideEffectConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.type_, SideEffectType::CloseConnection);
@@ -1955,12 +1954,12 @@ graceful: false
 
     #[test]
     fn test_side_effect_duplicate_request_ids() {
-        let yaml = r#"
+        let yaml = r"
 type: duplicate_request_ids
 trigger: continuous
 count: 5
 id: 42
-"#;
+";
 
         let config: SideEffectConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.type_, SideEffectType::DuplicateRequestIds);
@@ -1971,7 +1970,7 @@ id: 42
 
     #[test]
     fn test_behavior_config_full() {
-        let yaml = r#"
+        let yaml = r"
 delivery:
   type: slow_loris
   byte_delay_ms: 50
@@ -1980,7 +1979,7 @@ side_effects:
   - type: notification_flood
     trigger: on_connect
     rate_per_sec: 50
-"#;
+";
 
         let config: BehaviorConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.delivery.is_some());
@@ -2030,12 +2029,12 @@ key: "wrapper"
 
     #[test]
     fn test_generator_config_garbage() {
-        let yaml = r#"
+        let yaml = r"
 type: garbage
 bytes: 1000
 charset: binary
 seed: 12345
-"#;
+";
 
         let config: GeneratorConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.type_, GeneratorType::Garbage);
@@ -2212,12 +2211,12 @@ messages:
 
     #[test]
     fn test_logging_config() {
-        let yaml = r#"
+        let yaml = r"
 level: debug
 on_phase_change: true
 on_request: true
 on_response: false
-"#;
+";
 
         let config: LoggingConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.level, Some("debug".to_string()));

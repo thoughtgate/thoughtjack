@@ -1,5 +1,8 @@
 //! `ThoughtJack` — Adversarial MCP server for security testing
 
+// tokio::select! macro expands to pub(crate) items inside private scope
+#![allow(clippy::redundant_pub_crate)]
+
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 

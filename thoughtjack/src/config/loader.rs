@@ -1200,7 +1200,7 @@ mod tests {
             r"
             string: hello
             number: 42
-            float: 3.14
+            float: 2.71
             bool: true
             null_val: null
             array:
@@ -1216,7 +1216,7 @@ mod tests {
 
         assert_eq!(json["string"], "hello");
         assert_eq!(json["number"], 42);
-        assert!((json["float"].as_f64().unwrap() - 3.14).abs() < 0.001);
+        assert!((json["float"].as_f64().unwrap() - 2.71).abs() < 0.001);
         assert_eq!(json["bool"], true);
         assert!(json["null_val"].is_null());
         assert_eq!(json["array"][0], 1);
@@ -1256,9 +1256,7 @@ mod tests {
     fn test_estimate_generator_size_garbage() {
         let config = GeneratorConfig {
             type_: crate::config::schema::GeneratorType::Garbage,
-            params: [("bytes".to_string(), serde_json::json!(1000))]
-                .into_iter()
-                .collect(),
+            params: std::iter::once(("bytes".to_string(), serde_json::json!(1000))).collect(),
         };
         assert_eq!(estimate_generator_size(&config), 1000);
     }
@@ -1267,9 +1265,7 @@ mod tests {
     fn test_estimate_generator_size_nested_json() {
         let config = GeneratorConfig {
             type_: crate::config::schema::GeneratorType::NestedJson,
-            params: [("depth".to_string(), serde_json::json!(100))]
-                .into_iter()
-                .collect(),
+            params: std::iter::once(("depth".to_string(), serde_json::json!(100))).collect(),
         };
         // 100 * 15 = 1500
         assert_eq!(estimate_generator_size(&config), 1500);

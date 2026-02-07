@@ -89,8 +89,7 @@ fn build_capabilities(effective_state: &EffectiveState) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::config::schema::{
-        Capabilities, ContentItem, ContentValue, PromptDefinition, PromptPattern, PromptResponse,
-        ResourceDefinition, ResourcePattern, ResponseConfig, ToolDefinition, ToolPattern,
+        Capabilities, ContentItem, ContentValue, ResponseConfig, ToolDefinition, ToolPattern,
         ToolsCapability,
     };
     use crate::phase::EffectiveState;
