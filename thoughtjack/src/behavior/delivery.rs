@@ -240,6 +240,9 @@ impl DeliveryBehavior for UnboundedLineDelivery {
             let pad = self.padding_char.encode_utf8(&mut pad_buf).as_bytes();
             while buf.len() < serialized_len + padding_needed {
                 let remaining = (serialized_len + padding_needed) - buf.len();
+                // NOTE: when remaining < pad.len(), the final character is
+                // truncated, producing invalid UTF-8. This is intentional for
+                // the unbounded-line attack mode.
                 let chunk = remaining.min(pad.len());
                 buf.extend_from_slice(&pad[..chunk]);
             }
