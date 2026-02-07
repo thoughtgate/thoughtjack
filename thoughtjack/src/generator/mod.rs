@@ -200,11 +200,9 @@ pub(crate) fn require_usize(
     params: &HashMap<String, Value>,
     key: &str,
 ) -> Result<usize, GeneratorError> {
-    let value = params
-        .get(key)
-        .ok_or_else(|| {
-            GeneratorError::InvalidParameters(format!("missing required parameter: {key}"))
-        })?;
+    let value = params.get(key).ok_or_else(|| {
+        GeneratorError::InvalidParameters(format!("missing required parameter: {key}"))
+    })?;
     let n = value.as_u64().ok_or_else(|| {
         GeneratorError::InvalidParameters(format!(
             "parameter '{key}' must be a non-negative integer, got {value}"

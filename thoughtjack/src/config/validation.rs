@@ -399,10 +399,7 @@ impl Validator {
                     // Reject Pattern with all None fields — this almost always
                     // indicates a serde untagged deserialization gotcha where an
                     // exact-match object was swallowed as an empty Pattern.
-                    if contains.is_none()
-                        && prefix.is_none()
-                        && suffix.is_none()
-                        && regex.is_none()
+                    if contains.is_none() && prefix.is_none() && suffix.is_none() && regex.is_none()
                     {
                         self.add_error(
                             &format!("{path}.match.{field}"),

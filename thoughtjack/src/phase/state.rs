@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::time::Instant;
 
-use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 
 use crate::config::schema::EntryAction;
 

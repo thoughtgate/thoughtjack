@@ -159,10 +159,7 @@ impl SideEffect for NotificationFlood {
                 break;
             }
 
-            let notification = JsonRpcNotification::new(
-                self.method.clone(),
-                self.params.clone(),
-            );
+            let notification = JsonRpcNotification::new(self.method.clone(), self.params.clone());
             let mut serialized = serde_json::to_vec(&notification)?;
             serialized.push(b'\n');
             let len = serialized.len();
