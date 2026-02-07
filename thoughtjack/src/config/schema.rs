@@ -317,8 +317,8 @@ pub struct EmbeddedResource {
 
 /// Configuration for payload generators.
 ///
-/// Generators create payloads at configuration load time for deterministic
-/// testing. All generators are seeded for reproducibility.
+/// Generators are configured at load time; payloads are generated lazily at
+/// response time. All generators are seeded for reproducibility.
 ///
 /// YAML example:
 /// ```yaml

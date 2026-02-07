@@ -624,6 +624,10 @@ impl Server {
 /// If the config uses the phased form (baseline + phases), those are
 /// used directly. Otherwise, constructs a baseline from the simple-server
 /// top-level tools/resources/prompts.
+///
+/// The top-level `ServerConfig.behavior` is placed into
+/// `BaselineState.behavior`, establishing the 4-level priority chain:
+/// CLI flags > per-item behavior > phase/baseline behavior > hardcoded default.
 fn build_baseline_and_phases(
     config: &ServerConfig,
 ) -> (BaselineState, Vec<crate::config::schema::Phase>) {

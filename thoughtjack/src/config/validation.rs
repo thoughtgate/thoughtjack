@@ -96,7 +96,7 @@ impl Validator {
         if config.logging.is_some() {
             self.add_warning(
                 "logging",
-                "The 'logging' configuration is not yet implemented and will be ignored",
+                "The 'logging' configuration is parsed but not yet consumed at runtime",
             );
         }
 
