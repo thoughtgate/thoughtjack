@@ -189,6 +189,10 @@ impl HttpTransport {
     }
 
     /// Gracefully shuts down the HTTP transport.
+    ///
+    /// Called by library consumers for graceful shutdown.
+    ///
+    /// Implements: TJ-SPEC-002 F-003
     pub fn shutdown(&self) {
         self.shared.cancel.cancel();
     }
