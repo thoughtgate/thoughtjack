@@ -9,7 +9,9 @@
 
 use crate::config::loader::ConfigLimits;
 use crate::config::schema::{
-    BaselineState, FieldMatcher, Phase, PromptPattern, ResourcePattern, ServerConfig, ToolPattern,
+    BaselineState, ContentItem, ContentValue, FieldMatcher, HandlerConfig, MatchBranchConfig,
+    MatchConditionConfig, Phase, PromptPattern, ResourcePattern, SequenceEntryConfig, ServerConfig,
+    ToolPattern,
 };
 use crate::error::{Severity, ValidationIssue};
 
@@ -550,12 +552,34 @@ impl Validator {
                 );
             }
 
-            // Response content must not be empty
-            if tool.response.content.is_empty() {
+            // Response content must not be empty (unless dynamic features provide it)
+            let has_dynamic = tool.response.match_block.is_some()
+                || tool.response.sequence.is_some()
+                || tool.response.handler.is_some();
+            if tool.response.content.is_empty() && !has_dynamic {
                 self.add_error(
                     &format!("{path}.response.content"),
                     "Response content cannot be empty",
                 );
+            }
+
+            // Validate dynamic response fields (F-009)
+            self.validate_dynamic_fields(
+                tool.response.match_block.as_deref(),
+                tool.response.sequence.as_deref(),
+                tool.response.handler.as_ref(),
+                &format!("{path}.response"),
+            );
+            for (ci, item) in tool.response.content.iter().enumerate() {
+                if let ContentItem::Text {
+                    text: ContentValue::Static(s),
+                } = item
+                {
+                    self.validate_template_syntax(
+                        s,
+                        &format!("{path}.response.content[{ci}].text"),
+                    );
+                }
             }
         }
     }
@@ -587,6 +611,19 @@ impl Validator {
                     "Resource name is required",
                 );
             }
+
+            // Validate dynamic response fields on resource response (F-009)
+            if let Some(ref resp) = resource.response {
+                self.validate_dynamic_fields(
+                    resp.match_block.as_deref(),
+                    resp.sequence.as_deref(),
+                    resp.handler.as_ref(),
+                    &format!("{path}.response"),
+                );
+                if let ContentValue::Static(s) = &resp.content {
+                    self.validate_template_syntax(s, &format!("{path}.response.content"));
+                }
+            }
         }
     }
 
@@ -610,12 +647,28 @@ impl Validator {
                 );
             }
 
-            // Response messages must not be empty
-            if prompt.response.messages.is_empty() {
+            // Response messages must not be empty (unless dynamic features provide them)
+            let has_dynamic = prompt.response.match_block.is_some()
+                || prompt.response.sequence.is_some()
+                || prompt.response.handler.is_some();
+            if prompt.response.messages.is_empty() && !has_dynamic {
                 self.add_error(
                     &format!("{path}.response.messages"),
                     "Prompt response messages cannot be empty",
                 );
+            }
+
+            // Validate dynamic response fields (F-009)
+            self.validate_dynamic_fields(
+                prompt.response.match_block.as_deref(),
+                prompt.response.sequence.as_deref(),
+                prompt.response.handler.as_ref(),
+                &format!("{path}.response"),
+            );
+            for msg in &prompt.response.messages {
+                if let ContentValue::Static(s) = &msg.content {
+                    self.validate_template_syntax(s, &format!("{path}.response.messages"));
+                }
             }
         }
     }
@@ -678,6 +731,245 @@ impl Validator {
                     limits.max_prompts
                 ),
             );
+        }
+    }
+
+    // ========================================================================
+    // Dynamic Response Validation (TJ-SPEC-009 F-009)
+    // ========================================================================
+
+    /// Validates dynamic response fields (match block, sequence, handler).
+    fn validate_dynamic_fields(
+        &mut self,
+        match_block: Option<&[MatchBranchConfig]>,
+        sequence: Option<&[SequenceEntryConfig]>,
+        handler: Option<&HandlerConfig>,
+        base_path: &str,
+    ) {
+        if let Some(branches) = match_block {
+            self.validate_match_block(branches, &format!("{base_path}.match"));
+        }
+        if let Some(seq) = sequence {
+            if seq.is_empty() {
+                self.add_warning(
+                    &format!("{base_path}.sequence"),
+                    "Empty response sequence",
+                );
+            }
+        }
+        if let Some(h) = handler {
+            self.validate_handler_config(h, &format!("{base_path}.handler"));
+        }
+    }
+
+    /// Validates a match block's branches.
+    fn validate_match_block(&mut self, branches: &[MatchBranchConfig], path: &str) {
+        let mut found_default = false;
+
+        for (idx, branch) in branches.iter().enumerate() {
+            let branch_path = format!("{path}[{idx}]");
+
+            match branch {
+                MatchBranchConfig::Default { .. } => {
+                    if found_default {
+                        self.add_warning(
+                            &branch_path,
+                            "Multiple default branches; only the first will match",
+                        );
+                    }
+                    found_default = true;
+                }
+                MatchBranchConfig::When { when, .. } => {
+                    if found_default {
+                        self.add_warning(
+                            &branch_path,
+                            "Unreachable match branch after 'default'",
+                        );
+                    }
+                    for (field, cond) in when {
+                        self.validate_match_condition(
+                            cond,
+                            &format!("{branch_path}.when.{field}"),
+                        );
+                    }
+                }
+            }
+
+            // Validate templates in branch content
+            match branch {
+                MatchBranchConfig::When {
+                    content,
+                    messages,
+                    contents,
+                    sequence,
+                    handler,
+                    ..
+                }
+                | MatchBranchConfig::Default {
+                    content,
+                    messages,
+                    contents,
+                    sequence,
+                    handler,
+                    ..
+                } => {
+                    for (ci, item) in content.iter().enumerate() {
+                        if let ContentItem::Text {
+                            text: ContentValue::Static(s),
+                        } = item
+                        {
+                            self.validate_template_syntax(
+                                s,
+                                &format!("{branch_path}.content[{ci}].text"),
+                            );
+                        }
+                    }
+                    for msg in messages {
+                        if let ContentValue::Static(s) = &msg.content {
+                            self.validate_template_syntax(
+                                s,
+                                &format!("{branch_path}.messages"),
+                            );
+                        }
+                    }
+                    if let Some(entries) = contents {
+                        for entry in entries {
+                            self.validate_template_syntax(
+                                &entry.uri,
+                                &format!("{branch_path}.contents.uri"),
+                            );
+                            if let Some(ref t) = entry.text {
+                                self.validate_template_syntax(
+                                    t,
+                                    &format!("{branch_path}.contents.text"),
+                                );
+                            }
+                        }
+                    }
+                    if let Some(seq) = sequence {
+                        if seq.is_empty() {
+                            self.add_warning(
+                                &format!("{branch_path}.sequence"),
+                                "Empty response sequence in match branch",
+                            );
+                        }
+                    }
+                    if let Some(h) = handler {
+                        self.validate_handler_config(h, &format!("{branch_path}.handler"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Validates a single match condition (regex, glob patterns).
+    fn validate_match_condition(&mut self, cond: &MatchConditionConfig, path: &str) {
+        match cond {
+            MatchConditionConfig::Single(s) => {
+                if let Some(pattern) = s.strip_prefix("regex:") {
+                    if regex::Regex::new(pattern).is_err() {
+                        self.add_error(
+                            path,
+                            &format!("Invalid regex pattern: '{pattern}'"),
+                        );
+                    }
+                } else if glob::Pattern::new(s).is_err() {
+                    self.add_error(path, &format!("Invalid glob pattern: '{s}'"));
+                }
+            }
+            MatchConditionConfig::GlobList(patterns) => {
+                for p in patterns {
+                    if glob::Pattern::new(p).is_err() {
+                        self.add_error(path, &format!("Invalid glob pattern: '{p}'"));
+                    }
+                }
+            }
+            MatchConditionConfig::Operator { any_of, .. } => {
+                if let Some(patterns) = any_of {
+                    for p in patterns {
+                        if let Some(pattern) = p.strip_prefix("regex:") {
+                            if regex::Regex::new(pattern).is_err() {
+                                self.add_error(
+                                    &format!("{path}.any_of"),
+                                    &format!("Invalid regex pattern: '{pattern}'"),
+                                );
+                            }
+                        } else if glob::Pattern::new(p).is_err() {
+                            self.add_error(
+                                &format!("{path}.any_of"),
+                                &format!("Invalid glob pattern: '{p}'"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Validates template syntax (checks for unclosed `${`).
+    fn validate_template_syntax(&mut self, template: &str, path: &str) {
+        let mut i = 0;
+        let bytes = template.as_bytes();
+        while i < bytes.len() {
+            // Skip escaped dollar signs
+            if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'$' {
+                i += 2;
+                continue;
+            }
+            if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
+                // Found template start, look for closing brace
+                if let Some(close) = template[i + 2..].find('}') {
+                    let var_name = &template[i + 2..i + 2 + close];
+                    // Check for unknown function names
+                    if let Some(fn_name) = var_name.strip_prefix("fn.") {
+                        let fn_name = fn_name.split('(').next().unwrap_or(fn_name);
+                        let known_fns = [
+                            "upper", "lower", "base64", "json", "len", "default",
+                            "truncate", "timestamp", "uuid",
+                        ];
+                        if !known_fns.contains(&fn_name) {
+                            self.add_warning(
+                                path,
+                                &format!("Unknown function '{fn_name}'"),
+                            );
+                        }
+                    }
+                    i = i + 2 + close + 1;
+                } else {
+                    self.add_error(path, "Unclosed template variable '${...'");
+                    return;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Validates a handler configuration.
+    fn validate_handler_config(&mut self, config: &HandlerConfig, path: &str) {
+        match config {
+            HandlerConfig::Http { url, .. } => {
+                // Basic URL syntax validation
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    // Allow template-containing URLs
+                    if !url.contains("${") {
+                        self.add_error(
+                            &format!("{path}.url"),
+                            &format!(
+                                "Handler URL must start with http:// or https:// (got '{url}')"
+                            ),
+                        );
+                    }
+                }
+            }
+            HandlerConfig::Command { cmd, .. } => {
+                if cmd.is_empty() {
+                    self.add_error(
+                        &format!("{path}.cmd"),
+                        "Handler command cannot be empty",
+                    );
+                }
+            }
         }
     }
 
@@ -860,6 +1152,7 @@ mod tests {
                     text: ContentValue::Static("result".to_string()),
                 }],
                 is_error: None,
+                ..Default::default()
             },
             behavior: None,
         }
@@ -890,6 +1183,7 @@ mod tests {
                     role: Role::User,
                     content: ContentValue::Static("test".to_string()),
                 }],
+                ..Default::default()
             },
             behavior: None,
         }
@@ -1095,7 +1389,7 @@ mod tests {
             replace_tools: Some(
                 std::iter::once((
                     "nonexistent".to_string(),
-                    ToolPatternRef::Inline(make_tool("evil")),
+                    ToolPatternRef::Inline(Box::new(make_tool("evil"))),
                 ))
                 .collect(),
             ),
@@ -1702,6 +1996,276 @@ mod tests {
                 .iter()
                 .any(|e| e.message.contains("Invalid regex")),
             "valid regex should not produce error"
+        );
+    }
+
+    // ====================================================================
+    // Dynamic response validation tests (TJ-SPEC-009 F-009)
+    // ====================================================================
+
+    #[test]
+    fn test_validate_tool_with_dynamic_features_allows_empty_content() {
+        let mut config = minimal_config();
+        let mut tool = make_tool("calc");
+        tool.response.content = vec![]; // Would normally be an error
+        tool.response.match_block = Some(vec![MatchBranchConfig::Default {
+            default: serde_json::json!(true),
+            content: vec![ContentItem::Text {
+                text: ContentValue::Static("from match".to_string()),
+            }],
+            sequence: None,
+            on_exhausted: None,
+            handler: None,
+            messages: vec![],
+            contents: None,
+        }]);
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Response content cannot be empty")),
+            "empty content with match block should not be an error"
+        );
+    }
+
+    #[test]
+    fn test_validate_prompt_with_dynamic_features_allows_empty_messages() {
+        let mut config = minimal_config();
+        let mut prompt = make_prompt("greet");
+        prompt.response.messages = vec![]; // Would normally be an error
+        prompt.response.handler = Some(HandlerConfig::Http {
+            url: "http://example.com".to_string(),
+            timeout_ms: None,
+            headers: None,
+        });
+        config.prompts = Some(vec![prompt]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Prompt response messages cannot be empty")),
+            "empty messages with handler should not be an error"
+        );
+    }
+
+    #[test]
+    fn test_validate_unclosed_template() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("hello ${args.name", "test");
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Unclosed template")),
+            "expected unclosed template error, got: {:?}",
+            validator.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_template() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("hello ${args.name}", "test");
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_escaped_template_not_flagged() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("literal $${not_a_var}", "test");
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_unknown_function_warning() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("${fn.nonexistent()}", "test");
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unknown function 'nonexistent'")),
+            "expected unknown function warning"
+        );
+    }
+
+    #[test]
+    fn test_validate_known_function_no_warning() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("${fn.upper(hello)}", "test");
+        assert!(validator.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_validate_unreachable_branch_after_default() {
+        let mut validator = Validator::new();
+        let branches = vec![
+            MatchBranchConfig::Default {
+                default: serde_json::json!(true),
+                content: vec![],
+                sequence: None,
+                on_exhausted: None,
+                handler: None,
+                messages: vec![],
+                contents: None,
+            },
+            MatchBranchConfig::When {
+                when: indexmap::IndexMap::new(),
+                content: vec![],
+                sequence: None,
+                on_exhausted: None,
+                handler: None,
+                messages: vec![],
+                contents: None,
+            },
+        ];
+        validator.validate_match_block(&branches, "test");
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unreachable")),
+            "expected unreachable branch warning"
+        );
+    }
+
+    #[test]
+    fn test_validate_empty_sequence_warning() {
+        let mut config = minimal_config();
+        let mut tool = make_tool("calc");
+        tool.response.sequence = Some(vec![]);
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Empty response sequence")),
+            "expected empty sequence warning"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_handler_url() {
+        let mut validator = Validator::new();
+        validator.validate_handler_config(
+            &HandlerConfig::Http {
+                url: "not-a-url".to_string(),
+                timeout_ms: None,
+                headers: None,
+            },
+            "test",
+        );
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("must start with http://")),
+            "expected invalid URL error"
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_handler_url() {
+        let mut validator = Validator::new();
+        validator.validate_handler_config(
+            &HandlerConfig::Http {
+                url: "https://example.com/handler".to_string(),
+                timeout_ms: None,
+                headers: None,
+            },
+            "test",
+        );
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_handler_url_with_template() {
+        let mut validator = Validator::new();
+        validator.validate_handler_config(
+            &HandlerConfig::Http {
+                url: "${env.HANDLER_URL}".to_string(),
+                timeout_ms: None,
+                headers: None,
+            },
+            "test",
+        );
+        // Template URLs are allowed (resolved at runtime)
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_empty_handler_command() {
+        let mut validator = Validator::new();
+        validator.validate_handler_config(
+            &HandlerConfig::Command {
+                cmd: vec![],
+                timeout_ms: None,
+                env: None,
+                working_dir: None,
+            },
+            "test",
+        );
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("command cannot be empty")),
+            "expected empty command error"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_regex_in_match_condition() {
+        let mut validator = Validator::new();
+        validator.validate_match_condition(
+            &MatchConditionConfig::Single("regex:[invalid".to_string()),
+            "test",
+        );
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Invalid regex")),
+            "expected invalid regex error"
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_regex_in_match_condition() {
+        let mut validator = Validator::new();
+        validator.validate_match_condition(
+            &MatchConditionConfig::Single("regex:file://.*\\.env$".to_string()),
+            "test",
+        );
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_invalid_glob_in_match_condition() {
+        let mut validator = Validator::new();
+        validator.validate_match_condition(
+            &MatchConditionConfig::Single("[invalid".to_string()),
+            "test",
+        );
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Invalid glob")),
+            "expected invalid glob error"
         );
     }
 }

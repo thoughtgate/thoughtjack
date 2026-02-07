@@ -20,8 +20,10 @@ use crate::config::schema::{
     BaselineState, BehaviorConfig, EntryAction, GeneratorLimits, ServerConfig, SideEffectTrigger,
     StateScope, UnknownMethodHandling,
 };
+use crate::dynamic::sequence::CallTracker;
 use crate::error::ThoughtJackError;
 use crate::handlers;
+use crate::handlers::RequestContext;
 use crate::observability::events::{Event, EventEmitter};
 use crate::observability::metrics;
 use crate::phase::engine::PhaseEngine;
@@ -55,6 +57,8 @@ pub struct ServerOptions {
     pub cli_state_scope: Option<StateScope>,
     /// Spoofed server name for MCP initialization.
     pub spoof_client: Option<String>,
+    /// Whether external handlers (HTTP, command) are enabled.
+    pub allow_external_handlers: bool,
     /// Token for cooperative shutdown.
     pub cancel: CancellationToken,
 }
@@ -74,6 +78,9 @@ pub struct Server {
     generator_limits: GeneratorLimits,
     capture: Option<Arc<CaptureWriter>>,
     spoof_client: Option<String>,
+    allow_external_handlers: bool,
+    call_tracker: Arc<CallTracker>,
+    http_client: reqwest::Client,
     cancel: CancellationToken,
 }
 
@@ -109,6 +116,9 @@ impl Server {
             generator_limits: opts.generator_limits,
             capture: opts.capture.map(Arc::new),
             spoof_client: opts.spoof_client,
+            allow_external_handlers: opts.allow_external_handlers,
+            call_tracker: Arc::new(CallTracker::new()),
+            http_client: crate::dynamic::handlers::http::create_http_client(),
             cancel: opts.cancel,
         }
     }
@@ -254,12 +264,31 @@ impl Server {
             let transition = self.evaluate_transitions(&request).await;
 
             // 4. Route to handler (uses PRE-transition effective state)
+            let phase_index = self.phase_engine.current_phase();
+            #[allow(clippy::cast_possible_wrap)]
+            let phase_index_signed = if self.phase_engine.is_terminal() && self.config.phases.is_none() {
+                -1_i64
+            } else {
+                phase_index as i64
+            };
+
+            let request_ctx = RequestContext {
+                limits: &self.generator_limits,
+                call_tracker: &self.call_tracker,
+                phase_name: self.phase_engine.current_phase_name(),
+                phase_index: phase_index_signed,
+                connection_id: 0, // stdio = 0; HTTP connections get per-request IDs
+                allow_external_handlers: self.allow_external_handlers,
+                http_client: &self.http_client,
+                state_scope: self.phase_engine.scope(),
+            };
+
             let handler_result = handlers::handle_request(
                 &request,
                 &effective_state,
                 server_name,
                 server_version,
-                &self.generator_limits,
+                &request_ctx,
             )
             .await;
 
@@ -781,6 +810,7 @@ mod tests {
                         text: ContentValue::Static("42".to_string()),
                     }],
                     is_error: None,
+                    ..Default::default()
                 },
                 behavior: None,
             }]),
@@ -844,6 +874,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -874,6 +905,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -909,6 +941,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -949,6 +982,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -986,6 +1020,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -1030,6 +1065,7 @@ mod tests {
                             text: ContentValue::Static("ok".to_string()),
                         }],
                         is_error: None,
+                        ..Default::default()
                     },
                     behavior: None,
                 }],

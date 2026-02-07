@@ -127,13 +127,6 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         .map(|dir| CaptureWriter::new(dir, args.capture_redact))
         .transpose()?;
 
-    if args.allow_external_handlers {
-        tracing::warn!(
-            "--allow-external-handlers is set but no external handler \
-             types are currently supported; flag reserved for future use"
-        );
-    }
-
     let server = Server::new(ServerOptions {
         config,
         transport,
@@ -143,6 +136,7 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         capture,
         cli_state_scope: args.state_scope,
         spoof_client: args.spoof_client.clone(),
+        allow_external_handlers: args.allow_external_handlers,
         cancel,
     });
     server.run().await

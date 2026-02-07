@@ -5,6 +5,7 @@
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 // ============================================================================
@@ -198,16 +199,36 @@ pub struct ToolDefinition {
 
 /// Response configuration for tool calls.
 ///
-/// Implements: TJ-SPEC-001 F-004
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Supports static content, conditional matching, response sequences,
+/// and external handlers for dynamic response generation.
+///
+/// Implements: TJ-SPEC-001 F-004, TJ-SPEC-009 F-001
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseConfig {
-    /// Content items in the response
+    /// Content items in the response (default if no dynamic features match)
+    #[serde(default)]
     pub content: Vec<ContentItem>,
 
     /// Whether this response represents an error
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+
+    /// Conditional match block for request-based response selection
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_block: Option<Vec<MatchBranchConfig>>,
+
+    /// Response sequence for successive calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<Vec<SequenceEntryConfig>>,
+
+    /// Behavior when sequence is exhausted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exhausted: Option<ExhaustedBehavior>,
+
+    /// External handler for dynamic response generation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<HandlerConfig>,
 }
 
 /// Content item in a response.
@@ -663,12 +684,47 @@ pub struct ResourceDefinition {
 
 /// Response configuration for resource reads.
 ///
-/// Implements: TJ-SPEC-001 F-001
+/// Implements: TJ-SPEC-001 F-001, TJ-SPEC-009 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceResponse {
     /// Resource content (static, generated, or from file)
+    #[serde(default = "ResourceResponse::default_content")]
     pub content: ContentValue,
+
+    /// Conditional match block for request-based response selection
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_block: Option<Vec<MatchBranchConfig>>,
+
+    /// Response sequence for successive calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<Vec<SequenceEntryConfig>>,
+
+    /// Behavior when sequence is exhausted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exhausted: Option<ExhaustedBehavior>,
+
+    /// External handler for dynamic response generation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<HandlerConfig>,
+}
+
+impl ResourceResponse {
+    const fn default_content() -> ContentValue {
+        ContentValue::Static(String::new())
+    }
+}
+
+impl Default for ResourceResponse {
+    fn default() -> Self {
+        Self {
+            content: Self::default_content(),
+            match_block: None,
+            sequence: None,
+            on_exhausted: None,
+            handler: None,
+        }
+    }
 }
 
 // ============================================================================
@@ -733,12 +789,29 @@ pub struct PromptArgument {
 
 /// Response configuration for prompts.
 ///
-/// Implements: TJ-SPEC-001 F-001
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Implements: TJ-SPEC-001 F-001, TJ-SPEC-009 F-001
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptResponse {
     /// Prompt messages (the actual prompt content)
+    #[serde(default)]
     pub messages: Vec<PromptMessage>,
+
+    /// Conditional match block for request-based response selection
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_block: Option<Vec<MatchBranchConfig>>,
+
+    /// Response sequence for successive calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<Vec<SequenceEntryConfig>>,
+
+    /// Behavior when sequence is exhausted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exhausted: Option<ExhaustedBehavior>,
+
+    /// External handler for dynamic response generation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<HandlerConfig>,
 }
 
 /// A message in a prompt response.
@@ -893,7 +966,7 @@ pub struct Phase {
 #[serde(untagged)]
 pub enum ToolPatternRef {
     /// Inline tool pattern definition
-    Inline(ToolPattern),
+    Inline(Box<ToolPattern>),
     /// File path to tool pattern (resolved by loader)
     Path(PathBuf),
 }
@@ -905,7 +978,7 @@ pub enum ToolPatternRef {
 #[serde(untagged)]
 pub enum ResourcePatternRef {
     /// Inline resource pattern definition
-    Inline(ResourcePattern),
+    Inline(Box<ResourcePattern>),
     /// File path to resource pattern (resolved by loader)
     Path(PathBuf),
 }
@@ -917,7 +990,7 @@ pub enum ResourcePatternRef {
 #[serde(untagged)]
 pub enum PromptPatternRef {
     /// Inline prompt pattern definition
-    Inline(PromptPattern),
+    Inline(Box<PromptPattern>),
     /// File path to prompt pattern (resolved by loader)
     Path(PathBuf),
 }
@@ -1428,6 +1501,190 @@ pub enum UnknownMethodHandling {
     Error,
     /// No response (test timeout handling)
     Drop,
+}
+
+// ============================================================================
+// Dynamic Response Types (TJ-SPEC-009)
+// ============================================================================
+
+/// A match branch in a conditional response block.
+///
+/// Discriminated by the presence of `when` (conditional) or `default`
+/// (fallback). When `when` is present, all conditions must match (AND).
+///
+/// Implements: TJ-SPEC-009 F-002
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MatchBranchConfig {
+    /// Conditional branch with `when` clause
+    When {
+        /// Conditions that must all match (AND)
+        when: IndexMap<String, MatchConditionConfig>,
+        /// Content items for this branch
+        #[serde(default)]
+        content: Vec<ContentItem>,
+        /// Response sequence within this branch
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence: Option<Vec<SequenceEntryConfig>>,
+        /// Behavior when sequence is exhausted
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_exhausted: Option<ExhaustedBehavior>,
+        /// External handler within this branch
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handler: Option<HandlerConfig>,
+        /// Prompt messages (for prompt responses within match branches)
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        messages: Vec<PromptMessage>,
+        /// Resource contents (for resource responses within match branches)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contents: Option<Vec<ResourceContentConfig>>,
+    },
+
+    /// Default fallback branch
+    Default {
+        /// Marker field for serde discrimination
+        default: serde_json::Value,
+        /// Content items for this branch (from within the default object)
+        #[serde(default)]
+        content: Vec<ContentItem>,
+        /// Response sequence within this branch
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence: Option<Vec<SequenceEntryConfig>>,
+        /// Behavior when sequence is exhausted
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_exhausted: Option<ExhaustedBehavior>,
+        /// External handler within this branch
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handler: Option<HandlerConfig>,
+        /// Prompt messages (for prompt responses within match branches)
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        messages: Vec<PromptMessage>,
+        /// Resource contents (for resource responses within match branches)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contents: Option<Vec<ResourceContentConfig>>,
+    },
+}
+
+/// Resource content entry within a match branch.
+///
+/// Implements: TJ-SPEC-009 F-002
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceContentConfig {
+    /// Resource URI (may contain templates)
+    pub uri: String,
+    /// Text content (may contain templates)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// MIME type override
+    #[serde(default, rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+/// A match condition for conditional response selection.
+///
+/// Deserialized using `untagged` — ordering matters:
+/// 1. Operator object (contains known keys like `contains`, `prefix`, etc.)
+/// 2. Array of strings (implicit `AnyOf` of glob patterns)
+/// 3. Single string (glob pattern, or `regex:` prefix for regex)
+///
+/// Implements: TJ-SPEC-009 F-002
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MatchConditionConfig {
+    /// Operator-based match (object with known keys)
+    Operator {
+        /// Substring match
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contains: Option<String>,
+        /// Prefix match
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+        /// Suffix match
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suffix: Option<String>,
+        /// Existence check
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exists: Option<bool>,
+        /// Greater than (numeric)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gt: Option<f64>,
+        /// Less than (numeric)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lt: Option<f64>,
+        /// Any of (explicit OR list in an operator block)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        any_of: Option<Vec<String>>,
+    },
+
+    /// Array of patterns (implicit `AnyOf` of globs)
+    GlobList(Vec<String>),
+
+    /// Single glob pattern or `regex:` prefixed pattern
+    Single(String),
+}
+
+/// A single entry in a response sequence.
+///
+/// Implements: TJ-SPEC-009 F-005
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceEntryConfig {
+    /// Content items for this sequence entry
+    #[serde(default)]
+    pub content: Vec<ContentItem>,
+    /// Prompt messages for this sequence entry (prompt responses)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<PromptMessage>,
+}
+
+/// Behavior when a response sequence is exhausted.
+///
+/// Implements: TJ-SPEC-009 F-005
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExhaustedBehavior {
+    /// Cycle back to the first response
+    Cycle,
+    /// Keep returning the last response
+    #[default]
+    Last,
+    /// Return a JSON-RPC error
+    Error,
+}
+
+/// External handler configuration for dynamic response generation.
+///
+/// Handlers require `--allow-external-handlers` CLI flag for security.
+///
+/// Implements: TJ-SPEC-009 F-003, F-004
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HandlerConfig {
+    /// HTTP handler — POST request to external service
+    Http {
+        /// URL to POST to
+        url: String,
+        /// Timeout in milliseconds (default: 30000)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        /// HTTP headers (values may contain templates)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        headers: Option<HashMap<String, String>>,
+    },
+
+    /// Command handler — subprocess execution
+    Command {
+        /// Command and arguments (no shell interpretation)
+        cmd: Vec<String>,
+        /// Timeout in milliseconds (default: 30000)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        /// Environment variables (values may contain templates)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<HashMap<String, String>>,
+        /// Working directory for the subprocess
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<PathBuf>,
+    },
 }
 
 // ============================================================================

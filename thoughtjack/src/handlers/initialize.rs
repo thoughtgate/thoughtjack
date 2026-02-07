@@ -153,6 +153,7 @@ mod tests {
                         text: ContentValue::Static("42".to_string()),
                     }],
                     is_error: None,
+                    ..Default::default()
                 },
                 behavior: None,
             },

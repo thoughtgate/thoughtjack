@@ -9,11 +9,37 @@ pub mod prompts;
 pub mod resources;
 pub mod tools;
 
-use crate::config::schema::{ContentValue, GeneratorLimits};
+use crate::config::schema::{ContentValue, GeneratorLimits, StateScope};
+use crate::dynamic::sequence::CallTracker;
 use crate::error::ThoughtJackError;
 use crate::generator::{PayloadGenerator, create_generator};
 use crate::phase::EffectiveState;
 use crate::transport::jsonrpc::{JsonRpcRequest, JsonRpcResponse};
+
+/// Per-request context for handler dispatch.
+///
+/// Groups parameters that every handler needs — generator limits,
+/// call tracking, phase metadata, and external handler configuration.
+///
+/// Implements: TJ-SPEC-009 F-001
+pub struct RequestContext<'a> {
+    /// Limits applied to payload generators.
+    pub limits: &'a GeneratorLimits,
+    /// Shared call tracker for sequence state.
+    pub call_tracker: &'a CallTracker,
+    /// Name of the current phase (or `"<none>"`).
+    pub phase_name: &'a str,
+    /// Index of the current phase (-1 for baseline).
+    pub phase_index: i64,
+    /// Connection identifier.
+    pub connection_id: u64,
+    /// Whether external handlers are allowed.
+    pub allow_external_handlers: bool,
+    /// Shared HTTP client for external handlers.
+    pub http_client: &'a reqwest::Client,
+    /// State scope for call tracking keys.
+    pub state_scope: StateScope,
+}
 
 /// Dispatches an MCP request to the appropriate handler.
 ///
@@ -32,7 +58,7 @@ pub async fn handle_request(
     effective_state: &EffectiveState,
     server_name: &str,
     server_version: &str,
-    limits: &GeneratorLimits,
+    ctx: &RequestContext<'_>,
 ) -> Result<Option<JsonRpcResponse>, ThoughtJackError> {
     match request.method.as_str() {
         "initialize" => Ok(Some(initialize::handle(
@@ -51,15 +77,15 @@ pub async fn handle_request(
             }),
         ))),
         "tools/list" => Ok(Some(tools::handle_list(request, effective_state))),
-        "tools/call" => tools::handle_call(request, effective_state, limits)
+        "tools/call" => tools::handle_call(request, effective_state, ctx)
             .await
             .map(Some),
         "resources/list" => Ok(Some(resources::handle_list(request, effective_state))),
-        "resources/read" => resources::handle_read(request, effective_state, limits)
+        "resources/read" => resources::handle_read(request, effective_state, ctx)
             .await
             .map(Some),
         "prompts/list" => Ok(Some(prompts::handle_list(request, effective_state))),
-        "prompts/get" => prompts::handle_get(request, effective_state, limits)
+        "prompts/get" => prompts::handle_get(request, effective_state, ctx)
             .await
             .map(Some),
         _ => Ok(None),

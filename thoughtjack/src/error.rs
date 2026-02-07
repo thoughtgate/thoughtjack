@@ -39,6 +39,9 @@ impl ExitCode {
     /// Generator error (limit exceeded, generation failed)
     pub const GENERATOR_ERROR: i32 = 10;
 
+    /// Handler error (external handler failed)
+    pub const HANDLER_ERROR: i32 = 11;
+
     /// Usage error (invalid arguments, missing required options)
     pub const USAGE_ERROR: i32 = 64;
 
@@ -93,6 +96,10 @@ pub enum ThoughtJackError {
     #[error("YAML error: {0}")]
     Yaml(#[from] serde_yaml::Error),
 
+    /// External handler error
+    #[error(transparent)]
+    Handler(#[from] HandlerError),
+
     /// Usage error (invalid arguments, missing required options)
     #[error("{0}")]
     Usage(String),
@@ -112,6 +119,7 @@ impl ThoughtJackError {
             Self::Transport(_) => ExitCode::TRANSPORT_ERROR,
             Self::Phase(_) => ExitCode::PHASE_ERROR,
             Self::Generator(_) => ExitCode::GENERATOR_ERROR,
+            Self::Handler(_) => ExitCode::HANDLER_ERROR,
             Self::Behavior(_) => ExitCode::ERROR,
             Self::Io(_) => ExitCode::IO_ERROR,
             Self::Usage(_) => ExitCode::USAGE_ERROR,
@@ -318,6 +326,53 @@ pub enum GeneratorError {
     /// Invalid generator parameters
     #[error("invalid generator parameters: {0}")]
     InvalidParameters(String),
+}
+
+// ============================================================================
+// Handler Errors (TJ-SPEC-009)
+// ============================================================================
+
+/// External handler errors for HTTP and command handlers.
+///
+/// Implements: TJ-SPEC-009 F-003, F-004
+#[derive(Debug, Error)]
+pub enum HandlerError {
+    /// Network error during HTTP handler request
+    #[error("handler network error: {0}")]
+    Network(String),
+
+    /// HTTP handler returned non-success status code
+    #[error("handler returned HTTP {0}")]
+    HttpStatus(u16),
+
+    /// Handler returned invalid or unparseable response
+    #[error("invalid handler response: {0}")]
+    InvalidResponse(String),
+
+    /// Handler exceeded configured timeout
+    #[error("handler timeout")]
+    Timeout,
+
+    /// Failed to spawn command handler subprocess
+    #[error("failed to spawn handler: {0}")]
+    SpawnFailed(String),
+
+    /// Command handler exited with non-zero status
+    #[error("handler exited with code {}: {stderr}", code.map_or_else(|| "unknown".to_string(), |c| c.to_string()))]
+    NonZeroExit {
+        /// Exit code (None if killed by signal)
+        code: Option<i32>,
+        /// Captured stderr content
+        stderr: String,
+    },
+
+    /// Handler returned an error object to pass through
+    #[error("handler returned error: {0}")]
+    ToolError(serde_json::Value),
+
+    /// External handlers are not enabled via `--allow-external-handlers`
+    #[error("external handlers require --allow-external-handlers flag")]
+    NotEnabled,
 }
 
 // ============================================================================

@@ -302,6 +302,14 @@ impl PhaseEngine {
         &self.state
     }
 
+    /// Returns the configured state scope.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    #[must_use]
+    pub const fn scope(&self) -> StateScope {
+        self.scope
+    }
+
     /// Starts the background timer task for time-based triggers.
     ///
     /// The task runs every 100ms, checking if any time-based or timeout
@@ -436,6 +444,7 @@ mod tests {
                     text: ContentValue::Static("result".to_string()),
                 }],
                 is_error: None,
+                ..Default::default()
             },
             behavior: None,
         }
@@ -581,7 +590,7 @@ mod tests {
         let mut replace_tools = IndexMap::new();
         replace_tools.insert(
             "calc".to_string(),
-            ToolPatternRef::Inline(make_tool("calc", "Malicious calc")),
+            ToolPatternRef::Inline(Box::new(make_tool("calc", "Malicious calc"))),
         );
 
         let phases = vec![

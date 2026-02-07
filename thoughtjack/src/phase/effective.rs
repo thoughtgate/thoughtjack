@@ -154,7 +154,7 @@ impl EffectiveState {
 /// (file resolution is handled by the config loader).
 fn resolve_tool_ref(tool_ref: &ToolPatternRef) -> Option<ToolPattern> {
     match tool_ref {
-        ToolPatternRef::Inline(pattern) => Some(pattern.clone()),
+        ToolPatternRef::Inline(pattern) => Some(pattern.as_ref().clone()),
         ToolPatternRef::Path(_) => None, // File paths resolved at config load time
     }
 }
@@ -162,7 +162,7 @@ fn resolve_tool_ref(tool_ref: &ToolPatternRef) -> Option<ToolPattern> {
 /// Resolves a `ResourcePatternRef` to a `ResourcePattern`.
 fn resolve_resource_ref(resource_ref: &ResourcePatternRef) -> Option<ResourcePattern> {
     match resource_ref {
-        ResourcePatternRef::Inline(pattern) => Some(pattern.clone()),
+        ResourcePatternRef::Inline(pattern) => Some(pattern.as_ref().clone()),
         ResourcePatternRef::Path(_) => None,
     }
 }
@@ -170,7 +170,7 @@ fn resolve_resource_ref(resource_ref: &ResourcePatternRef) -> Option<ResourcePat
 /// Resolves a `PromptPatternRef` to a `PromptPattern`.
 fn resolve_prompt_ref(prompt_ref: &PromptPatternRef) -> Option<PromptPattern> {
     match prompt_ref {
-        PromptPatternRef::Inline(pattern) => Some(pattern.clone()),
+        PromptPatternRef::Inline(pattern) => Some(pattern.as_ref().clone()),
         PromptPatternRef::Path(_) => None,
     }
 }
@@ -210,6 +210,7 @@ mod tests {
                     text: ContentValue::Static("result".to_string()),
                 }],
                 is_error: None,
+                ..Default::default()
             },
             behavior: None,
         }
@@ -225,6 +226,7 @@ mod tests {
             },
             response: Some(ResourceResponse {
                 content: ContentValue::Static("content".to_string()),
+                ..Default::default()
             }),
             behavior: None,
         }
@@ -237,7 +239,7 @@ mod tests {
                 description: None,
                 arguments: None,
             },
-            response: PromptResponse { messages: vec![] },
+            response: PromptResponse::default(),
             behavior: None,
         }
     }
@@ -290,7 +292,7 @@ mod tests {
         let mut replace_tools = IndexMap::new();
         replace_tools.insert(
             "calc".to_string(),
-            ToolPatternRef::Inline(make_tool("calc", "Malicious calculator")),
+            ToolPatternRef::Inline(Box::new(make_tool("calc", "Malicious calculator"))),
         );
 
         let phase = Phase {
@@ -313,10 +315,10 @@ mod tests {
 
         let phase = Phase {
             name: "attack".to_string(),
-            add_tools: Some(vec![ToolPatternRef::Inline(make_tool(
+            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool(
                 "exploit",
                 "Exploit tool",
-            ))]),
+            )))]),
             ..default_phase()
         };
 
@@ -339,14 +341,14 @@ mod tests {
         let mut replace_tools = IndexMap::new();
         replace_tools.insert(
             "swap".to_string(),
-            ToolPatternRef::Inline(make_tool("swap", "Replaced swap")),
+            ToolPatternRef::Inline(Box::new(make_tool("swap", "Replaced swap"))),
         );
 
         let phase = Phase {
             name: "attack".to_string(),
             remove_tools: Some(vec!["old".to_string()]),
             replace_tools: Some(replace_tools),
-            add_tools: Some(vec![ToolPatternRef::Inline(make_tool("new", "New tool"))]),
+            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool("new", "New tool")))]),
             ..default_phase()
         };
 

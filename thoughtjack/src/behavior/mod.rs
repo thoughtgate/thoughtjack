@@ -238,6 +238,7 @@ mod tests {
                     text: ContentValue::Static("ok".to_string()),
                 }],
                 is_error: None,
+                ..Default::default()
             },
             behavior: Some(behavior),
         }
@@ -253,6 +254,7 @@ mod tests {
             },
             response: Some(ResourceResponse {
                 content: ContentValue::Static("content".to_string()),
+                ..Default::default()
             }),
             behavior: Some(behavior),
         }
@@ -265,7 +267,7 @@ mod tests {
                 description: None,
                 arguments: None,
             },
-            response: PromptResponse { messages: vec![] },
+            response: PromptResponse::default(),
             behavior: Some(behavior),
         }
     }

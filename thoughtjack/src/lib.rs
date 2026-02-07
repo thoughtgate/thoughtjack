@@ -13,6 +13,7 @@ pub mod behavior;
 pub mod capture;
 pub mod cli;
 pub mod config;
+pub mod dynamic;
 pub mod error;
 pub mod generator;
 pub mod handlers;
