@@ -151,19 +151,8 @@ impl SideEffect for NotificationFlood {
         let mut bytes_sent: usize = 0;
 
         loop {
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    return Ok(SideEffectResult {
-                        messages_sent,
-                        bytes_sent,
-                        duration: start.elapsed(),
-                        completed: false,
-                        outcome: SideEffectOutcome::Completed,
-                    });
-                }
-                () = tokio::time::sleep(interval) => {}
-            }
-
+            // Send first, then sleep — ensures the last interval's
+            // notification is delivered before the duration check.
             if start.elapsed() >= self.duration {
                 break;
             }
@@ -177,6 +166,19 @@ impl SideEffect for NotificationFlood {
             transport.send_message(&notification).await?;
             messages_sent += 1;
             bytes_sent += len;
+
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    return Ok(SideEffectResult {
+                        messages_sent,
+                        bytes_sent,
+                        duration: start.elapsed(),
+                        completed: false,
+                        outcome: SideEffectOutcome::Completed,
+                    });
+                }
+                () = tokio::time::sleep(interval) => {}
+            }
         }
 
         Ok(SideEffectResult {
