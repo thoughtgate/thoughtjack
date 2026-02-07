@@ -873,11 +873,17 @@ fn verify_within_base(resolved: &Path, base: &Path, directive: &str) -> Result<(
 }
 
 /// Parses an environment variable with a default value.
+///
+/// Logs a warning if the variable is set but cannot be parsed,
+/// to prevent silent misconfiguration of security-relevant limits.
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.parse().unwrap_or_else(|_| {
+            tracing::warn!(name, value = %v, "invalid env var value, using default");
+            default
+        }),
+        Err(_) => default,
+    }
 }
 
 /// Deep merges override into base.

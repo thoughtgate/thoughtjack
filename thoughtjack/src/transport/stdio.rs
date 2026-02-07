@@ -226,7 +226,13 @@ impl Transport for StdioTransport {
                 continue;
             }
 
-            let line = String::from_utf8_lossy(&buf);
+            let line = match std::str::from_utf8(&buf) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("invalid UTF-8 in message, skipping line: {e}");
+                    continue;
+                }
+            };
             let trimmed = line.trim();
 
             // EC-TRANS-009: Skip empty lines
@@ -286,11 +292,16 @@ fn sanitize_for_log(input: &str, max_len: usize) -> String {
 }
 
 /// Reads an environment variable, parsing it to type `T`, or returns the default.
+///
+/// Logs a warning if the variable is set but cannot be parsed.
 fn env_or<T: FromStr>(name: &str, default: T) -> T {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.parse().unwrap_or_else(|_| {
+            tracing::warn!(name, value = %v, "invalid env var value, using default");
+            default
+        }),
+        Err(_) => default,
+    }
 }
 
 #[cfg(test)]
