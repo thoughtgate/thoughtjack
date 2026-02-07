@@ -1348,6 +1348,11 @@ pub enum SideEffectTrigger {
 
 /// Logging configuration.
 ///
+/// **Note:** These fields are parsed and validated but not yet wired to the
+/// tracing subscriber at runtime. Use `--verbose`/`--quiet` CLI flags or the
+/// `THOUGHTJACK_LOG_LEVEL` environment variable to control logging.
+/// See `TODO(TJ-SPEC-001 F-016)` in `cli/commands/server.rs`.
+///
 /// Implements: TJ-SPEC-001 F-016
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
