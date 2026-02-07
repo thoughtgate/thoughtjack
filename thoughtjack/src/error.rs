@@ -132,7 +132,7 @@ impl ThoughtJackError {
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// YAML parsing failed
-    #[error("parse error in {path}: {message}")]
+    #[error("parse error in {path}{}: {message}", line.map_or_else(String::new, |l| format!(" (line {l})")))]
     ParseError {
         /// Path to the configuration file
         path: PathBuf,
