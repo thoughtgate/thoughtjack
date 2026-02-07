@@ -230,8 +230,20 @@ impl DeliveryBehavior for UnboundedLineDelivery {
         let mut buf = Vec::with_capacity(serialized_len + padding_needed);
         buf.extend_from_slice(&serialized);
 
-        let pad_byte = self.padding_char as u8;
-        buf.resize(serialized_len + padding_needed, pad_byte);
+        // Use the UTF-8 encoding of padding_char. For ASCII chars (the common
+        // case) this is a single byte. For multi-byte chars, we repeat the full
+        // encoding to fill the remaining space.
+        if self.padding_char.is_ascii() {
+            buf.resize(serialized_len + padding_needed, self.padding_char as u8);
+        } else {
+            let mut pad_buf = [0u8; 4];
+            let pad = self.padding_char.encode_utf8(&mut pad_buf).as_bytes();
+            while buf.len() < serialized_len + padding_needed {
+                let remaining = (serialized_len + padding_needed) - buf.len();
+                let chunk = remaining.min(pad.len());
+                buf.extend_from_slice(&pad[..chunk]);
+            }
+        }
 
         transport.send_raw(&buf).await?;
 

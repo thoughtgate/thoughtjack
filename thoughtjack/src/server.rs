@@ -306,10 +306,15 @@ impl Server {
                 })
             });
 
-        // Merge with any timer-triggered transition
-        match transition {
-            Some(t) => Some(t),
-            None => self.phase_engine.recv_transition().await.unwrap_or(None),
+        // If an event-based trigger fired, drain any stale timer transition
+        // from the channel so it doesn't fire at the wrong time on the next
+        // request. If no event-based trigger fired, check for a timer transition.
+        if transition.is_some() {
+            // Drain stale timer transition (non-blocking)
+            let _ = self.phase_engine.recv_transition().await;
+            transition
+        } else {
+            self.phase_engine.recv_transition().await.unwrap_or(None)
         }
     }
 

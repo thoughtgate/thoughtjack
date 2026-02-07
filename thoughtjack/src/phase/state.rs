@@ -12,6 +12,12 @@ use dashmap::DashMap;
 
 use crate::config::schema::EntryAction;
 
+/// Maximum number of distinct event types tracked in the `DashMap`.
+///
+/// Prevents unbounded memory growth from arbitrary event names
+/// (e.g., a malicious client sending events with unique names).
+const MAX_EVENT_TYPE_CARDINALITY: usize = 10_000;
+
 /// Newtype wrapper for event names, used as `DashMap` keys.
 ///
 /// Wraps event names like `"tools/call"` or `"tools/call:calculator"`
@@ -121,11 +127,32 @@ impl PhaseState {
 
     /// Atomically increments the event counter for the given event type.
     ///
-    /// Returns the new count after incrementing.
+    /// Returns the new count after incrementing. If the event is already
+    /// tracked, its counter is incremented. New event types are only tracked
+    /// if the cardinality limit has not been reached; otherwise the event
+    /// is silently dropped and `0` is returned.
+    ///
     /// Uses saturating add to handle overflow gracefully.
     ///
     /// Implements: TJ-SPEC-003 F-003
     pub fn increment_event(&self, event_type: &EventType) -> u64 {
+        // If the event type already exists, increment unconditionally
+        if let Some(counter) = self.event_counts.get(event_type) {
+            let prev = counter.fetch_add(1, Ordering::SeqCst);
+            return prev.saturating_add(1);
+        }
+
+        // Cardinality guard: reject new event types once we exceed the limit
+        // to prevent unbounded DashMap growth from arbitrary event names.
+        if self.event_counts.len() >= MAX_EVENT_TYPE_CARDINALITY {
+            tracing::warn!(
+                event = %event_type,
+                limit = MAX_EVENT_TYPE_CARDINALITY,
+                "event type cardinality limit reached, dropping event"
+            );
+            return 0;
+        }
+
         let prev = self
             .event_counts
             .entry(event_type.clone())

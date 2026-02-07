@@ -256,12 +256,16 @@ impl Transport for HttpTransport {
                     let guard = self.current_response.lock().await;
                     guard.as_ref().cloned()
                 };
-                if let Some(tx) = tx {
-                    let serialized = serde_json::to_vec(message)?;
-                    tx.send(Ok(Bytes::from(serialized))).await.map_err(|_| {
-                        TransportError::ConnectionClosed("response channel closed".into())
-                    })?;
-                }
+                let Some(tx) = tx else {
+                    return Err(TransportError::ConnectionClosed(
+                        "no active response channel (send_message called before receive_message)"
+                            .into(),
+                    ));
+                };
+                let serialized = serde_json::to_vec(message)?;
+                tx.send(Ok(Bytes::from(serialized))).await.map_err(|_| {
+                    TransportError::ConnectionClosed("response channel closed".into())
+                })?;
             }
             JsonRpcMessage::Notification(_) | JsonRpcMessage::Request(_) => {
                 // Server-initiated notifications/requests go to SSE broadcast
@@ -278,11 +282,14 @@ impl Transport for HttpTransport {
             let guard = self.current_response.lock().await;
             guard.as_ref().cloned()
         };
-        if let Some(tx) = tx {
-            tx.send(Ok(Bytes::copy_from_slice(bytes)))
-                .await
-                .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
-        }
+        let Some(tx) = tx else {
+            return Err(TransportError::ConnectionClosed(
+                "no active response channel (send_raw called before receive_message)".into(),
+            ));
+        };
+        tx.send(Ok(Bytes::copy_from_slice(bytes)))
+            .await
+            .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
         Ok(())
     }
 

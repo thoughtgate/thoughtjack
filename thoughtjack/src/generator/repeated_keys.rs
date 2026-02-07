@@ -12,19 +12,21 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::Write;
 
-/// Generates JSON objects with repeated/sequential keys.
+/// Generates JSON objects with duplicate keys to trigger hash collision
+/// attacks in JSON parsers.
 ///
-/// Keys are formatted as `k0000001`, `k0000002`, etc., padded to the
-/// configured key length. Since standard JSON libraries deduplicate keys,
-/// the JSON is built manually as a raw string.
+/// All entries use the same key (padded to `key_length`), producing raw
+/// JSON like `{"kkkkkkkk":"x","kkkkkkkk":"x",...}`. Since standard JSON
+/// libraries deduplicate keys, the JSON is built manually as a raw string.
 ///
-/// Output is fully deterministic (sequential keys, no random component).
+/// Output is fully deterministic.
 ///
 /// Implements: TJ-SPEC-005 F-005
 #[derive(Debug)]
 pub struct RepeatedKeysGenerator {
     count: usize,
-    key_length: usize,
+    /// The single key string repeated for all entries (e.g., `"kkkkkkkk"`)
+    key: String,
     value_json: String,
 }
 
@@ -51,15 +53,18 @@ impl RepeatedKeysGenerator {
             )));
         }
 
-        let key_length = extract_usize(params, "key_length", 8);
+        let key_length = extract_usize(params, "key_length", 8).max(1);
         let value =
             extract_value(params, "value").unwrap_or_else(|| Value::String("x".to_string()));
         let value_json = serde_json::to_string(&value)
             .map_err(|e| GeneratorError::GenerationFailed(e.to_string()))?;
 
+        // Build the single key string: 'k' padded to key_length
+        let key = "k".repeat(key_length);
+
         let this = Self {
             count,
-            key_length,
+            key,
             value_json,
         };
 
@@ -84,18 +89,15 @@ impl PayloadGenerator for RepeatedKeysGenerator {
         let mut output = String::with_capacity(self.estimated_size());
         output.push('{');
 
-        // key_length includes the 'k' prefix, so padding width is key_length - 1
-        let padding_width = self.key_length.saturating_sub(1);
-
         for i in 0..self.count {
             if i > 0 {
                 output.push(',');
             }
-            // Write "k0000001":value_json
+            // Write "kkkkkkkk":value_json — same key for all entries
             write!(
                 output,
-                "\"k{i:0>width$}\":{value}",
-                width = padding_width,
+                "\"{key}\":{value}",
+                key = self.key,
                 value = self.value_json
             )
             .expect("string write should not fail");
@@ -111,10 +113,10 @@ impl PayloadGenerator for RepeatedKeysGenerator {
             return 2; // "{}"
         }
 
-        // Each entry: "k{padded}":value_json
-        // Key part: 1 (") + key_length + 1 (") + 1 (:) = key_length + 3
-        // Entry: key_length + 3 + value_json.len()
-        let entry_size = self.key_length + 3 + self.value_json.len();
+        // Each entry: "kkkkkkkk":value_json
+        // Key part: 1 (") + key.len() + 1 (") + 1 (:) = key.len() + 3
+        // Entry: key.len() + 3 + value_json.len()
+        let entry_size = self.key.len() + 3 + self.value_json.len();
 
         // Total: { + entries + commas + }
         // = 2 + count * entry_size + (count - 1)
@@ -148,16 +150,19 @@ mod tests {
     }
 
     #[test]
-    fn all_keys_present() {
+    fn all_keys_are_duplicates() {
         let params = make_params(vec![("count", json!(100))]);
         let generator = RepeatedKeysGenerator::new(&params, &default_limits()).unwrap();
         let data = generator.generate().unwrap().into_bytes();
         let s = String::from_utf8(data).unwrap();
 
-        for i in 0..100 {
-            let key = format!("k{i:0>7}");
-            assert!(s.contains(&key), "missing key: {key}");
-        }
+        // All 100 entries use the same key "kkkkkkkk" (default key_length=8)
+        let key = "\"kkkkkkkk\"";
+        let occurrences = s.matches(key).count();
+        assert_eq!(
+            occurrences, 100,
+            "expected 100 duplicate keys, got {occurrences}"
+        );
     }
 
     #[test]
@@ -167,9 +172,10 @@ mod tests {
         let data = generator.generate().unwrap().into_bytes();
         let s = String::from_utf8(data).unwrap();
 
-        // Each key should be 12 chars: k + 11 digits
-        assert!(s.contains("\"k00000000000\""));
-        assert!(s.contains("\"k00000000004\""));
+        // Each key should be 12 chars: kkkkkkkkkkkk
+        let key = "\"kkkkkkkkkkkk\"";
+        let occurrences = s.matches(key).count();
+        assert_eq!(occurrences, 5, "expected 5 keys of length 12");
     }
 
     #[test]

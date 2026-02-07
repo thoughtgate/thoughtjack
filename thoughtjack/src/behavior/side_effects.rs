@@ -143,11 +143,9 @@ impl SideEffect for NotificationFlood {
         cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = std::time::Instant::now();
-        let interval = if self.rate_per_sec > 0 {
-            Duration::from_nanos(1_000_000_000 / self.rate_per_sec)
-        } else {
-            Duration::ZERO
-        };
+        // Clamp to minimum 1 req/sec to prevent a busy loop from Duration::ZERO
+        let effective_rate = self.rate_per_sec.max(1);
+        let interval = Duration::from_nanos(1_000_000_000 / effective_rate);
 
         let mut messages_sent: usize = 0;
         let mut bytes_sent: usize = 0;
