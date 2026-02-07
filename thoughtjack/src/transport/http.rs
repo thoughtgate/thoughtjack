@@ -376,7 +376,7 @@ async fn handle_post_message(
         }
     };
 
-    let connection_id = shared.next_connection_id.fetch_add(1, Ordering::Relaxed);
+    let connection_id = shared.next_connection_id.fetch_add(1, Ordering::SeqCst);
     let connected_at = Instant::now();
 
     // Connection tracking is deferred to receive_message to avoid a race where
