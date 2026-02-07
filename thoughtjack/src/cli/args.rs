@@ -24,11 +24,11 @@ pub struct Cli {
     pub command: Commands,
 
     /// Increase verbosity (-v info, -vv debug, -vvv trace).
-    #[arg(short, long, action = ArgAction::Count, global = true)]
+    #[arg(short, long, action = ArgAction::Count, global = true, conflicts_with = "quiet")]
     pub verbose: u8,
 
     /// Suppress all non-error output.
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 
     /// Color output control.
