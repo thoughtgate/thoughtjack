@@ -2,6 +2,7 @@
 //!
 //! Implements `server run`, `server validate`, and `server list`.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -31,9 +32,9 @@ use crate::transport::{DEFAULT_MAX_MESSAGE_SIZE, HttpTransport, StdioTransport, 
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
     // EC-CLI-003: require at least one source
-    if args.config.is_none() && args.tool.is_none() {
+    if args.config.is_none() && args.tool.is_none() && args.scenario.is_none() {
         return Err(ThoughtJackError::Usage(
-            "either --config or --tool is required".into(),
+            "either --config, --tool, or --scenario is required".into(),
         ));
     }
 
@@ -45,7 +46,44 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
 
     let generator_limits = build_generator_limits(args);
 
-    let config = if let Some(ref path) = args.config {
+    let config = if let Some(ref scenario_name) = args.scenario {
+        tracing::info!(scenario = %scenario_name, "loading built-in scenario");
+        let scenario = crate::scenarios::find_scenario(scenario_name).ok_or_else(|| {
+            let mut message = format!("Unknown scenario '{scenario_name}'");
+
+            if let Some(suggestion) = crate::scenarios::suggest_scenario(scenario_name) {
+                let _ = write!(message, "\n\nDid you mean '{suggestion}'?");
+            }
+
+            message.push_str("\n\nAvailable scenarios:");
+            for name in crate::scenarios::list_scenario_names() {
+                if let Some(s) = crate::scenarios::find_scenario(name) {
+                    let _ = write!(message, "\n  {:<24}{}", s.name, s.description);
+                }
+            }
+
+            message.push_str("\n\nUse 'thoughtjack scenarios list' for full details.");
+            ThoughtJackError::Usage(message)
+        })?;
+
+        let options = LoaderOptions {
+            embedded: true,
+            generator_limits,
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        let load_result = loader.load_from_str(scenario.yaml)?;
+
+        for warning in &load_result.warnings {
+            tracing::warn!(
+                location = warning.location.as_deref().unwrap_or("<unknown>"),
+                "{}",
+                warning.message
+            );
+        }
+
+        load_result.config
+    } else if let Some(ref path) = args.config {
         tracing::info!(config = %path.display(), "loading configuration");
         let options = LoaderOptions {
             library_root: args.library.clone(),
@@ -127,13 +165,6 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         .map(|dir| CaptureWriter::new(dir, args.capture_redact))
         .transpose()?;
 
-    if args.allow_external_handlers {
-        tracing::warn!(
-            "--allow-external-handlers is set but no external handler \
-             types are currently supported; flag reserved for future use"
-        );
-    }
-
     let server = Server::new(ServerOptions {
         config,
         transport,
@@ -143,6 +174,7 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
         capture,
         cli_state_scope: args.state_scope,
         spoof_client: args.spoof_client.clone(),
+        allow_external_handlers: args.allow_external_handlers,
         cancel,
     });
     server.run().await
@@ -235,7 +267,7 @@ pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError>
                         "warnings": [],
                     }));
                 } else {
-                    return Err(e.into());
+                    tracing::error!(file = %path.display(), "{e}");
                 }
             }
         }
@@ -244,10 +276,10 @@ pub async fn validate(args: &ServerValidateArgs) -> Result<(), ThoughtJackError>
     if args.format == OutputFormat::Json {
         print_validation_json(&results, args.files.len(), valid_count, invalid_count)?;
     } else if invalid_count > 0 {
-        return Err(ThoughtJackError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("{invalid_count} file(s) failed validation"),
-        )));
+        return Err(crate::error::ConfigError::ValidationFailed {
+            count: invalid_count,
+        }
+        .into());
     }
 
     Ok(())

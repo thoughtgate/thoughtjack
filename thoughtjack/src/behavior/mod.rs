@@ -11,10 +11,16 @@ pub mod side_effects;
 pub use delivery::{DeliveryBehavior, DeliveryResult, create_delivery_behavior};
 pub use side_effects::{SideEffect, SideEffectOutcome, SideEffectResult, create_side_effect};
 
-use crate::config::schema::{BehaviorConfig, DeliveryConfig};
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::config::schema::{BehaviorConfig, DeliveryConfig, SideEffectTrigger};
 use crate::phase::EffectiveState;
-use crate::transport::TransportType;
 use crate::transport::jsonrpc::JsonRpcRequest;
+use crate::transport::{Transport, TransportType};
 
 // ============================================================================
 // ResolvedBehavior
@@ -153,6 +159,150 @@ impl BehaviorCoordinator {
 }
 
 // ============================================================================
+// SideEffectManager
+// ============================================================================
+
+/// Manages the lifecycle of side effects for a server session.
+///
+/// Spawns, tracks, and shuts down side effects according to their
+/// [`SideEffectTrigger`] type:
+///
+/// - `OnConnect` / `Continuous` effects start via [`on_connect`](Self::on_connect)
+/// - `OnRequest` / `OnSubscribe` / `OnUnsubscribe` effects fire via
+///   [`trigger`](Self::trigger)
+/// - All running effects are cancelled and joined via [`shutdown`](Self::shutdown)
+///
+/// Implements: TJ-SPEC-004 F-014
+pub struct SideEffectManager {
+    transport: Arc<dyn Transport>,
+    cancel: CancellationToken,
+    running: Vec<JoinHandle<()>>,
+}
+
+impl SideEffectManager {
+    /// Creates a new manager.
+    ///
+    /// Implements: TJ-SPEC-004 F-014
+    #[must_use]
+    pub fn new(transport: Arc<dyn Transport>, cancel: CancellationToken) -> Self {
+        Self {
+            transport,
+            cancel,
+            running: Vec::new(),
+        }
+    }
+
+    /// Fires all effects matching the given trigger.
+    ///
+    /// Returns a list of results for successfully completed effects.
+    /// Transport-incompatible effects are skipped with a warning.
+    ///
+    /// Implements: TJ-SPEC-004 F-014
+    pub async fn trigger(
+        &self,
+        effects: &[Box<dyn SideEffect>],
+        trigger: SideEffectTrigger,
+    ) -> Vec<(String, SideEffectResult)> {
+        let mut results = Vec::new();
+        let transport_type = self.transport.transport_type();
+
+        for effect in effects {
+            if effect.trigger() != trigger {
+                continue;
+            }
+            if !effect.supports_transport(transport_type) {
+                tracing::warn!(
+                    effect = effect.name(),
+                    transport = ?transport_type,
+                    "side effect not supported on this transport, skipping"
+                );
+                continue;
+            }
+
+            let child_cancel = self.cancel.child_token();
+            match effect
+                .execute(
+                    self.transport.as_ref(),
+                    &self.transport.connection_context(),
+                    child_cancel,
+                )
+                .await
+            {
+                Ok(result) => {
+                    record_side_effect_metrics(effect.name(), &result);
+                    results.push((effect.name().to_string(), result));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        effect = effect.name(),
+                        error = %e,
+                        ?trigger,
+                        "side effect failed"
+                    );
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Spawns a single owned side effect as a background task.
+    ///
+    /// Use this for continuous effects where ownership can be transferred.
+    ///
+    /// Implements: TJ-SPEC-004 F-014
+    pub fn spawn(&mut self, effect: Box<dyn SideEffect>) {
+        let transport = Arc::clone(&self.transport);
+        let ctx = transport.connection_context();
+        let cancel = self.cancel.child_token();
+        let name = effect.name().to_string();
+
+        tracing::info!(effect = %name, "spawning background side effect");
+
+        self.running.push(tokio::spawn(async move {
+            match effect.execute(transport.as_ref(), &ctx, cancel).await {
+                Ok(result) => {
+                    record_side_effect_metrics(&name, &result);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        effect = %name,
+                        error = %e,
+                        "background side effect failed"
+                    );
+                }
+            }
+        }));
+    }
+
+    /// Cancels all running background effects and waits for them to finish.
+    ///
+    /// Each task is given a 2-second grace period before being considered
+    /// timed out.
+    ///
+    /// Implements: TJ-SPEC-004 F-014
+    pub async fn shutdown(&mut self) {
+        self.cancel.cancel();
+        for handle in self.running.drain(..) {
+            match tokio::time::timeout(Duration::from_secs(2), handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if e.is_cancelled() => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "background side effect task panicked"),
+                Err(_) => {
+                    tracing::warn!("background side effect task did not finish within 2s");
+                }
+            }
+        }
+    }
+
+    /// Returns the number of currently running background tasks.
+    #[must_use]
+    pub fn running_count(&self) -> usize {
+        self.running.len()
+    }
+}
+
+// ============================================================================
 // Metric helpers
 // ============================================================================
 
@@ -238,6 +388,7 @@ mod tests {
                     text: ContentValue::Static("ok".to_string()),
                 }],
                 is_error: None,
+                ..Default::default()
             },
             behavior: Some(behavior),
         }
@@ -253,6 +404,7 @@ mod tests {
             },
             response: Some(ResourceResponse {
                 content: ContentValue::Static("content".to_string()),
+                ..Default::default()
             }),
             behavior: Some(behavior),
         }
@@ -265,7 +417,7 @@ mod tests {
                 description: None,
                 arguments: None,
             },
-            response: PromptResponse { messages: vec![] },
+            response: PromptResponse::default(),
             behavior: Some(behavior),
         }
     }
@@ -506,5 +658,123 @@ mod tests {
 
         assert_eq!(resolved.delivery.name(), "normal");
         assert!(resolved.side_effects.is_empty());
+    }
+
+    // ========================================================================
+    // SideEffectManager tests
+    // ========================================================================
+
+    mod manager_tests {
+        use super::*;
+        use crate::config::schema::{SideEffectConfig, SideEffectType};
+        use crate::transport::jsonrpc::JsonRpcMessage;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        struct MockTransport {
+            raw_sends: Arc<Mutex<Vec<Vec<u8>>>>,
+        }
+
+        impl MockTransport {
+            fn new() -> Self {
+                Self {
+                    raw_sends: Arc::new(Mutex::new(Vec::new())),
+                }
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl crate::transport::Transport for MockTransport {
+            async fn send_message(
+                &self,
+                _message: &JsonRpcMessage,
+            ) -> crate::transport::Result<()> {
+                Ok(())
+            }
+
+            async fn send_raw(&self, bytes: &[u8]) -> crate::transport::Result<()> {
+                self.raw_sends.lock().unwrap().push(bytes.to_vec());
+                Ok(())
+            }
+
+            async fn receive_message(&self) -> crate::transport::Result<Option<JsonRpcMessage>> {
+                Ok(None)
+            }
+
+            fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
+                true
+            }
+
+            fn transport_type(&self) -> TransportType {
+                TransportType::Stdio
+            }
+
+            async fn finalize_response(&self) -> crate::transport::Result<()> {
+                Ok(())
+            }
+
+            fn connection_context(&self) -> crate::transport::ConnectionContext {
+                crate::transport::ConnectionContext::stdio()
+            }
+        }
+
+        #[tokio::test]
+        async fn manager_trigger_returns_results() {
+            let transport = Arc::new(MockTransport::new());
+            let cancel = CancellationToken::new();
+            let mgr = SideEffectManager::new(transport, cancel);
+
+            let effects: Vec<Box<dyn SideEffect>> = vec![create_side_effect(&SideEffectConfig {
+                type_: SideEffectType::CloseConnection,
+                trigger: SideEffectTrigger::OnRequest,
+                params: HashMap::new(),
+            })];
+
+            let results = mgr.trigger(&effects, SideEffectTrigger::OnRequest).await;
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].0, "close_connection");
+        }
+
+        #[tokio::test]
+        async fn manager_trigger_filters_by_trigger() {
+            let transport = Arc::new(MockTransport::new());
+            let cancel = CancellationToken::new();
+            let mgr = SideEffectManager::new(transport, cancel);
+
+            let effects: Vec<Box<dyn SideEffect>> = vec![create_side_effect(&SideEffectConfig {
+                type_: SideEffectType::CloseConnection,
+                trigger: SideEffectTrigger::OnRequest,
+                params: HashMap::new(),
+            })];
+
+            // Trigger with OnConnect should return no results
+            let results = mgr.trigger(&effects, SideEffectTrigger::OnConnect).await;
+            assert!(results.is_empty());
+        }
+
+        #[tokio::test]
+        async fn manager_spawn_and_shutdown() {
+            let transport = Arc::new(MockTransport::new());
+            let cancel = CancellationToken::new();
+            let mut mgr = SideEffectManager::new(transport, cancel);
+
+            let effect = create_side_effect(&SideEffectConfig {
+                type_: SideEffectType::NotificationFlood,
+                trigger: SideEffectTrigger::Continuous,
+                params: {
+                    let mut m = HashMap::new();
+                    m.insert("rate_per_sec".to_string(), json!(100));
+                    m.insert("duration_sec".to_string(), json!(60));
+                    m
+                },
+            });
+
+            mgr.spawn(effect);
+            assert_eq!(mgr.running_count(), 1);
+
+            // Shutdown should cancel and join
+            mgr.shutdown().await;
+            assert_eq!(mgr.running_count(), 0);
+        }
     }
 }

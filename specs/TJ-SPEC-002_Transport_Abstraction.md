@@ -152,6 +152,14 @@ The system SHALL implement the `Transport` trait for stdio (NDJSON over stdin/st
 - Supports all delivery behaviors
 - Supports stdio-specific side effects (pipe_deadlock)
 
+**Security Hardening:**
+
+The stdio transport implements several defenses against malicious or malformed input:
+
+- **Bounded line reading (B10)**: Uses a bounded buffer (`max_message_size + 1`) when reading lines to prevent out-of-memory attacks from unterminated lines (lines without `\n` terminators). The implementation uses `fill_buf()` and `consume()` to read incrementally without allocating unbounded memory.
+
+- **Log sanitization (B11)**: The `sanitize_for_log()` function strips control characters (except tab) from logged messages, replacing them with the Unicode replacement character (`U+FFFD`). This prevents log injection attacks where an attacker could embed ANSI escape sequences or other control codes in JSON-RPC messages to manipulate log output.
+
 **Message Framing:**
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -177,6 +185,14 @@ The system SHALL implement the `Transport` trait for HTTP+SSE.
 - Supports chunked transfer encoding for behavioral attacks
 - Handles multiple concurrent connections
 - Supports HTTP-specific behaviors (response delays via headers)
+
+**Security Hardening:**
+
+The HTTP transport includes security measures to prevent common web-based attacks:
+
+- **DNS rebinding protection (B7)**: The `validate_local_origin()` function checks the `Origin` or `Host` header against an allowlist of local addresses (`localhost`, `127.0.0.1`, `[::1]`, `::1`, `0.0.0.0`). This prevents DNS rebinding attacks where an attacker's webpage could use a malicious DNS entry that resolves to `127.0.0.1` to send requests to the local MCP server. Requests with missing headers or non-local origins are rejected with HTTP 403.
+
+- **SSE connection limit (B8)**: A `MAX_SSE_CONNECTIONS = 16` constant limits the number of concurrent Server-Sent Events connections. This prevents resource exhaustion attacks where a malicious client opens many SSE streams to consume server resources. The limit is enforced in the `GET /sse` handler, returning HTTP 503 when the limit is reached.
 
 **Message Flow:**
 ```
@@ -529,8 +545,13 @@ pub trait ConnectionHandle: Send + Sync {
 
 ### EC-TRANS-007: HTTP Request With Invalid JSON
 
-**Scenario:** POST body is not valid JSON  
+**Scenario:** POST body is not valid JSON
 **Expected:** Return 400 Bad Request with error details
+
+**Edge Case B9: JSON-RPC Null Handling**
+
+**Scenario:** Response contains `"result": null` vs absent `result` field
+**Expected:** The JSON-RPC deserialization uses a custom `deserialize_some` function that distinguishes between `"result": null` (valid success response per JSON-RPC 2.0 spec) and an absent `result` field (invalid response). Standard serde would map JSON `null` to `Option::None`, but the custom deserializer ensures `null` becomes `Some(Value::Null)` while absent fields remain `None`.
 
 ### EC-TRANS-008: stdio Message Without Newline at EOF
 
@@ -647,6 +668,8 @@ Optional tuning via environment variables:
 |----------|-------------|---------|
 | `THOUGHTJACK_STDIO_BUFFER_SIZE` | Read/write buffer size | 64 KB |
 | `THOUGHTJACK_MAX_MESSAGE_SIZE` | Maximum message size | 10 MB |
+
+**Note:** The `THOUGHTJACK_MAX_MESSAGE_SIZE` is used to bound line reading, preventing unbounded memory allocation from malicious input without newline terminators (see F-002 security hardening).
 
 ### 5.2 HTTP Configuration
 
@@ -968,6 +991,21 @@ Response sent: t=5000ms
 ---
 
 ## Appendix B: Side Effect Reference
+
+**Note on File Path Security (B6):**
+
+Throughout the codebase (particularly in configuration loading with `$file` and `$include` directives, and in resource handlers), path handling implements strict security checks:
+
+- **Absolute path rejection**: All file paths in configurations must be relative. Absolute paths (those starting with `/` on Unix or containing drive letters on Windows) are rejected with a validation error.
+- **Traversal sequence rejection**: Paths containing `..` are rejected to prevent directory traversal attacks.
+- **Symlink detection**: After constructing the full path, the implementation calls `canonicalize()` to resolve symlinks and verify the resulting path is still within the expected base directory. This prevents attacks where a symlink could bypass the string-level `..` check.
+
+These checks apply to:
+- `$file` directive in configuration (loads file content as string)
+- `$include` directive in configuration (loads and merges YAML files)
+- Resource handlers serving files to clients
+
+This is stricter than the original specification and ensures the attack server cannot be used to read arbitrary files from the host filesystem.
 
 ### B.1 Notification Flood
 

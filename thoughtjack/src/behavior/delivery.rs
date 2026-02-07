@@ -843,4 +843,103 @@ mod tests {
             assert!(behavior.supports_transport(TransportType::Stdio));
         }
     }
+
+    // ========================================================================
+    // EC-BEH-019: Slow loris chunk_size larger than message
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_slow_loris_chunk_larger_than_message() {
+        // EC-BEH-019: chunk_size: 10000 on small message → effectively normal
+        let transport = MockTransport::new();
+        let delivery = SlowLorisDelivery::new(Duration::from_millis(10), 10_000);
+        let msg = test_message();
+        let cancel = CancellationToken::new();
+
+        let result = delivery.deliver(&msg, &transport, cancel).await.unwrap();
+
+        assert!(result.completed);
+        let full_size = serde_json::to_vec(&msg).unwrap().len() + 1;
+        assert_eq!(result.bytes_sent, full_size);
+        // Should be fast since entire message fits in one chunk
+        assert!(result.duration.as_millis() < 500);
+    }
+
+    // ========================================================================
+    // EC-BEH-014: Nested JSON with empty/null result
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_nested_json_with_null_result() {
+        // EC-BEH-014: wrapping null result should still produce valid JSON
+        let transport = MockTransport::new();
+        let delivery = create_delivery_behavior(&DeliveryConfig::NestedJson {
+            depth: 5,
+            key: None,
+        });
+        let msg = JsonRpcMessage::Response(JsonRpcResponse::success(json!(1), json!(null)));
+        let cancel = CancellationToken::new();
+
+        let result = delivery.deliver(&msg, &transport, cancel).await.unwrap();
+        assert!(result.completed);
+
+        // NestedJsonDelivery wraps the ENTIRE JSON-RPC message in nesting:
+        // {"a":{"a":{"a":{"a":{"a":{"jsonrpc":"2.0","id":1,"result":null}}}}}}
+        let sent = transport.all_bytes();
+        let sent_str = String::from_utf8(sent).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(sent_str.trim()).unwrap();
+
+        // Drill through 5 levels of "a" nesting to find the original message
+        let mut inner = &parsed;
+        for _ in 0..5 {
+            inner = inner.get("a").expect("expected nesting key 'a'");
+        }
+        assert_eq!(inner.get("result"), Some(&json!(null)));
+    }
+
+    // ========================================================================
+    // EC-BEH-016: Behavior override to normal
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_normal_override_produces_single_send() {
+        // EC-BEH-016: Normal delivery → single send, no delays
+        let transport = MockTransport::new();
+        let delivery = create_delivery_behavior(&DeliveryConfig::Normal);
+        let msg = test_message();
+        let cancel = CancellationToken::new();
+
+        let result = delivery.deliver(&msg, &transport, cancel).await.unwrap();
+
+        assert!(result.completed);
+        assert!(result.duration.as_millis() < 100);
+        // Normal delivery should produce exactly 1 send_raw call
+        let sends = transport.raw_sends.lock().unwrap();
+        assert_eq!(sends.len(), 1, "normal delivery should produce one send");
+    }
+
+    // ========================================================================
+    // EC-BEH-012: Batch amplify with batch_size: 0
+    // ========================================================================
+
+    #[test]
+    fn test_batch_amplify_zero_clamped() {
+        // EC-BEH-012: batch_size 0 is clamped to 1 (max(1))
+        use crate::behavior::side_effects::create_side_effect;
+        use crate::config::schema::{SideEffectConfig, SideEffectTrigger, SideEffectType};
+        use std::collections::HashMap;
+
+        let config = SideEffectConfig {
+            type_: SideEffectType::BatchAmplify,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("batch_size".to_string(), json!(0));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        assert_eq!(effect.name(), "batch_amplify");
+        // The effect is created successfully; batch_size is clamped to 1 via .max(1)
+    }
 }

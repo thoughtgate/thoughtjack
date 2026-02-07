@@ -884,6 +884,8 @@ The system SHALL support forcibly closing the connection.
 - Forceful: Immediate close (RST on TCP)
 - Tests client reconnection handling
 - Works on both transports
+- Returns `SideEffectOutcome::CloseConnection { graceful: bool }` instead of directly calling `transport.close()`
+- Server loop handles the actual close based on the outcome (better separation of concerns)
 
 **Configuration:**
 ```yaml
@@ -915,34 +917,46 @@ pub struct CloseConnection {
 impl SideEffect for CloseConnection {
     async fn execute(
         &self,
-        transport: &dyn Transport,
+        _transport: &dyn Transport,
         _connection: &ConnectionContext,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = Instant::now();
-        
+
         if !self.delay.is_zero() {
-            tokio::time::sleep(self.delay).await;
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Ok(SideEffectResult {
+                        messages_sent: 0,
+                        bytes_sent: 0,
+                        duration: start.elapsed(),
+                        completed: false,
+                        outcome: SideEffectOutcome::Completed,
+                    });
+                }
+                _ = tokio::time::sleep(self.delay) => {}
+            }
         }
-        
-        transport.close(self.graceful).await?;
-        
+
         Ok(SideEffectResult {
             messages_sent: 0,
             bytes_sent: 0,
             duration: start.elapsed(),
             completed: true,
+            outcome: SideEffectOutcome::CloseConnection {
+                graceful: self.graceful,
+            },
         })
     }
-    
+
     fn supports_transport(&self, _: TransportType) -> bool {
         true
     }
-    
+
     fn trigger(&self) -> SideEffectTrigger {
         self.trigger
     }
-    
+
     fn name(&self) -> &'static str {
         "close_connection"
     }
@@ -1065,6 +1079,8 @@ The system SHALL support behavior configuration at multiple scopes.
 
 **Scope Resolution for `tools/call` requests:**
 ```
+CLI override (if --behavior flag set)
+    ↓ (fallback)
 Tool behavior (if params.name matches tool AND tool.behavior set)
     ↓ (fallback)
 Phase behavior (if set)
@@ -1076,6 +1092,8 @@ Default (normal delivery, no side effects)
 
 **Scope Resolution for `resources/read` and `resources/subscribe` requests:**
 ```
+CLI override (if --behavior flag set)
+    ↓ (fallback)
 Resource behavior (if params.uri matches resource AND resource.behavior set)
     ↓ (fallback)
 Phase behavior (if set)
@@ -1087,6 +1105,8 @@ Default (normal delivery, no side effects)
 
 **Scope Resolution for `prompts/get` requests:**
 ```
+CLI override (if --behavior flag set)
+    ↓ (fallback)
 Prompt behavior (if params.name matches prompt AND prompt.behavior set)
     ↓ (fallback)
 Phase behavior (if set)
@@ -1098,6 +1118,8 @@ Default (normal delivery, no side effects)
 
 **Scope Resolution for ALL other requests:**
 ```
+CLI override (if --behavior flag set)
+    ↓ (fallback)
 Phase behavior (if set)
     ↓ (fallback)
 Server/baseline behavior (if set)
@@ -1265,16 +1287,16 @@ The system SHALL emit metrics for all behavioral operations.
 **Metrics:**
 ```rust
 // Delivery metrics
-counter!("thoughtjack.delivery.total", "behavior" => behavior_name);
-histogram!("thoughtjack.delivery.duration_ms", "behavior" => behavior_name);
-counter!("thoughtjack.delivery.bytes", "behavior" => behavior_name);
+counter!("thoughtjack_delivery_total", "behavior" => behavior_name);
+histogram!("thoughtjack_delivery_duration_ms", "behavior" => behavior_name);
+counter!("thoughtjack_delivery_bytes", "behavior" => behavior_name);
 
 // Side effect metrics
-counter!("thoughtjack.side_effect.executions", "effect" => effect_name);
-histogram!("thoughtjack.side_effect.duration_ms", "effect" => effect_name);
-counter!("thoughtjack.side_effect.messages_sent", "effect" => effect_name);
-counter!("thoughtjack.side_effect.bytes_sent", "effect" => effect_name);
-gauge!("thoughtjack.side_effect.active", "effect" => effect_name);
+counter!("thoughtjack_side_effect_executions", "effect" => effect_name);
+histogram!("thoughtjack_side_effect_duration_ms", "effect" => effect_name);
+counter!("thoughtjack_side_effect_messages_sent", "effect" => effect_name);
+counter!("thoughtjack_side_effect_bytes_sent", "effect" => effect_name);
+gauge!("thoughtjack_side_effect_active", "effect" => effect_name);
 ```
 
 ---

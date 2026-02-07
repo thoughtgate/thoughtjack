@@ -197,10 +197,9 @@ impl PayloadStream for BatchNotificationsStream {
             return Some(chunk);
         }
 
-        if self.remaining == 0 {
-            self.finished = true;
-            return Some(b"]".to_vec());
-        }
+        // remaining > 0 here: if it were 0, the first chunk would have set
+        // finished=true and we would have returned None above.
+        debug_assert!(self.remaining > 0);
 
         let batch_size = self.remaining.min(1000);
         let mut chunk = Vec::with_capacity(batch_size * (self.single_notification.len() + 1));
@@ -326,5 +325,41 @@ mod tests {
         let estimated = generator.estimated_size();
         let actual = generator.generate().unwrap().into_bytes().len();
         assert_eq!(estimated, actual);
+    }
+
+    // EC-GEN-013: Batch notifications with deeply nested params object
+    #[test]
+    fn deeply_nested_params() {
+        let nested_params = json!({
+            "level1": {
+                "level2": {
+                    "level3": {
+                        "data": [1, 2, 3],
+                        "flag": true
+                    }
+                }
+            }
+        });
+        let params = make_params(vec![("count", json!(5)), ("params", nested_params.clone())]);
+        let generator = BatchNotificationsGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        let parsed: Value = serde_json::from_slice(&data).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 5);
+        for item in arr {
+            assert_eq!(item["params"], nested_params);
+        }
+    }
+
+    // EC-GEN-003: single notification (count=1) produces valid single-element array
+    #[test]
+    fn single_notification_valid_array() {
+        let params = make_params(vec![("count", json!(1))]);
+        let generator = BatchNotificationsGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        let parsed: Value = serde_json::from_slice(&data).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["jsonrpc"], "2.0");
     }
 }

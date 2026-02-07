@@ -134,8 +134,9 @@ async fn http_tools_list() {
         .join("tests/fixtures/simple_server.yaml");
     let server = HttpTestServer::start(&config_path).await;
 
-    // Initialize first
-    server.post_jsonrpc(&make_initialize()).await;
+    // Initialize first — consume body to ensure request completes before next
+    let init_resp = server.post_jsonrpc(&make_initialize()).await;
+    let _: serde_json::Value = init_resp.json().await.unwrap();
 
     let resp = server
         .post_jsonrpc(&serde_json::json!({
@@ -168,7 +169,9 @@ async fn http_tool_call() {
         .join("tests/fixtures/simple_server.yaml");
     let server = HttpTestServer::start(&config_path).await;
 
-    server.post_jsonrpc(&make_initialize()).await;
+    // Initialize first — consume body to ensure request completes before next
+    let init_resp = server.post_jsonrpc(&make_initialize()).await;
+    let _: serde_json::Value = init_resp.json().await.unwrap();
 
     let resp = server
         .post_jsonrpc(&serde_json::json!({

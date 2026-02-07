@@ -40,6 +40,11 @@ pub struct LoaderOptions {
 
     /// Limits for configuration size.
     pub config_limits: ConfigLimits,
+
+    /// When true, reject `$include` and `$file` directives (for embedded scenarios).
+    ///
+    /// Implements: TJ-SPEC-010 F-009
+    pub embedded: bool,
 }
 
 impl Default for LoaderOptions {
@@ -48,6 +53,7 @@ impl Default for LoaderOptions {
             library_root: PathBuf::from("library"),
             generator_limits: GeneratorLimits::default(),
             config_limits: ConfigLimits::default(),
+            embedded: false,
         }
     }
 }
@@ -79,12 +85,13 @@ pub struct ConfigLimits {
 impl Default for ConfigLimits {
     fn default() -> Self {
         Self {
-            max_phases: env_or("THOUGHTJACK_MAX_PHASES", 100),
-            max_tools: env_or("THOUGHTJACK_MAX_TOOLS", 1000),
-            max_resources: env_or("THOUGHTJACK_MAX_RESOURCES", 1000),
-            max_prompts: env_or("THOUGHTJACK_MAX_PROMPTS", 500),
-            max_include_depth: env_or("THOUGHTJACK_MAX_INCLUDE_DEPTH", 10),
-            max_config_size: env_or("THOUGHTJACK_MAX_CONFIG_SIZE", 10 * 1024 * 1024),
+            max_phases: env_or("THOUGHTJACK_MAX_PHASES", 100).min(10_000),
+            max_tools: env_or("THOUGHTJACK_MAX_TOOLS", 1000).min(100_000),
+            max_resources: env_or("THOUGHTJACK_MAX_RESOURCES", 1000).min(100_000),
+            max_prompts: env_or("THOUGHTJACK_MAX_PROMPTS", 500).min(50_000),
+            max_include_depth: env_or("THOUGHTJACK_MAX_INCLUDE_DEPTH", 10).min(100),
+            max_config_size: env_or("THOUGHTJACK_MAX_CONFIG_SIZE", 10 * 1024 * 1024)
+                .min(100 * 1024 * 1024),
         }
     }
 }
@@ -256,6 +263,105 @@ impl ConfigLoader {
             warnings,
         })
     }
+
+    /// Loads a configuration from an in-memory YAML string.
+    ///
+    /// Runs the same pipeline as [`load`](Self::load) but skips file I/O.
+    /// In embedded mode (`options.embedded == true`), `$include` and `$file`
+    /// directives are rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if YAML parsing, directive validation, or
+    /// semantic validation fails.
+    ///
+    /// Implements: TJ-SPEC-010 F-009
+    pub fn load_from_str(&mut self, yaml: &str) -> Result<LoadResult, ConfigError> {
+        let mut warnings = Vec::new();
+
+        // Handle UTF-8 BOM
+        let yaml = yaml.strip_prefix('\u{feff}').unwrap_or(yaml);
+
+        // Stage 1: Environment variable substitution
+        // Skip in embedded mode — built-in scenarios use ${...} for template
+        // interpolation at runtime, not env var expansion at load time.
+        let substituted;
+        if self.options.embedded {
+            substituted = yaml.to_string();
+        } else {
+            let mut env_sub = EnvSubstitution::new();
+            substituted = env_sub.substitute(yaml, Path::new("<embedded>"))?;
+            warnings.extend(env_sub.warnings);
+        }
+
+        // Stage 2: YAML parsing
+        let mut root: Value =
+            serde_yaml::from_str(&substituted).map_err(|e| ConfigError::ParseError {
+                path: PathBuf::from("<embedded>"),
+                line: e.location().map(|l| l.line()),
+                message: e.to_string(),
+            })?;
+
+        // Check for empty config
+        if root.is_null() {
+            return Err(ConfigError::ParseError {
+                path: PathBuf::from("<embedded>"),
+                line: None,
+                message: "Configuration is empty".to_string(),
+            });
+        }
+
+        // Stage 3+4: directive handling
+        if self.options.embedded {
+            // Embedded mode: reject $include and $file
+            reject_filesystem_directives(&root)?;
+        } else {
+            // Normal mode: resolve directives
+            let mut include_resolver = IncludeResolver::new(
+                self.options.library_root.clone(),
+                self.options.config_limits.max_include_depth,
+            );
+            include_resolver.resolve(&mut root, &mut self.include_cache)?;
+
+            let file_resolver = FileResolver::new(self.options.library_root.clone());
+            file_resolver.resolve(&mut root, Path::new("<string>"), &mut self.file_cache, 0)?;
+        }
+
+        // Stage 5: $generate validation
+        validate_generators(&root, &self.options.generator_limits, 0)?;
+
+        // Stage 6: Deserialize to typed config
+        let config: ServerConfig =
+            serde_yaml::from_value(root).map_err(|e| ConfigError::ParseError {
+                path: PathBuf::from("<embedded>"),
+                line: None,
+                message: format!("Failed to deserialize configuration: {e}"),
+            })?;
+
+        // Stage 7: Validation
+        let mut validator = Validator::new();
+        let validation_result = validator.validate(&config, &self.options.config_limits);
+
+        if validation_result.has_errors() {
+            return Err(ConfigError::ValidationError {
+                path: "<embedded>".to_string(),
+                errors: validation_result.errors,
+            });
+        }
+
+        for issue in validation_result.warnings {
+            warnings.push(LoadWarning {
+                message: issue.message,
+                location: Some(issue.path),
+            });
+        }
+
+        // Stage 8: Freeze
+        Ok(LoadResult {
+            config: Arc::new(config),
+            warnings,
+        })
+    }
 }
 
 /// Validates `$generate` directives without materializing bytes.
@@ -326,6 +432,54 @@ fn validate_generators(
     Ok(())
 }
 
+/// Rejects `$include` and `$file` directives in embedded scenarios.
+///
+/// Walks the YAML value tree looking for mapping keys `$include` or `$file`.
+/// Returns an error on the first occurrence.
+///
+/// Implements: TJ-SPEC-010 F-009
+fn reject_filesystem_directives(value: &Value) -> Result<(), ConfigError> {
+    reject_filesystem_directives_inner(value, 0)
+}
+
+fn reject_filesystem_directives_inner(value: &Value, depth: usize) -> Result<(), ConfigError> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Ok(());
+    }
+
+    match value {
+        Value::Mapping(map) => {
+            for (key, val) in map {
+                if let Value::String(k) = key {
+                    if k == "$include" {
+                        return Err(ConfigError::InvalidValue {
+                            field: "$include".to_string(),
+                            value: val.as_str().unwrap_or("<non-string>").to_string(),
+                            expected: "$include is not supported in embedded scenarios".to_string(),
+                        });
+                    }
+                    if k == "$file" {
+                        return Err(ConfigError::InvalidValue {
+                            field: "$file".to_string(),
+                            value: val.as_str().unwrap_or("<non-string>").to_string(),
+                            expected: "$file is not supported in embedded scenarios".to_string(),
+                        });
+                    }
+                }
+                reject_filesystem_directives_inner(val, depth + 1)?;
+            }
+        }
+        Value::Sequence(seq) => {
+            for item in seq {
+                reject_filesystem_directives_inner(item, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // Environment Variable Substitution
 // ============================================================================
@@ -373,7 +527,10 @@ impl EnvSubstitution {
                             Self::parse_var_spec(&mut chars, &mut position)?;
 
                         match std::env::var(&var_name) {
-                            Ok(value) => result.push_str(&value),
+                            Ok(value) => {
+                                tracing::debug!(var = %var_name, "expanding environment variable");
+                                result.push_str(&value);
+                            }
                             Err(_) => {
                                 if let Some(default_val) = default {
                                     result.push_str(&default_val);
@@ -566,6 +723,15 @@ impl IncludeResolver {
                     self.resolve(value, cache)?;
                     self.resolution_stack.pop();
                 } else {
+                    // EC-CFG-017: warn on orphan `override:` without `$include:`
+                    let override_key = Value::String("override".to_string());
+                    if map.contains_key(&override_key) {
+                        tracing::warn!(
+                            "orphan 'override:' key found without sibling '$include:' — \
+                             the override will have no effect"
+                        );
+                    }
+
                     // Recurse into map values
                     let keys: Vec<Value> = map.keys().cloned().collect();
                     for key in keys {
@@ -710,6 +876,11 @@ impl FileResolver {
                         FileContent::Json(v) => json_to_yaml(v),
                         FileContent::Text(s) => Value::String(s.clone()),
                         FileContent::Binary(b) => {
+                            // EC-CFG-019: binary file in text context
+                            tracing::warn!(
+                                path = %path.display(),
+                                "binary file resolved via $file — content will be base64-encoded"
+                            );
                             Value::String(base64::engine::general_purpose::STANDARD.encode(b))
                         }
                     };
@@ -1355,5 +1526,126 @@ mod tests {
             }
             _ => panic!("Expected InvalidValue error for path traversal"),
         }
+    }
+
+    #[test]
+    fn test_load_from_str_basic() {
+        let yaml = r#"
+server:
+  name: "test-server"
+  version: "1.0.0"
+tools:
+  - tool:
+      name: "test_tool"
+      description: "A test tool"
+      inputSchema:
+        type: object
+        properties:
+          input:
+            type: string
+        required: ["input"]
+    response:
+      content:
+        - type: text
+          text: "hello"
+"#;
+        let options = LoaderOptions {
+            embedded: true,
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        let result = loader.load_from_str(yaml);
+        assert!(result.is_ok(), "Failed to parse: {result:?}");
+        assert_eq!(result.unwrap().config.server.name, "test-server");
+    }
+
+    #[test]
+    fn test_load_from_str_rejects_include() {
+        let yaml = r#"
+server:
+  name: "test"
+tools:
+  - $include: "tools/evil.yaml"
+"#;
+        let options = LoaderOptions {
+            embedded: true,
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        let result = loader.load_from_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("$include"),
+            "Error should mention $include: {err}"
+        );
+    }
+
+    #[test]
+    fn test_load_from_str_rejects_file() {
+        let yaml = r#"
+server:
+  name: "test"
+tools:
+  - tool:
+      name: "test_tool"
+      description: "test"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text:
+            $file: "payloads/evil.txt"
+"#;
+        let options = LoaderOptions {
+            embedded: true,
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        let result = loader.load_from_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("$file"),
+            "Error should mention $file: {err}"
+        );
+    }
+
+    #[test]
+    fn test_load_from_str_allows_generate() {
+        let yaml = r#"
+server:
+  name: "test-server"
+  version: "1.0.0"
+tools:
+  - tool:
+      name: "test_tool"
+      description: "A test tool"
+      inputSchema:
+        type: object
+        properties:
+          input:
+            type: string
+        required: ["input"]
+    response:
+      content:
+        - type: text
+          text:
+            $generate:
+              type: nested_json
+              depth: 100
+              structure: object
+"#;
+        let options = LoaderOptions {
+            embedded: true,
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        let result = loader.load_from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "Expected $generate to work in embedded mode: {result:?}"
+        );
     }
 }

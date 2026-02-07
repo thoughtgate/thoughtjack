@@ -100,6 +100,9 @@ impl StdioTransport {
 
     /// Creates a new stdio transport with explicit configuration.
     ///
+    /// Primarily used in tests and by library consumers embedding the
+    /// transport directly.
+    ///
     /// Implements: TJ-SPEC-002 F-002
     #[must_use]
     pub fn with_config(config: StdioConfig) -> Self {
@@ -118,6 +121,8 @@ impl StdioTransport {
     }
 
     /// Returns a reference to the connection context.
+    ///
+    /// Primarily used in tests and by library consumers.
     ///
     /// Implements: TJ-SPEC-002 F-016
     #[must_use]

@@ -8,21 +8,23 @@ use std::time::Instant;
 
 use chrono::Utc;
 use serde_json::json;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::behavior::{
-    BehaviorCoordinator, ResolvedBehavior, record_delivery_metrics, record_side_effect_metrics,
+    BehaviorCoordinator, ResolvedBehavior, SideEffectManager, SideEffectOutcome,
+    record_delivery_metrics,
 };
-use crate::capture::{CaptureDirection, CaptureWriter};
+use crate::capture::{CaptureType, CaptureWriter};
 use crate::config::schema::{
     BaselineState, BehaviorConfig, EntryAction, GeneratorLimits, ServerConfig, SideEffectTrigger,
     StateScope, UnknownMethodHandling,
 };
+use crate::dynamic::sequence::CallTracker;
 use crate::error::ThoughtJackError;
 use crate::handlers;
-use crate::observability::events::{Event, EventEmitter};
+use crate::handlers::RequestContext;
+use crate::observability::events::{Event, EventEmitter, StopReason};
 use crate::observability::metrics;
 use crate::phase::engine::PhaseEngine;
 use crate::phase::state::EventType;
@@ -55,6 +57,8 @@ pub struct ServerOptions {
     pub cli_state_scope: Option<StateScope>,
     /// Spoofed server name for MCP initialization.
     pub spoof_client: Option<String>,
+    /// Whether external handlers (HTTP, command) are enabled.
+    pub allow_external_handlers: bool,
     /// Token for cooperative shutdown.
     pub cancel: CancellationToken,
 }
@@ -74,6 +78,9 @@ pub struct Server {
     generator_limits: GeneratorLimits,
     capture: Option<Arc<CaptureWriter>>,
     spoof_client: Option<String>,
+    allow_external_handlers: bool,
+    call_tracker: Arc<CallTracker>,
+    http_client: reqwest::Client,
     cancel: CancellationToken,
 }
 
@@ -109,6 +116,9 @@ impl Server {
             generator_limits: opts.generator_limits,
             capture: opts.capture.map(Arc::new),
             spoof_client: opts.spoof_client,
+            allow_external_handlers: opts.allow_external_handlers,
+            call_tracker: Arc::new(CallTracker::new()),
+            http_client: crate::dynamic::handlers::http::create_http_client(),
             cancel: opts.cancel,
         }
     }
@@ -141,35 +151,41 @@ impl Server {
             transport: transport_type.to_string(),
         });
 
-        metrics::set_current_phase(self.phase_engine.current_phase_name(), None);
+        metrics::set_current_phase(self.phase_engine.current_phase_name(0), None);
         metrics::set_connections_active(1);
 
         // Start background timer task for time-based triggers
         let timer_handle = self.phase_engine.start_timer_task();
 
-        // Spawn continuous side effects (if any in the initial effective state)
-        let continuous_handles = self.spawn_continuous_side_effects();
+        // Initialize side effect manager and spawn continuous effects
+        let mut side_effect_mgr =
+            SideEffectManager::new(Arc::clone(&self.transport), self.cancel.clone());
+        self.start_continuous_effects(&mut side_effect_mgr);
 
         let mut initialized = false;
 
         let result = self
-            .main_loop(effective_name, server_version, &mut initialized)
+            .main_loop(
+                effective_name,
+                server_version,
+                &mut initialized,
+                &side_effect_mgr,
+            )
             .await;
 
         // Shutdown
         self.phase_engine.shutdown();
         timer_handle.abort();
-        for handle in &continuous_handles {
-            handle.abort();
-        }
+        side_effect_mgr.shutdown().await;
         metrics::set_connections_active(0);
 
         self.event_emitter.emit(Event::ServerStopped {
             timestamp: Utc::now(),
             reason: match &result {
-                Ok(()) => "EOF".to_string(),
-                Err(e) => format!("error: {e}"),
+                Ok(()) => StopReason::Completed,
+                Err(_) => StopReason::Error,
             },
+            summary: None,
         });
         self.event_emitter.flush();
 
@@ -177,11 +193,13 @@ impl Server {
     }
 
     /// Core message loop.
+    #[allow(clippy::too_many_lines)]
     async fn main_loop(
         &self,
         server_name: &str,
         server_version: &str,
         initialized: &mut bool,
+        side_effect_mgr: &SideEffectManager,
     ) -> Result<(), ThoughtJackError> {
         loop {
             // Wait for next message or cancellation
@@ -223,13 +241,17 @@ impl Server {
             // Capture incoming request
             if let Some(ref capture) = self.capture {
                 if let Ok(data) = serde_json::to_value(&request) {
-                    if let Err(e) = capture.record(CaptureDirection::Request, &data) {
+                    if let Err(e) = capture.record(CaptureType::Request, &data, None) {
                         warn!(error = %e, "failed to capture request");
                     }
                 }
             }
 
             let start = Instant::now();
+
+            // Resolve connection identity
+            let connection_id = self.transport.connection_context().connection_id;
+            self.phase_engine.ensure_connection(connection_id);
 
             // Emit request received event
             self.event_emitter.emit(Event::RequestReceived {
@@ -241,18 +263,38 @@ impl Server {
 
             // === CRITICAL ORDERING ===
             // 1. Capture effective state BEFORE transition
-            let effective_state = self.phase_engine.effective_state();
+            let effective_state = self.phase_engine.effective_state(connection_id);
 
             // 2–3. Count events and evaluate triggers
-            let transition = self.evaluate_transitions(&request).await;
+            let transition = self.evaluate_transitions(&request, connection_id).await;
 
             // 4. Route to handler (uses PRE-transition effective state)
+            let phase_index = self.phase_engine.current_phase(connection_id);
+            #[allow(clippy::cast_possible_wrap)]
+            let phase_index_signed =
+                if self.phase_engine.is_terminal(connection_id) && self.config.phases.is_none() {
+                    -1_i64
+                } else {
+                    phase_index as i64
+                };
+
+            let request_ctx = RequestContext {
+                limits: &self.generator_limits,
+                call_tracker: &self.call_tracker,
+                phase_name: self.phase_engine.current_phase_name(connection_id),
+                phase_index: phase_index_signed,
+                connection_id,
+                allow_external_handlers: self.allow_external_handlers,
+                http_client: &self.http_client,
+                state_scope: self.phase_engine.scope(),
+            };
+
             let handler_result = handlers::handle_request(
                 &request,
                 &effective_state,
                 server_name,
                 server_version,
-                &self.generator_limits,
+                &request_ctx,
             )
             .await;
 
@@ -271,8 +313,15 @@ impl Server {
 
             // 5. Deliver response and execute side effects
             if let Some(ref resp) = response {
-                self.deliver_and_finalize(resp, &request, &effective_state, start, initialized)
-                    .await;
+                self.deliver_and_finalize(
+                    resp,
+                    &request,
+                    &effective_state,
+                    start,
+                    initialized,
+                    side_effect_mgr,
+                )
+                .await;
             }
 
             // 6. THEN execute entry actions (response-before-transition guarantee)
@@ -294,16 +343,17 @@ impl Server {
     async fn evaluate_transitions(
         &self,
         request: &JsonRpcRequest,
+        connection_id: u64,
     ) -> Option<crate::phase::state::PhaseTransition> {
         // ALWAYS count both generic and specific events (TJ-SPEC-003 F-003)
         let event = EventType::new(&request.method);
-        let count = self.phase_engine.state().increment_event(&event);
+        let count = self.phase_engine.increment_event(connection_id, &event);
         metrics::record_event_count(&event.0, count);
 
         let specific_event =
             extract_specific_name(&request.method, request.params.as_ref()).map(|name| {
                 let specific = EventType::new(format!("{}:{name}", request.method));
-                let specific_count = self.phase_engine.state().increment_event(&specific);
+                let specific_count = self.phase_engine.increment_event(connection_id, &specific);
                 metrics::record_event_count(&specific.0, specific_count);
                 specific
             });
@@ -311,11 +361,11 @@ impl Server {
         // Evaluate triggers: generic first, then specific (only one fires)
         let transition = self
             .phase_engine
-            .evaluate_trigger(&event, request.params.as_ref())
+            .evaluate_trigger(connection_id, &event, request.params.as_ref())
             .or_else(|| {
                 specific_event.as_ref().and_then(|se| {
                     self.phase_engine
-                        .evaluate_trigger(se, request.params.as_ref())
+                        .evaluate_trigger(connection_id, se, request.params.as_ref())
                 })
             });
 
@@ -347,11 +397,12 @@ impl Server {
         effective_state: &crate::phase::EffectiveState,
         start: Instant,
         initialized: &mut bool,
+        side_effect_mgr: &SideEffectManager,
     ) {
         // Capture outgoing response
         if let Some(ref capture) = self.capture {
             if let Ok(data) = serde_json::to_value(resp) {
-                if let Err(e) = capture.record(CaptureDirection::Response, &data) {
+                if let Err(e) = capture.record(CaptureType::Response, &data, None) {
                     warn!(error = %e, "failed to capture response");
                 }
             }
@@ -371,22 +422,22 @@ impl Server {
         }
 
         // Execute OnRequest side effects after delivery
-        self.execute_triggered_effects(&resolved, SideEffectTrigger::OnRequest)
+        self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnRequest)
             .await;
 
         // If this was a successful initialize, run OnConnect effects
         if !*initialized && request.method == "initialize" && resp.error.is_none() {
             *initialized = true;
-            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnConnect)
+            self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnConnect)
                 .await;
         }
 
         // Subscription triggers (TJ-SPEC-004 F-014)
         if request.method == "resources/subscribe" {
-            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnSubscribe)
+            self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnSubscribe)
                 .await;
         } else if request.method == "resources/unsubscribe" {
-            self.execute_triggered_effects(&resolved, SideEffectTrigger::OnUnsubscribe)
+            self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnUnsubscribe)
                 .await;
         }
     }
@@ -405,6 +456,7 @@ impl Server {
             timestamp: Utc::now(),
             phase_name: to_name,
             phase_index: trans.to_phase,
+            trigger: None,
         });
     }
 
@@ -446,7 +498,8 @@ impl Server {
         {
             Ok(result) => {
                 record_delivery_metrics(resolved.delivery.name(), &result);
-                metrics::record_response(&request.method, success);
+                let error_code = response.error.as_ref().map(|e| e.code);
+                metrics::record_response(&request.method, success, error_code);
                 metrics::record_delivery_duration(result.duration);
 
                 self.event_emitter.emit(Event::ResponseSent {
@@ -502,7 +555,7 @@ impl Server {
         }
     }
 
-    /// Executes side effects matching the given trigger.
+    /// Fires side effects matching the given trigger via the [`SideEffectManager`].
     ///
     /// Emits a [`SideEffectTriggered`](Event::SideEffectTriggered) event for
     /// each successfully executed effect (TJ-SPEC-008 F-011).
@@ -510,68 +563,38 @@ impl Server {
     /// When a side effect returns [`SideEffectOutcome::CloseConnection`],
     /// the server's cancellation token is cancelled to initiate shutdown
     /// (TJ-SPEC-004 F-007).
-    async fn execute_triggered_effects(
+    async fn fire_side_effects(
         &self,
+        mgr: &SideEffectManager,
         resolved: &ResolvedBehavior,
         trigger: SideEffectTrigger,
     ) {
-        for effect in &resolved.side_effects {
-            if effect.trigger() == trigger {
-                if !effect.supports_transport(self.transport.transport_type()) {
-                    warn!(
-                        effect = effect.name(),
-                        transport = ?self.transport.transport_type(),
-                        "side effect not supported on this transport, skipping"
-                    );
-                    continue;
-                }
-                let cancel = self.cancel.child_token();
-                match effect
-                    .execute(
-                        self.transport.as_ref(),
-                        &self.transport.connection_context(),
-                        cancel,
-                    )
-                    .await
-                {
-                    Ok(result) => {
-                        record_side_effect_metrics(effect.name(), &result);
-                        self.event_emitter.emit(Event::SideEffectTriggered {
-                            timestamp: Utc::now(),
-                            effect_type: effect.name().to_string(),
-                            phase: self.phase_engine.current_phase_name().to_string(),
-                        });
+        let results = mgr.trigger(&resolved.side_effects, trigger).await;
 
-                        // Handle close_connection outcome (TJ-SPEC-004 F-007)
-                        if let crate::behavior::SideEffectOutcome::CloseConnection { graceful } =
-                            result.outcome
-                        {
-                            info!(graceful, "close_connection side effect triggered shutdown");
-                            self.cancel.cancel();
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            effect = effect.name(),
-                            error = %e,
-                            ?trigger,
-                            "side effect failed"
-                        );
-                    }
-                }
+        for (name, result) in results {
+            self.event_emitter.emit(Event::SideEffectTriggered {
+                timestamp: Utc::now(),
+                effect_type: name.clone(),
+                phase: self.phase_engine.current_phase_name(0).to_string(),
+            });
+
+            // Handle close_connection outcome (TJ-SPEC-004 F-007)
+            if let SideEffectOutcome::CloseConnection { graceful } = result.outcome {
+                info!(graceful, "close_connection side effect triggered shutdown");
+                self.cancel.cancel();
+                return;
             }
         }
     }
 
-    /// Spawns continuous side effects as background tasks.
+    /// Starts continuous side effects via the [`SideEffectManager`].
     ///
-    /// Each continuous effect runs in its own `tokio::spawn` task, sharing the
-    /// transport via `Arc` and respecting the server's cancellation token.
+    /// Resolves the initial effective state and spawns any continuous effects
+    /// as background tasks managed by the side effect manager.
     ///
     /// Implements: TJ-SPEC-004 F-014
-    fn spawn_continuous_side_effects(&self) -> Vec<JoinHandle<()>> {
-        let effective_state = self.phase_engine.effective_state();
+    fn start_continuous_effects(&self, mgr: &mut SideEffectManager) {
+        let effective_state = self.phase_engine.effective_state(0);
         let synthetic_request = JsonRpcRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
             method: "initialize".to_string(),
@@ -585,27 +608,15 @@ impl Server {
         );
 
         let transport_type = self.transport.transport_type();
-        let continuous: Vec<_> = resolved
-            .side_effects
-            .drain(..)
-            .filter(|e| {
-                e.trigger() == SideEffectTrigger::Continuous && e.supports_transport(transport_type)
-            })
-            .collect();
 
-        let mut handles = Vec::new();
-        for effect in continuous {
-            let transport = Arc::clone(&self.transport);
-            let ctx = transport.connection_context();
-            let cancel = self.cancel.child_token();
-            info!(effect = effect.name(), "spawning continuous side effect");
-            handles.push(tokio::spawn(async move {
-                if let Err(e) = effect.execute(transport.as_ref(), &ctx, cancel).await {
-                    warn!(effect = effect.name(), error = %e, "continuous side effect failed");
-                }
-            }));
+        // Drain continuous effects from the resolved behavior and spawn them
+        for effect in resolved.side_effects.drain(..) {
+            if effect.trigger() == SideEffectTrigger::Continuous
+                && effect.supports_transport(transport_type)
+            {
+                mgr.spawn(effect);
+            }
         }
-        handles
     }
 }
 
@@ -614,6 +625,10 @@ impl Server {
 /// If the config uses the phased form (baseline + phases), those are
 /// used directly. Otherwise, constructs a baseline from the simple-server
 /// top-level tools/resources/prompts.
+///
+/// The top-level `ServerConfig.behavior` is placed into
+/// `BaselineState.behavior`, establishing the 4-level priority chain:
+/// CLI flags > per-item behavior > phase/baseline behavior > hardcoded default.
 fn build_baseline_and_phases(
     config: &ServerConfig,
 ) -> (BaselineState, Vec<crate::config::schema::Phase>) {
@@ -773,6 +788,7 @@ mod tests {
                         text: ContentValue::Static("42".to_string()),
                     }],
                     is_error: None,
+                    ..Default::default()
                 },
                 behavior: None,
             }]),
@@ -836,6 +852,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -866,6 +883,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -901,6 +919,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -941,6 +960,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -978,6 +998,7 @@ mod tests {
             capture: None,
             cli_state_scope: None,
             spoof_client: None,
+            allow_external_handlers: false,
             cancel: CancellationToken::new(),
         });
         server.run().await.unwrap();
@@ -1022,6 +1043,7 @@ mod tests {
                             text: ContentValue::Static("ok".to_string()),
                         }],
                         is_error: None,
+                        ..Default::default()
                     },
                     behavior: None,
                 }],

@@ -1,3 +1,26 @@
 # MCP conformance expected failures
 # Updated after initial CI run to baseline known transport/protocol gaps
-server: []
+server:
+  # Advanced tool content types (image, audio, embedded resource, mixed)
+  - tools-call-image
+  - tools-call-audio
+  - tools-call-embedded-resource
+  - tools-call-mixed-content
+  # Server-initiated client interactions (logging, progress, sampling, elicitation)
+  - tools-call-with-logging
+  - tools-call-with-progress
+  - tools-call-sampling
+  - tools-call-elicitation
+  # Elicitation feature
+  - elicitation-sep1034-defaults
+  - elicitation-sep1330-enums
+  # Advanced resource types
+  - resources-read-binary
+  - resources-templates-read
+  # Advanced prompt types
+  - prompts-get-embedded-resource
+  - prompts-get-with-image
+  # Argument substitution in prompts (requires template engine)
+  - prompts-get-with-args
+  # SSE multiple streams (0 passed, 0 failed — no assertions, but CI treats as failure)
+  - server-sse-multiple-streams

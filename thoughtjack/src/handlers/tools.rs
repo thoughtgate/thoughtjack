@@ -5,8 +5,11 @@
 
 use serde_json::json;
 
-use crate::config::schema::{ContentItem, GeneratorLimits};
+use crate::config::schema::ContentItem;
+use crate::dynamic::context::{ItemType, TemplateContext};
+use crate::dynamic::sequence::CallTracker;
 use crate::error::ThoughtJackError;
+use crate::handlers::RequestContext;
 use crate::handlers::resolve_content;
 use crate::phase::EffectiveState;
 use crate::transport::jsonrpc::{JsonRpcRequest, JsonRpcResponse, error_codes};
@@ -34,17 +37,19 @@ pub fn handle_list(request: &JsonRpcRequest, effective_state: &EffectiveState) -
 /// Handles `tools/call`.
 ///
 /// Looks up the tool by name from request params, resolves each content
-/// item in the response, and returns the MCP-formatted result.
+/// item in the response (with dynamic template/match/sequence/handler
+/// support), and returns the MCP-formatted result.
 ///
 /// # Errors
 ///
-/// Returns an error if content resolution fails (generator or file I/O).
+/// Returns an error if content resolution fails (generator, file I/O,
+/// or dynamic handler error).
 ///
-/// Implements: TJ-SPEC-002 F-001
+/// Implements: TJ-SPEC-002 F-001, TJ-SPEC-009 F-001
 pub async fn handle_call(
     request: &JsonRpcRequest,
     effective_state: &EffectiveState,
-    limits: &GeneratorLimits,
+    rctx: &RequestContext<'_>,
 ) -> Result<JsonRpcResponse, ThoughtJackError> {
     let tool_name = request
         .params
@@ -68,14 +73,77 @@ pub async fn handle_call(
         ));
     };
 
-    let mut content = Vec::with_capacity(tool.response.content.len());
-    for item in &tool.response.content {
-        let resolved = resolve_content_item(item, limits).await?;
+    // Extract arguments for template context
+    let args = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("arguments"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
+    // Increment call counter and get current count
+    let tracker_key = CallTracker::make_key(rctx.connection_id, rctx.state_scope, "tool", name);
+    let call_count = rctx.call_tracker.increment(&tracker_key);
+
+    let resp = &tool.response;
+
+    // Check if this response has dynamic features
+    let has_dynamic = resp.match_block.is_some()
+        || resp.sequence.is_some()
+        || resp.handler.is_some()
+        || resp.content.iter().any(|c| matches!(c, ContentItem::Text { text: crate::config::schema::ContentValue::Static(s) } if crate::dynamic::template::has_templates(s)));
+
+    if has_dynamic {
+        let template_ctx = TemplateContext {
+            args,
+            item_name: name.to_string(),
+            item_type: ItemType::Tool,
+            call_count,
+            phase_name: rctx.phase_name.to_string(),
+            phase_index: rctx.phase_index,
+            request_id: Some(request.id.clone()),
+            request_method: request.method.clone(),
+            connection_id: rctx.connection_id,
+            resource_name: None,
+            resource_mime_type: None,
+        };
+
+        let resolved = crate::dynamic::resolve_tool_content(
+            &resp.content,
+            resp.match_block.as_deref(),
+            resp.sequence.as_deref(),
+            resp.on_exhausted.unwrap_or_default(),
+            resp.handler.as_ref(),
+            &template_ctx,
+            rctx.allow_external_handlers,
+            rctx.http_client,
+        )
+        .await?;
+
+        // Resolve content values (generators/files) for dynamic results
+        let mut content = Vec::with_capacity(resolved.content.len());
+        for item in &resolved.content {
+            let resolved_item = resolve_content_item(item, rctx).await?;
+            content.push(resolved_item);
+        }
+
+        let mut result = json!({ "content": content });
+        if let Some(is_error) = resp.is_error {
+            result["isError"] = json!(is_error);
+        }
+
+        return Ok(JsonRpcResponse::success(request.id.clone(), result));
+    }
+
+    // Static path — no dynamic features
+    let mut content = Vec::with_capacity(resp.content.len());
+    for item in &resp.content {
+        let resolved = resolve_content_item(item, rctx).await?;
         content.push(resolved);
     }
 
     let mut result = json!({ "content": content });
-    if let Some(is_error) = tool.response.is_error {
+    if let Some(is_error) = resp.is_error {
         result["isError"] = json!(is_error);
     }
 
@@ -85,16 +153,16 @@ pub async fn handle_call(
 /// Resolves a single `ContentItem` to its MCP JSON representation.
 async fn resolve_content_item(
     item: &ContentItem,
-    limits: &GeneratorLimits,
+    rctx: &RequestContext<'_>,
 ) -> Result<serde_json::Value, ThoughtJackError> {
     match item {
         ContentItem::Text { text } => {
-            let resolved = resolve_content(text, limits).await?;
+            let resolved = resolve_content(text, rctx.limits).await?;
             Ok(json!({ "type": "text", "text": resolved }))
         }
         ContentItem::Image { mime_type, data } => {
             let resolved_data = if let Some(d) = data {
-                resolve_content(d, limits).await?
+                resolve_content(d, rctx.limits).await?
             } else {
                 String::new()
             };
@@ -119,8 +187,10 @@ async fn resolve_content_item(
 mod tests {
     use super::*;
     use crate::config::schema::{
-        ContentItem, ContentValue, ResponseConfig, ToolDefinition, ToolPattern,
+        ContentItem, ContentValue, GeneratorLimits, ResponseConfig, StateScope, ToolDefinition,
+        ToolPattern,
     };
+    use crate::dynamic::sequence::CallTracker;
     use crate::phase::EffectiveState;
     use crate::transport::jsonrpc::JSONRPC_VERSION;
     use indexmap::IndexMap;
@@ -140,6 +210,7 @@ mod tests {
                         text: ContentValue::Static(text.to_string()),
                     }],
                     is_error: None,
+                    ..Default::default()
                 },
                 behavior: None,
             },
@@ -162,6 +233,23 @@ mod tests {
         }
     }
 
+    fn make_rctx<'a>(
+        limits: &'a GeneratorLimits,
+        call_tracker: &'a CallTracker,
+        http_client: &'a reqwest::Client,
+    ) -> RequestContext<'a> {
+        RequestContext {
+            limits,
+            call_tracker,
+            phase_name: "<none>",
+            phase_index: -1,
+            connection_id: 0,
+            allow_external_handlers: false,
+            http_client,
+            state_scope: StateScope::Global,
+        }
+    }
+
     #[test]
     fn list_returns_all_tools() {
         let state = make_state_with_tool("calc", "42");
@@ -179,7 +267,10 @@ mod tests {
         let state = make_state_with_tool("calc", "42");
         let req = make_request("tools/call", Some(json!({"name": "calc"})));
         let limits = GeneratorLimits::default();
-        let resp = handle_call(&req, &state, &limits).await.unwrap();
+        let tracker = CallTracker::new();
+        let client = crate::dynamic::handlers::http::create_http_client();
+        let rctx = make_rctx(&limits, &tracker, &client);
+        let resp = handle_call(&req, &state, &rctx).await.unwrap();
         let result = resp.result.unwrap();
         assert_eq!(result["content"][0]["type"], "text");
         assert_eq!(result["content"][0]["text"], "42");
@@ -190,7 +281,10 @@ mod tests {
         let state = make_state_with_tool("calc", "42");
         let req = make_request("tools/call", Some(json!({})));
         let limits = GeneratorLimits::default();
-        let resp = handle_call(&req, &state, &limits).await.unwrap();
+        let tracker = CallTracker::new();
+        let client = crate::dynamic::handlers::http::create_http_client();
+        let rctx = make_rctx(&limits, &tracker, &client);
+        let resp = handle_call(&req, &state, &rctx).await.unwrap();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, error_codes::INVALID_PARAMS);
     }
@@ -200,7 +294,10 @@ mod tests {
         let state = make_state_with_tool("calc", "42");
         let req = make_request("tools/call", Some(json!({"name": "nonexistent"})));
         let limits = GeneratorLimits::default();
-        let resp = handle_call(&req, &state, &limits).await.unwrap();
+        let tracker = CallTracker::new();
+        let client = crate::dynamic::handlers::http::create_http_client();
+        let rctx = make_rctx(&limits, &tracker, &client);
+        let resp = handle_call(&req, &state, &rctx).await.unwrap();
         assert!(resp.error.is_some());
     }
 }

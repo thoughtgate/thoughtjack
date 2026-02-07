@@ -126,6 +126,15 @@ fn describe_metrics() {
         "Side effect execution duration in milliseconds"
     );
     describe_gauge!("thoughtjack_event_counts", "Current event counts");
+    describe_counter!(
+        "thoughtjack_errors_total",
+        "Total number of errors by category"
+    );
+    describe_histogram!(
+        "thoughtjack_payload_size_bytes",
+        "Payload size in bytes by generator type"
+    );
+    describe_gauge!("thoughtjack_uptime_seconds", "Server uptime in seconds");
 }
 
 /// Records an incoming MCP request.
@@ -139,11 +148,17 @@ pub fn record_request(method: &str) {
 /// Records an outgoing MCP response.
 ///
 /// Implements: TJ-SPEC-008 F-009
-pub fn record_response(method: &str, success: bool) {
+pub fn record_response(method: &str, success: bool, error_code: Option<i64>) {
     let label = sanitize_method_label(method);
     let status = if success { "success" } else { "error" };
-    counter!("thoughtjack_responses_total", "method" => label.to_owned(), "status" => status)
-        .increment(1);
+    let code = error_code.map_or_else(String::new, |c| c.to_string());
+    counter!(
+        "thoughtjack_responses_total",
+        "method" => label.to_owned(),
+        "status" => status,
+        "error_code" => code,
+    )
+    .increment(1);
 }
 
 /// Records request processing duration.
@@ -196,6 +211,59 @@ pub fn set_current_phase(phase_name: &str, previous_phase: Option<&str>) {
 #[allow(clippy::cast_precision_loss)]
 pub fn set_connections_active(count: u64) {
     gauge!("thoughtjack_connections_active").set(count as f64);
+}
+
+/// Records delivery bytes sent.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_delivery_bytes(bytes: u64) {
+    counter!("thoughtjack_delivery_bytes_total").increment(bytes);
+}
+
+/// Records a side effect execution.
+///
+/// Implements: TJ-SPEC-008 F-009
+#[allow(clippy::cast_precision_loss)]
+pub fn record_side_effect(
+    effect_type: &str,
+    messages_sent: u64,
+    bytes_sent: u64,
+    duration: Duration,
+) {
+    counter!("thoughtjack_side_effects_total", "effect_type" => effect_type.to_owned())
+        .increment(1);
+    histogram!("thoughtjack_side_effect_messages", "effect_type" => effect_type.to_owned())
+        .record(messages_sent as f64);
+    histogram!("thoughtjack_side_effect_bytes", "effect_type" => effect_type.to_owned())
+        .record(bytes_sent as f64);
+    histogram!("thoughtjack_side_effect_duration_ms", "effect_type" => effect_type.to_owned())
+        .record(duration.as_secs_f64() * 1000.0);
+}
+
+/// Records an error by category.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_error(category: &str) {
+    counter!("thoughtjack_errors_total", "category" => category.to_owned()).increment(1);
+}
+
+/// Records a payload size by generator type.
+///
+/// Implements: TJ-SPEC-008 F-009
+#[allow(clippy::cast_precision_loss)]
+pub fn record_payload_size(generator_type: &str, size_bytes: u64) {
+    histogram!(
+        "thoughtjack_payload_size_bytes",
+        "generator_type" => generator_type.to_owned()
+    )
+    .record(size_bytes as f64);
+}
+
+/// Sets the server uptime gauge.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn set_uptime(duration: Duration) {
+    gauge!("thoughtjack_uptime_seconds").set(duration.as_secs_f64());
 }
 
 /// Records the current count for an event type.
@@ -294,12 +362,17 @@ mod tests {
     fn record_functions_do_not_panic_without_recorder() {
         // metrics macros silently no-op when no global recorder is installed
         record_request("tools/call");
-        record_response("tools/call", true);
+        record_response("tools/call", true, None);
         record_request_duration("tools/call", Duration::from_millis(42));
         record_delivery_duration(Duration::from_secs(1));
+        record_delivery_bytes(1024);
+        record_side_effect("notification_flood", 100, 5000, Duration::from_millis(500));
         record_phase_transition("trust_building", "exploit");
         set_current_phase("exploit", Some("trust_building"));
         set_connections_active(3);
         record_event_count("tools/call", 5);
+        record_error("transport");
+        record_payload_size("nested_json", 10_000);
+        set_uptime(Duration::from_secs(300));
     }
 }

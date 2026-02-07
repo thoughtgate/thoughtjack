@@ -5,6 +5,7 @@
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 // ============================================================================
@@ -101,6 +102,10 @@ pub enum StateScope {
 
 /// MCP server capabilities.
 ///
+/// These structs serialize to **camelCase** (MCP wire format) but accept
+/// **`snake_case`** aliases in YAML config files for consistency with the
+/// rest of the configuration schema.
+///
 /// Implements: TJ-SPEC-001 F-014
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,7 +130,11 @@ pub struct Capabilities {
 #[serde(rename_all = "camelCase")]
 pub struct ToolsCapability {
     /// Whether the server supports `tools/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "list_changed"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -140,7 +149,11 @@ pub struct ResourcesCapability {
     pub subscribe: Option<bool>,
 
     /// Whether the server supports `resources/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "list_changed"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -151,7 +164,11 @@ pub struct ResourcesCapability {
 #[serde(rename_all = "camelCase")]
 pub struct PromptsCapability {
     /// Whether the server supports `prompts/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "list_changed"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -198,16 +215,36 @@ pub struct ToolDefinition {
 
 /// Response configuration for tool calls.
 ///
-/// Implements: TJ-SPEC-001 F-004
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Supports static content, conditional matching, response sequences,
+/// and external handlers for dynamic response generation.
+///
+/// Implements: TJ-SPEC-001 F-004, TJ-SPEC-009 F-001
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseConfig {
-    /// Content items in the response
+    /// Content items in the response (default if no dynamic features match)
+    #[serde(default)]
     pub content: Vec<ContentItem>,
 
     /// Whether this response represents an error
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+
+    /// Conditional match block for request-based response selection
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_block: Option<Vec<MatchBranchConfig>>,
+
+    /// Response sequence for successive calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<Vec<SequenceEntryConfig>>,
+
+    /// Behavior when sequence is exhausted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exhausted: Option<ExhaustedBehavior>,
+
+    /// External handler for dynamic response generation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<HandlerConfig>,
 }
 
 /// Content item in a response.
@@ -296,8 +333,8 @@ pub struct EmbeddedResource {
 
 /// Configuration for payload generators.
 ///
-/// Generators create payloads at configuration load time for deterministic
-/// testing. All generators are seeded for reproducibility.
+/// Generators are configured at load time; payloads are generated lazily at
+/// response time. All generators are seeded for reproducibility.
 ///
 /// YAML example:
 /// ```yaml
@@ -350,29 +387,6 @@ pub enum GeneratorType {
 /// The `HashMap` allows flexible parameters for each generator type.
 pub type GeneratorParams = std::collections::HashMap<String, serde_json::Value>;
 
-/// Parameters for `nested_json` generator.
-///
-/// Generates deeply nested JSON to test parser stack limits.
-///
-/// Implements: TJ-SPEC-005 F-002
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NestedJsonParams {
-    /// Nesting depth (required)
-    pub depth: usize,
-
-    /// Structure type for nesting
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub structure: Option<NestedStructure>,
-
-    /// Key name to use for object nesting (default: "a")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-
-    /// Value to place at the innermost level
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inner: Option<serde_json::Value>,
-}
-
 /// Structure type for nested JSON generation.
 ///
 /// Implements: TJ-SPEC-005 F-002
@@ -388,25 +402,6 @@ pub enum NestedStructure {
 
     /// Alternating objects and arrays
     Mixed,
-}
-
-/// Parameters for `garbage` generator.
-///
-/// Generates random bytes to test parser error handling.
-///
-/// Implements: TJ-SPEC-005 F-004
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GarbageParams {
-    /// Number of bytes to generate (required)
-    pub bytes: usize,
-
-    /// Character set for generation
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub charset: Option<Charset>,
-
-    /// Random seed for reproducibility
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
 }
 
 /// Character set for garbage generation.
@@ -432,63 +427,6 @@ pub enum Charset {
     Alphanumeric,
 }
 
-/// Parameters for `batch_notifications` generator.
-///
-/// Generates arrays of JSON-RPC notifications for batch attacks.
-///
-/// Implements: TJ-SPEC-005 F-003
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct BatchNotificationsParams {
-    /// Number of notifications to generate (required)
-    pub count: usize,
-
-    /// Notification method (default: "notifications/message")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-
-    /// Parameters for each notification
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub params: Option<serde_json::Value>,
-}
-
-/// Parameters for `repeated_keys` generator.
-///
-/// Generates JSON objects with repeated keys to trigger hash collisions.
-///
-/// Implements: TJ-SPEC-005 F-005
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RepeatedKeysParams {
-    /// Number of repeated keys (required)
-    pub count: usize,
-
-    /// Length of each key in characters
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_length: Option<usize>,
-
-    /// Value to assign to each key
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<serde_json::Value>,
-}
-
-/// Parameters for `unicode_spam` generator.
-///
-/// Generates Unicode attack sequences for display/rendering attacks.
-///
-/// Implements: TJ-SPEC-005 F-006
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct UnicodeSpamParams {
-    /// Number of bytes to generate (required)
-    pub bytes: usize,
-
-    /// Unicode category for attack sequences
-    #[serde(default)]
-    pub category: UnicodeCategory,
-
-    /// Carrier text to embed attack sequences in
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub carrier: Option<String>,
-}
-
 /// Unicode category for spam generation.
 ///
 /// Implements: TJ-SPEC-005 F-006
@@ -510,26 +448,6 @@ pub enum UnicodeCategory {
 
     /// Emoji and emoji modifiers
     Emoji,
-}
-
-/// Parameters for `ansi_escape` generator.
-///
-/// Generates ANSI escape sequences for terminal attacks.
-///
-/// Implements: TJ-SPEC-005 F-007
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AnsiEscapeParams {
-    /// Types of ANSI sequences to generate
-    #[serde(default)]
-    pub sequences: Vec<AnsiSequenceType>,
-
-    /// Number of sequences to generate
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub count: Option<usize>,
-
-    /// Payload to include (for title/hyperlink attacks)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<String>,
 }
 
 /// ANSI escape sequence types for terminal attacks.
@@ -663,12 +581,47 @@ pub struct ResourceDefinition {
 
 /// Response configuration for resource reads.
 ///
-/// Implements: TJ-SPEC-001 F-001
+/// Implements: TJ-SPEC-001 F-001, TJ-SPEC-009 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceResponse {
     /// Resource content (static, generated, or from file)
+    #[serde(default = "ResourceResponse::default_content")]
     pub content: ContentValue,
+
+    /// Conditional match block for request-based response selection
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_block: Option<Vec<MatchBranchConfig>>,
+
+    /// Response sequence for successive calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<Vec<SequenceEntryConfig>>,
+
+    /// Behavior when sequence is exhausted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exhausted: Option<ExhaustedBehavior>,
+
+    /// External handler for dynamic response generation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<HandlerConfig>,
+}
+
+impl ResourceResponse {
+    const fn default_content() -> ContentValue {
+        ContentValue::Static(String::new())
+    }
+}
+
+impl Default for ResourceResponse {
+    fn default() -> Self {
+        Self {
+            content: Self::default_content(),
+            match_block: None,
+            sequence: None,
+            on_exhausted: None,
+            handler: None,
+        }
+    }
 }
 
 // ============================================================================
@@ -733,12 +686,29 @@ pub struct PromptArgument {
 
 /// Response configuration for prompts.
 ///
-/// Implements: TJ-SPEC-001 F-001
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Implements: TJ-SPEC-001 F-001, TJ-SPEC-009 F-001
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptResponse {
     /// Prompt messages (the actual prompt content)
+    #[serde(default)]
     pub messages: Vec<PromptMessage>,
+
+    /// Conditional match block for request-based response selection
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_block: Option<Vec<MatchBranchConfig>>,
+
+    /// Response sequence for successive calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<Vec<SequenceEntryConfig>>,
+
+    /// Behavior when sequence is exhausted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exhausted: Option<ExhaustedBehavior>,
+
+    /// External handler for dynamic response generation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<HandlerConfig>,
 }
 
 /// A message in a prompt response.
@@ -893,7 +863,7 @@ pub struct Phase {
 #[serde(untagged)]
 pub enum ToolPatternRef {
     /// Inline tool pattern definition
-    Inline(ToolPattern),
+    Inline(Box<ToolPattern>),
     /// File path to tool pattern (resolved by loader)
     Path(PathBuf),
 }
@@ -905,7 +875,7 @@ pub enum ToolPatternRef {
 #[serde(untagged)]
 pub enum ResourcePatternRef {
     /// Inline resource pattern definition
-    Inline(ResourcePattern),
+    Inline(Box<ResourcePattern>),
     /// File path to resource pattern (resolved by loader)
     Path(PathBuf),
 }
@@ -917,7 +887,7 @@ pub enum ResourcePatternRef {
 #[serde(untagged)]
 pub enum PromptPatternRef {
     /// Inline prompt pattern definition
-    Inline(PromptPattern),
+    Inline(Box<PromptPattern>),
     /// File path to prompt pattern (resolved by loader)
     Path(PathBuf),
 }
@@ -1025,9 +995,9 @@ impl AnyOfValue {
             (Self::String(s), serde_json::Value::String(js)) => s == js,
             (Self::Bool(b), serde_json::Value::Bool(jb)) => b == jb,
             (Self::Int(i), serde_json::Value::Number(n)) => n.as_i64() == Some(*i),
-            // TODO(v0.2): exact float equality is fragile for computed values;
-            // acceptable for JSON-sourced constants but consider epsilon for v0.2.
-            (Self::Float(f), serde_json::Value::Number(n)) => n.as_f64() == Some(*f),
+            (Self::Float(f), serde_json::Value::Number(n)) => n
+                .as_f64()
+                .is_some_and(|nf| (nf - f).abs() < f64::EPSILON * 100.0),
             _ => false,
         }
     }
@@ -1390,6 +1360,11 @@ pub enum SideEffectTrigger {
 
 /// Logging configuration.
 ///
+/// **Note:** These fields are parsed and validated but not yet wired to the
+/// tracing subscriber at runtime. Use `--verbose`/`--quiet` CLI flags or the
+/// `THOUGHTJACK_LOG_LEVEL` environment variable to control logging.
+/// See `TODO(TJ-SPEC-001 F-016)` in `cli/commands/server.rs`.
+///
 /// Implements: TJ-SPEC-001 F-016
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1409,6 +1384,14 @@ pub struct LoggingConfig {
     /// Log outgoing responses
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_response: Option<bool>,
+
+    /// Log trigger matches during phase evaluation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_trigger_match: Option<bool>,
+
+    /// Output destination: `"stderr"`, `"stdout"`, or a file path
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 // ============================================================================
@@ -1428,6 +1411,190 @@ pub enum UnknownMethodHandling {
     Error,
     /// No response (test timeout handling)
     Drop,
+}
+
+// ============================================================================
+// Dynamic Response Types (TJ-SPEC-009)
+// ============================================================================
+
+/// A match branch in a conditional response block.
+///
+/// Discriminated by the presence of `when` (conditional) or `default`
+/// (fallback). When `when` is present, all conditions must match (AND).
+///
+/// Implements: TJ-SPEC-009 F-002
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MatchBranchConfig {
+    /// Conditional branch with `when` clause
+    When {
+        /// Conditions that must all match (AND)
+        when: IndexMap<String, MatchConditionConfig>,
+        /// Content items for this branch
+        #[serde(default)]
+        content: Vec<ContentItem>,
+        /// Response sequence within this branch
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence: Option<Vec<SequenceEntryConfig>>,
+        /// Behavior when sequence is exhausted
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_exhausted: Option<ExhaustedBehavior>,
+        /// External handler within this branch
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handler: Option<HandlerConfig>,
+        /// Prompt messages (for prompt responses within match branches)
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        messages: Vec<PromptMessage>,
+        /// Resource contents (for resource responses within match branches)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contents: Option<Vec<ResourceContentConfig>>,
+    },
+
+    /// Default fallback branch
+    Default {
+        /// Marker field for serde discrimination
+        default: serde_json::Value,
+        /// Content items for this branch (from within the default object)
+        #[serde(default)]
+        content: Vec<ContentItem>,
+        /// Response sequence within this branch
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence: Option<Vec<SequenceEntryConfig>>,
+        /// Behavior when sequence is exhausted
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_exhausted: Option<ExhaustedBehavior>,
+        /// External handler within this branch
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handler: Option<HandlerConfig>,
+        /// Prompt messages (for prompt responses within match branches)
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        messages: Vec<PromptMessage>,
+        /// Resource contents (for resource responses within match branches)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contents: Option<Vec<ResourceContentConfig>>,
+    },
+}
+
+/// Resource content entry within a match branch.
+///
+/// Implements: TJ-SPEC-009 F-002
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceContentConfig {
+    /// Resource URI (may contain templates)
+    pub uri: String,
+    /// Text content (may contain templates)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// MIME type override
+    #[serde(default, rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+/// A match condition for conditional response selection.
+///
+/// Deserialized using `untagged` — ordering matters:
+/// 1. Operator object (contains known keys like `contains`, `prefix`, etc.)
+/// 2. Array of strings (implicit `AnyOf` of glob patterns)
+/// 3. Single string (glob pattern, or `regex:` prefix for regex)
+///
+/// Implements: TJ-SPEC-009 F-002
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MatchConditionConfig {
+    /// Operator-based match (object with known keys)
+    Operator {
+        /// Substring match
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contains: Option<String>,
+        /// Prefix match
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+        /// Suffix match
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suffix: Option<String>,
+        /// Existence check
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exists: Option<bool>,
+        /// Greater than (numeric)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gt: Option<f64>,
+        /// Less than (numeric)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lt: Option<f64>,
+        /// Any of (explicit OR list in an operator block)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        any_of: Option<Vec<String>>,
+    },
+
+    /// Array of patterns (implicit `AnyOf` of globs)
+    GlobList(Vec<String>),
+
+    /// Single glob pattern or `regex:` prefixed pattern
+    Single(String),
+}
+
+/// A single entry in a response sequence.
+///
+/// Implements: TJ-SPEC-009 F-005
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceEntryConfig {
+    /// Content items for this sequence entry
+    #[serde(default)]
+    pub content: Vec<ContentItem>,
+    /// Prompt messages for this sequence entry (prompt responses)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<PromptMessage>,
+}
+
+/// Behavior when a response sequence is exhausted.
+///
+/// Implements: TJ-SPEC-009 F-005
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExhaustedBehavior {
+    /// Cycle back to the first response
+    Cycle,
+    /// Keep returning the last response
+    #[default]
+    Last,
+    /// Return a JSON-RPC error
+    Error,
+}
+
+/// External handler configuration for dynamic response generation.
+///
+/// Handlers require `--allow-external-handlers` CLI flag for security.
+///
+/// Implements: TJ-SPEC-009 F-003, F-004
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HandlerConfig {
+    /// HTTP handler — POST request to external service
+    Http {
+        /// URL to POST to
+        url: String,
+        /// Timeout in milliseconds (default: 30000)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        /// HTTP headers (values may contain templates)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        headers: Option<HashMap<String, String>>,
+    },
+
+    /// Command handler — subprocess execution
+    Command {
+        /// Command and arguments (no shell interpretation)
+        cmd: Vec<String>,
+        /// Timeout in milliseconds (default: 30000)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        /// Environment variables (values may contain templates)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<HashMap<String, String>>,
+        /// Working directory for the subprocess
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<PathBuf>,
+    },
 }
 
 // ============================================================================
@@ -2216,6 +2383,8 @@ level: debug
 on_phase_change: true
 on_request: true
 on_response: false
+on_trigger_match: true
+output: /tmp/thoughtjack.log
 ";
 
         let config: LoggingConfig = serde_yaml::from_str(yaml).unwrap();
@@ -2223,6 +2392,8 @@ on_response: false
         assert_eq!(config.on_phase_change, Some(true));
         assert_eq!(config.on_request, Some(true));
         assert_eq!(config.on_response, Some(false));
+        assert_eq!(config.on_trigger_match, Some(true));
+        assert_eq!(config.output, Some("/tmp/thoughtjack.log".to_string()));
     }
 
     #[test]
@@ -2232,6 +2403,8 @@ on_response: false
         assert!(config.on_phase_change.is_none());
         assert!(config.on_request.is_none());
         assert!(config.on_response.is_none());
+        assert!(config.on_trigger_match.is_none());
+        assert!(config.output.is_none());
     }
 
     #[test]

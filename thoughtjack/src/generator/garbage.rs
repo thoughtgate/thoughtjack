@@ -171,7 +171,8 @@ impl PayloadGenerator for GarbageGenerator {
 /// buffered path for the same seed. Chunk boundaries cause the RNG to
 /// advance differently because `generate_utf8_bytes` discards characters
 /// that don't fit in the remaining chunk space. A character-level streaming
-/// approach is needed to fix this determinism mismatch (P1 issue #6).
+/// approach is needed to fix this determinism mismatch.
+/// Workaround: use `Charset::Ascii` for deterministic streaming.
 ///
 /// Implements: TJ-SPEC-005 F-004, F-009
 #[derive(Debug)]
@@ -207,10 +208,15 @@ impl PayloadStream for GarbageStream {
         let data = generate_chunk(&mut self.rng, self.charset, chunk_size);
         let actual_len = data.len();
         if actual_len == 0 {
-            // UTF-8 charset: remaining bytes < min character width.
-            // Terminate the stream rather than looping forever.
+            // UTF-8 charset: remaining bytes < min multi-byte character width.
+            // Fall back to ASCII to fill the exact remaining count.
+            let ascii_data = generate_chunk(&mut self.rng, Charset::Ascii, self.remaining);
             self.remaining = 0;
-            return None;
+            return if ascii_data.is_empty() {
+                None
+            } else {
+                Some(ascii_data)
+            };
         }
         self.remaining = self.remaining.saturating_sub(actual_len);
         Some(data)
@@ -427,5 +433,44 @@ mod tests {
         }
 
         assert_eq!(buffered, streamed);
+    }
+
+    // EC-GEN-011: Same seed different sizes — first N bytes identical
+    #[test]
+    fn same_seed_prefix_identical() {
+        let seed = 42u64;
+        let params_small = make_params(vec![
+            ("bytes", json!(100)),
+            ("charset", json!("ascii")),
+            ("seed", json!(seed)),
+        ]);
+        let params_large = make_params(vec![
+            ("bytes", json!(500)),
+            ("charset", json!("ascii")),
+            ("seed", json!(seed)),
+        ]);
+        let gen_small = GarbageGenerator::new(&params_small, &default_limits()).unwrap();
+        let gen_large = GarbageGenerator::new(&params_large, &default_limits()).unwrap();
+        let small = gen_small.generate().unwrap().into_bytes();
+        let large = gen_large.generate().unwrap().into_bytes();
+        assert_eq!(&small[..], &large[..100]);
+    }
+
+    // EC-GEN-005: UTF-8 output with various charsets produces valid bytes
+    #[test]
+    fn all_charsets_produce_correct_output() {
+        for charset in &["ascii", "binary", "numeric", "alphanumeric", "utf8"] {
+            let params = make_params(vec![
+                ("bytes", json!(500)),
+                ("charset", json!(charset)),
+                ("seed", json!(0)),
+            ]);
+            let generator = GarbageGenerator::new(&params, &default_limits()).unwrap();
+            let data = generator.generate().unwrap().into_bytes();
+            assert!(
+                !data.is_empty(),
+                "charset '{charset}' produced empty output"
+            );
+        }
     }
 }

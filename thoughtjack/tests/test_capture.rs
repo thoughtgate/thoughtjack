@@ -21,7 +21,7 @@ async fn capture_records_traffic() {
     .await;
     proc.shutdown().await;
 
-    // Find session-*.jsonl file in capture dir
+    // Find capture-*.ndjson file in capture dir
     let entries: Vec<_> = std::fs::read_dir(capture_dir.path())
         .unwrap()
         .filter_map(Result::ok)
@@ -30,20 +30,20 @@ async fn capture_records_traffic() {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| {
-                    n.starts_with("session-")
+                    n.starts_with("capture-")
                         && std::path::Path::new(n)
                             .extension()
-                            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("ndjson"))
                 })
         })
         .collect();
 
-    assert_eq!(entries.len(), 1, "expected exactly 1 session file");
+    assert_eq!(entries.len(), 1, "expected exactly 1 capture file");
     let content = std::fs::read_to_string(entries[0].path()).unwrap();
     let lines: Vec<serde_json::Value> = content
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).expect("invalid JSONL line"))
+        .map(|l| serde_json::from_str(l).expect("invalid NDJSON line"))
         .collect();
 
     // At least: init request, init response, tool call request, tool call response
@@ -55,9 +55,8 @@ async fn capture_records_traffic() {
 
     // Verify structure of captured entries
     for line in &lines {
-        assert!(line.get("timestamp").is_some(), "missing timestamp");
-        assert!(line.get("direction").is_some(), "missing direction");
-        assert!(line.get("data").is_some(), "missing data");
+        assert!(line.get("ts").is_some(), "missing ts");
+        assert!(line.get("type").is_some(), "missing type");
     }
 }
 
@@ -83,7 +82,7 @@ async fn capture_redact_mode() {
     // Wait briefly for file to be flushed
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Find session file
+    // Find capture file
     let entries: Vec<_> = std::fs::read_dir(capture_dir.path())
         .unwrap()
         .filter_map(Result::ok)
@@ -92,10 +91,10 @@ async fn capture_redact_mode() {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| {
-                    n.starts_with("session-")
+                    n.starts_with("capture-")
                         && std::path::Path::new(n)
                             .extension()
-                            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("ndjson"))
                 })
         })
         .collect();
@@ -109,11 +108,9 @@ async fn capture_redact_mode() {
         .collect();
 
     // Find the tools/call request capture line
-    let tool_call_capture = lines.iter().find(|l| {
-        l.pointer("/data/method")
-            .and_then(serde_json::Value::as_str)
-            == Some("tools/call")
-    });
+    let tool_call_capture = lines
+        .iter()
+        .find(|l| l.get("method").and_then(serde_json::Value::as_str) == Some("tools/call"));
 
     assert!(
         tool_call_capture.is_some(),
@@ -121,7 +118,8 @@ async fn capture_redact_mode() {
     );
 
     let captured = tool_call_capture.unwrap();
-    let secret_val = captured.pointer("/data/params/arguments/secret");
+    // In the new format, params contains the redacted arguments directly
+    let secret_val = captured.pointer("/params/arguments/secret");
     assert_eq!(
         secret_val.and_then(serde_json::Value::as_str),
         Some("[REDACTED]"),

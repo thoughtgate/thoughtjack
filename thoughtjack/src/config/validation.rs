@@ -9,7 +9,9 @@
 
 use crate::config::loader::ConfigLimits;
 use crate::config::schema::{
-    BaselineState, FieldMatcher, Phase, PromptPattern, ResourcePattern, ServerConfig, ToolPattern,
+    BaselineState, BehaviorConfig, ContentItem, ContentValue, FieldMatcher, HandlerConfig,
+    MatchBranchConfig, MatchConditionConfig, Phase, PromptPattern, ResourcePattern,
+    SequenceEntryConfig, ServerConfig, SideEffectConfig, SideEffectType, ToolPattern,
 };
 use crate::error::{Severity, ValidationIssue};
 
@@ -94,7 +96,7 @@ impl Validator {
         if config.logging.is_some() {
             self.add_warning(
                 "logging",
-                "The 'logging' configuration is not yet implemented and will be ignored",
+                "The 'logging' configuration is parsed but not yet consumed at runtime",
             );
         }
 
@@ -173,6 +175,10 @@ impl Validator {
         if let Some(prompts) = &config.prompts {
             self.validate_prompts(prompts, "prompts");
         }
+
+        if let Some(behavior) = &config.behavior {
+            self.validate_behavior(behavior, "behavior");
+        }
     }
 
     // ========================================================================
@@ -208,9 +214,19 @@ impl Validator {
         self.validate_tools(&baseline.tools, "baseline.tools");
         self.validate_resources(&baseline.resources, "baseline.resources");
         self.validate_prompts(&baseline.prompts, "baseline.prompts");
+        if let Some(behavior) = &baseline.behavior {
+            self.validate_behavior(behavior, "baseline.behavior");
+        }
     }
 
     /// Validates phases and their cross-references.
+    ///
+    /// Uses **cumulative** state (baseline + all preceding phase additions)
+    /// as a design-time aid for sequential phase designs, even though the
+    /// runtime (`effective.rs`) applies each phase independently as
+    /// baseline + current-phase-diff.  This means a tool added in phase A
+    /// will satisfy a replace/remove in phase B here but may not resolve at
+    /// runtime.  We emit a targeted warning for such cases.
     fn validate_phases(
         &mut self,
         phases: &[Phase],
@@ -218,6 +234,11 @@ impl Validator {
         baseline_resources: &HashSet<String>,
         baseline_prompts: &HashSet<String>,
     ) {
+        // Track cumulative state across phases for validation
+        let mut cumulative_tools = baseline_tools.clone();
+        let mut cumulative_resources = baseline_resources.clone();
+        let mut cumulative_prompts = baseline_prompts.clone();
+
         // Check for duplicate phase names
         let mut phase_names = HashSet::new();
         for (idx, phase) in phases.iter().enumerate() {
@@ -253,91 +274,155 @@ impl Validator {
                 );
             }
 
-            // TODO(v0.2): validate replace/remove targets against cumulative state
-            // (baseline + previous phases' add_* fields) instead of just baseline,
-            // so phases that build on earlier additions can be validated correctly.
+            // Validate replace/remove targets against cumulative state
+            self.validate_phase_targets(
+                phase,
+                &path,
+                &cumulative_tools,
+                &cumulative_resources,
+                &cumulative_prompts,
+                baseline_tools,
+                baseline_resources,
+                baseline_prompts,
+            );
 
-            // Validate replace_tools targets exist in baseline
-            if let Some(replace_tools) = &phase.replace_tools {
-                for tool_name in replace_tools.keys() {
-                    if !baseline_tools.contains(tool_name) {
-                        self.add_error(
-                            &format!("{path}.replace_tools.{tool_name}"),
-                            &format!(
-                                "Cannot replace unknown tool '{tool_name}'. Tool not found in baseline."
-                            ),
-                        );
-                    }
-                }
+            // Validate phase-level behavior/side_effects
+            if let Some(behavior) = &phase.behavior {
+                self.validate_behavior(behavior, &format!("{path}.behavior"));
             }
 
-            // Validate remove_tools targets exist in baseline
-            if let Some(remove_tools) = &phase.remove_tools {
-                for tool_name in remove_tools {
-                    if !baseline_tools.contains(tool_name) {
-                        self.add_error(
-                            &format!("{path}.remove_tools"),
-                            &format!(
-                                "Cannot remove unknown tool '{tool_name}'. Tool not found in baseline."
-                            ),
-                        );
-                    }
+            // Update cumulative state for next phase
+            update_cumulative_state(
+                phase,
+                &mut cumulative_tools,
+                &mut cumulative_resources,
+                &mut cumulative_prompts,
+            );
+        }
+    }
+
+    /// Validates that phase replace/remove targets exist in the cumulative state.
+    ///
+    /// Also warns when a target exists in the cumulative state (added by a
+    /// preceding phase) but not in the original baseline, because at runtime
+    /// each phase is applied independently (baseline + current diff).
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn validate_phase_targets(
+        &mut self,
+        phase: &Phase,
+        path: &str,
+        cumulative_tools: &HashSet<String>,
+        cumulative_resources: &HashSet<String>,
+        cumulative_prompts: &HashSet<String>,
+        baseline_tools: &HashSet<String>,
+        baseline_resources: &HashSet<String>,
+        baseline_prompts: &HashSet<String>,
+    ) {
+        if let Some(replace_tools) = &phase.replace_tools {
+            for tool_name in replace_tools.keys() {
+                if !cumulative_tools.contains(tool_name) {
+                    self.add_error(
+                        &format!("{path}.replace_tools.{tool_name}"),
+                        &format!("Cannot replace unknown tool '{tool_name}'. Tool not found in cumulative state."),
+                    );
+                } else if !baseline_tools.contains(tool_name) {
+                    self.add_warning(
+                        &format!("{path}.replace_tools.{tool_name}"),
+                        &format!(
+                            "Tool '{tool_name}' exists via an earlier phase but phases apply \
+                             independently at runtime — this replace may not resolve as expected"
+                        ),
+                    );
                 }
             }
-
-            // Validate replace_resources targets exist in baseline
-            if let Some(replace_resources) = &phase.replace_resources {
-                for uri in replace_resources.keys() {
-                    if !baseline_resources.contains(uri) {
-                        self.add_error(
-                            &format!("{path}.replace_resources.{uri}"),
-                            &format!(
-                                "Cannot replace unknown resource '{uri}'. Resource not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(remove_tools) = &phase.remove_tools {
+            for tool_name in remove_tools {
+                if !cumulative_tools.contains(tool_name) {
+                    self.add_error(
+                        &format!("{path}.remove_tools"),
+                        &format!("Cannot remove unknown tool '{tool_name}'. Tool not found in cumulative state."),
+                    );
+                } else if !baseline_tools.contains(tool_name) {
+                    self.add_warning(
+                        &format!("{path}.remove_tools"),
+                        &format!(
+                            "Tool '{tool_name}' exists via an earlier phase but phases apply \
+                             independently at runtime — this remove may not resolve as expected"
+                        ),
+                    );
                 }
             }
-
-            // Validate remove_resources targets exist in baseline
-            if let Some(remove_resources) = &phase.remove_resources {
-                for uri in remove_resources {
-                    if !baseline_resources.contains(uri) {
-                        self.add_error(
-                            &format!("{path}.remove_resources"),
-                            &format!(
-                                "Cannot remove unknown resource '{uri}'. Resource not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(replace_resources) = &phase.replace_resources {
+            for uri in replace_resources.keys() {
+                if !cumulative_resources.contains(uri) {
+                    self.add_error(
+                        &format!("{path}.replace_resources.{uri}"),
+                        &format!("Cannot replace unknown resource '{uri}'. Resource not found in cumulative state."),
+                    );
+                } else if !baseline_resources.contains(uri) {
+                    self.add_warning(
+                        &format!("{path}.replace_resources.{uri}"),
+                        &format!(
+                            "Resource '{uri}' exists via an earlier phase but phases apply \
+                             independently at runtime — this replace may not resolve as expected"
+                        ),
+                    );
                 }
             }
-
-            // Validate replace_prompts targets exist in baseline
-            if let Some(replace_prompts) = &phase.replace_prompts {
-                for name in replace_prompts.keys() {
-                    if !baseline_prompts.contains(name) {
-                        self.add_error(
-                            &format!("{path}.replace_prompts.{name}"),
-                            &format!(
-                                "Cannot replace unknown prompt '{name}'. Prompt not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(remove_resources) = &phase.remove_resources {
+            for uri in remove_resources {
+                if !cumulative_resources.contains(uri) {
+                    self.add_error(
+                        &format!("{path}.remove_resources"),
+                        &format!("Cannot remove unknown resource '{uri}'. Resource not found in cumulative state."),
+                    );
+                } else if !baseline_resources.contains(uri) {
+                    self.add_warning(
+                        &format!("{path}.remove_resources"),
+                        &format!(
+                            "Resource '{uri}' exists via an earlier phase but phases apply \
+                             independently at runtime — this remove may not resolve as expected"
+                        ),
+                    );
                 }
             }
-
-            // Validate remove_prompts targets exist in baseline
-            if let Some(remove_prompts) = &phase.remove_prompts {
-                for name in remove_prompts {
-                    if !baseline_prompts.contains(name) {
-                        self.add_error(
-                            &format!("{path}.remove_prompts"),
-                            &format!(
-                                "Cannot remove unknown prompt '{name}'. Prompt not found in baseline."
-                            ),
-                        );
-                    }
+        }
+        if let Some(replace_prompts) = &phase.replace_prompts {
+            for name in replace_prompts.keys() {
+                if !cumulative_prompts.contains(name) {
+                    self.add_error(
+                        &format!("{path}.replace_prompts.{name}"),
+                        &format!("Cannot replace unknown prompt '{name}'. Prompt not found in cumulative state."),
+                    );
+                } else if !baseline_prompts.contains(name) {
+                    self.add_warning(
+                        &format!("{path}.replace_prompts.{name}"),
+                        &format!(
+                            "Prompt '{name}' exists via an earlier phase but phases apply \
+                             independently at runtime — this replace may not resolve as expected"
+                        ),
+                    );
+                }
+            }
+        }
+        if let Some(remove_prompts) = &phase.remove_prompts {
+            for name in remove_prompts {
+                if !cumulative_prompts.contains(name) {
+                    self.add_error(
+                        &format!("{path}.remove_prompts"),
+                        &format!("Cannot remove unknown prompt '{name}'. Prompt not found in cumulative state."),
+                    );
+                } else if !baseline_prompts.contains(name) {
+                    self.add_warning(
+                        &format!("{path}.remove_prompts"),
+                        &format!(
+                            "Prompt '{name}' exists via an earlier phase but phases apply \
+                             independently at runtime — this remove may not resolve as expected"
+                        ),
+                    );
                 }
             }
         }
@@ -545,12 +630,39 @@ impl Validator {
                 );
             }
 
-            // Response content must not be empty
-            if tool.response.content.is_empty() {
+            // Response content must not be empty (unless dynamic features provide it)
+            let has_dynamic = tool.response.match_block.is_some()
+                || tool.response.sequence.is_some()
+                || tool.response.handler.is_some();
+            if tool.response.content.is_empty() && !has_dynamic {
                 self.add_error(
                     &format!("{path}.response.content"),
                     "Response content cannot be empty",
                 );
+            }
+
+            // Validate dynamic response fields (F-009)
+            self.validate_dynamic_fields(
+                tool.response.match_block.as_deref(),
+                tool.response.sequence.as_deref(),
+                tool.response.handler.as_ref(),
+                &format!("{path}.response"),
+            );
+            for (ci, item) in tool.response.content.iter().enumerate() {
+                if let ContentItem::Text {
+                    text: ContentValue::Static(s),
+                } = item
+                {
+                    self.validate_template_syntax(
+                        s,
+                        &format!("{path}.response.content[{ci}].text"),
+                    );
+                }
+            }
+
+            // Validate behavior/side_effects
+            if let Some(behavior) = &tool.behavior {
+                self.validate_behavior(behavior, &format!("{path}.behavior"));
             }
         }
     }
@@ -582,6 +694,24 @@ impl Validator {
                     "Resource name is required",
                 );
             }
+
+            // Validate dynamic response fields on resource response (F-009)
+            if let Some(ref resp) = resource.response {
+                self.validate_dynamic_fields(
+                    resp.match_block.as_deref(),
+                    resp.sequence.as_deref(),
+                    resp.handler.as_ref(),
+                    &format!("{path}.response"),
+                );
+                if let ContentValue::Static(s) = &resp.content {
+                    self.validate_template_syntax(s, &format!("{path}.response.content"));
+                }
+            }
+
+            // Validate behavior/side_effects
+            if let Some(behavior) = &resource.behavior {
+                self.validate_behavior(behavior, &format!("{path}.behavior"));
+            }
         }
     }
 
@@ -605,12 +735,33 @@ impl Validator {
                 );
             }
 
-            // Response messages must not be empty
-            if prompt.response.messages.is_empty() {
+            // Response messages must not be empty (unless dynamic features provide them)
+            let has_dynamic = prompt.response.match_block.is_some()
+                || prompt.response.sequence.is_some()
+                || prompt.response.handler.is_some();
+            if prompt.response.messages.is_empty() && !has_dynamic {
                 self.add_error(
                     &format!("{path}.response.messages"),
                     "Prompt response messages cannot be empty",
                 );
+            }
+
+            // Validate dynamic response fields (F-009)
+            self.validate_dynamic_fields(
+                prompt.response.match_block.as_deref(),
+                prompt.response.sequence.as_deref(),
+                prompt.response.handler.as_ref(),
+                &format!("{path}.response"),
+            );
+            for msg in &prompt.response.messages {
+                if let ContentValue::Static(s) = &msg.content {
+                    self.validate_template_syntax(s, &format!("{path}.response.messages"));
+                }
+            }
+
+            // Validate behavior/side_effects
+            if let Some(behavior) = &prompt.behavior {
+                self.validate_behavior(behavior, &format!("{path}.behavior"));
             }
         }
     }
@@ -677,6 +828,318 @@ impl Validator {
     }
 
     // ========================================================================
+    // Dynamic Response Validation (TJ-SPEC-009 F-009)
+    // ========================================================================
+
+    /// Validates dynamic response fields (match block, sequence, handler).
+    fn validate_dynamic_fields(
+        &mut self,
+        match_block: Option<&[MatchBranchConfig]>,
+        sequence: Option<&[SequenceEntryConfig]>,
+        handler: Option<&HandlerConfig>,
+        base_path: &str,
+    ) {
+        if let Some(branches) = match_block {
+            self.validate_match_block(branches, &format!("{base_path}.match"));
+        }
+        if let Some(seq) = sequence {
+            if seq.is_empty() {
+                self.add_warning(&format!("{base_path}.sequence"), "Empty response sequence");
+            }
+        }
+        if let Some(h) = handler {
+            self.validate_handler_config(h, &format!("{base_path}.handler"));
+        }
+    }
+
+    /// Validates a match block's branches.
+    fn validate_match_block(&mut self, branches: &[MatchBranchConfig], path: &str) {
+        let mut found_default = false;
+
+        for (idx, branch) in branches.iter().enumerate() {
+            let branch_path = format!("{path}[{idx}]");
+
+            match branch {
+                MatchBranchConfig::Default { .. } => {
+                    if found_default {
+                        self.add_warning(
+                            &branch_path,
+                            "Multiple default branches; only the first will match",
+                        );
+                    }
+                    found_default = true;
+                }
+                MatchBranchConfig::When { when, .. } => {
+                    if found_default {
+                        self.add_warning(&branch_path, "Unreachable match branch after 'default'");
+                    }
+                    for (field, cond) in when {
+                        self.validate_match_condition(cond, &format!("{branch_path}.when.{field}"));
+                    }
+                }
+            }
+
+            // Validate templates in branch content
+            match branch {
+                MatchBranchConfig::When {
+                    content,
+                    messages,
+                    contents,
+                    sequence,
+                    handler,
+                    ..
+                }
+                | MatchBranchConfig::Default {
+                    content,
+                    messages,
+                    contents,
+                    sequence,
+                    handler,
+                    ..
+                } => {
+                    for (ci, item) in content.iter().enumerate() {
+                        if let ContentItem::Text {
+                            text: ContentValue::Static(s),
+                        } = item
+                        {
+                            self.validate_template_syntax(
+                                s,
+                                &format!("{branch_path}.content[{ci}].text"),
+                            );
+                        }
+                    }
+                    for msg in messages {
+                        if let ContentValue::Static(s) = &msg.content {
+                            self.validate_template_syntax(s, &format!("{branch_path}.messages"));
+                        }
+                    }
+                    if let Some(entries) = contents {
+                        for entry in entries {
+                            self.validate_template_syntax(
+                                &entry.uri,
+                                &format!("{branch_path}.contents.uri"),
+                            );
+                            if let Some(ref t) = entry.text {
+                                self.validate_template_syntax(
+                                    t,
+                                    &format!("{branch_path}.contents.text"),
+                                );
+                            }
+                        }
+                    }
+                    if let Some(seq) = sequence {
+                        if seq.is_empty() {
+                            self.add_warning(
+                                &format!("{branch_path}.sequence"),
+                                "Empty response sequence in match branch",
+                            );
+                        }
+                    }
+                    if let Some(h) = handler {
+                        self.validate_handler_config(h, &format!("{branch_path}.handler"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Validates a single match condition (regex, glob patterns).
+    fn validate_match_condition(&mut self, cond: &MatchConditionConfig, path: &str) {
+        match cond {
+            MatchConditionConfig::Single(s) => {
+                if let Some(pattern) = s.strip_prefix("regex:") {
+                    if regex::Regex::new(pattern).is_err() {
+                        self.add_error(path, &format!("Invalid regex pattern: '{pattern}'"));
+                    }
+                } else if glob::Pattern::new(s).is_err() {
+                    self.add_error(path, &format!("Invalid glob pattern: '{s}'"));
+                }
+            }
+            MatchConditionConfig::GlobList(patterns) => {
+                for p in patterns {
+                    if glob::Pattern::new(p).is_err() {
+                        self.add_error(path, &format!("Invalid glob pattern: '{p}'"));
+                    }
+                }
+            }
+            MatchConditionConfig::Operator { any_of, .. } => {
+                if let Some(patterns) = any_of {
+                    for p in patterns {
+                        if let Some(pattern) = p.strip_prefix("regex:") {
+                            if regex::Regex::new(pattern).is_err() {
+                                self.add_error(
+                                    &format!("{path}.any_of"),
+                                    &format!("Invalid regex pattern: '{pattern}'"),
+                                );
+                            }
+                        } else if glob::Pattern::new(p).is_err() {
+                            self.add_error(
+                                &format!("{path}.any_of"),
+                                &format!("Invalid glob pattern: '{p}'"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Validates template syntax (checks for unclosed `${`).
+    fn validate_template_syntax(&mut self, template: &str, path: &str) {
+        let mut i = 0;
+        let bytes = template.as_bytes();
+        while i < bytes.len() {
+            // Skip escaped dollar signs
+            if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'$' {
+                i += 2;
+                continue;
+            }
+            if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
+                // Found template start, look for closing brace
+                if let Some(close) = template[i + 2..].find('}') {
+                    let var_name = &template[i + 2..i + 2 + close];
+                    // Check for unknown function names
+                    if let Some(fn_name) = var_name.strip_prefix("fn.") {
+                        let fn_name = fn_name.split('(').next().unwrap_or(fn_name);
+                        let known_fns = [
+                            "upper",
+                            "lower",
+                            "base64",
+                            "json",
+                            "len",
+                            "default",
+                            "truncate",
+                            "timestamp",
+                            "uuid",
+                        ];
+                        if !known_fns.contains(&fn_name) {
+                            self.add_warning(path, &format!("Unknown function '{fn_name}'"));
+                        }
+                    }
+                    i = i + 2 + close + 1;
+                } else {
+                    self.add_error(path, "Unclosed template variable '${...'");
+                    return;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Validates a handler configuration.
+    fn validate_handler_config(&mut self, config: &HandlerConfig, path: &str) {
+        match config {
+            HandlerConfig::Http { url, .. } => {
+                // Basic URL syntax validation
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    // Allow template-containing URLs
+                    if !url.contains("${") {
+                        self.add_error(
+                            &format!("{path}.url"),
+                            &format!(
+                                "Handler URL must start with http:// or https:// (got '{url}')"
+                            ),
+                        );
+                    }
+                }
+            }
+            HandlerConfig::Command { cmd, .. } => {
+                if cmd.is_empty() {
+                    self.add_error(&format!("{path}.cmd"), "Handler command cannot be empty");
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Behavior / Side Effect Validation
+    // ========================================================================
+
+    /// Validates a behavior configuration, including its side effects.
+    fn validate_behavior(&mut self, behavior: &BehaviorConfig, path: &str) {
+        if let Some(effects) = &behavior.side_effects {
+            for (idx, effect) in effects.iter().enumerate() {
+                self.validate_side_effect_params(effect, &format!("{path}.side_effects[{idx}]"));
+            }
+        }
+    }
+
+    /// Validates side effect parameters against expected keys for each type.
+    ///
+    /// Emits warnings (not errors) for:
+    /// - Unknown parameter keys (likely typos)
+    /// - Wrong parameter types (e.g. string where u64 expected)
+    ///
+    /// Does not warn on missing params since they have runtime defaults.
+    fn validate_side_effect_params(&mut self, config: &SideEffectConfig, path: &str) {
+        let expected: &[(&str, ParamType)] = match config.type_ {
+            SideEffectType::NotificationFlood => &[
+                ("rate_per_sec", ParamType::U64),
+                ("duration_sec", ParamType::U64),
+                ("method", ParamType::Str),
+                ("params", ParamType::Any),
+            ],
+            SideEffectType::BatchAmplify => {
+                &[("batch_size", ParamType::U64), ("method", ParamType::Str)]
+            }
+            SideEffectType::PipeDeadlock => &[("fill_bytes", ParamType::U64)],
+            SideEffectType::CloseConnection => {
+                &[("graceful", ParamType::Bool), ("delay_ms", ParamType::U64)]
+            }
+            SideEffectType::DuplicateRequestIds => &[
+                ("count", ParamType::U64),
+                ("id", ParamType::Any),
+                ("method", ParamType::Str),
+                ("params", ParamType::Any),
+            ],
+        };
+
+        let known_keys: HashSet<&str> = expected.iter().map(|(k, _)| *k).collect();
+        // `trigger` is handled by SideEffectConfig directly, not in params
+        let reserved_keys: HashSet<&str> = ["type", "trigger"].iter().copied().collect();
+
+        for (key, value) in &config.params {
+            if reserved_keys.contains(key.as_str()) {
+                continue;
+            }
+
+            if !known_keys.contains(key.as_str()) {
+                self.add_warning(
+                    &format!("{path}.{key}"),
+                    &format!(
+                        "Unknown parameter '{key}' for side effect type '{:?}' — \
+                         possible typo",
+                        config.type_
+                    ),
+                );
+                continue;
+            }
+
+            // Check type
+            if let Some((_, expected_type)) = expected.iter().find(|(k, _)| *k == key.as_str()) {
+                let type_ok = match expected_type {
+                    ParamType::U64 => value.is_u64(),
+                    ParamType::Bool => value.is_boolean(),
+                    ParamType::Str => value.is_string(),
+                    ParamType::Any => true,
+                };
+
+                if !type_ok {
+                    self.add_warning(
+                        &format!("{path}.{key}"),
+                        &format!(
+                            "Parameter '{key}' expects {expected_type}, got {actual}",
+                            expected_type = expected_type.label(),
+                            actual = json_type_label(value),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    // ========================================================================
     // Helper Methods
     // ========================================================================
 
@@ -702,6 +1165,51 @@ impl Validator {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Updates cumulative tool/resource/prompt sets after processing a phase.
+fn update_cumulative_state(
+    phase: &Phase,
+    tools: &mut HashSet<String>,
+    resources: &mut HashSet<String>,
+    prompts: &mut HashSet<String>,
+) {
+    if let Some(add_tools) = &phase.add_tools {
+        for t in add_tools {
+            if let crate::config::schema::ToolPatternRef::Inline(tp) = t {
+                tools.insert(tp.tool.name.clone());
+            }
+        }
+    }
+    if let Some(remove_tools) = &phase.remove_tools {
+        for name in remove_tools {
+            tools.remove(name);
+        }
+    }
+    if let Some(add_resources) = &phase.add_resources {
+        for r in add_resources {
+            if let crate::config::schema::ResourcePatternRef::Inline(rp) = r {
+                resources.insert(rp.resource.uri.clone());
+            }
+        }
+    }
+    if let Some(remove_resources) = &phase.remove_resources {
+        for uri in remove_resources {
+            resources.remove(uri);
+        }
+    }
+    if let Some(add_prompts) = &phase.add_prompts {
+        for p in add_prompts {
+            if let crate::config::schema::PromptPatternRef::Inline(pp) = p {
+                prompts.insert(pp.prompt.name.clone());
+            }
+        }
+    }
+    if let Some(remove_prompts) = &phase.remove_prompts {
+        for name in remove_prompts {
+            prompts.remove(name);
+        }
+    }
+}
 
 /// Collects tool names from baseline.
 fn collect_baseline_tool_names(baseline: Option<&BaselineState>) -> HashSet<String> {
@@ -767,6 +1275,42 @@ fn count_total_prompts(config: &ServerConfig) -> usize {
 }
 
 // ============================================================================
+// Side Effect Parameter Type Helpers
+// ============================================================================
+
+/// Expected parameter type for side effect validation.
+#[derive(Debug, Clone, Copy)]
+enum ParamType {
+    U64,
+    Bool,
+    Str,
+    Any,
+}
+
+impl ParamType {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::U64 => "a number (u64)",
+            Self::Bool => "a boolean",
+            Self::Str => "a string",
+            Self::Any => "any type",
+        }
+    }
+}
+
+/// Returns a human-readable label for a JSON value type.
+const fn json_type_label(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -810,6 +1354,7 @@ mod tests {
                     text: ContentValue::Static("result".to_string()),
                 }],
                 is_error: None,
+                ..Default::default()
             },
             behavior: None,
         }
@@ -840,6 +1385,7 @@ mod tests {
                     role: Role::User,
                     content: ContentValue::Static("test".to_string()),
                 }],
+                ..Default::default()
             },
             behavior: None,
         }
@@ -1045,7 +1591,7 @@ mod tests {
             replace_tools: Some(
                 std::iter::once((
                     "nonexistent".to_string(),
-                    ToolPatternRef::Inline(make_tool("evil")),
+                    ToolPatternRef::Inline(Box::new(make_tool("evil"))),
                 ))
                 .collect(),
             ),
@@ -1388,8 +1934,8 @@ mod tests {
             result
                 .warnings
                 .iter()
-                .any(|w| w.path == "logging" && w.message.contains("not yet implemented")),
-            "expected warning about unimplemented logging config"
+                .any(|w| w.path == "logging" && w.message.contains("not yet consumed")),
+            "expected warning about logging config not consumed at runtime"
         );
     }
 
@@ -1652,6 +2198,425 @@ mod tests {
                 .iter()
                 .any(|e| e.message.contains("Invalid regex")),
             "valid regex should not produce error"
+        );
+    }
+
+    // ====================================================================
+    // Dynamic response validation tests (TJ-SPEC-009 F-009)
+    // ====================================================================
+
+    #[test]
+    fn test_validate_tool_with_dynamic_features_allows_empty_content() {
+        let mut config = minimal_config();
+        let mut tool = make_tool("calc");
+        tool.response.content = vec![]; // Would normally be an error
+        tool.response.match_block = Some(vec![MatchBranchConfig::Default {
+            default: serde_json::json!(true),
+            content: vec![ContentItem::Text {
+                text: ContentValue::Static("from match".to_string()),
+            }],
+            sequence: None,
+            on_exhausted: None,
+            handler: None,
+            messages: vec![],
+            contents: None,
+        }]);
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Response content cannot be empty")),
+            "empty content with match block should not be an error"
+        );
+    }
+
+    #[test]
+    fn test_validate_prompt_with_dynamic_features_allows_empty_messages() {
+        let mut config = minimal_config();
+        let mut prompt = make_prompt("greet");
+        prompt.response.messages = vec![]; // Would normally be an error
+        prompt.response.handler = Some(HandlerConfig::Http {
+            url: "http://example.com".to_string(),
+            timeout_ms: None,
+            headers: None,
+        });
+        config.prompts = Some(vec![prompt]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            !result.errors.iter().any(|e| e
+                .message
+                .contains("Prompt response messages cannot be empty")),
+            "empty messages with handler should not be an error"
+        );
+    }
+
+    #[test]
+    fn test_validate_unclosed_template() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("hello ${args.name", "test");
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Unclosed template")),
+            "expected unclosed template error, got: {:?}",
+            validator.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_template() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("hello ${args.name}", "test");
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_escaped_template_not_flagged() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("literal $${not_a_var}", "test");
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_unknown_function_warning() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("${fn.nonexistent()}", "test");
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unknown function 'nonexistent'")),
+            "expected unknown function warning"
+        );
+    }
+
+    #[test]
+    fn test_validate_known_function_no_warning() {
+        let mut validator = Validator::new();
+        validator.validate_template_syntax("${fn.upper(hello)}", "test");
+        assert!(validator.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_validate_unreachable_branch_after_default() {
+        let mut validator = Validator::new();
+        let branches = vec![
+            MatchBranchConfig::Default {
+                default: serde_json::json!(true),
+                content: vec![],
+                sequence: None,
+                on_exhausted: None,
+                handler: None,
+                messages: vec![],
+                contents: None,
+            },
+            MatchBranchConfig::When {
+                when: indexmap::IndexMap::new(),
+                content: vec![],
+                sequence: None,
+                on_exhausted: None,
+                handler: None,
+                messages: vec![],
+                contents: None,
+            },
+        ];
+        validator.validate_match_block(&branches, "test");
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unreachable")),
+            "expected unreachable branch warning"
+        );
+    }
+
+    #[test]
+    fn test_validate_empty_sequence_warning() {
+        let mut config = minimal_config();
+        let mut tool = make_tool("calc");
+        tool.response.sequence = Some(vec![]);
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Empty response sequence")),
+            "expected empty sequence warning"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_handler_url() {
+        let mut validator = Validator::new();
+        validator.validate_handler_config(
+            &HandlerConfig::Http {
+                url: "not-a-url".to_string(),
+                timeout_ms: None,
+                headers: None,
+            },
+            "test",
+        );
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("must start with http://")),
+            "expected invalid URL error"
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_handler_url() {
+        let mut validator = Validator::new();
+        validator.validate_handler_config(
+            &HandlerConfig::Http {
+                url: "https://example.com/handler".to_string(),
+                timeout_ms: None,
+                headers: None,
+            },
+            "test",
+        );
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_handler_url_with_template() {
+        let mut validator = Validator::new();
+        validator.validate_handler_config(
+            &HandlerConfig::Http {
+                url: "${env.HANDLER_URL}".to_string(),
+                timeout_ms: None,
+                headers: None,
+            },
+            "test",
+        );
+        // Template URLs are allowed (resolved at runtime)
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_empty_handler_command() {
+        let mut validator = Validator::new();
+        validator.validate_handler_config(
+            &HandlerConfig::Command {
+                cmd: vec![],
+                timeout_ms: None,
+                env: None,
+                working_dir: None,
+            },
+            "test",
+        );
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("command cannot be empty")),
+            "expected empty command error"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_regex_in_match_condition() {
+        let mut validator = Validator::new();
+        validator.validate_match_condition(
+            &MatchConditionConfig::Single("regex:[invalid".to_string()),
+            "test",
+        );
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Invalid regex")),
+            "expected invalid regex error"
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_regex_in_match_condition() {
+        let mut validator = Validator::new();
+        validator.validate_match_condition(
+            &MatchConditionConfig::Single("regex:file://.*\\.env$".to_string()),
+            "test",
+        );
+        assert!(validator.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_invalid_glob_in_match_condition() {
+        let mut validator = Validator::new();
+        validator.validate_match_condition(
+            &MatchConditionConfig::Single("[invalid".to_string()),
+            "test",
+        );
+        assert!(
+            validator
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Invalid glob")),
+            "expected invalid glob error"
+        );
+    }
+
+    // ====================================================================
+    // Side Effect Parameter Validation
+    // ====================================================================
+
+    fn make_side_effect(
+        type_: SideEffectType,
+        params: Vec<(&str, serde_json::Value)>,
+    ) -> SideEffectConfig {
+        SideEffectConfig {
+            type_,
+            trigger: Default::default(),
+            params: params
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_side_effect_valid_params_no_warnings() {
+        let mut validator = Validator::new();
+        let effect = make_side_effect(
+            SideEffectType::NotificationFlood,
+            vec![
+                ("rate_per_sec", serde_json::json!(100)),
+                ("duration_sec", serde_json::json!(5)),
+                ("method", serde_json::json!("notifications/message")),
+            ],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator.warnings.is_empty(),
+            "valid params should produce no warnings: {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_unknown_param_warns() {
+        let mut validator = Validator::new();
+        let effect = make_side_effect(
+            SideEffectType::CloseConnection,
+            vec![("dealy_ms", serde_json::json!(100))],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unknown parameter 'dealy_ms'")
+                    && w.message.contains("typo")),
+            "expected typo warning for 'dealy_ms': {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_wrong_type_warns() {
+        let mut validator = Validator::new();
+        let effect = make_side_effect(
+            SideEffectType::CloseConnection,
+            vec![("delay_ms", serde_json::json!("not_a_number"))],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("delay_ms") && w.message.contains("expects")),
+            "expected type mismatch warning for 'delay_ms': {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_missing_params_no_warning() {
+        let mut validator = Validator::new();
+        // Empty params is fine — all have defaults
+        let effect = make_side_effect(SideEffectType::PipeDeadlock, vec![]);
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator.warnings.is_empty(),
+            "missing params should not warn: {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_reserved_keys_ignored() {
+        let mut validator = Validator::new();
+        // `type` and `trigger` are handled by serde, not params
+        let effect = make_side_effect(
+            SideEffectType::BatchAmplify,
+            vec![
+                ("type", serde_json::json!("batch_amplify")),
+                ("trigger", serde_json::json!("on_request")),
+                ("batch_size", serde_json::json!(10)),
+            ],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator.warnings.is_empty(),
+            "reserved keys should not produce warnings: {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_side_effect_any_type_accepts_all() {
+        let mut validator = Validator::new();
+        let effect = make_side_effect(
+            SideEffectType::DuplicateRequestIds,
+            vec![
+                ("id", serde_json::json!(42)),
+                ("params", serde_json::json!({"key": "value"})),
+            ],
+        );
+        validator.validate_side_effect_params(&effect, "test");
+        assert!(
+            validator.warnings.is_empty(),
+            "Any-typed params should accept all values: {:?}",
+            validator.warnings
+        );
+    }
+
+    #[test]
+    fn test_behavior_validation_wired_through() {
+        let mut config = minimal_config();
+        let mut tool = make_tool("calc");
+        tool.behavior = Some(BehaviorConfig {
+            delivery: None,
+            side_effects: Some(vec![make_side_effect(
+                SideEffectType::CloseConnection,
+                vec![("typo_param", serde_json::json!(true))],
+            )]),
+        });
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unknown parameter 'typo_param'")),
+            "tool-level side effect param validation should produce warning: {:?}",
+            result.warnings
         );
     }
 }

@@ -63,7 +63,9 @@ pub fn init_logging(format: LogFormat, verbosity: u8, color: ColorChoice) {
     let show_target = verbosity >= 2;
 
     let use_ansi = match color {
-        ColorChoice::Auto => std::io::stderr().is_terminal(),
+        ColorChoice::Auto => {
+            std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+        }
         ColorChoice::Always => true,
         ColorChoice::Never => false,
     };

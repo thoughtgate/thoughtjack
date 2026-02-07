@@ -389,7 +389,7 @@ The system SHALL collect quantitative metrics.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `thoughtjack_requests_total` | Counter | method | Total requests received |
-| `thoughtjack_responses_total` | Counter | method, status | Total responses sent |
+| `thoughtjack_responses_total` | Counter | method, status, error_code | Total responses sent |
 | `thoughtjack_request_duration_ms` | Histogram | method | Request processing time |
 | `thoughtjack_phase_transitions_total` | Counter | from, to | Phase transitions |
 | `thoughtjack_delivery_bytes_total` | Counter | behavior | Bytes delivered |
@@ -426,6 +426,13 @@ Unknown methods are bucketed as `method="__unknown__"` to limit cardinality.
 
 **Warning: Config-Derived Cardinality:**
 Labels derived from configuration (e.g., `phase_name`, `from`, `to`) are NOT sanitized because they are user-controlled, not attacker-controlled. However, configurations with an excessive number of phases (100+) will increase metric memory usage proportionally. This is a self-DoS scenario via config, not an attack vector.
+
+**Phase Label Sanitization:**
+Phase name labels are sanitized before use to prevent label cardinality issues:
+- Truncated to 64 characters maximum
+- Characters not matching `[a-zA-Z0-9_-]` are replaced with `_`
+
+This ensures that even unusual phase names in configuration files won't cause Prometheus label errors.
 
 **Recommendation:** Keep phase counts reasonable (<50) or disable phase-level metrics for large configurations.
 
@@ -1006,7 +1013,7 @@ thoughtjack server --config attack.yaml --capture-dir ./captures --capture-redac
 | `--log-format` | `THOUGHTJACK_LOG_FORMAT` | `human` | Log format (human/json) |
 | `--log-file` | `THOUGHTJACK_LOG_FILE` | — | Log file path |
 | `--log-file-format` | — | (same as --log-format) | Log file format |
-| `--quiet` | — | false | Suppress non-error output |
+| `-q` / `--quiet` | — | false | Skips all logging output (no tracing subscriber) |
 | `--metrics` | — | false | Enable metrics endpoint |
 | `--events-file` | `THOUGHTJACK_EVENTS_FILE` | — | Events output file |
 | `--report` | — | false | Print summary on exit |
@@ -1315,7 +1322,7 @@ impl EventEmitter {
 | Name | Labels | Description |
 |------|--------|-------------|
 | `thoughtjack_requests_total` | method | Requests received |
-| `thoughtjack_responses_total` | method, status | Responses sent |
+| `thoughtjack_responses_total` | method, status, error_code | Responses sent (error_code is string, e.g., "-32600" for invalid request) |
 | `thoughtjack_phase_transitions_total` | from, to | Phase changes |
 | `thoughtjack_delivery_bytes_total` | behavior | Bytes delivered |
 | `thoughtjack_side_effects_total` | effect_type | Side effects run |
@@ -1363,5 +1370,5 @@ impl EventEmitter {
 | `RequestReceived` | request_id, method |
 | `ResponseSent` | request_id, success, duration_ms |
 | `AttackTriggered` | attack_type, phase, details |
-| `SideEffectExecuted` | effect_type, trigger, result |
+| `SideEffectTriggered` | effect_name, trigger, messages_sent, bytes_sent, completed, connection_id |
 | `Error` | error_type, message, context |

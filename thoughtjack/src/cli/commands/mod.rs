@@ -4,12 +4,13 @@
 
 pub mod agent;
 pub mod completions;
+pub mod scenarios;
 pub mod server;
 pub mod version;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::args::{Cli, Commands, ServerSubcommand};
+use crate::cli::args::{Cli, Commands, ScenariosSubcommand, ServerSubcommand};
 use crate::error::ThoughtJackError;
 
 /// Dispatch a parsed CLI invocation to the appropriate command handler.
@@ -26,6 +27,10 @@ pub async fn dispatch(cli: Cli, cancel: CancellationToken) -> Result<(), Thought
             Some(ServerSubcommand::Validate(args)) => server::validate(&args).await,
             Some(ServerSubcommand::List(args)) => server::list(&args).await,
             None => server::run(&cmd.run_args, cancel).await,
+        },
+        Commands::Scenarios(cmd) => match cmd.subcommand {
+            ScenariosSubcommand::List(ref args) => scenarios::list(args).await,
+            ScenariosSubcommand::Show(ref args) => scenarios::show(args).await,
         },
         Commands::Agent(cmd) => agent::run(&cmd).await,
         Commands::Completions(args) => {

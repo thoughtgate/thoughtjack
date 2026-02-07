@@ -363,6 +363,7 @@ The system SHALL support generating payloads at configuration load time.
 | `garbage` | `bytes` | Random byte string |
 | `repeated_keys` | `count`, `key_length` | Hash-collision-prone JSON |
 | `unicode_spam` | `bytes`, `charset` | Unicode attack sequences |
+| `ansi_escape` | `sequences`, `count`, `payload`, `seed` | ANSI terminal escape sequences for rendering attacks |
 
 - `$generate` directive triggers generation
 - Safety limits enforced (overridable via env vars)
@@ -1363,9 +1364,9 @@ pub enum StateScope {
 #[serde(rename_all = "snake_case")]
 pub enum UnknownMethodsPolicy {
     #[default]
-    Error,
     Ignore,
-    Log,
+    Error,
+    Drop,
 }
 ```
 
@@ -1490,7 +1491,7 @@ pub struct PromptArgument {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub required: bool,
+    pub required: Option<bool>,
 }
 ```
 
@@ -1502,6 +1503,9 @@ pub struct PromptArgument {
 pub struct ResponseConfig {
     /// Static content, sequences, match conditions, or external handler
     pub strategy: ResponseStrategy,
+    /// Whether this response represents an error
+    #[serde(default)]
+    pub is_error: Option<bool>,
 }
 
 /// Response configuration for resources (resources/read)
@@ -1557,6 +1561,7 @@ pub enum ContentItem {
 pub enum ContentValue {
     Static(String),
     Generated { generator: Box<dyn PayloadGenerator> },
+    File { path: PathBuf },
 }
 ```
 
@@ -1583,6 +1588,7 @@ pub enum DeliveryMode {
     },
     UnboundedLine {
         padding_bytes: usize,
+        padding_char: Option<char>,
     },
     NestedJson {
         depth: usize,
@@ -1632,7 +1638,7 @@ pub enum SideEffectTrigger {
 pub struct Phase {
     pub name: String,
     pub diff: PhaseDiff,
-    pub on_enter: Vec<OnEnterAction>,
+    pub on_enter: Vec<EntryAction>,
     pub advance: Option<Trigger>,
 }
 
@@ -1655,9 +1661,38 @@ pub struct PhaseDiff {
 /// Action to execute when entering a phase
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OnEnterAction {
-    SendListChanged,
-    Log { message: String },
+pub enum EntryAction {
+    SendNotification {
+        send_notification: SendNotificationConfig,
+    },
+    SendRequest {
+        send_request: SendRequestConfig,
+    },
+    Log {
+        log: String,
+    },
+}
+
+/// Configuration for send_notification entry action (short or long form)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SendNotificationConfig {
+    Short(String),
+    Full {
+        method: String,
+        #[serde(default)]
+        params: Option<serde_json::Value>,
+    },
+}
+
+/// Configuration for send_request entry action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendRequestConfig {
+    pub method: String,
+    #[serde(default)]
+    pub id: Option<serde_json::Value>,
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
 }
 
 /// Trigger condition for phase advancement
@@ -1708,6 +1743,9 @@ pub struct MatchPredicate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FieldMatcher {
+    AnyOf {
+        any_of: Vec<serde_json::Value>,
+    },
     Exact(String),
     Pattern {
         contains: Option<String>,

@@ -172,6 +172,25 @@ The system SHALL resolve `$include` directives by loading and merging referenced
 - Circular includes detected and rejected
 - Missing includes produce clear error with path
 - Include resolution is cached (same file loaded once)
+- Environment variable expansion applies to included files (B44)
+
+**Environment Variable Expansion in Includes (B44):**
+
+When an included file is loaded, environment variable expansion (`${VAR}`, `${VAR:-default}`, `${VAR:?msg}`) is applied to the included file's content before YAML parsing. This ensures that included files can reference environment variables just like the root configuration file. The expansion occurs:
+
+1. On the raw text of the included file (before YAML parsing)
+2. Before the included content is merged with the parent configuration
+3. Recursively for nested includes
+
+This allows library patterns to use environment variables for dynamic behavior:
+
+```yaml
+# library/tools/api_client.yaml
+tool:
+  name: "api_client"
+  description: "Calls ${API_HOST:-api.example.com}"
+  # ${API_HOST} is expanded when this file is included
+```
 
 **Syntax:**
 ```yaml
@@ -931,6 +950,17 @@ The system SHALL enforce hard limits on configuration size to prevent resource e
 | Include depth | 10 | `THOUGHTJACK_MAX_INCLUDE_DEPTH` | Stack overflow prevention |
 | Config file size | 10MB | `THOUGHTJACK_MAX_CONFIG_SIZE` | Parse time bound |
 
+**Hard Upper Bounds (B42):**
+
+The implementation enforces hard upper bounds using `.min()` caps on all user-configurable limits. Even if a user sets `THOUGHTJACK_MAX_PHASES=999999`, the actual limit is capped at a safe maximum (e.g., 10,000 for phases). This prevents accidental or malicious resource exhaustion via environment variables. The hard caps are:
+
+- `max_phases`: 10,000
+- `max_tools`: 100,000
+- `max_resources`: 100,000
+- `max_prompts`: 50,000
+- `max_include_depth`: 100
+- `max_config_size`: 100 MB
+
 **Implementation:**
 ```rust
 pub struct ConfigLimits {
@@ -945,12 +975,13 @@ pub struct ConfigLimits {
 impl Default for ConfigLimits {
     fn default() -> Self {
         Self {
-            max_phases: env_or("THOUGHTJACK_MAX_PHASES", 100),
-            max_tools: env_or("THOUGHTJACK_MAX_TOOLS", 1000),
-            max_resources: env_or("THOUGHTJACK_MAX_RESOURCES", 1000),
-            max_prompts: env_or("THOUGHTJACK_MAX_PROMPTS", 500),
-            max_include_depth: env_or("THOUGHTJACK_MAX_INCLUDE_DEPTH", 10),
-            max_config_size: env_or("THOUGHTJACK_MAX_CONFIG_SIZE", 10 * 1024 * 1024),
+            max_phases: env_or("THOUGHTJACK_MAX_PHASES", 100).min(10_000),
+            max_tools: env_or("THOUGHTJACK_MAX_TOOLS", 1000).min(100_000),
+            max_resources: env_or("THOUGHTJACK_MAX_RESOURCES", 1000).min(100_000),
+            max_prompts: env_or("THOUGHTJACK_MAX_PROMPTS", 500).min(50_000),
+            max_include_depth: env_or("THOUGHTJACK_MAX_INCLUDE_DEPTH", 10).min(100),
+            max_config_size: env_or("THOUGHTJACK_MAX_CONFIG_SIZE", 10 * 1024 * 1024)
+                .min(100 * 1024 * 1024),
         }
     }
 }
@@ -1090,6 +1121,18 @@ The system SHALL produce an immutable, runtime-ready configuration.
 - All generates expanded
 - Config is `Send + Sync` for multi-threaded use
 
+**In-Memory Loading (B43):**
+
+In addition to loading from files via `load()`, the system provides a `load_from_str(&mut self, yaml: &str)` method that enables loading configurations from in-memory strings. This is used for embedded scenario loading (TJ-SPEC-010).
+
+Key differences from file-based loading:
+- Skips file I/O
+- When `options.embedded == true`, environment variable substitution is skipped since `${...}` syntax is reserved for template interpolation at runtime (not env var expansion at load time)
+- When `options.embedded == true`, `$include` and `$file` directives are rejected with errors
+- `$generate` directives are allowed in embedded mode
+
+This enables built-in attack scenarios to be embedded directly in the binary without requiring external YAML files or library filesystem access.
+
 **Implementation:**
 ```rust
 #[derive(Debug, Clone)]
@@ -1117,32 +1160,44 @@ impl ConfigLoader {
     pub fn load(&self, path: &Path) -> Result<Arc<ServerConfig>, ConfigErrors> {
         // 1. Parse YAML
         let mut parsed = self.parse_yaml(path)?;
-        
+
         // 2. Resolve directives
         let mut include_resolver = IncludeResolver::new(&self.library_root);
         include_resolver.resolve(&mut parsed.root, path)?;
-        
+
         let mut file_resolver = FileResolver::new(&self.library_root);
         file_resolver.resolve(&mut parsed.root, path)?;
-        
+
         let mut generate_resolver = GenerateResolver::new(self.limits.clone());
         generate_resolver.resolve(&mut parsed.root, &parsed.source_map)?;
-        
+
         let mut env_resolver = EnvResolver::new();
         env_resolver.resolve(&mut parsed.root)?;
-        
+
         // 3. Deserialize to typed config
         let config: ServerConfig = serde_yaml::from_value(parsed.root)
             .map_err(|e| ConfigErrors::single(ConfigError::DeserializeError {
                 message: e.to_string(),
             }))?;
-        
+
         // 4. Validate
         let mut validator = SchemaValidator::new();
         validator.validate(&config)?;
-        
+
         // 5. Freeze
         Ok(config.freeze())
+    }
+
+    /// Load configuration from in-memory YAML string (B43)
+    ///
+    /// Runs the same pipeline as `load()` but skips file I/O.
+    /// In embedded mode (`options.embedded == true`), `$include` and `$file`
+    /// directives are rejected.
+    pub fn load_from_str(&mut self, yaml: &str) -> Result<Arc<ServerConfig>, ConfigErrors> {
+        // Same pipeline as load(), but from string
+        // Environment substitution skipped if embedded == true
+        // Filesystem directives rejected if embedded == true
+        // ...
     }
 }
 ```
@@ -1422,13 +1477,13 @@ pub fn validate_command(args: &ValidateArgs) -> Result<(), ThoughtJackError> {
 
 ### 5.2 Resolution Order
 
+0. **Env** — `${VAR}` expansion (before parsing, on raw YAML text)
 1. **Parse** — YAML to AST
 2. **Include** — `$include` directives (recursive, with override merge)
 3. **File** — `$file` directives
 4. **Generate** — `$generate` directives
-5. **Env** — `${VAR}` expansion
-6. **Validate** — Schema and semantic checks
-7. **Freeze** — Produce immutable config
+5. **Validate** — Schema and semantic checks
+6. **Freeze** — Produce immutable config
 
 ### 5.3 Configuration Transformation Pipeline
 

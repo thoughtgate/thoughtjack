@@ -124,12 +124,23 @@ impl GeneratedPayload {
     /// Implements: TJ-SPEC-005 F-001
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
+        /// Maximum materialization size (100 MB).
+        const MAX_MATERIALIZATION: usize = 100 * 1024 * 1024;
+
         match self {
             Self::Buffered(data) => data,
             Self::Streamed(mut stream) => {
-                let mut result = Vec::with_capacity(stream.estimated_total());
+                let estimated = stream.estimated_total().min(MAX_MATERIALIZATION);
+                let mut result = Vec::with_capacity(estimated);
                 while let Some(chunk) = stream.next_chunk() {
                     result.extend_from_slice(&chunk);
+                    if result.len() > MAX_MATERIALIZATION {
+                        tracing::warn!(
+                            bytes = result.len(),
+                            "stream exceeded 100MB materialization limit, truncating"
+                        );
+                        break;
+                    }
                 }
                 result
             }
@@ -229,10 +240,10 @@ pub(crate) fn require_usize(
 /// Returns [`GeneratorError::LimitExceeded`] if parameters exceed limits.
 /// Returns [`GeneratorError::InvalidParameters`] if required params are missing.
 ///
-// TODO(TJ-SPEC-005 F-010): Add generator caching with memory limits.
-// Currently generators are created per-call which is correct but suboptimal
-// for repeated identical configs. A cache keyed by GeneratorConfig with
-// LRU eviction and memory budget tracking would improve performance.
+// TODO(TJ-SPEC-005 F-010): Add generator caching with LRU eviction and
+// memory budget tracking. Currently generators are created per-call which
+// is correct but suboptimal for repeated identical configs.
+// Tracked for v0.3 milestone.
 ///
 /// Implements: TJ-SPEC-005 F-001
 pub fn create_generator(

@@ -7,6 +7,6 @@ pub mod events;
 pub mod logging;
 pub mod metrics;
 
-pub use events::{Event, EventEmitter};
+pub use events::{Event, EventEmitter, RunSummary, StopReason, TriggerInfo};
 pub use logging::{LogFormat, init_logging};
 pub use metrics::init_metrics;
