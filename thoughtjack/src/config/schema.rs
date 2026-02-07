@@ -371,29 +371,6 @@ pub enum GeneratorType {
 /// The `HashMap` allows flexible parameters for each generator type.
 pub type GeneratorParams = std::collections::HashMap<String, serde_json::Value>;
 
-/// Parameters for `nested_json` generator.
-///
-/// Generates deeply nested JSON to test parser stack limits.
-///
-/// Implements: TJ-SPEC-005 F-002
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NestedJsonParams {
-    /// Nesting depth (required)
-    pub depth: usize,
-
-    /// Structure type for nesting
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub structure: Option<NestedStructure>,
-
-    /// Key name to use for object nesting (default: "a")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-
-    /// Value to place at the innermost level
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inner: Option<serde_json::Value>,
-}
-
 /// Structure type for nested JSON generation.
 ///
 /// Implements: TJ-SPEC-005 F-002
@@ -409,25 +386,6 @@ pub enum NestedStructure {
 
     /// Alternating objects and arrays
     Mixed,
-}
-
-/// Parameters for `garbage` generator.
-///
-/// Generates random bytes to test parser error handling.
-///
-/// Implements: TJ-SPEC-005 F-004
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GarbageParams {
-    /// Number of bytes to generate (required)
-    pub bytes: usize,
-
-    /// Character set for generation
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub charset: Option<Charset>,
-
-    /// Random seed for reproducibility
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
 }
 
 /// Character set for garbage generation.
@@ -453,63 +411,6 @@ pub enum Charset {
     Alphanumeric,
 }
 
-/// Parameters for `batch_notifications` generator.
-///
-/// Generates arrays of JSON-RPC notifications for batch attacks.
-///
-/// Implements: TJ-SPEC-005 F-003
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct BatchNotificationsParams {
-    /// Number of notifications to generate (required)
-    pub count: usize,
-
-    /// Notification method (default: "notifications/message")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-
-    /// Parameters for each notification
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub params: Option<serde_json::Value>,
-}
-
-/// Parameters for `repeated_keys` generator.
-///
-/// Generates JSON objects with repeated keys to trigger hash collisions.
-///
-/// Implements: TJ-SPEC-005 F-005
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RepeatedKeysParams {
-    /// Number of repeated keys (required)
-    pub count: usize,
-
-    /// Length of each key in characters
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_length: Option<usize>,
-
-    /// Value to assign to each key
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<serde_json::Value>,
-}
-
-/// Parameters for `unicode_spam` generator.
-///
-/// Generates Unicode attack sequences for display/rendering attacks.
-///
-/// Implements: TJ-SPEC-005 F-006
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct UnicodeSpamParams {
-    /// Number of bytes to generate (required)
-    pub bytes: usize,
-
-    /// Unicode category for attack sequences
-    #[serde(default)]
-    pub category: UnicodeCategory,
-
-    /// Carrier text to embed attack sequences in
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub carrier: Option<String>,
-}
-
 /// Unicode category for spam generation.
 ///
 /// Implements: TJ-SPEC-005 F-006
@@ -531,26 +432,6 @@ pub enum UnicodeCategory {
 
     /// Emoji and emoji modifiers
     Emoji,
-}
-
-/// Parameters for `ansi_escape` generator.
-///
-/// Generates ANSI escape sequences for terminal attacks.
-///
-/// Implements: TJ-SPEC-005 F-007
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AnsiEscapeParams {
-    /// Types of ANSI sequences to generate
-    #[serde(default)]
-    pub sequences: Vec<AnsiSequenceType>,
-
-    /// Number of sequences to generate
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub count: Option<usize>,
-
-    /// Payload to include (for title/hyperlink attacks)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<String>,
 }
 
 /// ANSI escape sequence types for terminal attacks.
