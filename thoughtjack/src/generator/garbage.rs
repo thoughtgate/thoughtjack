@@ -165,8 +165,13 @@ impl PayloadGenerator for GarbageGenerator {
 
 /// Streaming garbage byte source for large payloads.
 ///
-/// Emits 64 KB chunks using the same seeded RNG, ensuring the
-/// same seed produces the same byte sequence as the buffered path.
+/// Emits 64 KB chunks using the same seeded RNG.
+///
+/// TODO(v0.2): UTF-8 streaming does NOT produce the same bytes as the
+/// buffered path for the same seed. Chunk boundaries cause the RNG to
+/// advance differently because `generate_utf8_bytes` discards characters
+/// that don't fit in the remaining chunk space. A character-level streaming
+/// approach is needed to fix this determinism mismatch (P1 issue #6).
 ///
 /// Implements: TJ-SPEC-005 F-004, F-009
 #[derive(Debug)]

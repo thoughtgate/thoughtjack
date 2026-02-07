@@ -118,7 +118,9 @@ pub struct HttpTransport {
     current_guard: std::sync::Mutex<Option<ConnectionGuard>>,
     _server_handle: JoinHandle<()>,
     // TODO(v0.2): add per-connection rate limiting
-    // TODO(v0.2): add configurable request timeout
+    // TODO(v0.2): add configurable request timeout — without one, slow clients
+    // hold response channels indefinitely; ~32 concurrent slow requests can DoS
+    // the transport by filling the incoming channel (P1 issue #11)
 }
 
 impl HttpTransport {
