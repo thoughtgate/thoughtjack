@@ -790,12 +790,31 @@ impl FileResolver {
     }
 
     /// Loads a file with caching.
+    /// Maximum file size for `$file` / `$include` directives (10 MB).
+    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
     fn load_file(
         path: &Path,
         cache: &mut HashMap<PathBuf, FileContent>,
     ) -> Result<FileContent, ConfigError> {
         if let Some(cached) = cache.get(path) {
             return Ok(cached.clone());
+        }
+
+        // Size guard: prevent loading excessively large files
+        let metadata = std::fs::metadata(path).map_err(|_| ConfigError::MissingFile {
+            path: path.to_path_buf(),
+        })?;
+        if metadata.len() > Self::MAX_FILE_SIZE {
+            return Err(ConfigError::ParseError {
+                path: path.to_path_buf(),
+                line: None,
+                message: format!(
+                    "file size {} exceeds maximum {} bytes",
+                    metadata.len(),
+                    Self::MAX_FILE_SIZE
+                ),
+            });
         }
 
         let content = match path.extension().and_then(|e| e.to_str()) {
