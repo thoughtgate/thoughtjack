@@ -92,6 +92,10 @@ pub enum ThoughtJackError {
     /// YAML parsing error
     #[error("YAML error: {0}")]
     Yaml(#[from] serde_yaml::Error),
+
+    /// Usage error (invalid arguments, missing required options)
+    #[error("{0}")]
+    Usage(String),
 }
 
 impl ThoughtJackError {
@@ -110,6 +114,7 @@ impl ThoughtJackError {
             Self::Generator(_) => ExitCode::GENERATOR_ERROR,
             Self::Behavior(_) => ExitCode::ERROR,
             Self::Io(_) => ExitCode::IO_ERROR,
+            Self::Usage(_) => ExitCode::USAGE_ERROR,
         }
     }
 }

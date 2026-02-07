@@ -32,10 +32,9 @@ use crate::transport::{DEFAULT_MAX_MESSAGE_SIZE, HttpTransport, StdioTransport, 
 pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
     // EC-CLI-003: require at least one source
     if args.config.is_none() && args.tool.is_none() {
-        return Err(ThoughtJackError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "either --config or --tool is required",
-        )));
+        return Err(ThoughtJackError::Usage(
+            "either --config or --tool is required".into(),
+        ));
     }
 
     // Initialize Prometheus metrics if --metrics-port is provided
