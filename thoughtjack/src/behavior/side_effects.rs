@@ -440,6 +440,11 @@ impl SideEffect for DuplicateRequestIds {
             id,
         });
 
+        // Serialize once outside the loop to avoid redundant work
+        let mut serialized = serde_json::to_vec(&request)?;
+        serialized.push(b'\n');
+        let frame_len = serialized.len();
+
         let mut messages_sent: usize = 0;
         let mut bytes_sent: usize = 0;
         for _ in 0..self.count {
@@ -452,8 +457,6 @@ impl SideEffect for DuplicateRequestIds {
                     outcome: SideEffectOutcome::Completed,
                 });
             }
-            let msg_bytes = serde_json::to_vec(&request)?;
-            let len = msg_bytes.len();
             tokio::select! {
                 () = cancel.cancelled() => {
                     return Ok(SideEffectResult {
@@ -464,10 +467,10 @@ impl SideEffect for DuplicateRequestIds {
                         outcome: SideEffectOutcome::Completed,
                     });
                 }
-                result = transport.send_message(&request) => { result?; }
+                result = transport.send_raw(&serialized) => { result?; }
             }
             messages_sent += 1;
-            bytes_sent += len;
+            bytes_sent += frame_len;
         }
 
         Ok(SideEffectResult {
