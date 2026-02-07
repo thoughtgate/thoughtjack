@@ -206,6 +206,18 @@ impl EventEmitter {
     pub fn event_count(&self) -> u64 {
         self.sequence.load(Ordering::Relaxed)
     }
+
+    /// Flushes the underlying writer.
+    ///
+    /// Call this before shutdown to ensure all buffered events reach disk.
+    /// Flush failures are silently ignored (observability must not crash the server).
+    ///
+    /// Implements: TJ-SPEC-008 F-012
+    pub fn flush(&self) {
+        if let Ok(mut w) = self.writer.lock() {
+            let _ = w.flush();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
