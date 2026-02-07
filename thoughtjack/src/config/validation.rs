@@ -253,6 +253,10 @@ impl Validator {
                 );
             }
 
+            // TODO(v0.2): validate replace/remove targets against cumulative state
+            // (baseline + previous phases' add_* fields) instead of just baseline,
+            // so phases that build on earlier additions can be validated correctly.
+
             // Validate replace_tools targets exist in baseline
             if let Some(replace_tools) = &phase.replace_tools {
                 for tool_name in replace_tools.keys() {
