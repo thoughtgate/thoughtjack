@@ -873,14 +873,23 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
 
 /// Deep merges override into base.
 ///
-/// For mappings: recursively merge keys.
+/// For mappings: recursively merge keys up to `MAX_RECURSION_DEPTH`.
 /// For other types: override replaces base.
 fn deep_merge(base: &mut Value, override_val: &Value) {
+    deep_merge_inner(base, override_val, 0);
+}
+
+fn deep_merge_inner(base: &mut Value, override_val: &Value, depth: usize) {
+    if depth >= MAX_RECURSION_DEPTH {
+        // At max depth, replace rather than recurse (prevents stack overflow)
+        *base = override_val.clone();
+        return;
+    }
     match (base, override_val) {
         (Value::Mapping(base_map), Value::Mapping(override_map)) => {
             for (key, override_value) in override_map {
                 if let Some(base_value) = base_map.get_mut(key) {
-                    deep_merge(base_value, override_value);
+                    deep_merge_inner(base_value, override_value, depth + 1);
                 } else {
                     base_map.insert(key.clone(), override_value.clone());
                 }
