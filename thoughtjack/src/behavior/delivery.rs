@@ -273,6 +273,13 @@ impl DeliveryBehavior for UnboundedLineDelivery {
 /// multi-gigabyte allocations via `Vec::with_capacity`.
 const MAX_NESTED_JSON_DEPTH: usize = 100_000;
 
+/// Maximum key length for `NestedJsonDelivery`.
+///
+/// A long key multiplied by `MAX_NESTED_JSON_DEPTH` can OOM:
+/// e.g. 10k-char key × 100k depth ≈ 1GB. Capped at 1024 to keep
+/// worst-case allocation under ~100MB.
+const MAX_NESTED_JSON_KEY_LEN: usize = 1024;
+
 /// Wrap response in deep JSON nesting (iterative, no recursion).
 ///
 /// Implements: TJ-SPEC-004 F-005
@@ -284,11 +291,13 @@ pub struct NestedJsonDelivery {
 impl NestedJsonDelivery {
     /// Creates a new nested JSON delivery.
     ///
-    /// Depth is clamped to [`MAX_NESTED_JSON_DEPTH`] (100,000).
+    /// Depth is clamped to [`MAX_NESTED_JSON_DEPTH`] (100,000) and
+    /// key length to [`MAX_NESTED_JSON_KEY_LEN`] (1024) to prevent OOM.
     ///
     /// Implements: TJ-SPEC-004 F-005
     #[must_use]
-    pub fn new(depth: usize, key: String) -> Self {
+    pub fn new(depth: usize, mut key: String) -> Self {
+        key.truncate(MAX_NESTED_JSON_KEY_LEN);
         Self {
             depth: depth.min(MAX_NESTED_JSON_DEPTH),
             key,
