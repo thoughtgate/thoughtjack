@@ -46,7 +46,7 @@ pub fn run(args: &VersionArgs) {
                 "rustc": rustc_version,
                 "target": target,
             });
-            println!("{json}");
+            println!("{}", serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()));
         }
     }
 }
