@@ -175,7 +175,10 @@ impl EventEmitter {
     ///
     /// Implements: TJ-SPEC-008 F-012
     pub fn from_file(path: &Path) -> std::io::Result<Self> {
-        let file = std::fs::File::create(path)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
         Ok(Self::new(Box::new(file)))
     }
 
@@ -205,6 +208,18 @@ impl EventEmitter {
     #[must_use]
     pub fn event_count(&self) -> u64 {
         self.sequence.load(Ordering::Relaxed)
+    }
+
+    /// Flushes the underlying writer.
+    ///
+    /// Call this before shutdown to ensure all buffered events reach disk.
+    /// Flush failures are silently ignored (observability must not crash the server).
+    ///
+    /// Implements: TJ-SPEC-008 F-012
+    pub fn flush(&self) {
+        if let Ok(mut w) = self.writer.lock() {
+            let _ = w.flush();
+        }
     }
 }
 
@@ -357,5 +372,35 @@ mod tests {
             parsed.get("event").is_none(),
             "event field should be flattened"
         );
+    }
+
+    #[test]
+    fn from_file_creates_valid_jsonl_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let emitter = EventEmitter::from_file(&path).unwrap();
+        emitter.emit(sample_event());
+        emitter.emit(Event::ServerStopped {
+            timestamp: Utc::now(),
+            reason: "test".to_owned(),
+        });
+
+        assert_eq!(emitter.event_count(), 2);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<serde_json::Value> = content
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["type"], "ServerStarted");
+        assert_eq!(lines[1]["type"], "ServerStopped");
+    }
+
+    #[test]
+    fn stderr_emitter_does_not_panic() {
+        let emitter = EventEmitter::stderr();
+        emitter.emit(sample_event());
+        assert_eq!(emitter.event_count(), 1);
     }
 }

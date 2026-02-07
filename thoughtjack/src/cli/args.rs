@@ -24,11 +24,11 @@ pub struct Cli {
     pub command: Commands,
 
     /// Increase verbosity (-v info, -vv debug, -vvv trace).
-    #[arg(short, long, action = ArgAction::Count, global = true)]
+    #[arg(short, long, action = ArgAction::Count, global = true, conflicts_with = "quiet")]
     pub verbose: u8,
 
     /// Suppress all non-error output.
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 
     /// Color output control.
@@ -120,17 +120,9 @@ pub struct ServerRunArgs {
     #[arg(long, env = "THOUGHTJACK_BEHAVIOR")]
     pub behavior: Option<DeliveryMode>,
 
-    /// Phase state scope.
-    #[arg(
-        long,
-        default_value = "per-connection",
-        env = "THOUGHTJACK_STATE_SCOPE"
-    )]
-    pub state_scope: StateScope,
-
-    /// Server profile preset.
-    #[arg(long, default_value = "default")]
-    pub profile: ServerProfile,
+    /// Phase state scope (overrides config file when specified).
+    #[arg(long, env = "THOUGHTJACK_STATE_SCOPE")]
+    pub state_scope: Option<StateScope>,
 
     /// Path to the attack pattern library directory.
     #[arg(long, default_value = "./library", env = "THOUGHTJACK_LIBRARY")]
@@ -285,20 +277,6 @@ pub enum DeliveryMode {
     ResponseDelay,
 }
 
-/// Server profile preset.
-///
-/// Implements: TJ-SPEC-007 F-002
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
-pub enum ServerProfile {
-    /// Balanced defaults.
-    #[default]
-    Default,
-    /// Maximum attack intensity.
-    Aggressive,
-    /// Low-detection mode.
-    Stealth,
-}
-
 /// Output format for structured output.
 ///
 /// Implements: TJ-SPEC-007 F-003
@@ -400,13 +378,16 @@ mod tests {
     }
 
     #[test]
-    fn test_default_state_scope() {
+    fn test_default_state_scope_is_none() {
         let cli =
             Cli::try_parse_from(["thoughtjack", "server", "run", "--config", "test.yaml"]).unwrap();
 
         if let Commands::Server(cmd) = cli.command {
             if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
-                assert_eq!(args.state_scope, StateScope::PerConnection);
+                assert!(
+                    args.state_scope.is_none(),
+                    "Expected None when --state-scope not specified"
+                );
                 return;
             }
         }
@@ -414,13 +395,21 @@ mod tests {
     }
 
     #[test]
-    fn test_default_profile() {
-        let cli =
-            Cli::try_parse_from(["thoughtjack", "server", "run", "--config", "test.yaml"]).unwrap();
+    fn test_explicit_state_scope() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "server",
+            "run",
+            "--config",
+            "test.yaml",
+            "--state-scope",
+            "global",
+        ])
+        .unwrap();
 
         if let Commands::Server(cmd) = cli.command {
             if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
-                assert_eq!(args.profile, ServerProfile::Default);
+                assert_eq!(args.state_scope, Some(StateScope::Global));
                 return;
             }
         }

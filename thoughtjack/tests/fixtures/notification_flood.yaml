@@ -1,0 +1,23 @@
+# Server with notification flood side effect for E2E tests
+server:
+  name: "flood-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "ping"
+      description: "Ping"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "pong"
+
+behavior:
+  side_effects:
+    - type: notification_flood
+      trigger: on_request
+      rate_per_sec: 100
+      duration_sec: 1
+      method: "notifications/test"

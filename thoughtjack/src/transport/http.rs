@@ -49,6 +49,7 @@ struct IncomingRequest {
     response_tx: mpsc::Sender<std::result::Result<Bytes, io::Error>>,
     connection_id: u64,
     remote_addr: SocketAddr,
+    connected_at: Instant,
 }
 
 /// Per-connection state tracked while a request is in flight.
@@ -117,7 +118,9 @@ pub struct HttpTransport {
     current_guard: std::sync::Mutex<Option<ConnectionGuard>>,
     _server_handle: JoinHandle<()>,
     // TODO(v0.2): add per-connection rate limiting
-    // TODO(v0.2): add configurable request timeout
+    // TODO(v0.2): add configurable request timeout — without one, slow clients
+    // hold response channels indefinitely; ~32 concurrent slow requests can DoS
+    // the transport by filling the incoming channel (P1 issue #11)
 }
 
 impl HttpTransport {
@@ -171,7 +174,12 @@ impl HttpTransport {
             shared,
             incoming_rx: tokio::sync::Mutex::new(incoming_rx),
             current_response: tokio::sync::Mutex::new(None),
-            current_context: std::sync::Mutex::new(ConnectionContext::stdio()),
+            current_context: std::sync::Mutex::new(ConnectionContext {
+                connection_id: 0,
+                remote_addr: None,
+                is_exclusive: false,
+                connected_at: Instant::now(),
+            }),
             current_guard: std::sync::Mutex::new(None),
             _server_handle: server_handle,
         };
@@ -210,7 +218,19 @@ impl Transport for HttpTransport {
             *guard = Some(req.response_tx);
         }
 
-        // Update connection context
+        // Track connection here (not in the handler) to avoid a race where the
+        // handler inserts a connection and the ConnectionGuard from a previous
+        // request removes the wrong entry.
+        self.shared.connections.insert(
+            req.connection_id,
+            ConnectionState {
+                remote_addr: req.remote_addr,
+                connected_at: req.connected_at,
+                request_count: AtomicU64::new(1),
+            },
+        );
+
+        // Update connection context using the timestamp captured in the handler
         // Poisoned mutex means a thread panicked while holding the lock — data is
         // corrupt, so panicking here is the correct response.
         {
@@ -219,7 +239,7 @@ impl Transport for HttpTransport {
                 connection_id: req.connection_id,
                 remote_addr: Some(req.remote_addr),
                 is_exclusive: false,
-                connected_at: Instant::now(),
+                connected_at: req.connected_at,
             };
         }
 
@@ -243,12 +263,16 @@ impl Transport for HttpTransport {
                     let guard = self.current_response.lock().await;
                     guard.as_ref().cloned()
                 };
-                if let Some(tx) = tx {
-                    let serialized = serde_json::to_vec(message)?;
-                    tx.send(Ok(Bytes::from(serialized))).await.map_err(|_| {
-                        TransportError::ConnectionClosed("response channel closed".into())
-                    })?;
-                }
+                let Some(tx) = tx else {
+                    return Err(TransportError::ConnectionClosed(
+                        "no active response channel (send_message called before receive_message)"
+                            .into(),
+                    ));
+                };
+                let serialized = serde_json::to_vec(message)?;
+                tx.send(Ok(Bytes::from(serialized))).await.map_err(|_| {
+                    TransportError::ConnectionClosed("response channel closed".into())
+                })?;
             }
             JsonRpcMessage::Notification(_) | JsonRpcMessage::Request(_) => {
                 // Server-initiated notifications/requests go to SSE broadcast
@@ -265,11 +289,14 @@ impl Transport for HttpTransport {
             let guard = self.current_response.lock().await;
             guard.as_ref().cloned()
         };
-        if let Some(tx) = tx {
-            tx.send(Ok(Bytes::copy_from_slice(bytes)))
-                .await
-                .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
-        }
+        let Some(tx) = tx else {
+            return Err(TransportError::ConnectionClosed(
+                "no active response channel (send_raw called before receive_message)".into(),
+            ));
+        };
+        tx.send(Ok(Bytes::copy_from_slice(bytes)))
+            .await
+            .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
         Ok(())
     }
 
@@ -314,9 +341,15 @@ impl Transport for HttpTransport {
 
 /// Builds the axum router with `POST /message` and `GET /sse` routes.
 fn build_router(shared: Arc<HttpSharedState>) -> Router {
+    // Override axum's default 2MB body limit with the configured max_message_size
+    // (default 10MB). Without this, requests between 2MB and max_message_size
+    // are rejected by axum before reaching the handler's size check.
+    let body_limit = axum::extract::DefaultBodyLimit::max(shared.max_message_size);
+
     Router::new()
         .route("/message", post(handle_post_message))
         .route("/sse", get(handle_sse))
+        .layer(body_limit)
         .with_state(shared)
 }
 
@@ -356,17 +389,12 @@ async fn handle_post_message(
         }
     };
 
-    let connection_id = shared.next_connection_id.fetch_add(1, Ordering::Relaxed);
+    let connection_id = shared.next_connection_id.fetch_add(1, Ordering::SeqCst);
+    let connected_at = Instant::now();
 
-    // Track connection
-    shared.connections.insert(
-        connection_id,
-        ConnectionState {
-            remote_addr: addr,
-            connected_at: Instant::now(),
-            request_count: AtomicU64::new(1),
-        },
-    );
+    // Connection tracking is deferred to receive_message to avoid a race where
+    // the handler inserts and the ConnectionGuard from the previous request
+    // removes the wrong entry.
 
     // Create response body channel
     let (response_tx, response_rx) = mpsc::channel::<std::result::Result<Bytes, io::Error>>(64);
@@ -376,6 +404,7 @@ async fn handle_post_message(
         response_tx,
         connection_id,
         remote_addr: addr,
+        connected_at,
     };
 
     // Push into the transport channel
@@ -390,7 +419,10 @@ async fn handle_post_message(
     Response::builder()
         .header("content-type", "application/json")
         .body(body)
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to build HTTP response");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
 }
 
 /// `GET /sse` handler.
@@ -403,8 +435,12 @@ async fn handle_sse(
 {
     let rx = shared.sse_tx.subscribe();
     let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-        |result: std::result::Result<String, _>| {
-            result.ok().map(|data| Ok(SseEvent::default().data(data)))
+        |result: std::result::Result<String, _>| match result {
+            Ok(data) => Some(Ok(SseEvent::default().data(data))),
+            Err(e) => {
+                tracing::warn!(error = %e, "SSE subscriber lagged, dropping missed messages");
+                None
+            }
         },
     );
     Sse::new(stream).keep_alive(KeepAlive::default())
@@ -419,18 +455,27 @@ async fn handle_sse(
 /// Accepts:
 /// - `:8080` → `0.0.0.0:8080`
 /// - `8080` → `0.0.0.0:8080`
-/// - `1.2.3.4:8080` → `1.2.3.4:8080`
+/// - `1.2.3.4:8080` → as-is
 ///
-/// Implements: TJ-SPEC-007 F-002
-#[must_use]
-pub fn parse_bind_addr(input: &str) -> String {
-    if input.starts_with(':') {
+/// # Errors
+///
+/// Returns [`TransportError::ConnectionFailed`] if the result cannot be
+/// parsed as a valid socket address.
+///
+/// Implements: TJ-SPEC-002 F-003
+pub fn parse_bind_addr(input: &str) -> std::result::Result<String, TransportError> {
+    let addr = if input.starts_with(':') {
         format!("0.0.0.0{input}")
     } else if input.parse::<u16>().is_ok() {
         format!("0.0.0.0:{input}")
     } else {
         input.to_string()
-    }
+    };
+    // Validate it can be parsed as a socket address
+    addr.parse::<SocketAddr>().map_err(|e| {
+        TransportError::ConnectionFailed(format!("invalid bind address \"{input}\": {e}"))
+    })?;
+    Ok(addr)
 }
 
 // ============================================================================
@@ -471,22 +516,27 @@ mod tests {
 
     #[test]
     fn parse_bind_addr_colon_port() {
-        assert_eq!(parse_bind_addr(":8080"), "0.0.0.0:8080");
+        assert_eq!(parse_bind_addr(":8080").unwrap(), "0.0.0.0:8080");
     }
 
     #[test]
     fn parse_bind_addr_port_only() {
-        assert_eq!(parse_bind_addr("8080"), "0.0.0.0:8080");
+        assert_eq!(parse_bind_addr("8080").unwrap(), "0.0.0.0:8080");
     }
 
     #[test]
     fn parse_bind_addr_full() {
-        assert_eq!(parse_bind_addr("1.2.3.4:8080"), "1.2.3.4:8080");
+        assert_eq!(parse_bind_addr("1.2.3.4:8080").unwrap(), "1.2.3.4:8080");
     }
 
     #[test]
     fn parse_bind_addr_localhost() {
-        assert_eq!(parse_bind_addr("127.0.0.1:3000"), "127.0.0.1:3000");
+        assert_eq!(parse_bind_addr("127.0.0.1:3000").unwrap(), "127.0.0.1:3000");
+    }
+
+    #[test]
+    fn parse_bind_addr_invalid() {
+        assert!(parse_bind_addr("not-an-address").is_err());
     }
 
     // ------------------------------------------------------------------

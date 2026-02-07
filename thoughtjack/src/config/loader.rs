@@ -437,7 +437,15 @@ impl EnvSubstitution {
                             let msg = Self::read_until_close(chars, position)?;
                             return Ok((var_name, None, Some(msg)));
                         }
-                        _ => var_name.push(':'),
+                        _ => {
+                            tracing::warn!(
+                                "env var reference '${{{}:...' has ':' not \
+                                 followed by '-' or '?'; did you mean '${{{{VAR:-default}}}}' \
+                                 or '${{{{VAR:?error}}}}'?",
+                                var_name
+                            );
+                            var_name.push(':');
+                        }
                     }
                 }
                 _ => {
@@ -599,12 +607,12 @@ impl IncludeResolver {
             });
         }
 
+        // Reject absolute paths — all $include paths must be relative to library root
         if path.is_absolute() {
-            if path.exists() {
-                return Ok(path.to_path_buf());
-            }
-            return Err(ConfigError::MissingFile {
-                path: path.to_path_buf(),
+            return Err(ConfigError::InvalidValue {
+                field: "$include".to_string(),
+                value: path_str.to_string(),
+                expected: "relative path (absolute paths are not allowed in $include)".to_string(),
             });
         }
 
@@ -751,12 +759,12 @@ impl FileResolver {
             });
         }
 
+        // Reject absolute paths — all $file paths must be relative
         if path.is_absolute() {
-            if path.exists() {
-                return Ok(path.to_path_buf());
-            }
-            return Err(ConfigError::MissingFile {
-                path: path.to_path_buf(),
+            return Err(ConfigError::InvalidValue {
+                field: "$file".to_string(),
+                value: path_str.to_string(),
+                expected: "relative path (absolute paths are not allowed in $file)".to_string(),
             });
         }
 
@@ -783,12 +791,31 @@ impl FileResolver {
     }
 
     /// Loads a file with caching.
+    /// Maximum file size for `$file` / `$include` directives (10 MB).
+    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
     fn load_file(
         path: &Path,
         cache: &mut HashMap<PathBuf, FileContent>,
     ) -> Result<FileContent, ConfigError> {
         if let Some(cached) = cache.get(path) {
             return Ok(cached.clone());
+        }
+
+        // Size guard: prevent loading excessively large files
+        let metadata = std::fs::metadata(path).map_err(|_| ConfigError::MissingFile {
+            path: path.to_path_buf(),
+        })?;
+        if metadata.len() > Self::MAX_FILE_SIZE {
+            return Err(ConfigError::ParseError {
+                path: path.to_path_buf(),
+                line: None,
+                message: format!(
+                    "file size {} exceeds maximum {} bytes",
+                    metadata.len(),
+                    Self::MAX_FILE_SIZE
+                ),
+            });
         }
 
         let content = match path.extension().and_then(|e| e.to_str()) {
@@ -850,7 +877,9 @@ fn verify_within_base(resolved: &Path, base: &Path, directive: &str) -> Result<(
         .map_err(|_| ConfigError::MissingFile {
             path: resolved.to_path_buf(),
         })?;
-    let canonical_base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let canonical_base = base.canonicalize().map_err(|_| ConfigError::MissingFile {
+        path: base.to_path_buf(),
+    })?;
 
     if !canonical.starts_with(&canonical_base) {
         return Err(ConfigError::InvalidValue {
@@ -864,23 +893,38 @@ fn verify_within_base(resolved: &Path, base: &Path, directive: &str) -> Result<(
 }
 
 /// Parses an environment variable with a default value.
+///
+/// Logs a warning if the variable is set but cannot be parsed,
+/// to prevent silent misconfiguration of security-relevant limits.
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.parse().unwrap_or_else(|_| {
+            tracing::warn!(name, value = %v, "invalid env var value, using default");
+            default
+        }),
+        Err(_) => default,
+    }
 }
 
 /// Deep merges override into base.
 ///
-/// For mappings: recursively merge keys.
+/// For mappings: recursively merge keys up to `MAX_RECURSION_DEPTH`.
 /// For other types: override replaces base.
 fn deep_merge(base: &mut Value, override_val: &Value) {
+    deep_merge_inner(base, override_val, 0);
+}
+
+fn deep_merge_inner(base: &mut Value, override_val: &Value, depth: usize) {
+    if depth >= MAX_RECURSION_DEPTH {
+        // At max depth, replace rather than recurse (prevents stack overflow)
+        *base = override_val.clone();
+        return;
+    }
     match (base, override_val) {
         (Value::Mapping(base_map), Value::Mapping(override_map)) => {
             for (key, override_value) in override_map {
                 if let Some(base_value) = base_map.get_mut(key) {
-                    deep_merge(base_value, override_value);
+                    deep_merge_inner(base_value, override_value, depth + 1);
                 } else {
                     base_map.insert(key.clone(), override_value.clone());
                 }
@@ -1156,7 +1200,7 @@ mod tests {
             r"
             string: hello
             number: 42
-            float: 3.14
+            float: 2.71
             bool: true
             null_val: null
             array:
@@ -1172,7 +1216,7 @@ mod tests {
 
         assert_eq!(json["string"], "hello");
         assert_eq!(json["number"], 42);
-        assert!((json["float"].as_f64().unwrap() - 3.14).abs() < 0.001);
+        assert!((json["float"].as_f64().unwrap() - 2.71).abs() < 0.001);
         assert_eq!(json["bool"], true);
         assert!(json["null_val"].is_null());
         assert_eq!(json["array"][0], 1);
@@ -1212,9 +1256,7 @@ mod tests {
     fn test_estimate_generator_size_garbage() {
         let config = GeneratorConfig {
             type_: crate::config::schema::GeneratorType::Garbage,
-            params: [("bytes".to_string(), serde_json::json!(1000))]
-                .into_iter()
-                .collect(),
+            params: std::iter::once(("bytes".to_string(), serde_json::json!(1000))).collect(),
         };
         assert_eq!(estimate_generator_size(&config), 1000);
     }
@@ -1223,9 +1265,7 @@ mod tests {
     fn test_estimate_generator_size_nested_json() {
         let config = GeneratorConfig {
             type_: crate::config::schema::GeneratorType::NestedJson,
-            params: [("depth".to_string(), serde_json::json!(100))]
-                .into_iter()
-                .collect(),
+            params: std::iter::once(("depth".to_string(), serde_json::json!(100))).collect(),
         };
         // 100 * 15 = 1500
         assert_eq!(estimate_generator_size(&config), 1500);
@@ -1257,6 +1297,60 @@ mod tests {
                 field, expected, ..
             }) => {
                 assert_eq!(field, "$file");
+                assert!(expected.contains(".."));
+            }
+            _ => panic!("Expected InvalidValue error for path traversal"),
+        }
+    }
+
+    #[test]
+    fn test_file_resolver_rejects_absolute_path() {
+        let resolver = FileResolver::new(PathBuf::from("/fake/library"));
+        let abs_path = Value::String("/etc/passwd".to_string());
+        let result = resolver.resolve_path(&abs_path, Path::new("/fake/config.yaml"));
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue {
+                field, expected, ..
+            }) => {
+                assert_eq!(field, "$file");
+                assert!(expected.contains("absolute"));
+            }
+            _ => panic!("Expected InvalidValue error for absolute path"),
+        }
+    }
+
+    #[test]
+    fn test_include_resolver_rejects_absolute_path() {
+        let resolver = IncludeResolver::new(PathBuf::from("/fake/library"), 10);
+        let abs_path = Value::String("/etc/shadow".to_string());
+        let result = resolver.resolve_path(&abs_path);
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue {
+                field, expected, ..
+            }) => {
+                assert_eq!(field, "$include");
+                assert!(expected.contains("absolute"));
+            }
+            _ => panic!("Expected InvalidValue error for absolute path"),
+        }
+    }
+
+    #[test]
+    fn test_include_resolver_rejects_path_traversal() {
+        let resolver = IncludeResolver::new(PathBuf::from("/fake/library"), 10);
+        let traversal = Value::String("../../etc/passwd".to_string());
+        let result = resolver.resolve_path(&traversal);
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue {
+                field, expected, ..
+            }) => {
+                assert_eq!(field, "$include");
                 assert!(expected.contains(".."));
             }
             _ => panic!("Expected InvalidValue error for path traversal"),

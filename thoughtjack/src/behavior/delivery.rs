@@ -230,8 +230,23 @@ impl DeliveryBehavior for UnboundedLineDelivery {
         let mut buf = Vec::with_capacity(serialized_len + padding_needed);
         buf.extend_from_slice(&serialized);
 
-        let pad_byte = self.padding_char as u8;
-        buf.resize(serialized_len + padding_needed, pad_byte);
+        // Use the UTF-8 encoding of padding_char. For ASCII chars (the common
+        // case) this is a single byte. For multi-byte chars, we repeat the full
+        // encoding to fill the remaining space.
+        if self.padding_char.is_ascii() {
+            buf.resize(serialized_len + padding_needed, self.padding_char as u8);
+        } else {
+            let mut pad_buf = [0u8; 4];
+            let pad = self.padding_char.encode_utf8(&mut pad_buf).as_bytes();
+            while buf.len() < serialized_len + padding_needed {
+                let remaining = (serialized_len + padding_needed) - buf.len();
+                // NOTE: when remaining < pad.len(), the final character is
+                // truncated, producing invalid UTF-8. This is intentional for
+                // the unbounded-line attack mode.
+                let chunk = remaining.min(pad.len());
+                buf.extend_from_slice(&pad[..chunk]);
+            }
+        }
 
         transport.send_raw(&buf).await?;
 
@@ -255,6 +270,19 @@ impl DeliveryBehavior for UnboundedLineDelivery {
 // NestedJsonDelivery
 // ============================================================================
 
+/// Maximum nesting depth for `NestedJsonDelivery`.
+///
+/// Prevents OOM from extreme depth values that would produce
+/// multi-gigabyte allocations via `Vec::with_capacity`.
+const MAX_NESTED_JSON_DEPTH: usize = 100_000;
+
+/// Maximum key length for `NestedJsonDelivery`.
+///
+/// A long key multiplied by `MAX_NESTED_JSON_DEPTH` can OOM:
+/// e.g. 10k-char key × 100k depth ≈ 1GB. Capped at 1024 to keep
+/// worst-case allocation under ~100MB.
+const MAX_NESTED_JSON_KEY_LEN: usize = 1024;
+
 /// Wrap response in deep JSON nesting (iterative, no recursion).
 ///
 /// Implements: TJ-SPEC-004 F-005
@@ -266,10 +294,17 @@ pub struct NestedJsonDelivery {
 impl NestedJsonDelivery {
     /// Creates a new nested JSON delivery.
     ///
+    /// Depth is clamped to [`MAX_NESTED_JSON_DEPTH`] (100,000) and
+    /// key length to [`MAX_NESTED_JSON_KEY_LEN`] (1024) to prevent OOM.
+    ///
     /// Implements: TJ-SPEC-004 F-005
     #[must_use]
-    pub const fn new(depth: usize, key: String) -> Self {
-        Self { depth, key }
+    pub fn new(depth: usize, mut key: String) -> Self {
+        key.truncate(MAX_NESTED_JSON_KEY_LEN);
+        Self {
+            depth: depth.min(MAX_NESTED_JSON_DEPTH),
+            key,
+        }
     }
 }
 
@@ -536,6 +571,7 @@ mod tests {
 
         let serialized = serde_json::to_vec(&msg).unwrap();
         let expected_chunks = serialized.len() + 1; // +1 for newline
+        #[allow(clippy::cast_possible_truncation)]
         let expected_min = delay * (expected_chunks as u32) * 9 / 10; // 90% tolerance
 
         assert!(
@@ -731,6 +767,56 @@ mod tests {
     fn test_factory_response_delay() {
         let behavior = create_delivery_behavior(&DeliveryConfig::ResponseDelay { delay_ms: 500 });
         assert_eq!(behavior.name(), "response_delay");
+    }
+
+    #[tokio::test]
+    async fn test_slow_loris_precancelled() {
+        // EC-BEH-002: pre-cancelled token → completed: false
+        // Note: select! may poll both branches; the first chunk's send_raw
+        // may complete before cancellation is noticed, so bytes_sent can be
+        // 0 or chunk_size. The key invariant is completed == false.
+        let transport = MockTransport::new();
+        let delivery = SlowLorisDelivery::new(Duration::from_millis(100), 1);
+        let msg = test_message();
+
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // Pre-cancel
+
+        let result = delivery.deliver(&msg, &transport, cancel).await.unwrap();
+
+        assert!(
+            !result.completed,
+            "should not be completed when pre-cancelled"
+        );
+        // bytes_sent must be less than the full message
+        let full_size = serde_json::to_vec(&msg).unwrap().len() + 1;
+        assert!(
+            result.bytes_sent < full_size,
+            "should not have sent full message ({} >= {full_size})",
+            result.bytes_sent
+        );
+    }
+
+    #[tokio::test]
+    async fn test_response_delay_precancelled() {
+        // EC-BEH-002: pre-cancel → completed: false
+        let transport = MockTransport::new();
+        let delivery = ResponseDelayDelivery::new(Duration::from_secs(60));
+        let msg = test_message();
+
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // Pre-cancel
+
+        let result = delivery.deliver(&msg, &transport, cancel).await.unwrap();
+
+        assert!(
+            !result.completed,
+            "should not be completed when pre-cancelled"
+        );
+        assert_eq!(
+            result.bytes_sent, 0,
+            "should not send any bytes when pre-cancelled"
+        );
     }
 
     #[test]

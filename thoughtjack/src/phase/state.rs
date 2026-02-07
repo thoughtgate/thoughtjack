@@ -9,8 +9,15 @@ use std::sync::{Arc, Mutex};
 use tokio::time::Instant;
 
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 
 use crate::config::schema::EntryAction;
+
+/// Maximum number of distinct event types tracked in the `DashMap`.
+///
+/// Prevents unbounded memory growth from arbitrary event names
+/// (e.g., a malicious client sending events with unique names).
+const MAX_EVENT_TYPE_CARDINALITY: usize = 10_000;
 
 /// Newtype wrapper for event names, used as `DashMap` keys.
 ///
@@ -65,6 +72,11 @@ pub struct PhaseState {
     current_phase: AtomicUsize,
     /// Event counts per event type, using atomic increments
     event_counts: DashMap<EventType, AtomicU64>,
+    /// Approximate count of distinct event types in `event_counts`.
+    /// Used for cardinality checking without calling `DashMap::len()`
+    /// (which would require locking all shards and could deadlock
+    /// if called inside an `entry()` lock).
+    event_type_count: AtomicUsize,
     /// Timestamp when current phase was entered.
     // std::sync::Mutex is intentional: held briefly for Instant read/write, never
     // across .await points. Per tokio docs this is preferred over tokio::sync::Mutex
@@ -88,6 +100,7 @@ impl PhaseState {
         Self {
             current_phase: AtomicUsize::new(0),
             event_counts: DashMap::new(),
+            event_type_count: AtomicUsize::new(0),
             phase_entered_at: Mutex::new(now),
             is_terminal: AtomicBool::new(num_phases == 0),
             num_phases,
@@ -121,17 +134,49 @@ impl PhaseState {
 
     /// Atomically increments the event counter for the given event type.
     ///
-    /// Returns the new count after incrementing.
+    /// Returns the new count after incrementing. If the event is already
+    /// tracked, its counter is incremented. New event types are only tracked
+    /// if the cardinality limit has not been reached; otherwise the event
+    /// is silently dropped and `0` is returned.
+    ///
     /// Uses saturating add to handle overflow gracefully.
     ///
     /// Implements: TJ-SPEC-003 F-003
     pub fn increment_event(&self, event_type: &EventType) -> u64 {
-        let prev = self
-            .event_counts
-            .entry(event_type.clone())
-            .or_insert_with(|| AtomicU64::new(0))
-            .fetch_add(1, Ordering::SeqCst);
-        prev.saturating_add(1)
+        // Fast path: if the event type already exists, increment atomically.
+        if let Some(counter) = self.event_counts.get(event_type) {
+            let prev = counter.fetch_add(1, Ordering::SeqCst);
+            return prev.saturating_add(1);
+        }
+
+        // Cardinality guard: reject new event types once we exceed the limit
+        // to prevent unbounded DashMap growth from arbitrary event names.
+        // Uses a separate atomic counter instead of DashMap::len() because
+        // len() locks all shards and would deadlock inside entry().
+        // The overshoot under concurrency is bounded to ~num_cpus.
+        if self.event_type_count.load(Ordering::SeqCst) >= MAX_EVENT_TYPE_CARDINALITY {
+            tracing::warn!(
+                event = %event_type,
+                limit = MAX_EVENT_TYPE_CARDINALITY,
+                "event type cardinality limit reached, dropping event"
+            );
+            return 0;
+        }
+
+        // Use entry() for atomic insert-or-increment to avoid losing
+        // increments from concurrent threads inserting the same key.
+        match self.event_counts.entry(event_type.clone()) {
+            Entry::Occupied(entry) => {
+                // Another thread inserted between our get() and entry() — just increment.
+                let prev = entry.get().fetch_add(1, Ordering::SeqCst);
+                prev.saturating_add(1)
+            }
+            Entry::Vacant(entry) => {
+                self.event_type_count.fetch_add(1, Ordering::SeqCst);
+                entry.insert(AtomicU64::new(1));
+                1
+            }
+        }
     }
 
     /// Returns the current count for the given event type.

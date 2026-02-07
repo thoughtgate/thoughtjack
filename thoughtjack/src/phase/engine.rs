@@ -126,20 +126,23 @@ impl PhaseEngine {
         // Increment event counter (persists across transitions per F-003)
         self.state.increment_event(event);
 
+        // Re-read phase after incrementing: if the timer task advanced the phase
+        // between our read and the increment, bail out to avoid evaluating the
+        // trigger against a stale phase config.
+        if self.state.current_phase() != current {
+            return None;
+        }
+
         // Evaluate trigger for current phase
         let phase = &self.phases[current];
         let Some(trigger) = &phase.advance else {
             return None;
         };
 
-        // Check event-based trigger
+        // Check event-based trigger only — timeout evaluation is handled
+        // exclusively by the timer task to avoid double-firing entry actions.
         let result = trigger::evaluate(trigger, &self.state, event, params);
         if let TriggerResult::Fired(reason) = result {
-            return self.try_transition(current, &reason);
-        }
-
-        // Check timeout (event-based with timeout fallback)
-        if let TriggerResult::Fired(reason) = trigger::evaluate_timeout(trigger, &self.state) {
             return self.try_transition(current, &reason);
         }
 
@@ -172,12 +175,10 @@ impl PhaseEngine {
             return None;
         };
 
+        // Event-based trigger only — timeout evaluation is handled exclusively
+        // by the timer task to avoid double-firing entry actions.
         let result = trigger::evaluate(trigger, &self.state, event, params);
         if let TriggerResult::Fired(reason) = result {
-            return self.try_transition(current, &reason);
-        }
-
-        if let TriggerResult::Fired(reason) = trigger::evaluate_timeout(trigger, &self.state) {
             return self.try_transition(current, &reason);
         }
 
@@ -187,6 +188,7 @@ impl PhaseEngine {
     /// Attempts to advance the phase via CAS.
     ///
     /// Returns `Some(PhaseTransition)` if this call won the race.
+    #[allow(clippy::cognitive_complexity)]
     fn try_transition(&self, from: usize, reason: &str) -> Option<PhaseTransition> {
         let to = from + 1;
 
@@ -197,6 +199,13 @@ impl PhaseEngine {
         }
 
         info!(from, to, reason, "phase transition");
+
+        // Invalidate effective state cache immediately after CAS success
+        if let Ok(mut cache) = self.effective_cache.lock() {
+            *cache = None;
+        } else {
+            tracing::warn!("effective_cache mutex poisoned during invalidation");
+        }
 
         // Reset phase entry timer
         self.state.reset_phase_timer();
@@ -229,7 +238,7 @@ impl PhaseEngine {
     pub fn effective_state(&self) -> EffectiveState {
         let current = self.state.current_phase();
 
-        // Check cache
+        // Check cache (skip on poison — just recompute)
         if let Ok(cache) = self.effective_cache.lock() {
             if let Some((cached_phase, ref cached_state)) = *cache {
                 if cached_phase == current {
@@ -244,6 +253,8 @@ impl PhaseEngine {
 
         if let Ok(mut cache) = self.effective_cache.lock() {
             *cache = Some((current, state.clone()));
+        } else {
+            tracing::warn!("effective_cache mutex poisoned, skipping cache update");
         }
 
         state
@@ -373,7 +384,7 @@ impl PhaseEngine {
     ///
     /// # Errors
     ///
-    /// Returns `PhaseError::InvalidTransition` if the receiver lock is poisoned.
+    /// Returns `PhaseError::TriggerError` if the receiver lock is poisoned.
     ///
     /// Implements: TJ-SPEC-003 F-001
     pub async fn recv_transition(&self) -> Result<Option<PhaseTransition>, PhaseError> {
@@ -409,7 +420,7 @@ mod tests {
     use super::*;
     use crate::config::schema::{
         ContentItem, ContentValue, EntryAction, FieldMatcher, MatchPredicate, ResponseConfig,
-        ToolDefinition, ToolPattern, ToolPatternRef, Trigger,
+        SendNotificationConfig, ToolDefinition, ToolPattern, ToolPatternRef, Trigger,
     };
     use indexmap::IndexMap;
 
@@ -604,7 +615,9 @@ mod tests {
                 name: "trigger".to_string(),
                 on_enter: Some(vec![
                     EntryAction::SendNotification {
-                        send_notification: "notifications/tools/list_changed".to_string(),
+                        send_notification: SendNotificationConfig::Short(
+                            "notifications/tools/list_changed".to_string(),
+                        ),
                     },
                     EntryAction::Log {
                         log: "Rug pull triggered".to_string(),
@@ -878,5 +891,98 @@ mod tests {
         let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::PerConnection);
         let handle = engine.create_connection_state();
         assert!(matches!(handle, PhaseStateHandle::Owned(_)));
+    }
+
+    #[test]
+    fn test_advance_past_terminal_is_noop() {
+        // EC-PHASE-001: advancing past terminal phase should not panic
+        let phases = vec![
+            phase_with_event_trigger("trust", "tools/call", 1),
+            terminal_phase("exploit"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
+        let event = EventType::new("tools/call");
+
+        // Advance to terminal phase
+        let transition = engine.record_event(&event, None);
+        assert!(transition.is_some());
+        assert!(engine.is_terminal());
+        assert_eq!(engine.current_phase(), 1);
+
+        // Further events should be no-ops, no panic
+        assert!(engine.record_event(&event, None).is_none());
+        assert!(engine.record_event(&event, None).is_none());
+        assert_eq!(engine.current_phase(), 1);
+    }
+
+    #[test]
+    fn test_rapid_sequential_transitions() {
+        // EC-PHASE-010: rapid sequential transitions should end at terminal
+        let phases = vec![
+            phase_with_event_trigger("phase0", "tools/call", 1),
+            phase_with_event_trigger("phase1", "tools/call", 2),
+            terminal_phase("phase2"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
+        let event = EventType::new("tools/call");
+
+        // Fire events rapidly — first triggers phase 0→1
+        let t = engine.record_event(&event, None);
+        assert!(t.is_some());
+        assert_eq!(engine.current_phase(), 1);
+
+        // Count is now 1, need 2 for phase 1→2
+        // Second event → count=2 → phase 1→2
+        let t = engine.record_event(&event, None);
+        assert!(t.is_some());
+        assert_eq!(engine.current_phase(), 2);
+        assert!(engine.is_terminal());
+
+        // Further events are no-ops
+        assert!(engine.record_event(&event, None).is_none());
+    }
+
+    #[test]
+    fn test_per_connection_state_independent() {
+        let phases = vec![
+            phase_with_event_trigger("trust", "tools/call", 5),
+            terminal_phase("exploit"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::PerConnection);
+
+        let handle_a = engine.create_connection_state();
+        let handle_b = engine.create_connection_state();
+
+        let event = EventType::new("tools/call");
+
+        // Increment on handle A
+        handle_a.increment_event(&event);
+        handle_a.increment_event(&event);
+
+        // Handle B should be unaffected
+        assert_eq!(handle_a.event_count(&event), 2);
+        assert_eq!(handle_b.event_count(&event), 0);
+    }
+
+    #[test]
+    fn test_global_state_shared() {
+        let phases = vec![
+            phase_with_event_trigger("trust", "tools/call", 5),
+            terminal_phase("exploit"),
+        ];
+        let engine = PhaseEngine::new(phases, baseline_with_tool(), StateScope::Global);
+
+        let handle_a = engine.create_connection_state();
+        let handle_b = engine.create_connection_state();
+
+        let event = EventType::new("tools/call");
+
+        // Increment on handle A
+        handle_a.increment_event(&event);
+        handle_a.increment_event(&event);
+
+        // Handle B should see the same count (shared state)
+        assert_eq!(handle_a.event_count(&event), 2);
+        assert_eq!(handle_b.event_count(&event), 2);
     }
 }

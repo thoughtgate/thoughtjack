@@ -1,0 +1,53 @@
+# cargo-deny configuration for ThoughtJack
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+# =============================================================================
+# Licenses
+# =============================================================================
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MIT-0",
+    "Unlicense",
+    "OpenSSL",
+    "Apache-2.0 WITH LLVM-exception",
+]
+confidence-threshold = 0.8
+
+# =============================================================================
+# Advisories
+# =============================================================================
+[advisories]
+db-path = "~/.cargo/advisory-db"
+# vulnerability is always denied in cargo-deny >=0.19 (no config needed)
+unmaintained = "workspace"
+yanked = "warn"
+
+# =============================================================================
+# Bans
+# =============================================================================
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# =============================================================================
+# Sources
+# =============================================================================
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

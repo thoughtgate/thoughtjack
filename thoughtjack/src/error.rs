@@ -92,6 +92,10 @@ pub enum ThoughtJackError {
     /// YAML parsing error
     #[error("YAML error: {0}")]
     Yaml(#[from] serde_yaml::Error),
+
+    /// Usage error (invalid arguments, missing required options)
+    #[error("{0}")]
+    Usage(String),
 }
 
 impl ThoughtJackError {
@@ -110,6 +114,7 @@ impl ThoughtJackError {
             Self::Generator(_) => ExitCode::GENERATOR_ERROR,
             Self::Behavior(_) => ExitCode::ERROR,
             Self::Io(_) => ExitCode::IO_ERROR,
+            Self::Usage(_) => ExitCode::USAGE_ERROR,
         }
     }
 }
@@ -127,7 +132,7 @@ impl ThoughtJackError {
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// YAML parsing failed
-    #[error("parse error in {path}: {message}")]
+    #[error("parse error in {path}{}: {message}", line.map_or_else(String::new, |l| format!(" (line {l})")))]
     ParseError {
         /// Path to the configuration file
         path: PathBuf,
@@ -158,15 +163,6 @@ pub enum ConfigError {
     MissingFile {
         /// Path to the missing file
         path: PathBuf,
-    },
-
-    /// Required field is missing from configuration
-    #[error("missing required field '{field}' at {location}")]
-    MissingRequired {
-        /// Name of the missing field
-        field: String,
-        /// Location in the configuration (e.g., "phases[0].advance")
-        location: String,
     },
 
     /// Field has an invalid value
@@ -249,35 +245,9 @@ pub enum TransportError {
     #[error("connection failed: {0}")]
     ConnectionFailed(String),
 
-    /// Protocol-level error (malformed JSON-RPC, invalid message format)
-    #[error("protocol error: {0}")]
-    Protocol(String),
-
     /// Connection was closed unexpectedly
     #[error("connection closed: {0}")]
     ConnectionClosed(String),
-
-    /// Read or write timeout
-    #[error("timeout: {0}")]
-    Timeout(String),
-
-    /// Message exceeds size limit
-    #[error("message too large: {size} bytes (limit: {limit})")]
-    MessageTooLarge {
-        /// Actual message size in bytes
-        size: usize,
-        /// Configured size limit in bytes
-        limit: usize,
-    },
-
-    /// Behavior not supported on this transport
-    #[error("behavior not supported on {transport}: {behavior}")]
-    UnsupportedBehavior {
-        /// Transport type name
-        transport: String,
-        /// Behavior name
-        behavior: String,
-    },
 }
 
 // ============================================================================
@@ -289,10 +259,6 @@ pub enum TransportError {
 /// Implements: TJ-SPEC-003 F-001
 #[derive(Debug, Error)]
 pub enum PhaseError {
-    /// Attempted invalid state transition
-    #[error("invalid phase transition: {0}")]
-    InvalidTransition(String),
-
     /// Referenced phase does not exist
     #[error("phase not found: {0}")]
     NotFound(String),
@@ -300,10 +266,6 @@ pub enum PhaseError {
     /// Trigger evaluation failed
     #[error("trigger evaluation failed: {0}")]
     TriggerError(String),
-
-    /// Entry action execution failed
-    #[error("entry action failed: {0}")]
-    EntryActionFailed(String),
 }
 
 // ============================================================================
@@ -318,14 +280,6 @@ pub enum BehaviorError {
     /// Behavior execution failed
     #[error("behavior execution failed: {0}")]
     ExecutionFailed(String),
-
-    /// Side effect execution failed
-    #[error("side effect failed: {0}")]
-    SideEffectFailed(String),
-
-    /// Invalid behavior configuration
-    #[error("invalid behavior configuration: {0}")]
-    InvalidConfig(String),
 }
 
 impl From<TransportError> for BehaviorError {
@@ -360,10 +314,6 @@ pub enum GeneratorError {
     /// Invalid generator parameters
     #[error("invalid generator parameters: {0}")]
     InvalidParameters(String),
-
-    /// Seed validation failed
-    #[error("invalid seed: {0}")]
-    InvalidSeed(String),
 }
 
 // ============================================================================
@@ -397,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_phase_error_exit_code() {
-        let err: ThoughtJackError = PhaseError::InvalidTransition("test".to_string()).into();
+        let err: ThoughtJackError = PhaseError::TriggerError("test".to_string()).into();
         assert_eq!(err.exit_code(), ExitCode::PHASE_ERROR);
     }
 

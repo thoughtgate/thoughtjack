@@ -48,12 +48,29 @@ impl AnsiEscapeGenerator {
             .map(|arr| {
                 arr.iter()
                     .filter_map(Value::as_str)
-                    .filter_map(parse_sequence_type)
+                    .filter_map(|name| {
+                        let parsed = parse_sequence_type(name);
+                        if parsed.is_none() {
+                            tracing::warn!(
+                                sequence_type = name,
+                                "unknown ANSI sequence type, ignoring"
+                            );
+                        }
+                        parsed
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
 
         let count = extract_usize(params, "count", 100);
+
+        if count > limits.max_batch_size {
+            return Err(GeneratorError::LimitExceeded(format!(
+                "count {count} exceeds max_batch_size {}",
+                limits.max_batch_size
+            )));
+        }
+
         let payload = params
             .get("payload")
             .and_then(Value::as_str)
@@ -340,7 +357,7 @@ mod tests {
         assert_eq!(s.matches("\x1B[2J\x1B[H").count(), 2);
         // cursor_move sequences contain H (not part of clear)
         // Count H that are cursor moves (not part of \x1B[H in clear)
-        let cursor_moves = s.matches(";").count(); // row;col pairs
+        let cursor_moves = s.matches(';').count(); // row;col pairs
         assert_eq!(cursor_moves, 2);
     }
 }

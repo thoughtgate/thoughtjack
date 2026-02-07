@@ -1,0 +1,3 @@
+# MCP conformance expected failures
+# Updated after initial CI run to baseline known transport/protocol gaps
+server: []

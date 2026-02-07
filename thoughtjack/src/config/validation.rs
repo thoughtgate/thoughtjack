@@ -9,7 +9,7 @@
 
 use crate::config::loader::ConfigLimits;
 use crate::config::schema::{
-    BaselineState, Phase, PromptPattern, ResourcePattern, ServerConfig, ToolPattern,
+    BaselineState, FieldMatcher, Phase, PromptPattern, ResourcePattern, ServerConfig, ToolPattern,
 };
 use crate::error::{Severity, ValidationIssue};
 
@@ -88,6 +88,14 @@ impl Validator {
             self.validate_phased_server(config);
         } else {
             self.validate_simple_server(config);
+        }
+
+        // Feature completeness warnings
+        if config.logging.is_some() {
+            self.add_warning(
+                "logging",
+                "The 'logging' configuration is not yet implemented and will be ignored",
+            );
         }
 
         // Limits validation
@@ -233,6 +241,22 @@ impl Validator {
                 self.validate_trigger(trigger, &format!("{path}.advance"));
             }
 
+            // EC-CFG-013: middle terminal phase warning
+            if phase.advance.is_none() && idx < phases.len() - 1 {
+                self.add_warning(
+                    &path,
+                    &format!(
+                        "Phase '{}' has no advance trigger but is not the last phase; \
+                         subsequent phases will be unreachable",
+                        phase.name
+                    ),
+                );
+            }
+
+            // TODO(v0.2): validate replace/remove targets against cumulative state
+            // (baseline + previous phases' add_* fields) instead of just baseline,
+            // so phases that build on earlier additions can be validated correctly.
+
             // Validate replace_tools targets exist in baseline
             if let Some(replace_tools) = &phase.replace_tools {
                 for tool_name in replace_tools.keys() {
@@ -332,6 +356,21 @@ impl Validator {
             );
         }
 
+        // EC-PHASE-005: count must be positive
+        if let Some(count) = trigger.count {
+            if count == 0 {
+                self.add_error(&format!("{path}.count"), "count must be positive (got 0)");
+            }
+        }
+
+        // EC-CFG-007: timeout only valid with event triggers
+        if trigger.timeout.is_some() && !has_event {
+            self.add_error(
+                &format!("{path}.timeout"),
+                "timeout is only valid with event triggers ('on' must be specified)",
+            );
+        }
+
         // Validate event name format
         if let Some(event) = &trigger.on {
             self.validate_event_name(event, &format!("{path}.on"));
@@ -345,6 +384,40 @@ impl Validator {
         // Validate timeout duration if present
         if let Some(timeout) = &trigger.timeout {
             self.validate_duration(timeout, &format!("{path}.timeout"));
+        }
+
+        // EC-PHASE-023: validate regex patterns and empty pattern matchers
+        if let Some(match_cond) = &trigger.match_condition {
+            for (field, matcher) in &match_cond.conditions {
+                if let FieldMatcher::Pattern {
+                    contains,
+                    prefix,
+                    suffix,
+                    regex,
+                } = matcher
+                {
+                    // Reject Pattern with all None fields — this almost always
+                    // indicates a serde untagged deserialization gotcha where an
+                    // exact-match object was swallowed as an empty Pattern.
+                    if contains.is_none() && prefix.is_none() && suffix.is_none() && regex.is_none()
+                    {
+                        self.add_error(
+                            &format!("{path}.match.{field}"),
+                            "Pattern matcher has no conditions (all fields are None); \
+                             use an exact value or specify contains/prefix/suffix/regex",
+                        );
+                    }
+
+                    if let Some(pattern) = regex {
+                        if regex::Regex::new(pattern).is_err() {
+                            self.add_error(
+                                &format!("{path}.match.{field}.regex"),
+                                &format!("Invalid regex pattern: '{pattern}'"),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -970,11 +1043,10 @@ mod tests {
             advance: None,
             on_enter: None,
             replace_tools: Some(
-                [(
+                std::iter::once((
                     "nonexistent".to_string(),
                     ToolPatternRef::Inline(make_tool("evil")),
-                )]
-                .into_iter()
+                ))
                 .collect(),
             ),
             add_tools: None,
@@ -1297,6 +1369,289 @@ mod tests {
                 .errors
                 .iter()
                 .any(|e| e.message.contains("Duplicate prompt name"))
+        );
+    }
+
+    #[test]
+    fn test_logging_config_warning() {
+        let mut config = minimal_config();
+        config.logging = Some(LoggingConfig::default());
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result.is_valid(),
+            "logging should produce a warning, not an error"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.path == "logging" && w.message.contains("not yet implemented")),
+            "expected warning about unimplemented logging config"
+        );
+    }
+
+    #[test]
+    fn test_both_simple_and_phased_form_error() {
+        // EC-CFG-016: config with both top-level tools and baseline → error
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState {
+            tools: vec![make_tool("calc")],
+            resources: vec![],
+            prompts: vec![],
+            capabilities: None,
+            behavior: None,
+        });
+        config.tools = Some(vec![make_tool("echo")]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Cannot have both")),
+            "should error when both simple and phased forms are used"
+        );
+    }
+
+    #[test]
+    fn test_empty_phases_array_valid() {
+        // EC-CFG-001: empty phases array is valid (terminal config)
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState {
+            tools: vec![make_tool("calc")],
+            resources: vec![],
+            prompts: vec![],
+            capabilities: None,
+            behavior: None,
+        });
+        config.phases = Some(vec![]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result.is_valid(),
+            "empty phases array should be valid, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    fn make_phase(name: &str) -> Phase {
+        Phase {
+            name: name.to_string(),
+            advance: None,
+            on_enter: None,
+            replace_tools: None,
+            add_tools: None,
+            remove_tools: None,
+            replace_resources: None,
+            add_resources: None,
+            remove_resources: None,
+            replace_prompts: None,
+            add_prompts: None,
+            remove_prompts: None,
+            replace_capabilities: None,
+            behavior: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_count_zero_error() {
+        // EC-PHASE-005: count must be positive
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState::default());
+        let mut phase = make_phase("phase1");
+        phase.advance = Some(Trigger {
+            on: Some("tools/call".to_string()),
+            count: Some(0),
+            match_condition: None,
+            after: None,
+            timeout: None,
+            on_timeout: None,
+        });
+        config.phases = Some(vec![phase]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("count must be positive")),
+            "expected error about count=0, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_timeout_without_on_error() {
+        // EC-CFG-007: timeout only valid with event triggers
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState::default());
+        let mut phase = make_phase("phase1");
+        phase.advance = Some(Trigger {
+            on: None,
+            count: None,
+            match_condition: None,
+            after: Some("30s".to_string()),
+            timeout: Some("10s".to_string()),
+            on_timeout: None,
+        });
+        config.phases = Some(vec![phase]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result.errors.iter().any(|e| e
+                .message
+                .contains("timeout is only valid with event triggers")),
+            "expected error about timeout without on, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_middle_terminal_phase_warning() {
+        // EC-CFG-013: non-last phase without advance → warning
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState::default());
+        config.phases = Some(vec![
+            make_phase("phase1"), // no advance, but not last → warning
+            make_phase("phase2"),
+        ]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("unreachable")),
+            "expected warning about unreachable phases, got warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn test_validate_last_phase_no_advance_ok() {
+        // Last phase without advance is fine (terminal state)
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState::default());
+        let mut phase1 = make_phase("phase1");
+        phase1.advance = Some(Trigger {
+            on: Some("tools/call".to_string()),
+            count: Some(3),
+            match_condition: None,
+            after: None,
+            timeout: None,
+            on_timeout: None,
+        });
+        config.phases = Some(vec![phase1, make_phase("phase2")]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("unreachable")),
+            "last phase without advance should not trigger warning"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_regex_at_load() {
+        // EC-PHASE-023: invalid regex caught at validation time
+        use crate::config::schema::{FieldMatcher, MatchPredicate};
+        use indexmap::IndexMap;
+
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState::default());
+        let mut phase = make_phase("phase1");
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "path".to_string(),
+            FieldMatcher::Pattern {
+                contains: None,
+                prefix: None,
+                suffix: None,
+                regex: Some("[invalid".to_string()),
+            },
+        );
+        phase.advance = Some(Trigger {
+            on: Some("tools/call".to_string()),
+            count: None,
+            match_condition: Some(MatchPredicate { conditions }),
+            after: None,
+            timeout: None,
+            on_timeout: None,
+        });
+        config.phases = Some(vec![phase]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Invalid regex pattern")),
+            "expected error about invalid regex, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_regex_at_load() {
+        // Valid regex should not produce an error
+        use crate::config::schema::{FieldMatcher, MatchPredicate};
+        use indexmap::IndexMap;
+
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState::default());
+        let mut phase = make_phase("phase1");
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "path".to_string(),
+            FieldMatcher::Pattern {
+                contains: None,
+                prefix: None,
+                suffix: None,
+                regex: Some(r"\.(env|pem|key)$".to_string()),
+            },
+        );
+        phase.advance = Some(Trigger {
+            on: Some("tools/call".to_string()),
+            count: None,
+            match_condition: Some(MatchPredicate { conditions }),
+            after: None,
+            timeout: None,
+            on_timeout: None,
+        });
+        config.phases = Some(vec![phase]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Invalid regex")),
+            "valid regex should not produce error"
         );
     }
 }

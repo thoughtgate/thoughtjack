@@ -3,12 +3,16 @@
 //! Provides Prometheus-compatible metrics with label cardinality protection
 //! and typed convenience functions for recording measurements.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 use crate::error::ThoughtJackError;
+
+/// Guard to prevent double-initialization of the metrics recorder.
+static METRICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Known MCP method names used for label cardinality protection.
 ///
@@ -59,6 +63,10 @@ pub fn sanitize_method_label(method: &str) -> &str {
 ///
 /// Implements: TJ-SPEC-008 F-010
 pub fn init_metrics(port: Option<u16>) -> Result<(), ThoughtJackError> {
+    if METRICS_INITIALIZED.swap(true, Ordering::SeqCst) {
+        tracing::debug!("metrics already initialized, skipping");
+        return Ok(());
+    }
     port.map_or_else(
         || PrometheusBuilder::new().install_recorder().map(|_| ()),
         |p| {
@@ -156,21 +164,30 @@ pub fn record_delivery_duration(duration: Duration) {
 
 /// Records a phase transition.
 ///
+/// Phase names are sanitized to prevent label cardinality explosion
+/// from user-controlled configuration values.
+///
 /// Implements: TJ-SPEC-008 F-009
 pub fn record_phase_transition(from: &str, to: &str) {
     counter!(
         "thoughtjack_phase_transitions_total",
-        "from" => from.to_owned(),
-        "to" => to.to_owned()
+        "from" => sanitize_phase_label(from),
+        "to" => sanitize_phase_label(to)
     )
     .increment(1);
 }
 
 /// Sets the currently active phase gauge.
 ///
+/// Zeros out the previous phase label (if any) before setting the new one,
+/// preventing stale labels from showing `1.0` in Prometheus.
+///
 /// Implements: TJ-SPEC-008 F-009
-pub fn set_current_phase(phase_name: &str) {
-    gauge!("thoughtjack_current_phase", "phase_name" => phase_name.to_owned()).set(1.0);
+pub fn set_current_phase(phase_name: &str, previous_phase: Option<&str>) {
+    if let Some(prev) = previous_phase {
+        gauge!("thoughtjack_current_phase", "phase_name" => sanitize_phase_label(prev)).set(0.0);
+    }
+    gauge!("thoughtjack_current_phase", "phase_name" => sanitize_phase_label(phase_name)).set(1.0);
 }
 
 /// Sets the number of active connections.
@@ -181,39 +198,63 @@ pub fn set_connections_active(count: u64) {
     gauge!("thoughtjack_connections_active").set(count as f64);
 }
 
-/// Records bytes delivered by a delivery behavior.
+/// Records the current count for an event type.
+///
+/// Event names are derived from `EventType` internally (not from
+/// raw attacker-controlled input), so we sanitize by extracting
+/// the method prefix (before `:`) and validating it against known
+/// methods. Specific events like `"tools/call:calc"` use the full
+/// string as the label when the prefix is recognized.
 ///
 /// Implements: TJ-SPEC-008 F-009
 #[allow(clippy::cast_precision_loss)]
-pub fn record_delivery_bytes(behavior: &str, bytes: usize) {
-    counter!(
-        "thoughtjack_delivery_bytes_total",
-        "behavior" => behavior.to_owned()
-    )
-    .increment(bytes as u64);
+pub fn record_event_count(event: &str, count: u64) {
+    let label = sanitize_event_label(event);
+    gauge!("thoughtjack_event_counts", "event" => label.to_owned()).set(count as f64);
 }
 
-/// Records a side effect execution.
+/// Maximum length for phase name labels.
 ///
-/// Implements: TJ-SPEC-008 F-009
-pub fn record_side_effect_execution(effect_type: &str) {
-    counter!(
-        "thoughtjack_side_effects_total",
-        "effect" => effect_type.to_owned()
-    )
-    .increment(1);
+/// Phase names come from user config and are used directly as Prometheus
+/// labels. This caps the label length to prevent cardinality issues.
+const MAX_PHASE_LABEL_LEN: usize = 64;
+
+/// Sanitizes a phase name for use as a metrics label.
+///
+/// Truncates to [`MAX_PHASE_LABEL_LEN`] characters and replaces any
+/// characters invalid in Prometheus labels with underscores.
+fn sanitize_phase_label(name: &str) -> String {
+    name.chars()
+        .take(MAX_PHASE_LABEL_LEN)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
-/// Sets the current count for a given event type.
+/// Sanitizes an event label, handling both generic and specific forms.
 ///
-/// Implements: TJ-SPEC-008 F-009
-#[allow(clippy::cast_precision_loss)]
-pub fn set_event_count(event_type: &str, count: u64) {
-    gauge!(
-        "thoughtjack_event_counts",
-        "event" => event_type.to_owned()
-    )
-    .set(count as f64);
+/// Generic events like `"tools/call"` are validated directly.
+/// Specific events like `"tools/call:calc"` are accepted when the
+/// prefix before `:` is a known method. Unknown prefixes are bucketed
+/// as `"__unknown__"`.
+#[must_use]
+fn sanitize_event_label(event: &str) -> &str {
+    // Check the full event name first (handles generic events)
+    if KNOWN_METHODS.contains(&event) {
+        return event;
+    }
+    // For specific events like "tools/call:calc", validate the prefix
+    if let Some(prefix) = event.split(':').next() {
+        if KNOWN_METHODS.contains(&prefix) {
+            return event;
+        }
+    }
+    "__unknown__"
 }
 
 #[cfg(test)]
@@ -243,6 +284,13 @@ mod tests {
     }
 
     #[test]
+    fn very_long_method_returns_unknown() {
+        // EC-OBS-022: very long method name should be bucketed as __unknown__
+        let long_method = "x".repeat(10_000);
+        assert_eq!(sanitize_method_label(&long_method), "__unknown__");
+    }
+
+    #[test]
     fn record_functions_do_not_panic_without_recorder() {
         // metrics macros silently no-op when no global recorder is installed
         record_request("tools/call");
@@ -250,10 +298,8 @@ mod tests {
         record_request_duration("tools/call", Duration::from_millis(42));
         record_delivery_duration(Duration::from_secs(1));
         record_phase_transition("trust_building", "exploit");
-        set_current_phase("exploit");
+        set_current_phase("exploit", Some("trust_building"));
         set_connections_active(3);
-        record_delivery_bytes("normal", 1024);
-        record_side_effect_execution("notification_flood");
-        set_event_count("tools/call", 5);
+        record_event_count("tools/call", 5);
     }
 }

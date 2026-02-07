@@ -164,32 +164,79 @@ impl Transport for StdioTransport {
     #[allow(clippy::significant_drop_tightening)] // reader must be held across the loop
     async fn receive_message(&self) -> Result<Option<JsonRpcMessage>> {
         let mut reader = self.reader.lock().await;
-        let mut line = String::new();
+        // Bounded line reading: prevents OOM from a single line without '\n'.
+        // We read from the BufReader's internal buffer in a loop, copying up to
+        // max_message_size + 1 bytes. If the line exceeds the limit before we
+        // find '\n', we drain the remainder and skip.
+        let read_limit = self.config.max_message_size + 1;
+        let mut buf: Vec<u8> = Vec::with_capacity(read_limit.min(64 * 1024));
 
         loop {
-            line.clear();
-            let bytes_read = reader.read_line(&mut line).await?;
+            buf.clear();
+            let mut overflowed = false;
 
-            // EOF
-            if bytes_read == 0 {
-                return Ok(None);
+            // Bounded line read using fill_buf + consume
+            loop {
+                let available = reader.fill_buf().await?;
+                if available.is_empty() {
+                    // EOF
+                    if buf.is_empty() {
+                        return Ok(None);
+                    }
+                    // Last line without trailing '\n' (EC-TRANS-008)
+                    break;
+                }
+
+                // Find newline in available buffer
+                if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+                    if !overflowed {
+                        let remaining_cap = read_limit.saturating_sub(buf.len());
+                        let copy_len = pos.min(remaining_cap);
+                        buf.extend_from_slice(&available[..copy_len]);
+                        if pos > remaining_cap {
+                            overflowed = true;
+                        }
+                    }
+                    reader.consume(pos + 1); // consume through the newline
+                    break;
+                }
+
+                // No newline in this chunk — append if within limit
+                if !overflowed {
+                    let remaining_cap = read_limit.saturating_sub(buf.len());
+                    if remaining_cap == 0 {
+                        overflowed = true;
+                    } else {
+                        let copy_len = available.len().min(remaining_cap);
+                        buf.extend_from_slice(&available[..copy_len]);
+                        if available.len() > remaining_cap {
+                            overflowed = true;
+                        }
+                    }
+                }
+                let consumed = available.len();
+                reader.consume(consumed);
             }
 
+            if overflowed {
+                tracing::warn!(
+                    limit = self.config.max_message_size,
+                    "message exceeds size limit (read capped), skipping"
+                );
+                continue;
+            }
+
+            let line = match std::str::from_utf8(&buf) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("invalid UTF-8 in message, skipping line: {e}");
+                    continue;
+                }
+            };
             let trimmed = line.trim();
 
             // EC-TRANS-009: Skip empty lines
             if trimmed.is_empty() {
-                continue;
-            }
-
-            // F-008: Check message size limit
-            if trimmed.len() > self.config.max_message_size {
-                tracing::warn!(
-                    size = trimmed.len(),
-                    limit = self.config.max_message_size,
-                    line = %sanitize_for_log(trimmed, 200),
-                    "message exceeds size limit, skipping"
-                );
                 continue;
             }
 
@@ -245,11 +292,16 @@ fn sanitize_for_log(input: &str, max_len: usize) -> String {
 }
 
 /// Reads an environment variable, parsing it to type `T`, or returns the default.
+///
+/// Logs a warning if the variable is set but cannot be parsed.
 fn env_or<T: FromStr>(name: &str, default: T) -> T {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.parse().unwrap_or_else(|_| {
+            tracing::warn!(name, value = %v, "invalid env var value, using default");
+            default
+        }),
+        Err(_) => default,
+    }
 }
 
 #[cfg(test)]

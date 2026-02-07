@@ -99,7 +99,15 @@ fn generate_byte(rng: &mut StdRng, charset: Charset) -> u8 {
 fn generate_utf8_bytes(rng: &mut StdRng, target: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(target);
     while buf.len() < target {
-        let codepoint = rng.random_range(0x20..0xD800_u32);
+        // Include BMP (0x20..0xD800) and supplementary planes (0xE000..0x110000)
+        // to cover emoji (U+1F600+), CJK Extension B (U+20000+), etc.
+        let codepoint = loop {
+            let cp = rng.random_range(0x20..0x11_0000_u32);
+            // Skip surrogate range (0xD800..0xE000) — not valid Unicode scalar values
+            if !(0xD800..0xE000).contains(&cp) {
+                break cp;
+            }
+        };
         if let Some(ch) = char::from_u32(codepoint) {
             let mut encode_buf = [0u8; 4];
             let encoded = ch.encode_utf8(&mut encode_buf);
@@ -157,8 +165,13 @@ impl PayloadGenerator for GarbageGenerator {
 
 /// Streaming garbage byte source for large payloads.
 ///
-/// Emits 64 KB chunks using the same seeded RNG, ensuring the
-/// same seed produces the same byte sequence as the buffered path.
+/// Emits 64 KB chunks using the same seeded RNG.
+///
+/// TODO(v0.2): UTF-8 streaming does NOT produce the same bytes as the
+/// buffered path for the same seed. Chunk boundaries cause the RNG to
+/// advance differently because `generate_utf8_bytes` discards characters
+/// that don't fit in the remaining chunk space. A character-level streaming
+/// approach is needed to fix this determinism mismatch (P1 issue #6).
 ///
 /// Implements: TJ-SPEC-005 F-004, F-009
 #[derive(Debug)]
@@ -193,6 +206,12 @@ impl PayloadStream for GarbageStream {
         let chunk_size = self.remaining.min(STREAM_CHUNK_SIZE);
         let data = generate_chunk(&mut self.rng, self.charset, chunk_size);
         let actual_len = data.len();
+        if actual_len == 0 {
+            // UTF-8 charset: remaining bytes < min character width.
+            // Terminate the stream rather than looping forever.
+            self.remaining = 0;
+            return None;
+        }
         self.remaining = self.remaining.saturating_sub(actual_len);
         Some(data)
     }

@@ -1,5 +1,8 @@
 //! `ThoughtJack` — Adversarial MCP server for security testing
 
+// tokio::select! macro expands to pub(crate) items inside private scope
+#![allow(clippy::redundant_pub_crate)]
+
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
@@ -13,7 +16,7 @@ async fn main() {
     let cli = Cli::parse();
 
     if !cli.quiet {
-        init_logging(LogFormat::Human, cli.verbose);
+        init_logging(LogFormat::Human, cli.verbose, cli.color);
     }
 
     // Create a single cancellation token shared across the entire process

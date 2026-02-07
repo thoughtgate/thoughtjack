@@ -5,8 +5,22 @@
 //! params, result, error data, and IDs to support arbitrary JSON payloads
 //! required by adversarial testing.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+/// Deserializes a present JSON value (including `null`) as `Some(value)`.
+///
+/// Standard serde maps JSON `null` → `None` for `Option<T>`, but
+/// JSON-RPC 2.0 requires distinguishing `"result": null` (valid response)
+/// from absent `result` field (invalid response). This helper ensures
+/// `null` becomes `Some(Value::Null)` while an absent field uses the
+/// `#[serde(default)]` to produce `None`.
+fn deserialize_some<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
+}
 
 /// JSON-RPC protocol version string.
 ///
@@ -159,7 +173,16 @@ pub struct JsonRpcResponse {
     pub jsonrpc: String,
 
     /// Result value (present on success).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// Uses a custom deserializer so that JSON `null` becomes
+    /// `Some(Value::Null)` rather than `None`, preserving the
+    /// distinction between "key absent" and "key is null" for
+    /// JSON-RPC 2.0 compliance.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_some"
+    )]
     pub result: Option<Value>,
 
     /// Error value (present on failure).
@@ -383,19 +406,24 @@ mod tests {
 
     #[test]
     fn test_deserialize_response_with_null_result() {
-        // "result": null is detected as a response by the custom deserializer
-        // (because the "result" key is present), but serde's Option<Value>
-        // deserializes null as None.
+        // "result": null must round-trip as Some(Value::Null) to produce
+        // valid JSON-RPC 2.0 output (the "result" key must be present).
         let json = r#"{"jsonrpc":"2.0","result":null,"id":1}"#;
         let msg: JsonRpcMessage = serde_json::from_str(json).unwrap();
-        match msg {
+        match &msg {
             JsonRpcMessage::Response(r) => {
-                assert!(r.result.is_none());
+                assert_eq!(r.result, Some(Value::Null));
                 assert!(r.error.is_none());
                 assert_eq!(r.id, json!(1));
             }
             _ => panic!("Expected Response"),
         }
+        // Verify round-trip preserves "result": null
+        let re_serialized = serde_json::to_string(&msg).unwrap();
+        assert!(
+            re_serialized.contains(r#""result":null"#),
+            "expected 'result:null' in output, got: {re_serialized}"
+        );
     }
 
     // ========================================================================

@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt -- --check
+        working-directory: thoughtjack
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: thoughtjack -> thoughtjack/target
+      - run: cargo clippy -- -D warnings
+        working-directory: thoughtjack
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: thoughtjack -> thoughtjack/target
+      - run: cargo test
+        working-directory: thoughtjack
+
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: thoughtjack/Cargo.toml
+
+  mcp-conformance:
+    name: MCP Conformance
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: thoughtjack -> thoughtjack/target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build release binary
+        run: cargo build --release
+        working-directory: thoughtjack
+
+      - name: Start server
+        run: |
+          ./thoughtjack/target/release/thoughtjack server run \
+            --config thoughtjack/tests/fixtures/conformance.yaml \
+            --http 127.0.0.1:3001 &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for server
+        run: |
+          for i in $(seq 1 20); do
+            # POST with empty body — server responds with 400, proving it's up
+            status=$(curl -s -o /dev/null -w '%{http_code}' \
+              -X POST http://127.0.0.1:3001/message \
+              --max-time 2 2>/dev/null) || true
+            if [ -n "$status" ] && [ "$status" != "000" ]; then
+              echo "Server ready after ${i}×500ms (HTTP $status)"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "Server failed to start within 10s"
+          exit 1
+
+      - name: Run conformance tests
+        uses: modelcontextprotocol/conformance@v0.1.11
+        with:
+          mode: server
+          url: http://localhost:3001/message
+          expected-failures: conformance-baseline.yml
+
+      - name: Stop server
+        if: always()
+        run: kill "$SERVER_PID" 2>/dev/null || true

@@ -421,7 +421,7 @@ The system SHALL support configurable state scoping for HTTP transport.
 
 **Acceptance Criteria:**
 - `per_connection` mode (default): Each HTTP connection instantiates independent PhaseEngine
-- `global` mode: Single PhaseEngine shared via `Arc<RwLock<PhaseEngine>>`
+- `global` mode: Single PhaseState shared via `Arc<PhaseState>` with atomic CAS operations
 - stdio transport always uses single state (only one connection possible)
 - Mode configurable via `server.state_scope` config or `--state-scope` CLI flag
 
@@ -441,7 +441,7 @@ server:
 pub enum StateScope {
     /// Each connection gets independent PhaseEngine instance
     PerConnection,
-    /// All connections share Arc<RwLock<PhaseEngine>>
+    /// All connections share Arc<PhaseState> (lock-free atomics)
     Global,
 }
 
@@ -725,7 +725,7 @@ pub struct HttpTransport {
 }
 
 struct ServerState {
-    phase_engine: RwLock<PhaseEngine>,
+    phase_engine: Arc<PhaseEngine>,
     // ... other shared state
 }
 
@@ -783,7 +783,7 @@ impl<T: Transport> BehaviorExecutor<T> {
 |--------------|-----|------------------|
 | Using `std::io` for stdin/stdout | Blocks the async runtime | Use `tokio::io::stdin()` / `stdout()` |
 | Unbuffered stdout writes | Poor performance, syscall per byte | Use `BufWriter`, flush after message |
-| Shared mutable state without sync | Race conditions with HTTP concurrency | Use `Arc<RwLock<_>>` or channels |
+| Shared mutable state without sync | Race conditions with HTTP concurrency | Use `Arc<AtomicUsize>` + CAS or channels |
 | Blocking in async context | Stalls entire runtime | Use `tokio::task::spawn_blocking` for CPU work |
 | Ignoring backpressure | Memory exhaustion under load | Use bounded channels, check buffer capacity |
 | Hardcoding buffer sizes | Inflexible for different use cases | Make configurable via env vars |

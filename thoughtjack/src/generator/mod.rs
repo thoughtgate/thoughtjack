@@ -156,11 +156,24 @@ pub trait PayloadStream: Send + std::fmt::Debug {
 // ============================================================================
 
 /// Extracts a `usize` parameter from the params map, returning `default` if missing.
+///
+/// Logs a warning if the value is present but not a valid non-negative integer.
 pub(crate) fn extract_usize(params: &HashMap<String, Value>, key: &str, default: usize) -> usize {
-    params
-        .get(key)
-        .and_then(Value::as_u64)
-        .map_or(default, |v| usize::try_from(v).unwrap_or(default))
+    let Some(value) = params.get(key) else {
+        return default;
+    };
+    value.as_u64().map_or_else(
+        || {
+            tracing::warn!(key, ?value, "expected non-negative integer, using default");
+            default
+        },
+        |v| {
+            usize::try_from(v).unwrap_or_else(|_| {
+                tracing::warn!(key, v, "value exceeds usize range, using default");
+                default
+            })
+        },
+    )
 }
 
 /// Extracts a `u64` parameter from the params map, returning `default` if missing.
@@ -182,18 +195,24 @@ pub(crate) fn extract_value(params: &HashMap<String, Value>, key: &str) -> Optio
     params.get(key).cloned()
 }
 
-/// Extracts a required `usize` parameter, returning an error if missing.
+/// Extracts a required `usize` parameter, returning an error if missing or invalid.
 pub(crate) fn require_usize(
     params: &HashMap<String, Value>,
     key: &str,
 ) -> Result<usize, GeneratorError> {
-    params
-        .get(key)
-        .and_then(Value::as_u64)
-        .map(|v| usize::try_from(v).unwrap_or(0))
-        .ok_or_else(|| {
-            GeneratorError::InvalidParameters(format!("missing required parameter: {key}"))
-        })
+    let value = params.get(key).ok_or_else(|| {
+        GeneratorError::InvalidParameters(format!("missing required parameter: {key}"))
+    })?;
+    let n = value.as_u64().ok_or_else(|| {
+        GeneratorError::InvalidParameters(format!(
+            "parameter '{key}' must be a non-negative integer, got {value}"
+        ))
+    })?;
+    usize::try_from(n).map_err(|_| {
+        GeneratorError::InvalidParameters(format!(
+            "parameter '{key}' value {n} exceeds platform usize range"
+        ))
+    })
 }
 
 // ============================================================================

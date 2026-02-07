@@ -9,4 +9,4 @@ pub mod metrics;
 
 pub use events::{Event, EventEmitter};
 pub use logging::{LogFormat, init_logging};
-pub use metrics::{init_metrics, sanitize_method_label};
+pub use metrics::init_metrics;

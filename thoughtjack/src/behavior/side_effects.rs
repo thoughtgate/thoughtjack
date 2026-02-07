@@ -143,16 +143,30 @@ impl SideEffect for NotificationFlood {
         cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = std::time::Instant::now();
-        let interval = if self.rate_per_sec > 0 {
-            Duration::from_nanos(1_000_000_000 / self.rate_per_sec)
-        } else {
-            Duration::ZERO
-        };
+        // Clamp rate to [1, 10_000] req/sec to prevent busy loops from tiny intervals.
+        // At 10k/sec the interval is 100μs — below that, tokio timer resolution
+        // and serialization overhead make higher rates unreliable anyway.
+        let effective_rate = self.rate_per_sec.clamp(1, 10_000);
+        let interval = Duration::from_nanos(1_000_000_000 / effective_rate);
 
         let mut messages_sent: usize = 0;
         let mut bytes_sent: usize = 0;
 
         loop {
+            // Send first, then sleep — ensures the last interval's
+            // notification is delivered before the duration check.
+            if start.elapsed() >= self.duration {
+                break;
+            }
+
+            let notification = JsonRpcNotification::new(self.method.clone(), self.params.clone());
+            let mut serialized = serde_json::to_vec(&notification)?;
+            serialized.push(b'\n');
+            let len = serialized.len();
+            transport.send_raw(&serialized).await?;
+            messages_sent += 1;
+            bytes_sent += len;
+
             tokio::select! {
                 () = cancel.cancelled() => {
                     return Ok(SideEffectResult {
@@ -165,20 +179,6 @@ impl SideEffect for NotificationFlood {
                 }
                 () = tokio::time::sleep(interval) => {}
             }
-
-            if start.elapsed() >= self.duration {
-                break;
-            }
-
-            let notification = JsonRpcMessage::Notification(JsonRpcNotification::new(
-                self.method.clone(),
-                self.params.clone(),
-            ));
-            let msg_bytes = serde_json::to_vec(&notification)?;
-            let len = msg_bytes.len();
-            transport.send_message(&notification).await?;
-            messages_sent += 1;
-            bytes_sent += len;
         }
 
         Ok(SideEffectResult {
@@ -228,7 +228,8 @@ impl SideEffect for BatchAmplify {
             .map(|_| JsonRpcNotification::new(self.method.clone(), None))
             .collect();
 
-        let serialized = serde_json::to_vec(&notifications)?;
+        let mut serialized = serde_json::to_vec(&notifications)?;
+        serialized.push(b'\n'); // Trailing newline for line-delimited framing
         let bytes_sent = serialized.len();
 
         tokio::select! {
@@ -436,6 +437,11 @@ impl SideEffect for DuplicateRequestIds {
             id,
         });
 
+        // Serialize once outside the loop to avoid redundant work
+        let mut serialized = serde_json::to_vec(&request)?;
+        serialized.push(b'\n');
+        let frame_len = serialized.len();
+
         let mut messages_sent: usize = 0;
         let mut bytes_sent: usize = 0;
         for _ in 0..self.count {
@@ -448,8 +454,6 @@ impl SideEffect for DuplicateRequestIds {
                     outcome: SideEffectOutcome::Completed,
                 });
             }
-            let msg_bytes = serde_json::to_vec(&request)?;
-            let len = msg_bytes.len();
             tokio::select! {
                 () = cancel.cancelled() => {
                     return Ok(SideEffectResult {
@@ -460,10 +464,10 @@ impl SideEffect for DuplicateRequestIds {
                         outcome: SideEffectOutcome::Completed,
                     });
                 }
-                result = transport.send_message(&request) => { result?; }
+                result = transport.send_raw(&serialized) => { result?; }
             }
             messages_sent += 1;
-            bytes_sent += len;
+            bytes_sent += frame_len;
         }
 
         Ok(SideEffectResult {
@@ -823,9 +827,11 @@ mod tests {
             .execute(&transport, &connection, cancel)
             .await
             .unwrap();
-        // With a pre-cancelled token, select! may pick either branch;
-        // just verify we get a result without error.
-        assert!(result.completed || !result.completed);
+        // The .unwrap() above is the real assertion — no error from
+        // executing with a pre-cancelled token.  The outcome is
+        // non-deterministic (select! may pick either branch), so we only
+        // verify the messages_sent counter is consistent with completion.
+        assert!(result.messages_sent == 0 || result.completed);
     }
 
     #[tokio::test]
