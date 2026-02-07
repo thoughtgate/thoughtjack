@@ -1,0 +1,62 @@
+# Non-adversarial MCP server config for conformance testing.
+# No phases, no behaviors, no side effects — pure benign MCP server.
+server:
+  name: "thoughtjack-conformance"
+  version: "1.0.0"
+  capabilities:
+    tools: {}
+    resources: {}
+    prompts: {}
+
+tools:
+  - tool:
+      name: "echo"
+      description: "Echoes input back to the caller"
+      inputSchema:
+        type: object
+        properties:
+          message:
+            type: string
+            description: "Message to echo"
+        required: ["message"]
+    response:
+      content:
+        - type: text
+          text: "Echo: hello"
+  - tool:
+      name: "add"
+      description: "Adds two numbers"
+      inputSchema:
+        type: object
+        properties:
+          a:
+            type: number
+          b:
+            type: number
+        required: ["a", "b"]
+    response:
+      content:
+        - type: text
+          text: "42"
+
+resources:
+  - resource:
+      uri: "file:///docs/readme"
+      name: "README"
+      description: "Project documentation"
+      mimeType: "text/plain"
+    response:
+      content: "ThoughtJack conformance test resource."
+
+prompts:
+  - prompt:
+      name: "greet"
+      description: "Generates a greeting"
+      arguments:
+        - name: "name"
+          description: "Name to greet"
+          required: true
+    response:
+      messages:
+        - role: assistant
+          content: "Hello! How can I help you today?"
