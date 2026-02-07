@@ -37,9 +37,16 @@ pub fn run(args: &VersionArgs) {
             println!("  target:  {target}");
         }
         OutputFormat::Json => {
-            println!(
-                r#"{{"name":"{name}","version":"{version}","commit":"{git_hash}","dirty":{git_dirty},"built":"{build_time}","rustc":"{rustc_version}","target":"{target}"}}"#,
-            );
+            let json = serde_json::json!({
+                "name": name,
+                "version": version,
+                "commit": git_hash,
+                "dirty": git_dirty,
+                "built": build_time,
+                "rustc": rustc_version,
+                "target": target,
+            });
+            println!("{json}");
         }
     }
 }
