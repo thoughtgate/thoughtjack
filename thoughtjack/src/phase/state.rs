@@ -57,6 +57,8 @@ pub struct PhaseTransition {
     pub trigger_reason: String,
     /// Entry actions to execute for the new phase
     pub entry_actions: Vec<EntryAction>,
+    /// Connection that triggered the transition (0 for global/timer)
+    pub connection_id: u64,
 }
 
 /// Lock-free atomic phase state.
@@ -264,6 +266,17 @@ pub enum PhaseStateHandle {
 }
 
 impl PhaseStateHandle {
+    /// Returns a reference to the underlying `PhaseState`.
+    ///
+    /// Implements: TJ-SPEC-003 F-001
+    #[must_use]
+    pub fn as_phase_state(&self) -> &PhaseState {
+        match self {
+            Self::Owned(s) => s,
+            Self::Shared(s) => s,
+        }
+    }
+
     /// Returns the current phase index.
     ///
     /// Implements: TJ-SPEC-003 F-001

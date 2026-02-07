@@ -103,7 +103,7 @@ pub enum StateScope {
 /// MCP server capabilities.
 ///
 /// These structs serialize to **camelCase** (MCP wire format) but accept
-/// **snake_case** aliases in YAML config files for consistency with the
+/// **`snake_case`** aliases in YAML config files for consistency with the
 /// rest of the configuration schema.
 ///
 /// Implements: TJ-SPEC-001 F-014

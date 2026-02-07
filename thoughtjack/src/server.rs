@@ -151,7 +151,7 @@ impl Server {
             transport: transport_type.to_string(),
         });
 
-        metrics::set_current_phase(self.phase_engine.current_phase_name(), None);
+        metrics::set_current_phase(self.phase_engine.current_phase_name(0), None);
         metrics::set_connections_active(1);
 
         // Start background timer task for time-based triggers
@@ -249,6 +249,10 @@ impl Server {
 
             let start = Instant::now();
 
+            // Resolve connection identity
+            let connection_id = self.transport.connection_context().connection_id;
+            self.phase_engine.ensure_connection(connection_id);
+
             // Emit request received event
             self.event_emitter.emit(Event::RequestReceived {
                 timestamp: Utc::now(),
@@ -259,16 +263,16 @@ impl Server {
 
             // === CRITICAL ORDERING ===
             // 1. Capture effective state BEFORE transition
-            let effective_state = self.phase_engine.effective_state();
+            let effective_state = self.phase_engine.effective_state(connection_id);
 
             // 2–3. Count events and evaluate triggers
-            let transition = self.evaluate_transitions(&request).await;
+            let transition = self.evaluate_transitions(&request, connection_id).await;
 
             // 4. Route to handler (uses PRE-transition effective state)
-            let phase_index = self.phase_engine.current_phase();
+            let phase_index = self.phase_engine.current_phase(connection_id);
             #[allow(clippy::cast_possible_wrap)]
             let phase_index_signed =
-                if self.phase_engine.is_terminal() && self.config.phases.is_none() {
+                if self.phase_engine.is_terminal(connection_id) && self.config.phases.is_none() {
                     -1_i64
                 } else {
                     phase_index as i64
@@ -277,9 +281,9 @@ impl Server {
             let request_ctx = RequestContext {
                 limits: &self.generator_limits,
                 call_tracker: &self.call_tracker,
-                phase_name: self.phase_engine.current_phase_name(),
+                phase_name: self.phase_engine.current_phase_name(connection_id),
                 phase_index: phase_index_signed,
-                connection_id: 0, // stdio = 0; HTTP connections get per-request IDs
+                connection_id,
                 allow_external_handlers: self.allow_external_handlers,
                 http_client: &self.http_client,
                 state_scope: self.phase_engine.scope(),
@@ -339,16 +343,17 @@ impl Server {
     async fn evaluate_transitions(
         &self,
         request: &JsonRpcRequest,
+        connection_id: u64,
     ) -> Option<crate::phase::state::PhaseTransition> {
         // ALWAYS count both generic and specific events (TJ-SPEC-003 F-003)
         let event = EventType::new(&request.method);
-        let count = self.phase_engine.state().increment_event(&event);
+        let count = self.phase_engine.increment_event(connection_id, &event);
         metrics::record_event_count(&event.0, count);
 
         let specific_event =
             extract_specific_name(&request.method, request.params.as_ref()).map(|name| {
                 let specific = EventType::new(format!("{}:{name}", request.method));
-                let specific_count = self.phase_engine.state().increment_event(&specific);
+                let specific_count = self.phase_engine.increment_event(connection_id, &specific);
                 metrics::record_event_count(&specific.0, specific_count);
                 specific
             });
@@ -356,11 +361,11 @@ impl Server {
         // Evaluate triggers: generic first, then specific (only one fires)
         let transition = self
             .phase_engine
-            .evaluate_trigger(&event, request.params.as_ref())
+            .evaluate_trigger(connection_id, &event, request.params.as_ref())
             .or_else(|| {
                 specific_event.as_ref().and_then(|se| {
                     self.phase_engine
-                        .evaluate_trigger(se, request.params.as_ref())
+                        .evaluate_trigger(connection_id, se, request.params.as_ref())
                 })
             });
 
@@ -574,7 +579,7 @@ impl Server {
             self.event_emitter.emit(Event::SideEffectTriggered {
                 timestamp: Utc::now(),
                 effect_type: name.clone(),
-                phase: self.phase_engine.current_phase_name().to_string(),
+                phase: self.phase_engine.current_phase_name(0).to_string(),
             });
 
             // Handle close_connection outcome (TJ-SPEC-004 F-007)
@@ -593,7 +598,7 @@ impl Server {
     ///
     /// Implements: TJ-SPEC-004 F-014
     fn start_continuous_effects(&self, mgr: &mut SideEffectManager) {
-        let effective_state = self.phase_engine.effective_state();
+        let effective_state = self.phase_engine.effective_state(0);
         let synthetic_request = JsonRpcRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
             method: "initialize".to_string(),
