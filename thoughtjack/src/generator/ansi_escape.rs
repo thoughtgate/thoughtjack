@@ -63,6 +63,14 @@ impl AnsiEscapeGenerator {
             .unwrap_or_default();
 
         let count = extract_usize(params, "count", 100);
+
+        if count > limits.max_batch_size {
+            return Err(GeneratorError::LimitExceeded(format!(
+                "count {count} exceeds max_batch_size {}",
+                limits.max_batch_size
+            )));
+        }
+
         let payload = params
             .get("payload")
             .and_then(Value::as_str)
