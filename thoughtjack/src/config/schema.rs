@@ -102,6 +102,10 @@ pub enum StateScope {
 
 /// MCP server capabilities.
 ///
+/// These structs serialize to **camelCase** (MCP wire format) but accept
+/// **snake_case** aliases in YAML config files for consistency with the
+/// rest of the configuration schema.
+///
 /// Implements: TJ-SPEC-001 F-014
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,7 +130,7 @@ pub struct Capabilities {
 #[serde(rename_all = "camelCase")]
 pub struct ToolsCapability {
     /// Whether the server supports `tools/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
     pub list_changed: Option<bool>,
 }
 
@@ -141,7 +145,7 @@ pub struct ResourcesCapability {
     pub subscribe: Option<bool>,
 
     /// Whether the server supports `resources/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
     pub list_changed: Option<bool>,
 }
 
@@ -152,7 +156,7 @@ pub struct ResourcesCapability {
 #[serde(rename_all = "camelCase")]
 pub struct PromptsCapability {
     /// Whether the server supports `prompts/list_changed` notifications
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
     pub list_changed: Option<bool>,
 }
 
