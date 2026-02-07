@@ -168,8 +168,14 @@ pub fn record_phase_transition(from: &str, to: &str) {
 
 /// Sets the currently active phase gauge.
 ///
+/// Zeros out the previous phase label (if any) before setting the new one,
+/// preventing stale labels from showing `1.0` in Prometheus.
+///
 /// Implements: TJ-SPEC-008 F-009
-pub fn set_current_phase(phase_name: &str) {
+pub fn set_current_phase(phase_name: &str, previous_phase: Option<&str>) {
+    if let Some(prev) = previous_phase {
+        gauge!("thoughtjack_current_phase", "phase_name" => prev.to_owned()).set(0.0);
+    }
     gauge!("thoughtjack_current_phase", "phase_name" => phase_name.to_owned()).set(1.0);
 }
 
@@ -234,7 +240,7 @@ mod tests {
         record_request_duration("tools/call", Duration::from_millis(42));
         record_delivery_duration(Duration::from_secs(1));
         record_phase_transition("trust_building", "exploit");
-        set_current_phase("exploit");
+        set_current_phase("exploit", Some("trust_building"));
         set_connections_active(3);
         record_event_count("tools/call", 5);
     }

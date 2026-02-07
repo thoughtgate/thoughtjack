@@ -141,14 +141,14 @@ impl Server {
             transport: transport_type.to_string(),
         });
 
-        metrics::set_current_phase(self.phase_engine.current_phase_name());
+        metrics::set_current_phase(self.phase_engine.current_phase_name(), None);
         metrics::set_connections_active(1);
 
         // Start background timer task for time-based triggers
         let timer_handle = self.phase_engine.start_timer_task();
 
         // Spawn continuous side effects (if any in the initial effective state)
-        let _continuous_handles = self.spawn_continuous_side_effects();
+        let continuous_handles = self.spawn_continuous_side_effects();
 
         let mut initialized = false;
 
@@ -159,6 +159,9 @@ impl Server {
         // Shutdown
         self.phase_engine.shutdown();
         timer_handle.abort();
+        for handle in &continuous_handles {
+            handle.abort();
+        }
         metrics::set_connections_active(0);
 
         self.event_emitter.emit(Event::ServerStopped {
@@ -168,6 +171,7 @@ impl Server {
                 Err(e) => format!("error: {e}"),
             },
         });
+        self.event_emitter.flush();
 
         result
     }
@@ -376,7 +380,7 @@ impl Server {
         let to_name = self.phase_engine.phase_name_at(trans.to_phase).to_string();
 
         metrics::record_phase_transition(from_name, &to_name);
-        metrics::set_current_phase(&to_name);
+        metrics::set_current_phase(&to_name, Some(from_name));
 
         self.execute_entry_actions(&trans.entry_actions).await;
 
