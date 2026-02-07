@@ -361,8 +361,26 @@ fn build_router(shared: Arc<HttpSharedState>) -> Router {
 async fn handle_post_message(
     State(shared): State<Arc<HttpSharedState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    // DNS rebinding protection: validate Origin or Host header
+    let origin = headers
+        .get("origin")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok());
+    if let Some(header_value) = origin {
+        let host_part = header_value
+            .strip_prefix("http://")
+            .or_else(|| header_value.strip_prefix("https://"))
+            .unwrap_or(header_value);
+        // Strip port suffix (handles both IPv4 `host:port` and bare hostnames)
+        let hostname = host_part.split(':').next().unwrap_or(host_part);
+        if !matches!(hostname, "localhost" | "127.0.0.1" | "[::1]" | "::1") {
+            return (StatusCode::FORBIDDEN, "dns rebinding rejected").into_response();
+        }
+    }
+
     // EC-TRANS-006: empty body
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty request body").into_response();
@@ -734,5 +752,125 @@ mod tests {
         // Default context before any request is stdio-like (connection_id 0)
         assert_eq!(ctx.connection_id, 0);
         transport.shutdown();
+    }
+
+    // ------------------------------------------------------------------
+    // DNS rebinding protection
+    // ------------------------------------------------------------------
+
+    fn valid_jsonrpc_body() -> &'static str {
+        r#"{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}"#
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_evil_origin_rejected() {
+        let shared = test_shared_state();
+        let app = test_router(shared);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header("origin", "http://evil.example.com")
+            .body(Body::from(valid_jsonrpc_body()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_localhost_origin_allowed() {
+        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            cancel: CancellationToken::new(),
+        });
+        let app = test_router(shared);
+
+        // Consume the incoming request so the handler doesn't block
+        tokio::spawn(async move {
+            if let Some(incoming) = incoming_rx.recv().await {
+                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
+                incoming.response_tx.send(Ok(response)).await.ok();
+            }
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header("origin", "http://localhost:3001")
+            .body(Body::from(valid_jsonrpc_body()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_host_127_allowed() {
+        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            cancel: CancellationToken::new(),
+        });
+        let app = test_router(shared);
+
+        tokio::spawn(async move {
+            if let Some(incoming) = incoming_rx.recv().await {
+                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
+                incoming.response_tx.send(Ok(response)).await.ok();
+            }
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header("host", "127.0.0.1:3001")
+            .body(Body::from(valid_jsonrpc_body()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_no_header_allowed() {
+        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            cancel: CancellationToken::new(),
+        });
+        let app = test_router(shared);
+
+        tokio::spawn(async move {
+            if let Some(incoming) = incoming_rx.recv().await {
+                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
+                incoming.response_tx.send(Ok(response)).await.ok();
+            }
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .body(Body::from(valid_jsonrpc_body()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

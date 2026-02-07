@@ -41,9 +41,15 @@ pub async fn handle_request(
             server_name,
             server_version,
         ))),
-        "ping" | "resources/subscribe" | "resources/unsubscribe" => Ok(Some(
+        "ping" | "resources/subscribe" | "resources/unsubscribe" | "logging/setLevel" => Ok(Some(
             JsonRpcResponse::success(request.id.clone(), serde_json::json!({})),
         )),
+        "completion/complete" => Ok(Some(JsonRpcResponse::success(
+            request.id.clone(),
+            serde_json::json!({
+                "completion": { "values": [], "hasMore": false }
+            }),
+        ))),
         "tools/list" => Ok(Some(tools::handle_list(request, effective_state))),
         "tools/call" => tools::handle_call(request, effective_state, limits)
             .await
