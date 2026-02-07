@@ -3,12 +3,16 @@
 //! Provides Prometheus-compatible metrics with label cardinality protection
 //! and typed convenience functions for recording measurements.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 use crate::error::ThoughtJackError;
+
+/// Guard to prevent double-initialization of the metrics recorder.
+static METRICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Known MCP method names used for label cardinality protection.
 ///
@@ -59,6 +63,10 @@ pub fn sanitize_method_label(method: &str) -> &str {
 ///
 /// Implements: TJ-SPEC-008 F-010
 pub fn init_metrics(port: Option<u16>) -> Result<(), ThoughtJackError> {
+    if METRICS_INITIALIZED.swap(true, Ordering::SeqCst) {
+        tracing::debug!("metrics already initialized, skipping");
+        return Ok(());
+    }
     port.map_or_else(
         || PrometheusBuilder::new().install_recorder().map(|_| ()),
         |p| {
