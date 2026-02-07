@@ -315,10 +315,18 @@ impl Server {
         // request. If no event-based trigger fired, check for a timer transition.
         if transition.is_some() {
             // Drain stale timer transition (non-blocking)
-            let _ = self.phase_engine.recv_transition().await;
+            if let Err(e) = self.phase_engine.recv_transition().await {
+                tracing::warn!(error = %e, "failed to drain timer transition");
+            }
             transition
         } else {
-            self.phase_engine.recv_transition().await.unwrap_or(None)
+            match self.phase_engine.recv_transition().await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to receive timer transition");
+                    None
+                }
+            }
         }
     }
 
