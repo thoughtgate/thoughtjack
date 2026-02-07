@@ -15,6 +15,11 @@ use crate::error::PhaseError;
 
 use super::state::{EventType, PhaseState};
 
+/// Maximum number of cached regex patterns.
+///
+/// Prevents unbounded memory growth from attacker-controlled `content_match` patterns.
+const MAX_REGEX_CACHE_SIZE: usize = 256;
+
 /// Module-level regex cache to avoid recompiling patterns on every trigger evaluation.
 static REGEX_CACHE: LazyLock<Mutex<HashMap<String, Option<Regex>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -231,13 +236,19 @@ fn field_matches(matcher: &FieldMatcher, value: &serde_json::Value) -> bool {
 /// Returns a cached compiled regex, or compiles and caches it on first use.
 ///
 /// Returns `None` if the pattern is invalid. Invalid patterns are also cached
-/// to avoid repeated compilation attempts.
+/// to avoid repeated compilation attempts. The cache is bounded to
+/// [`MAX_REGEX_CACHE_SIZE`] entries; once full, new patterns are compiled
+/// but not cached.
 fn get_or_compile_regex(pattern: &str) -> Option<Regex> {
     let mut cache = REGEX_CACHE.lock().expect("regex cache lock poisoned");
-    cache
-        .entry(pattern.to_string())
-        .or_insert_with(|| Regex::new(pattern).ok())
-        .clone()
+    if let Some(cached) = cache.get(pattern) {
+        return cached.clone();
+    }
+    let compiled = Regex::new(pattern).ok();
+    if cache.len() < MAX_REGEX_CACHE_SIZE {
+        cache.insert(pattern.to_string(), compiled.clone());
+    }
+    compiled
 }
 
 /// Parses a duration string like "30s", "5m", "100ms", "1h".
