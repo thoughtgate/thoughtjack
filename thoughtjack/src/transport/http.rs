@@ -419,7 +419,10 @@ async fn handle_post_message(
     Response::builder()
         .header("content-type", "application/json")
         .body(body)
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to build HTTP response");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
 }
 
 /// `GET /sse` handler.
