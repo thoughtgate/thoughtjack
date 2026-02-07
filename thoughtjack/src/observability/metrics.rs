@@ -181,39 +181,16 @@ pub fn set_connections_active(count: u64) {
     gauge!("thoughtjack_connections_active").set(count as f64);
 }
 
-/// Records bytes delivered by a delivery behavior.
+/// Records the current count for an event type.
+///
+/// The event name is sanitized via [`sanitize_method_label`] to prevent
+/// label cardinality explosion from unknown event types.
 ///
 /// Implements: TJ-SPEC-008 F-009
 #[allow(clippy::cast_precision_loss)]
-pub fn record_delivery_bytes(behavior: &str, bytes: usize) {
-    counter!(
-        "thoughtjack_delivery_bytes_total",
-        "behavior" => behavior.to_owned()
-    )
-    .increment(bytes as u64);
-}
-
-/// Records a side effect execution.
-///
-/// Implements: TJ-SPEC-008 F-009
-pub fn record_side_effect_execution(effect_type: &str) {
-    counter!(
-        "thoughtjack_side_effects_total",
-        "effect" => effect_type.to_owned()
-    )
-    .increment(1);
-}
-
-/// Sets the current count for a given event type.
-///
-/// Implements: TJ-SPEC-008 F-009
-#[allow(clippy::cast_precision_loss)]
-pub fn set_event_count(event_type: &str, count: u64) {
-    gauge!(
-        "thoughtjack_event_counts",
-        "event" => event_type.to_owned()
-    )
-    .set(count as f64);
+pub fn record_event_count(event: &str, count: u64) {
+    let label = sanitize_method_label(event);
+    gauge!("thoughtjack_event_counts", "event" => label.to_owned()).set(count as f64);
 }
 
 #[cfg(test)]
@@ -259,8 +236,6 @@ mod tests {
         record_phase_transition("trust_building", "exploit");
         set_current_phase("exploit");
         set_connections_active(3);
-        record_delivery_bytes("normal", 1024);
-        record_side_effect_execution("notification_flood");
-        set_event_count("tools/call", 5);
+        record_event_count("tools/call", 5);
     }
 }

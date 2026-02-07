@@ -49,6 +49,7 @@ struct IncomingRequest {
     response_tx: mpsc::Sender<std::result::Result<Bytes, io::Error>>,
     connection_id: u64,
     remote_addr: SocketAddr,
+    connected_at: Instant,
 }
 
 /// Per-connection state tracked while a request is in flight.
@@ -210,7 +211,19 @@ impl Transport for HttpTransport {
             *guard = Some(req.response_tx);
         }
 
-        // Update connection context
+        // Track connection here (not in the handler) to avoid a race where the
+        // handler inserts a connection and the ConnectionGuard from a previous
+        // request removes the wrong entry.
+        self.shared.connections.insert(
+            req.connection_id,
+            ConnectionState {
+                remote_addr: req.remote_addr,
+                connected_at: req.connected_at,
+                request_count: AtomicU64::new(1),
+            },
+        );
+
+        // Update connection context using the timestamp captured in the handler
         // Poisoned mutex means a thread panicked while holding the lock — data is
         // corrupt, so panicking here is the correct response.
         {
@@ -219,7 +232,7 @@ impl Transport for HttpTransport {
                 connection_id: req.connection_id,
                 remote_addr: Some(req.remote_addr),
                 is_exclusive: false,
-                connected_at: Instant::now(),
+                connected_at: req.connected_at,
             };
         }
 
@@ -357,16 +370,11 @@ async fn handle_post_message(
     };
 
     let connection_id = shared.next_connection_id.fetch_add(1, Ordering::Relaxed);
+    let connected_at = Instant::now();
 
-    // Track connection
-    shared.connections.insert(
-        connection_id,
-        ConnectionState {
-            remote_addr: addr,
-            connected_at: Instant::now(),
-            request_count: AtomicU64::new(1),
-        },
-    );
+    // Connection tracking is deferred to receive_message to avoid a race where
+    // the handler inserts and the ConnectionGuard from the previous request
+    // removes the wrong entry.
 
     // Create response body channel
     let (response_tx, response_rx) = mpsc::channel::<std::result::Result<Bytes, io::Error>>(64);
@@ -376,6 +384,7 @@ async fn handle_post_message(
         response_tx,
         connection_id,
         remote_addr: addr,
+        connected_at,
     };
 
     // Push into the transport channel

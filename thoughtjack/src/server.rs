@@ -284,12 +284,14 @@ impl Server {
     ) -> Option<crate::phase::state::PhaseTransition> {
         // ALWAYS count both generic and specific events (TJ-SPEC-003 F-003)
         let event = EventType::new(&request.method);
-        self.phase_engine.state().increment_event(&event);
+        let count = self.phase_engine.state().increment_event(&event);
+        metrics::record_event_count(&event.0, count);
 
         let specific_event =
             extract_specific_name(&request.method, request.params.as_ref()).map(|name| {
                 let specific = EventType::new(format!("{}:{name}", request.method));
-                self.phase_engine.state().increment_event(&specific);
+                let specific_count = self.phase_engine.state().increment_event(&specific);
+                metrics::record_event_count(&specific.0, specific_count);
                 specific
             });
 
@@ -365,13 +367,11 @@ impl Server {
 
     /// Records metrics and executes entry actions for a phase transition.
     async fn apply_transition(&self, trans: &crate::phase::state::PhaseTransition) {
+        let from_name = self.phase_engine.phase_name_at(trans.from_phase);
         let to_name = self.phase_engine.phase_name_at(trans.to_phase).to_string();
 
-        metrics::record_phase_transition(
-            &trans.from_phase.to_string(),
-            &trans.to_phase.to_string(),
-        );
-        metrics::set_current_phase(self.phase_engine.current_phase_name());
+        metrics::record_phase_transition(from_name, &to_name);
+        metrics::set_current_phase(&to_name);
 
         self.execute_entry_actions(&trans.entry_actions).await;
 
@@ -446,11 +446,12 @@ impl Server {
         for action in actions {
             match action {
                 EntryAction::SendNotification {
-                    send_notification: method,
+                    send_notification: cfg,
                 } => {
+                    let method = cfg.method();
                     let notification = JsonRpcMessage::Notification(JsonRpcNotification::new(
-                        method.clone(),
-                        None,
+                        method.to_string(),
+                        cfg.params().cloned(),
                     ));
                     if let Err(e) = self.transport.send_message(&notification).await {
                         warn!(method, error = %e, "failed to send entry notification");
@@ -479,6 +480,10 @@ impl Server {
     ///
     /// Emits a [`SideEffectTriggered`](Event::SideEffectTriggered) event for
     /// each successfully executed effect (TJ-SPEC-008 F-011).
+    ///
+    /// When a side effect returns [`SideEffectOutcome::CloseConnection`],
+    /// the server's cancellation token is cancelled to initiate shutdown
+    /// (TJ-SPEC-004 F-007).
     async fn execute_triggered_effects(
         &self,
         resolved: &ResolvedBehavior,
@@ -510,6 +515,15 @@ impl Server {
                             effect_type: effect.name().to_string(),
                             phase: self.phase_engine.current_phase_name().to_string(),
                         });
+
+                        // Handle close_connection outcome (TJ-SPEC-004 F-007)
+                        if let crate::behavior::SideEffectOutcome::CloseConnection { graceful } =
+                            result.outcome
+                        {
+                            info!(graceful, "close_connection side effect triggered shutdown");
+                            self.cancel.cancel();
+                            return;
+                        }
                     }
                     Err(e) => {
                         warn!(
@@ -638,10 +652,6 @@ mod tests {
                 messages_to_receive: Mutex::new(incoming),
                 sent_messages: StdArc::new(Mutex::new(Vec::new())),
             }
-        }
-
-        fn sent_bytes(&self) -> Vec<Vec<u8>> {
-            self.sent_messages.lock().unwrap().clone()
         }
     }
 

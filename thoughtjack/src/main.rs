@@ -13,7 +13,7 @@ async fn main() {
     let cli = Cli::parse();
 
     if !cli.quiet {
-        init_logging(LogFormat::Human, cli.verbose);
+        init_logging(LogFormat::Human, cli.verbose, cli.color);
     }
 
     // Create a single cancellation token shared across the entire process

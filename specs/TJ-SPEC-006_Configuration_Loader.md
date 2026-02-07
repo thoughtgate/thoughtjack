@@ -1239,9 +1239,9 @@ The system SHALL support a standalone validation command.
 
 **Implementation:**
 ```rust
-pub fn validate_command(args: &ValidateArgs) -> Result<(), CliError> {
+pub fn validate_command(args: &ValidateArgs) -> Result<(), ThoughtJackError> {
     let loader = ConfigLoader::new(&args.library);
-    
+
     match loader.load(&args.config) {
         Ok(_config) => {
             if !args.quiet {
@@ -1255,7 +1255,7 @@ pub fn validate_command(args: &ValidateArgs) -> Result<(), CliError> {
             } else {
                 eprintln!("{}", errors.format_report());
             }
-            Err(CliError::ValidationFailed)
+            Err(ThoughtJackError::ValidationFailed)
         }
     }
 }

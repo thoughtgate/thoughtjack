@@ -28,6 +28,7 @@ use crate::transport::{DEFAULT_MAX_MESSAGE_SIZE, HttpTransport, StdioTransport, 
 /// or a transport/phase error if the server fails during operation.
 ///
 /// Implements: TJ-SPEC-007 F-002
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
     // EC-CLI-003: require at least one source
     if args.config.is_none() && args.tool.is_none() {
@@ -60,6 +61,14 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
                 location = warning.location.as_deref().unwrap_or("<unknown>"),
                 "{}",
                 warning.message
+            );
+        }
+
+        // TODO(TJ-SPEC-001 F-016): wire LoggingConfig to tracing subscriber
+        if load_result.config.logging.is_some() {
+            tracing::warn!(
+                "logging configuration in YAML is not yet implemented; \
+                 use --verbose/--quiet CLI flags instead"
             );
         }
 

@@ -314,43 +314,37 @@ pub enum TriggerResult {
 The `process_event_shared` method uses double-checked locking to safely handle concurrent trigger evaluation:
 
 ```rust
-async fn process_event_shared(&self, state: &Arc<RwLock<PhaseState>>, event: &McpEvent) -> Result<(), PhaseError> {
+async fn process_event_shared(&self, state: &Arc<PhaseState>, event: &McpEvent) -> Result<(), PhaseError> {
     // Capture phase index before any changes
-    let phase_at_start: usize;
-    
-    // Phase 1: Atomic increment + read-only evaluation
-    let should_advance = {
-        let state = state.read().await;
-        phase_at_start = state.current_phase;
-        state.increment_event_atomic(event);
-        
-        // Early evaluation with current phase guard
-        match self.evaluate_trigger(&state, event, phase_at_start) {
-            TriggerResult::Advance => true,
-            _ => false,
-        }
-    };  // Read lock released
-    
-    // Phase 2: Write lock + re-evaluation only if needed
+    let phase_at_start = state.current_phase.load(Ordering::SeqCst);
+
+    // Phase 1: Atomic increment + lock-free evaluation
+    state.increment_event(event);
+
+    // Early evaluation with current phase guard
+    let should_advance = match self.evaluate_trigger(&state, event, phase_at_start) {
+        TriggerResult::Advance => true,
+        _ => false,
+    };
+
+    // Phase 2: CAS-based transition attempt if needed
     if should_advance {
-        let mut state = state.write().await;
-        
-        // CRITICAL: Re-evaluate under write lock with phase guard
+        let next_phase = phase_at_start + 1;
+
+        // CRITICAL: Use compare-and-exchange to prevent double-transitions
         // Another thread may have already transitioned
-        match self.evaluate_trigger(&state, event, phase_at_start) {
-            TriggerResult::Advance => {
-                self.execute_transition(&mut state).await?;
+        match state.try_advance(phase_at_start, next_phase) {
+            Ok(()) => {
+                // We won the race - execute transition side effects
+                self.execute_transition(next_phase).await?;
             }
-            TriggerResult::AlreadyTransitioned => {
+            Err(_) => {
                 // Another thread won the race - this is expected, not an error
                 debug!("Phase transition already occurred, skipping");
             }
-            TriggerResult::NotMatched => {
-                // Shouldn't happen, but harmless
-            }
         }
     }
-    
+
     Ok(())
 }
 ```
@@ -718,7 +712,7 @@ The phase engine supports two state scoping modes (configured via `server.state_
 | Mode | Implementation | Use Case |
 |------|----------------|----------|
 | `per_connection` (default) | Each connection owns independent `PhaseEngine` | Deterministic testing |
-| `global` | Single `Arc<RwLock<PhaseState>>` shared by all | Cross-client attacks |
+| `global` | Single `Arc<PhaseState>` with lock-free atomics shared by all | Cross-client attacks |
 
 **Canonical PhaseEngine Definition:**
 
@@ -726,7 +720,7 @@ The phase engine uses a unified struct that handles both scoping modes via an in
 
 ```rust
 /// Phase engine manages server state and phase transitions.
-/// 
+///
 /// This is the CANONICAL definition - see TJ-SPEC-003 Section 5.1 for full API.
 pub struct PhaseEngine {
     /// Immutable configuration (phases, triggers, diffs)
@@ -734,7 +728,8 @@ pub struct PhaseEngine {
     /// Mutable state - scoped per-connection or global
     state_handle: PhaseStateHandle,
     /// Cached effective state (tools, resources, prompts after applying diffs)
-    effective_state: RwLock<EffectiveState>,
+    /// Invalidated on phase transitions, recomputed on next access
+    effective_state: StdMutex<Option<(usize, EffectiveState)>>,
     /// Broadcast channel for transition events
     transition_tx: broadcast::Sender<TransitionEvent>,
 }
@@ -742,9 +737,11 @@ pub struct PhaseEngine {
 /// State handle abstracts over per-connection vs global scoping
 pub enum PhaseStateHandle {
     /// Each connection owns its state (default, deterministic)
-    Owned(RwLock<PhaseState>),
+    /// No lock needed - single-owner pattern
+    Owned(PhaseState),
     /// All connections share state (cross-client attacks)
-    Shared(Arc<RwLock<PhaseState>>),
+    /// AtomicUsize + DashMap provide inherent lock-free concurrency
+    Shared(Arc<PhaseState>),
 }
 
 impl PhaseEngine {
@@ -753,27 +750,27 @@ impl PhaseEngine {
         let state = PhaseState::new(&config);
         let effective = EffectiveState::from_baseline(&config.baseline);
         let (tx, _) = broadcast::channel(16);
-        
+
         Ok(Self {
             config,
-            state_handle: PhaseStateHandle::Owned(RwLock::new(state)),
-            effective_state: RwLock::new(effective),
+            state_handle: PhaseStateHandle::Owned(state),
+            effective_state: StdMutex::new(Some((0, effective))),
             transition_tx: tx,
         })
     }
-    
+
     /// Create engine for global mode (shared state)
     pub fn new_global(
         config: Arc<PhaseConfig>,
-        shared_state: Arc<RwLock<PhaseState>>,
+        shared_state: Arc<PhaseState>,
     ) -> Result<Self, PhaseError> {
         let effective = EffectiveState::from_baseline(&config.baseline);
         let (tx, _) = broadcast::channel(16);
-        
+
         Ok(Self {
             config,
             state_handle: PhaseStateHandle::Shared(shared_state),
-            effective_state: RwLock::new(effective),
+            effective_state: StdMutex::new(Some((0, effective))),
             transition_tx: tx,
         })
     }
@@ -793,39 +790,46 @@ impl PhaseEngine {
     
     /// Process event with owned state (no contention)
     async fn process_event_owned(
-        &self, 
-        state: &RwLock<PhaseState>,
+        &self,
+        state: &PhaseState,
         event: &McpEvent,
     ) -> Result<(), PhaseError> {
-        let mut state = state.write().await;
+        let phase_at_start = state.current_phase.load(Ordering::SeqCst);
         state.increment_event(event);
-        
-        if let Some(transition) = self.evaluate_trigger(&state, event) {
-            self.execute_transition(&mut state, transition).await?;
+
+        if let Some(transition) = self.evaluate_trigger(&state, event, phase_at_start) {
+            let next_phase = phase_at_start + 1;
+            // No CAS needed for owned state - we're the only writer
+            state.current_phase.store(next_phase, Ordering::SeqCst);
+            self.execute_transition(next_phase).await?;
         }
         Ok(())
     }
-    
+
     /// Process event with shared state (optimized for concurrency)
     async fn process_event_shared(
         &self,
-        state: &Arc<RwLock<PhaseState>>,
+        state: &Arc<PhaseState>,
         event: &McpEvent,
     ) -> Result<(), PhaseError> {
-        // Phase 1: Read lock for evaluation (allows concurrent reads)
-        let should_advance = {
-            let state = state.read().await;
-            // Note: increment uses atomic counter, no write needed
-            state.increment_event_atomic(event);
-            self.evaluate_trigger(&state, event).is_some()
-        };  // Read lock released
-        
-        // Phase 2: Write lock only if transition needed
+        let phase_at_start = state.current_phase.load(Ordering::SeqCst);
+
+        // Atomic increment (lock-free)
+        state.increment_event(event);
+
+        // Evaluate trigger
+        let should_advance = self.evaluate_trigger(&state, event, phase_at_start).is_some();
+
+        // CAS-based transition if needed
         if should_advance {
-            let mut state = state.write().await;
-            // Double-check pattern: re-evaluate under write lock
-            if let Some(transition) = self.evaluate_trigger(&state, event) {
-                self.execute_transition(&mut state, transition).await?;
+            let next_phase = phase_at_start + 1;
+            match state.try_advance(phase_at_start, next_phase) {
+                Ok(()) => {
+                    self.execute_transition(next_phase).await?;
+                }
+                Err(_) => {
+                    // Another thread already transitioned
+                }
             }
         }
         Ok(())
@@ -835,7 +839,7 @@ impl PhaseEngine {
 
 > ⚠️ **Implementation Note: Lock Contention in Global Mode**
 >
-> The `process_event_shared` implementation uses a read-lock-first strategy to allow concurrent trigger evaluation. The write lock is only acquired when a transition is actually needed, and uses double-check locking to handle races. This prevents regex evaluation on large payloads from serializing all traffic.
+> The `process_event_shared` implementation uses lock-free atomic operations for event counting and CAS (compare-and-swap) for phase transitions. This allows concurrent trigger evaluation without any locks, preventing regex evaluation on large payloads from serializing all traffic. The CAS operation prevents double-transitions when multiple threads detect the same trigger simultaneously.
 
 ### F-013: State Scope Configuration
 
@@ -1098,7 +1102,7 @@ impl PhaseEngine {
     /// Create engine for global mode (shared state)
     pub fn new_global(
         config: Arc<PhaseConfig>,
-        shared_state: Arc<RwLock<PhaseState>>,
+        shared_state: Arc<PhaseState>,
     ) -> Result<Self, PhaseError>;
     
     // --- Event Processing ---
@@ -1241,10 +1245,11 @@ pub enum TimeoutBehavior {
 
 | Library | Purpose |
 |---------|---------|
-| `tokio::sync::RwLock` | Async-aware read-write lock |
+| `std::sync::atomic::{AtomicUsize, AtomicU64}` | Lock-free phase index and event counters |
+| `std::sync::Mutex` | Cache locking for effective state |
 | `tokio::sync::broadcast` | Transition event broadcasting |
 | `tokio::time` | Timer management |
-| `dashmap` | Concurrent hash map (alternative to RwLock<HashMap>) |
+| `dashmap` | Concurrent hash map with atomic values for event counts |
 | `serde_json` | JSON value manipulation for content matching |
 
 ### 6.2 Timer Implementation
@@ -1346,8 +1351,8 @@ impl PhaseEngine {
 | Anti-Pattern | Why | Correct Approach |
 |--------------|-----|------------------|
 | Recomputing effective state on every request | Expensive, unnecessary | Cache and invalidate on transition only |
-| Holding lock during I/O (entry actions) | Blocks all concurrent requests | Release lock before I/O, use channel for actions |
-| Using `Mutex` instead of `RwLock` | Readers block each other | Use `RwLock` for read-heavy workload |
+| Holding lock during I/O (entry actions) | Blocks all concurrent requests | Use atomics for phase state, no lock needed |
+| Using locks for phase state instead of atomics | Readers block each other unnecessarily | Use `AtomicUsize` + `DashMap` for lock-free concurrent access |
 | Polling timers too frequently | CPU waste | 100ms is sufficient for testing scenarios |
 | Polling timers too infrequently | Poor precision | Don't exceed 1s interval |
 | Modifying baseline during runtime | Corrupts state computation | Baseline is immutable after load |

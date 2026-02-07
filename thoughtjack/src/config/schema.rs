@@ -67,7 +67,7 @@ pub struct ServerConfig {
 ///
 /// Implements: TJ-SPEC-001 F-001
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ServerMetadata {
     /// Server name (required)
     pub name: String,
@@ -78,6 +78,7 @@ pub struct ServerMetadata {
 
     /// Phase state scope (per-connection or global)
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "stateScope")]
     pub state_scope: Option<StateScope>,
 
     /// MCP capabilities to advertise
@@ -997,18 +998,58 @@ pub struct MatchPredicate {
     pub conditions: IndexMap<String, FieldMatcher>,
 }
 
+/// A primitive value for use in `any_of` match lists.
+///
+/// Avoids `serde_json::Value` to prevent serde-yaml/serde-json
+/// interop issues in untagged enum deserialization.
+///
+/// Implements: TJ-SPEC-003 F-005
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum AnyOfValue {
+    /// Boolean primitive
+    Bool(bool),
+    /// Integer primitive
+    Int(i64),
+    /// Floating-point primitive
+    Float(f64),
+    /// String primitive
+    String(String),
+}
+
+impl AnyOfValue {
+    /// Checks whether this value matches a JSON value (type-sensitive).
+    #[must_use]
+    pub fn matches_json(&self, value: &serde_json::Value) -> bool {
+        match (self, value) {
+            (Self::String(s), serde_json::Value::String(js)) => s == js,
+            (Self::Bool(b), serde_json::Value::Bool(jb)) => b == jb,
+            (Self::Int(i), serde_json::Value::Number(n)) => n.as_i64() == Some(*i),
+            (Self::Float(f), serde_json::Value::Number(n)) => n.as_f64() == Some(*f),
+            _ => false,
+        }
+    }
+}
+
 /// Matcher for a single field value.
 ///
-/// Supports exact matching (any JSON value) or pattern-based matching.
-/// Serde `untagged` tries variants in order: `Pattern` first (matches
-/// objects with `contains`/`prefix`/`suffix`/`regex` keys), then `Exact`
-/// as catch-all for strings, numbers, booleans, null, etc.
+/// Supports exact matching (any JSON value), pattern-based matching,
+/// or `any_of` set membership. Serde `untagged` tries variants in order:
+/// `AnyOf` first (requires `any_of` key), then `Pattern` (matches objects
+/// with `contains`/`prefix`/`suffix`/`regex` keys), then `Exact` as
+/// catch-all for strings, numbers, booleans, null, etc.
 ///
 /// Implements: TJ-SPEC-001 F-008, TJ-SPEC-003 F-005
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FieldMatcher {
-    /// Pattern-based match (tried first — requires object shape)
+    /// Set membership match (tried first — requires `any_of` key)
+    AnyOf {
+        /// Match if field equals any of the listed values
+        any_of: Vec<AnyOfValue>,
+    },
+
+    /// Pattern-based match (tried second — requires object shape)
     Pattern {
         /// Match if field contains this substring
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1059,8 +1100,8 @@ pub enum FieldMatcher {
 pub enum EntryAction {
     /// Send a JSON-RPC notification to the client
     SendNotification {
-        /// The notification method to send
-        send_notification: String,
+        /// Notification configuration (string or object with method + params)
+        send_notification: SendNotificationConfig,
     },
 
     /// Send a JSON-RPC request to the client
@@ -1074,6 +1115,59 @@ pub enum EntryAction {
         /// Message to log
         log: String,
     },
+}
+
+/// Configuration for a `send_notification` entry action.
+///
+/// Supports both short form (bare string) and long form (object with
+/// method and optional params).
+///
+/// YAML examples:
+/// ```yaml
+/// # Short form
+/// send_notification: "notifications/tools/list_changed"
+///
+/// # Long form with params
+/// send_notification:
+///   method: "notifications/tools/list_changed"
+///   params: { changes: ["calc"] }
+/// ```
+///
+/// Implements: TJ-SPEC-003 F-007
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SendNotificationConfig {
+    /// Short form: just the method name
+    Short(String),
+
+    /// Long form: method name with optional params
+    Full {
+        /// The notification method name
+        method: String,
+
+        /// Optional notification parameters
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<serde_json::Value>,
+    },
+}
+
+impl SendNotificationConfig {
+    /// Returns the notification method name.
+    #[must_use]
+    pub fn method(&self) -> &str {
+        match self {
+            Self::Short(m) | Self::Full { method: m, .. } => m,
+        }
+    }
+
+    /// Returns the notification params, if any.
+    #[must_use]
+    pub const fn params(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Short(_) => None,
+            Self::Full { params, .. } => params.as_ref(),
+        }
+    }
 }
 
 /// Configuration for a `send_request` entry action.
@@ -1341,6 +1435,7 @@ pub enum UnknownMethodHandling {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_simple_server_config_deserialize() {
@@ -1595,7 +1690,24 @@ args.path:
     }
 
     #[test]
-    fn test_entry_action_send_notification() {
+    fn test_match_predicate_any_of_deserialization() {
+        let yaml = r#"
+method:
+  any_of: ["read", "write", "list"]
+"#;
+
+        let predicate: MatchPredicate = serde_yaml::from_str(yaml).unwrap();
+        match predicate.conditions.get("method").unwrap() {
+            FieldMatcher::AnyOf { any_of } => {
+                assert_eq!(any_of.len(), 3);
+                assert_eq!(any_of[0], AnyOfValue::String("read".to_string()));
+            }
+            other => panic!("Expected AnyOf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_entry_action_send_notification_short() {
         let yaml = r#"
 send_notification: "notifications/tools/list_changed"
 "#;
@@ -1603,7 +1715,34 @@ send_notification: "notifications/tools/list_changed"
         let action: EntryAction = serde_yaml::from_str(yaml).unwrap();
         match action {
             EntryAction::SendNotification { send_notification } => {
-                assert_eq!(send_notification, "notifications/tools/list_changed");
+                assert_eq!(
+                    send_notification.method(),
+                    "notifications/tools/list_changed"
+                );
+                assert!(send_notification.params().is_none());
+            }
+            _ => panic!("Expected SendNotification"),
+        }
+    }
+
+    #[test]
+    fn test_entry_action_send_notification_with_params() {
+        let yaml = r#"
+send_notification:
+  method: "notifications/tools/list_changed"
+  params:
+    changes: ["calc"]
+"#;
+
+        let action: EntryAction = serde_yaml::from_str(yaml).unwrap();
+        match action {
+            EntryAction::SendNotification { send_notification } => {
+                assert_eq!(
+                    send_notification.method(),
+                    "notifications/tools/list_changed"
+                );
+                let params = send_notification.params().unwrap();
+                assert!(params.get("changes").is_some());
             }
             _ => panic!("Expected SendNotification"),
         }
@@ -2258,7 +2397,7 @@ unknown_methods: error
 
     #[test]
     fn test_camel_case_field_mapping() {
-        // Test that camelCase YAML maps correctly to snake_case Rust fields
+        // Test that camelCase YAML (legacy) still works via alias
         let yaml = r#"
 server:
   name: "camel-test"
@@ -2287,7 +2426,7 @@ tools:
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
 
-        // Verify stateScope -> state_scope mapping
+        // Verify stateScope alias -> state_scope mapping
         assert_eq!(config.server.state_scope, Some(StateScope::PerConnection));
 
         // Verify listChanged -> list_changed mapping
@@ -2305,7 +2444,19 @@ tools:
     }
 
     #[test]
-    fn test_serialization_uses_camel_case() {
+    fn test_snake_case_state_scope() {
+        // TJ-SPEC-001: YAML uses snake_case for state_scope
+        let yaml = r#"
+server:
+  name: "snake-test"
+  state_scope: global
+"#;
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.server.state_scope, Some(StateScope::Global));
+    }
+
+    #[test]
+    fn test_serialization_uses_snake_case_for_metadata() {
         let metadata = ServerMetadata {
             name: "test".to_string(),
             version: Some("1.0".to_string()),
@@ -2321,11 +2472,12 @@ tools:
 
         let yaml = serde_yaml::to_string(&metadata).unwrap();
 
-        // Verify camelCase is used in serialized output
-        assert!(yaml.contains("stateScope: global"));
+        // ServerMetadata now serializes with snake_case
+        assert!(
+            yaml.contains("state_scope: global"),
+            "expected snake_case state_scope in: {yaml}"
+        );
+        // Capabilities still use camelCase (MCP protocol)
         assert!(yaml.contains("listChanged: true"));
-        // Verify snake_case is NOT used
-        assert!(!yaml.contains("state_scope"));
-        assert!(!yaml.contains("list_changed"));
     }
 }

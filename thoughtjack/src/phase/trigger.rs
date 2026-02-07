@@ -181,6 +181,7 @@ fn json_path_get<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a ser
 fn field_matches(matcher: &FieldMatcher, value: &serde_json::Value) -> bool {
     match matcher {
         FieldMatcher::Exact(expected) => value == expected,
+        FieldMatcher::AnyOf { any_of } => any_of.iter().any(|v| v.matches_json(value)),
         FieldMatcher::Pattern {
             contains,
             prefix,
@@ -810,5 +811,77 @@ mod tests {
         let predicate = MatchPredicate { conditions };
 
         assert!(!matches_content(&predicate, &json!({"path": "anything"})));
+    }
+
+    // ---- any_of Matcher (TJ-SPEC-003 F-005) ----
+
+    #[test]
+    fn test_any_of_string_match() {
+        use crate::config::schema::AnyOfValue;
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "op".to_string(),
+            FieldMatcher::AnyOf {
+                any_of: vec![
+                    AnyOfValue::String("read".to_string()),
+                    AnyOfValue::String("write".to_string()),
+                ],
+            },
+        );
+        let predicate = MatchPredicate { conditions };
+
+        assert!(matches_content(&predicate, &json!({"op": "read"})));
+        assert!(matches_content(&predicate, &json!({"op": "write"})));
+        assert!(!matches_content(&predicate, &json!({"op": "delete"})));
+    }
+
+    #[test]
+    fn test_any_of_mixed_types() {
+        // EC-PHASE-026: any_of with mixed types
+        use crate::config::schema::AnyOfValue;
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "status".to_string(),
+            FieldMatcher::AnyOf {
+                any_of: vec![
+                    AnyOfValue::String("active".to_string()),
+                    AnyOfValue::Int(1),
+                    AnyOfValue::Bool(true),
+                ],
+            },
+        );
+        let predicate = MatchPredicate { conditions };
+
+        assert!(matches_content(&predicate, &json!({"status": "active"})));
+        assert!(matches_content(&predicate, &json!({"status": 1})));
+        assert!(matches_content(&predicate, &json!({"status": true})));
+        assert!(!matches_content(&predicate, &json!({"status": "inactive"})));
+        assert!(!matches_content(&predicate, &json!({"status": 2})));
+    }
+
+    #[test]
+    fn test_any_of_no_match_on_missing_field() {
+        use crate::config::schema::AnyOfValue;
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "op".to_string(),
+            FieldMatcher::AnyOf {
+                any_of: vec![AnyOfValue::String("read".to_string())],
+            },
+        );
+        let predicate = MatchPredicate { conditions };
+
+        assert!(!matches_content(&predicate, &json!({"other": "read"})));
+    }
+
+    #[test]
+    fn test_any_of_yaml_deserialization() {
+        let yaml = r#"
+method:
+  any_of: ["read", "write", "list"]
+"#;
+        let predicate: MatchPredicate = serde_yaml::from_str(yaml).unwrap();
+        let params = json!({"method": "write"});
+        assert!(matches_content(&predicate, &params));
     }
 }

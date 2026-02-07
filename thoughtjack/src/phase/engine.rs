@@ -126,20 +126,23 @@ impl PhaseEngine {
         // Increment event counter (persists across transitions per F-003)
         self.state.increment_event(event);
 
+        // Re-read phase after incrementing: if the timer task advanced the phase
+        // between our read and the increment, bail out to avoid evaluating the
+        // trigger against a stale phase config.
+        if self.state.current_phase() != current {
+            return None;
+        }
+
         // Evaluate trigger for current phase
         let phase = &self.phases[current];
         let Some(trigger) = &phase.advance else {
             return None;
         };
 
-        // Check event-based trigger
+        // Check event-based trigger only — timeout evaluation is handled
+        // exclusively by the timer task to avoid double-firing entry actions.
         let result = trigger::evaluate(trigger, &self.state, event, params);
         if let TriggerResult::Fired(reason) = result {
-            return self.try_transition(current, &reason);
-        }
-
-        // Check timeout (event-based with timeout fallback)
-        if let TriggerResult::Fired(reason) = trigger::evaluate_timeout(trigger, &self.state) {
             return self.try_transition(current, &reason);
         }
 
@@ -172,12 +175,10 @@ impl PhaseEngine {
             return None;
         };
 
+        // Event-based trigger only — timeout evaluation is handled exclusively
+        // by the timer task to avoid double-firing entry actions.
         let result = trigger::evaluate(trigger, &self.state, event, params);
         if let TriggerResult::Fired(reason) = result {
-            return self.try_transition(current, &reason);
-        }
-
-        if let TriggerResult::Fired(reason) = trigger::evaluate_timeout(trigger, &self.state) {
             return self.try_transition(current, &reason);
         }
 
@@ -197,6 +198,11 @@ impl PhaseEngine {
         }
 
         info!(from, to, reason, "phase transition");
+
+        // Invalidate effective state cache immediately after CAS success
+        if let Ok(mut cache) = self.effective_cache.lock() {
+            *cache = None;
+        }
 
         // Reset phase entry timer
         self.state.reset_phase_timer();
@@ -373,7 +379,7 @@ impl PhaseEngine {
     ///
     /// # Errors
     ///
-    /// Returns `PhaseError::InvalidTransition` if the receiver lock is poisoned.
+    /// Returns `PhaseError::TriggerError` if the receiver lock is poisoned.
     ///
     /// Implements: TJ-SPEC-003 F-001
     pub async fn recv_transition(&self) -> Result<Option<PhaseTransition>, PhaseError> {
@@ -409,7 +415,7 @@ mod tests {
     use super::*;
     use crate::config::schema::{
         ContentItem, ContentValue, EntryAction, FieldMatcher, MatchPredicate, ResponseConfig,
-        ToolDefinition, ToolPattern, ToolPatternRef, Trigger,
+        SendNotificationConfig, ToolDefinition, ToolPattern, ToolPatternRef, Trigger,
     };
     use indexmap::IndexMap;
 
@@ -604,7 +610,9 @@ mod tests {
                 name: "trigger".to_string(),
                 on_enter: Some(vec![
                     EntryAction::SendNotification {
-                        send_notification: "notifications/tools/list_changed".to_string(),
+                        send_notification: SendNotificationConfig::Short(
+                            "notifications/tools/list_changed".to_string(),
+                        ),
                     },
                     EntryAction::Log {
                         log: "Rug pull triggered".to_string(),

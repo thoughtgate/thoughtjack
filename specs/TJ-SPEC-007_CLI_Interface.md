@@ -165,7 +165,6 @@ Options:
       --behavior <MODE>      Override delivery behavior [env: THOUGHTJACK_BEHAVIOR]
       --state-scope <SCOPE>  Phase state scope for HTTP [default: per-connection]
                              [env: THOUGHTJACK_STATE_SCOPE] [values: per-connection, global]
-      --profile <PROFILE>    Server profile [default: default] [possible values: default, aggressive, stealth]
       --library <PATH>       Library root directory [default: ./library] [env: THOUGHTJACK_LIBRARY]
       --capture-dir <PATH>   Capture request/response pairs [env: THOUGHTJACK_CAPTURE_DIR]
       --capture-redact       Redact sensitive fields in captures
@@ -563,7 +562,7 @@ pub struct AgentCommand {
 }
 
 impl AgentCommand {
-    pub fn run(&self) -> Result<(), CliError> {
+    pub fn run(&self) -> Result<(), ThoughtJackError> {
         eprintln!("{}",
             "The 'agent' command is coming soon in a future release.\n\n\
              This will enable simulation of malicious A2A agents for testing\n\
@@ -571,7 +570,7 @@ impl AgentCommand {
              Track progress: https://github.com/thoughtgate/thoughtjack/issues/XXX"
                 .yellow()
         );
-        Err(CliError::NotImplemented)
+        Err(ThoughtJackError::NotImplemented)
     }
 }
 ```
@@ -622,7 +621,7 @@ pub enum Shell {
 }
 
 impl CompletionsCommand {
-    pub fn run(&self, cmd: &mut clap::Command) -> Result<(), CliError> {
+    pub fn run(&self, cmd: &mut clap::Command) -> Result<(), ThoughtJackError> {
         let shell = match self.shell {
             Shell::Bash => clap_complete::Shell::Bash,
             Shell::Zsh => clap_complete::Shell::Zsh,
@@ -630,7 +629,7 @@ impl CompletionsCommand {
             Shell::PowerShell => clap_complete::Shell::PowerShell,
             Shell::Elvish => clap_complete::Shell::Elvish,
         };
-        
+
         clap_complete::generate(shell, cmd, "thoughtjack", &mut std::io::stdout());
         Ok(())
     }
@@ -718,15 +717,16 @@ pub enum ExitCode {
     Interrupted = 130,
 }
 
-impl From<CliError> for ExitCode {
-    fn from(err: CliError) -> Self {
-        match err {
-            CliError::Config(_) => ExitCode::ConfigError,
-            CliError::Io(_) => ExitCode::IoError,
-            CliError::Transport(_) => ExitCode::TransportError,
-            CliError::NotImplemented => ExitCode::NotImplemented,
-            CliError::Usage(_) => ExitCode::UsageError,
-            CliError::Interrupted => ExitCode::Interrupted,
+impl From<ThoughtJackError> for ExitCode {
+    fn from(err: ThoughtJackError) -> Self {
+        // Use ThoughtJackError.exit_code() method to determine appropriate exit code
+        match err.exit_code() {
+            2 => ExitCode::ConfigError,
+            3 => ExitCode::IoError,
+            4 => ExitCode::TransportError,
+            5 => ExitCode::NotImplemented,
+            64 => ExitCode::UsageError,
+            130 => ExitCode::Interrupted,
             _ => ExitCode::GeneralError,
         }
     }
@@ -928,10 +928,10 @@ The system SHALL handle signals gracefully.
 
 **Implementation:**
 ```rust
-async fn run_with_signals(server: Server) -> Result<(), CliError> {
+async fn run_with_signals(server: Server) -> Result<(), ThoughtJackError> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
-    
+
     ctrlc::set_handler(move || {
         if shutdown_clone.swap(true, Ordering::SeqCst) {
             // Second signal - force exit
@@ -940,12 +940,12 @@ async fn run_with_signals(server: Server) -> Result<(), CliError> {
         }
         eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
     })?;
-    
+
     tokio::select! {
         result = server.run() => result,
         _ = wait_for_shutdown(&shutdown) => {
             server.shutdown().await;
-            Err(CliError::Interrupted)
+            Err(ThoughtJackError::Interrupted)
         }
     }
 }
@@ -1125,7 +1125,7 @@ thoughtjack
 │   │   ├── --http <ADDR>           HTTP transport address
 │   │   ├── --spoof-client <NAME>   Override client name
 │   │   ├── --behavior <MODE>       Override delivery behavior
-│   │   ├── --profile <PROFILE>     Server profile
+│   │   ├── --state-scope <SCOPE>   Phase state scope
 │   │   └── --library <PATH>        Library root directory
 │   │
 │   ├── validate                    Validate configuration
@@ -1200,21 +1200,21 @@ thoughtjack/
 ### 6.3 Error Formatting
 
 ```rust
-impl CliError {
+impl ThoughtJackError {
     pub fn format(&self, color: bool) -> String {
         let prefix = if color {
             "error:".red().bold().to_string()
         } else {
             "error:".to_string()
         };
-        
+
         let message = match self {
-            CliError::Config(e) => format!("{} {}\n\n{}", prefix, "Configuration error", e),
-            CliError::Io(e) => format!("{} {}", prefix, e),
-            CliError::Usage(msg) => format!("{} {}\n\nFor more information, try '--help'", prefix, msg),
+            ThoughtJackError::Config(e) => format!("{} {}\n\n{}", prefix, "Configuration error", e),
+            ThoughtJackError::Io(e) => format!("{} {}", prefix, e),
+            ThoughtJackError::Usage(msg) => format!("{} {}\n\nFor more information, try '--help'", prefix, msg),
             // ...
         };
-        
+
         message
     }
 }
@@ -1361,15 +1361,9 @@ Options:
 
       --behavior <MODE>
           Override delivery behavior
-          
+
           [env: THOUGHTJACK_BEHAVIOR]
           [possible values: normal, slow-loris, unbounded-line, nested-json, response-delay]
-
-      --profile <PROFILE>
-          Server profile
-          
-          [default: default]
-          [possible values: default, aggressive, stealth]
 
       --library <PATH>
           Library root directory

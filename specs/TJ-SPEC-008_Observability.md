@@ -93,26 +93,51 @@ The system SHALL use structured logging with configurable verbosity.
 use tracing::{info, debug, trace, warn, error, instrument, Span};
 use tracing_subscriber::{fmt, EnvFilter};
 
-pub fn init_logging(level: LogLevel, format: LogFormat) {
-    let filter = EnvFilter::new(level.to_filter_string());
-    
-    let subscriber = fmt::Subscriber::builder()
-        .with_env_filter(filter)
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_file(true)
-        .with_line_number(true);
-    
+/// Maps a verbosity level to a tracing directive string.
+///
+/// - 0 → `"warn"`
+/// - 1 → `"info"`
+/// - 2 → `"debug"`
+/// - 3+ → `"trace"` (saturates)
+pub const fn verbosity_to_directive(verbosity: u8) -> &'static str {
+    match verbosity {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    }
+}
+
+pub fn init_logging(format: LogFormat, verbosity: u8, color: ColorChoice) {
+    let default_directive = verbosity_to_directive(verbosity);
+
+    let filter = EnvFilter::try_from_env("THOUGHTJACK_LOG_LEVEL")
+        .unwrap_or_else(|_| EnvFilter::new(default_directive));
+
+    let show_target = verbosity >= 2;
+
+    let use_ansi = match color {
+        ColorChoice::Auto => std::io::stderr().is_terminal(),
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+    };
+
     match format {
         LogFormat::Human => {
-            subscriber
-                .with_ansi(atty::is(atty::Stream::Stderr))
-                .init();
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(use_ansi)
+                .with_target(show_target)
+                .with_writer(std::io::stderr)
+                .try_init();
         }
         LogFormat::Json => {
-            subscriber
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(filter)
                 .json()
-                .init();
+                .with_target(show_target)
+                .with_writer(std::io::stderr)
+                .try_init();
         }
     }
 }
@@ -1088,18 +1113,39 @@ pub fn init_observability(config: &ObservabilityConfig) -> Result<(), Error> {
 
 ```rust
 use metrics_exporter_prometheus::PrometheusBuilder;
+use crate::error::ThoughtJackError;
 
-pub fn init_metrics(config: &MetricsConfig) -> Result<PrometheusHandle, Error> {
-    let builder = PrometheusBuilder::new();
-    
-    let handle = builder
-        .with_http_listener(([127, 0, 0, 1], 9090))
-        .install_recorder()?;
-    
-    // Register metrics with descriptions
+/// Initializes the global metrics recorder.
+///
+/// When `port` is `Some`, a Prometheus HTTP listener is started on
+/// `127.0.0.1:<port>`.  When `None`, the recorder is installed without
+/// an HTTP endpoint (metrics are recorded internally and can be read
+/// programmatically).
+///
+/// # Errors
+///
+/// Returns `ThoughtJackError::Io` if the recorder or HTTP listener
+/// cannot be installed (e.g. port already in use).
+pub fn init_metrics(port: Option<u16>) -> Result<(), ThoughtJackError> {
+    port.map_or_else(
+        || PrometheusBuilder::new().install_recorder().map(|_| ()),
+        |p| {
+            PrometheusBuilder::new()
+                .with_http_listener(([127, 0, 0, 1], p))
+                .install()
+        },
+    )
+    .map_err(|e| ThoughtJackError::Io(std::io::Error::other(e.to_string())))?;
+
+    describe_metrics();
+    Ok(())
+}
+
+/// Registers metric descriptions with the global recorder.
+fn describe_metrics() {
     metrics::describe_counter!(
         "thoughtjack_requests_total",
-        "Total number of requests received"
+        "Total number of MCP requests received"
     );
     metrics::describe_histogram!(
         "thoughtjack_request_duration_ms",

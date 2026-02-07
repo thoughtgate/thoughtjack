@@ -535,7 +535,7 @@ pub struct Dispatcher {
 /// Handle to phase engine - scoping depends on config (ERRATA C-01)
 pub enum PhaseEngineHandle {
     PerConnection(PhaseEngine),
-    Global(Arc<RwLock<PhaseEngine>>),
+    Global(Arc<PhaseEngine>),
 }
 
 impl Dispatcher {
@@ -574,19 +574,19 @@ See TJ-SPEC-003 F-012 for the canonical `PhaseEngine` definition. Summary:
 pub struct PhaseEngine {
     config: Arc<PhaseConfig>,
     state_handle: PhaseStateHandle,       // Owned or Shared
-    effective_state: RwLock<EffectiveState>,
+    effective_state: StdMutex<Option<(usize, EffectiveState)>>,
     transition_tx: broadcast::Sender<TransitionEvent>,
 }
 
 /// State handle abstracts over per-connection vs global scoping
 pub enum PhaseStateHandle {
-    Owned(RwLock<PhaseState>),            // Per-connection: no contention
-    Shared(Arc<RwLock<PhaseState>>),      // Global: shared across connections
+    Owned(PhaseState),            // Per-connection: no contention
+    Shared(Arc<PhaseState>),      // Global: shared across connections
 }
 
 impl PhaseEngine {
     pub fn new_per_connection(config: Arc<PhaseConfig>) -> Result<Self, PhaseError>;
-    pub fn new_global(config: Arc<PhaseConfig>, shared: Arc<RwLock<PhaseState>>) -> Result<Self, PhaseError>;
+    pub fn new_global(config: Arc<PhaseConfig>, shared: Arc<PhaseState>) -> Result<Self, PhaseError>;
     pub async fn process_event(&self, event: &McpEvent) -> Result<(), PhaseError>;
     pub async fn effective_state(&self) -> EffectiveState;
     pub async fn current_phase_info(&self) -> PhaseInfo;
@@ -720,7 +720,7 @@ pub async fn run_server(args: ServerRunArgs) -> anyhow::Result<()> {
         }
         StateScope::Global => {
             // Single shared engine
-            let shared_state = Arc::new(RwLock::new(PhaseState::new(&config)));
+            let shared_state = Arc::new(PhaseState::new(&config));
             Some(Arc::new(PhaseEngine::new_global(config.clone(), shared_state)?))
         }
     };

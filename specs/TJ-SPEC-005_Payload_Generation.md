@@ -425,11 +425,11 @@ pub enum Charset {
 impl Charset {
     fn sample(&self, rng: &mut impl Rng) -> u8 {
         match self {
-            Charset::Ascii => rng.gen_range(0x20..=0x7E),
-            Charset::Binary => rng.gen(),
+            Charset::Ascii => rng.random_range(0x20..=0x7E),
+            Charset::Binary => rng.random(),
             Charset::Alphanumeric => {
                 const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-                CHARS[rng.gen_range(0..CHARS.len())]
+                CHARS[rng.random_range(0..CHARS.len())]
             }
         }
     }
@@ -681,11 +681,11 @@ impl PayloadGenerator for UnicodeSpamGenerator {
         
         while output.len() < self.bytes {
             // Intersperse carrier text if provided
-            if !carrier_chars.is_empty() && rng.gen_bool(0.3) {
+            if !carrier_chars.is_empty() && rng.random_bool(0.3) {
                 output.push(carrier_chars[carrier_idx % carrier_chars.len()]);
                 carrier_idx += 1;
             } else {
-                output.push(chars[rng.gen_range(0..chars.len())]);
+                output.push(chars[rng.random_range(0..chars.len())]);
             }
         }
         
@@ -770,8 +770,8 @@ pub enum AnsiSequenceType {
 impl AnsiSequenceType {
     fn generate(&self, payload: &str, rng: &mut impl Rng) -> String {
         match self {
-            Self::CursorMove => format!("\x1b[{};{}H", rng.gen_range(1..100), rng.gen_range(1..100)),
-            Self::Color => format!("\x1b[{}m", rng.gen_range(30..48)),
+            Self::CursorMove => format!("\x1b[{};{}H", rng.random_range(1..100), rng.random_range(1..100)),
+            Self::Color => format!("\x1b[{}m", rng.random_range(30..48)),
             Self::Title => format!("\x1b]0;{}\x07", payload),
             Self::Hyperlink => format!("\x1b]8;;{}\x07click\x1b]8;;\x07", payload),
             Self::Clear => "\x1b[2J\x1b[H".to_string(),
@@ -785,7 +785,7 @@ impl PayloadGenerator for AnsiEscapeGenerator {
         let mut rng = StdRng::seed_from_u64(42);
         
         for _ in 0..self.count {
-            let seq_type = &self.sequences[rng.gen_range(0..self.sequences.len())];
+            let seq_type = &self.sequences[rng.random_range(0..self.sequences.len())];
             output.push_str(&seq_type.generate(&self.payload, &mut rng));
         }
         
@@ -1256,7 +1256,7 @@ phases:
 | `rand` | Random number generation |
 | `rand::SeedableRng` | Deterministic seeding |
 | `serde_json` | JSON construction |
-| `tokio::sync::RwLock` | Cache synchronization |
+| `std::sync::Mutex` | Cache synchronization |
 | `indexmap` | Deterministic iteration order for generated objects |
 
 ### 6.2 Generator Factory

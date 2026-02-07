@@ -599,12 +599,12 @@ impl IncludeResolver {
             });
         }
 
+        // Reject absolute paths — all $include paths must be relative to library root
         if path.is_absolute() {
-            if path.exists() {
-                return Ok(path.to_path_buf());
-            }
-            return Err(ConfigError::MissingFile {
-                path: path.to_path_buf(),
+            return Err(ConfigError::InvalidValue {
+                field: "$include".to_string(),
+                value: path_str.to_string(),
+                expected: "relative path (absolute paths are not allowed in $include)".to_string(),
             });
         }
 
@@ -751,12 +751,12 @@ impl FileResolver {
             });
         }
 
+        // Reject absolute paths — all $file paths must be relative
         if path.is_absolute() {
-            if path.exists() {
-                return Ok(path.to_path_buf());
-            }
-            return Err(ConfigError::MissingFile {
-                path: path.to_path_buf(),
+            return Err(ConfigError::InvalidValue {
+                field: "$file".to_string(),
+                value: path_str.to_string(),
+                expected: "relative path (absolute paths are not allowed in $file)".to_string(),
             });
         }
 
@@ -1257,6 +1257,60 @@ mod tests {
                 field, expected, ..
             }) => {
                 assert_eq!(field, "$file");
+                assert!(expected.contains(".."));
+            }
+            _ => panic!("Expected InvalidValue error for path traversal"),
+        }
+    }
+
+    #[test]
+    fn test_file_resolver_rejects_absolute_path() {
+        let resolver = FileResolver::new(PathBuf::from("/fake/library"));
+        let abs_path = Value::String("/etc/passwd".to_string());
+        let result = resolver.resolve_path(&abs_path, Path::new("/fake/config.yaml"));
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue {
+                field, expected, ..
+            }) => {
+                assert_eq!(field, "$file");
+                assert!(expected.contains("absolute"));
+            }
+            _ => panic!("Expected InvalidValue error for absolute path"),
+        }
+    }
+
+    #[test]
+    fn test_include_resolver_rejects_absolute_path() {
+        let resolver = IncludeResolver::new(PathBuf::from("/fake/library"), 10);
+        let abs_path = Value::String("/etc/shadow".to_string());
+        let result = resolver.resolve_path(&abs_path);
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue {
+                field, expected, ..
+            }) => {
+                assert_eq!(field, "$include");
+                assert!(expected.contains("absolute"));
+            }
+            _ => panic!("Expected InvalidValue error for absolute path"),
+        }
+    }
+
+    #[test]
+    fn test_include_resolver_rejects_path_traversal() {
+        let resolver = IncludeResolver::new(PathBuf::from("/fake/library"), 10);
+        let traversal = Value::String("../../etc/passwd".to_string());
+        let result = resolver.resolve_path(&traversal);
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue {
+                field, expected, ..
+            }) => {
+                assert_eq!(field, "$include");
                 assert!(expected.contains(".."));
             }
             _ => panic!("Expected InvalidValue error for path traversal"),
