@@ -723,6 +723,15 @@ impl IncludeResolver {
                     self.resolve(value, cache)?;
                     self.resolution_stack.pop();
                 } else {
+                    // EC-CFG-017: warn on orphan `override:` without `$include:`
+                    let override_key = Value::String("override".to_string());
+                    if map.contains_key(&override_key) {
+                        tracing::warn!(
+                            "orphan 'override:' key found without sibling '$include:' — \
+                             the override will have no effect"
+                        );
+                    }
+
                     // Recurse into map values
                     let keys: Vec<Value> = map.keys().cloned().collect();
                     for key in keys {
@@ -867,6 +876,11 @@ impl FileResolver {
                         FileContent::Json(v) => json_to_yaml(v),
                         FileContent::Text(s) => Value::String(s.clone()),
                         FileContent::Binary(b) => {
+                            // EC-CFG-019: binary file in text context
+                            tracing::warn!(
+                                path = %path.display(),
+                                "binary file resolved via $file — content will be base64-encoded"
+                            );
                             Value::String(base64::engine::general_purpose::STANDARD.encode(b))
                         }
                     };
