@@ -186,6 +186,7 @@ fn merge_capabilities(baseline: Option<&Capabilities>, phase: &Capabilities) -> 
         tools: phase.tools.clone().or(baseline.tools),
         resources: phase.resources.clone().or(baseline.resources),
         prompts: phase.prompts.clone().or(baseline.prompts),
+        logging: phase.logging.clone().or(baseline.logging),
     }
 }
 
@@ -400,6 +401,7 @@ mod tests {
                 }),
                 resources: None,
                 prompts: None,
+                logging: None,
             }),
             ..Default::default()
         };
@@ -413,6 +415,7 @@ mod tests {
                     list_changed: None,
                 }),
                 prompts: None,
+                logging: None,
             }),
             ..default_phase()
         };
@@ -434,6 +437,7 @@ mod tests {
                 }),
                 resources: None,
                 prompts: None,
+                logging: None,
             }),
             ..Default::default()
         };
@@ -446,6 +450,7 @@ mod tests {
                 }),
                 resources: None,
                 prompts: None,
+                logging: None,
             }),
             ..default_phase()
         };

@@ -129,6 +129,10 @@ pub struct Capabilities {
     /// Prompts capability
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompts: Option<PromptsCapability>,
+
+    /// Logging capability (MCP spec `logging` field)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logging: Option<LoggingCapability>,
 }
 
 /// Tools capability configuration.
@@ -179,6 +183,15 @@ pub struct PromptsCapability {
     )]
     pub list_changed: Option<bool>,
 }
+
+/// Logging capability configuration (MCP spec).
+///
+/// An empty struct indicating the server supports the MCP `logging`
+/// capability. The MCP specification defines this as an empty object.
+///
+/// Implements: TJ-SPEC-001 F-014
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LoggingCapability {}
 
 // ============================================================================
 // Tool Pattern (F-003)
@@ -2879,6 +2892,7 @@ server:
                 }),
                 resources: None,
                 prompts: None,
+                logging: None,
             }),
         };
 

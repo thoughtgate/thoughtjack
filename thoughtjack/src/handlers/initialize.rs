@@ -175,6 +175,7 @@ mod tests {
             }),
             resources: None,
             prompts: None,
+            logging: None,
         });
 
         let req = make_request();

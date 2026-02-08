@@ -1400,7 +1400,8 @@ pub struct Capabilities {
     pub resources: Option<ResourcesCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompts: Option<PromptsCapability>,
-    // logging: Option<LoggingCapability> — planned, see Phase 2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logging: Option<LoggingCapability>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
