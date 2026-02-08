@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'ThoughtJack',
   tagline: 'Adversarial MCP server for security testing',
-  url: 'https://thoughtgate.github.io',
+  url: 'https://thoughtjack.io',
   baseUrl: '/',
 
   organizationName: 'thoughtgate',
