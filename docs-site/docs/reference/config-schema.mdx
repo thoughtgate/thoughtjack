@@ -1,0 +1,338 @@
+---
+title: Configuration Schema
+sidebar_position: 2
+description: Complete YAML configuration format for ThoughtJack scenarios
+---
+
+# Configuration Schema
+
+Complete reference for ThoughtJack's YAML configuration format. See [TJ-SPEC-001](https://github.com/thoughtgate/thoughtjack/blob/main/specs/TJ-SPEC-001_Configuration_Schema.md) for the formal specification.
+
+## Root structure
+
+```yaml
+server:          # Required — server identity
+  name: string
+  version: string
+
+metadata:        # Optional — scenario metadata for docs/catalog
+  # See Scenario Metadata Schema
+
+baseline:        # Optional — initial server state
+  capabilities:  # MCP capabilities
+  tools: []      # Initial tool set
+  resources: []  # Initial resource set
+  prompts: []    # Initial prompt set
+
+tools: []        # Shorthand for baseline.tools (mutually exclusive)
+resources: []    # Shorthand for baseline.resources
+prompts: []     # Shorthand for baseline.prompts
+
+phases: []       # Optional — phase engine configuration
+
+behavior:        # Optional — delivery and side effect configuration
+  delivery: {}
+  side_effects: []
+
+logging:         # Optional — logging configuration
+  level: string
+  format: string
+
+unknown_methods: string  # Optional — how to handle unknown JSON-RPC methods
+```
+
+## `server`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Server name in MCP `initialize` response |
+| `version` | string | Yes | Server version string |
+
+```yaml
+server:
+  name: "helpful-assistant"
+  version: "1.0.0"
+```
+
+## `baseline`
+
+The initial state of the server before any phase transitions.
+
+### `baseline.capabilities`
+
+MCP server capabilities advertised in the `initialize` response.
+
+```yaml
+baseline:
+  capabilities:
+    tools:
+      listChanged: true    # enables notifications/tools/list_changed
+    resources:
+      subscribe: true      # enables resource subscriptions
+      listChanged: true
+    prompts:
+      listChanged: true
+```
+
+### Tool definition
+
+```yaml
+tools:
+  - tool:
+      name: string              # Required — tool name
+      description: string       # Required — tool description (shown to agent)
+      inputSchema:              # Required — JSON Schema for tool parameters
+        type: object
+        properties: {}
+        required: []
+    response:                   # Required — what to return when called
+      content: []               # Content items (see below)
+      match: []                 # Optional — conditional responses
+      sequence: []              # Optional — sequential responses
+      $handler: {}              # Optional — dynamic handler
+    behavior:                   # Optional — per-tool delivery behavior
+      delivery: {}
+```
+
+### Resource definition
+
+```yaml
+resources:
+  - resource:
+      uri: string              # Required — resource URI
+      name: string             # Required — display name
+      description: string      # Optional
+      mimeType: string         # Optional — MIME type
+    response:
+      content: []
+```
+
+### Prompt definition
+
+```yaml
+prompts:
+  - prompt:
+      name: string             # Required — prompt name
+      description: string      # Optional
+      arguments: []             # Optional — prompt arguments
+    response:
+      content: []
+```
+
+## Content items
+
+The `content` array contains MCP content items:
+
+### Text content
+
+```yaml
+content:
+  - type: text
+    text: "Static text response"
+```
+
+### Text with template interpolation
+
+```yaml
+content:
+  - type: text
+    text: "Hello ${args.name}, phase: ${phase.name}"
+```
+
+### Text with generator
+
+```yaml
+content:
+  - type: text
+    text:
+      $generate:
+        type: nested_json
+        depth: 50000
+```
+
+### Text with file content
+
+```yaml
+content:
+  - type: text
+    text:
+      $file: "path/to/payload.txt"
+```
+
+### Image content
+
+```yaml
+content:
+  - type: image
+    data: "base64-encoded-data"
+    mimeType: "image/png"
+```
+
+### Resource content
+
+```yaml
+content:
+  - type: resource
+    resource:
+      uri: "file:///path"
+      text: "Resource content"
+```
+
+## Template interpolation
+
+Templates use `${...}` syntax. Available namespaces:
+
+| Namespace | Example | Description |
+|-----------|---------|-------------|
+| `args.*` | `${args.query}` | Tool call arguments (dot-notation, array indexing) |
+| `tool.*` | `${tool.name}` | Tool metadata |
+| `resource.*` | `${resource.uri}` | Resource metadata |
+| `prompt.*` | `${prompt.name}` | Prompt metadata |
+| `phase.*` | `${phase.name}`, `${phase.index}` | Current phase |
+| `request.*` | `${request.id}`, `${request.method}` | Request metadata |
+| `connection.*` | `${connection.id}` | Connection metadata |
+| `env.*` | `${env.HOME}` | Environment variables |
+| `fn.*` | `${fn.upper(args.name)}` | Built-in functions |
+
+### Built-in functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `upper` | `fn.upper(value)` | Uppercase string |
+| `lower` | `fn.lower(value)` | Lowercase string |
+| `base64` | `fn.base64(value)` | Base64 encode |
+| `json` | `fn.json(value)` | JSON serialize |
+| `len` | `fn.len(value)` | String or array length |
+| `default` | `fn.default(value, fallback)` | Default for missing variables |
+| `truncate` | `fn.truncate(value, n)` | Truncate to n characters |
+| `timestamp` | `fn.timestamp()` | Current ISO 8601 timestamp |
+| `uuid` | `fn.uuid()` | Generate UUID v4 |
+
+Escape `${` by doubling: `$${` produces literal `${`.
+
+## `phases`
+
+Phases define the state machine for temporal attacks. See [Phase Triggers](./triggers) for trigger details.
+
+```yaml
+phases:
+  - name: string               # Required — phase name
+    advance:                   # Trigger to advance to next phase
+      on: string               # Event name (e.g., "tools/call")
+      count: integer           # Event count threshold
+      after: string            # Duration (e.g., "30s", "5m")
+      timeout: string          # Trigger timeout
+      match: {}                # Content matching (see Triggers)
+    on_enter: []               # Entry actions
+    add_tools: []              # Tools to add
+    remove_tools: []           # Tool names to remove
+    replace_tools: []          # Tools to replace (by name)
+    add_resources: []          # Resources to add
+    remove_resources: []       # Resource URIs to remove
+    replace_resources: []      # Resources to replace (by URI)
+    add_prompts: []            # Prompts to add
+    remove_prompts: []         # Prompt names to remove
+    replace_prompts: []        # Prompts to replace (by name)
+    behavior:                  # Phase-specific behavior
+      delivery: {}
+      side_effects: []
+```
+
+### Entry actions
+
+```yaml
+on_enter:
+  - send_notification: "notifications/tools/list_changed"
+  - send_request: { method: "sampling/createMessage", params: {} }
+  - log: "Phase transition occurred"
+```
+
+## `behavior`
+
+### Delivery configuration
+
+```yaml
+behavior:
+  delivery:
+    type: slow_loris           # normal, slow_loris, unbounded_line, nested_json, response_delay
+    byte_delay_ms: 100         # slow_loris specific
+    chunk_size: 1              # slow_loris specific
+```
+
+See [Behavioral Modes](./behaviors) for all delivery parameters.
+
+### Side effects configuration
+
+```yaml
+behavior:
+  side_effects:
+    - type: notification_flood
+      rate_per_second: 100
+      duration_ms: 5000
+      trigger: on_request      # on_connect, on_request, on_subscribe, on_unsubscribe, continuous
+```
+
+See [Behavioral Modes](./behaviors) for all side effect parameters.
+
+## `unknown_methods`
+
+Controls how the server handles unrecognized JSON-RPC methods:
+
+| Value | Behavior |
+|-------|----------|
+| `ignore` | Return empty success response (default) |
+| `error` | Return JSON-RPC error response |
+| `drop` | Silently drop the request |
+
+## Directives
+
+### `$include`
+
+Import and merge another YAML file:
+
+```yaml
+$include: "base_config.yaml"
+```
+
+### `$file`
+
+Load file content as a string:
+
+```yaml
+text:
+  $file: "payloads/injection.txt"
+```
+
+### `$generate`
+
+Generate payload at response time:
+
+```yaml
+text:
+  $generate:
+    type: nested_json
+    depth: 50000
+```
+
+See [Payload Generators](./generators) for all generator types.
+
+### `$handler`
+
+Dynamic response from external source:
+
+```yaml
+$handler:
+  url: "https://api.example.com/respond"
+  timeout_ms: 5000
+```
+
+See [Dynamic Response Handlers](/docs/how-to/dynamic-responses) for handler configuration.
+
+### `${VAR}`
+
+Environment variable substitution (at config load time):
+
+```yaml
+server:
+  name: "${SERVER_NAME}"
+```

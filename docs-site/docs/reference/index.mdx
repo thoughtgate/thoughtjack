@@ -3,14 +3,28 @@ id: reference
 title: Reference
 sidebar_label: Reference
 sidebar_position: 3
+description: Technical reference documentation for ThoughtJack
 ---
 
 # Reference
 
-Technical reference documentation for ThoughtJack.
+Precise, complete descriptions of every configuration field, CLI command, and component. Use these pages when you know what you're looking for and need exact details.
 
-- **Configuration Schema** — Complete YAML configuration format (TJ-SPEC-001)
-- **CLI Reference** — All commands, flags, and environment variables (TJ-SPEC-007)
-- **Scenario Metadata** — Metadata block format and validation rules (TJ-SPEC-011)
-- **Attack Scenarios** — Auto-generated scenario catalog
-- **Coverage Matrices** — MITRE ATT&CK, OWASP MCP, and attack surface coverage
+| Reference | What it covers |
+|-----------|---------------|
+| [Configuration Schema](./config-schema) | Complete YAML configuration format — every field, type, and default |
+| [CLI Reference](./cli) | All commands, flags, environment variables, and exit codes |
+| [Payload Generators](./generators) | Generator types, parameters, limits, and output formats |
+| [Behavioral Modes](./behaviors) | Delivery behaviors and side effects with parameters |
+| [Scenario Metadata Schema](./scenarios-metadata) | Metadata block fields for scenario registration |
+| [Phase Triggers](./triggers) | Trigger types, field matchers, and content matching syntax |
+
+## Auto-generated reference
+
+The [Attack Catalog](/docs/scenarios) is auto-generated from built-in scenarios using `thoughtjack docs generate`. Each scenario page includes metadata, phase diagrams, and YAML source.
+
+## Not what you're looking for?
+
+- **Learning from scratch?** → start with [Tutorials](/docs/tutorials)
+- **Trying to accomplish a specific task?** → see [How-To Guides](/docs/how-to)
+- **Want conceptual understanding?** → see [Explanation](/docs/explanation)

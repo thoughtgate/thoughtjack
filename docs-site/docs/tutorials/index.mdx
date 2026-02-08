@@ -3,13 +3,34 @@ id: tutorials
 title: Tutorials
 sidebar_label: Tutorials
 sidebar_position: 1
+description: Step-by-step guides to get started with ThoughtJack
 ---
 
 # Tutorials
 
-Step-by-step guides to get started with ThoughtJack.
+Learn ThoughtJack from the ground up with these step-by-step tutorials. Each tutorial walks you through a complete workflow, from installation to observing results.
 
-- **Getting Started** — Set up ThoughtJack and run your first attack scenario
-- **Writing a Custom Scenario** — Create a YAML scenario from scratch
-- **Phased Attacks** — Build a multi-phase rug-pull scenario
-- **Generating Documentation** — Use `thoughtjack docs generate` to create a scenario catalog
+## Where to start
+
+If you're new to ThoughtJack, begin with **Getting Started** — it takes about 5 minutes and gives you a working feel for the tool.
+
+| Tutorial | What you'll learn |
+|----------|-------------------|
+| [Getting Started](./getting-started) | Install ThoughtJack, run your first scenario, understand the output |
+| [Writing a Custom Scenario](./custom-scenario) | Create a YAML config from scratch with tools, phases, and triggers |
+| [Building Phased Attacks](./phased-attacks) | Multi-phase trust-building → trigger → exploit with `replace_tools` |
+| [Generating Documentation](./generating-docs) | Auto-generate a documentation site from your scenarios |
+
+## Prerequisites
+
+- Rust toolchain (1.85+) or a pre-built binary
+- An MCP client to test against (or just observe ThoughtJack's stdout)
+- Basic familiarity with YAML
+
+## What these tutorials are not
+
+These are **learning-oriented** guides that walk you through complete workflows. If you need:
+
+- **Task-specific instructions** → see [How-To Guides](/docs/how-to)
+- **Complete field reference** → see [Reference](/docs/reference)
+- **Conceptual background** → see [Explanation](/docs/explanation)

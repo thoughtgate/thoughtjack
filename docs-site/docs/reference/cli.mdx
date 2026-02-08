@@ -1,0 +1,210 @@
+---
+title: CLI Reference
+sidebar_position: 3
+description: All ThoughtJack commands, flags, environment variables, and exit codes
+---
+
+# CLI Reference
+
+Complete reference for the `thoughtjack` command-line interface. See [TJ-SPEC-007](https://github.com/thoughtgate/thoughtjack/blob/main/specs/TJ-SPEC-007_CLI_Interface.md) for the formal specification.
+
+## Global flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--verbose` | `-v` | Increase verbosity (repeat for more: `-v` info, `-vv` debug, `-vvv` trace) |
+| `--quiet` | `-q` | Suppress all non-error output |
+| `--color <when>` | | Color output: `auto`, `always`, `never` |
+| `--log-format <format>` | | Log format: `human` (default), `json` |
+
+## Commands
+
+### `server run`
+
+Start the adversarial MCP server.
+
+```bash
+thoughtjack server run --config <path>
+thoughtjack server run --scenario <name>
+thoughtjack server run --tool <tool-definition>
+```
+
+The `--config`, `--scenario`, and `--tool` flags are mutually exclusive.
+
+| Flag | Env Variable | Description |
+|------|-------------|-------------|
+| `-c, --config <path>` | `THOUGHTJACK_CONFIG` | Path to YAML configuration file |
+| `--scenario <name>` | | Run a built-in scenario by name |
+| `-t, --tool <path>` | | Path to a single tool definition (quick-start mode) |
+| `--http <[host:]port>` | | Bind HTTP transport instead of stdio |
+| `--behavior <mode>` | `THOUGHTJACK_BEHAVIOR` | Override delivery behavior |
+| `--state-scope <scope>` | `THOUGHTJACK_STATE_SCOPE` | Phase state scope: `per-connection` (default), `global` |
+| `--profile <preset>` | | Server profile: `default`, `aggressive`, `stealth` |
+| `--spoof-client <name>` | `THOUGHTJACK_SPOOF_CLIENT` | Spoof client identity string |
+| `--library <path>` | `THOUGHTJACK_LIBRARY` | Library directory (default: `./library`) |
+| `--capture-dir <path>` | `THOUGHTJACK_CAPTURE_DIR` | Capture request/response traffic to directory |
+| `--capture-redact` | | Redact sensitive data in captured traffic |
+| `--allow-external-handlers` | `THOUGHTJACK_ALLOW_EXTERNAL_HANDLERS` | Allow `$handler` directives (HTTP/command) |
+| `--metrics-port <port>` | `THOUGHTJACK_METRICS_PORT` | Enable Prometheus metrics endpoint |
+| `--events-file <path>` | `THOUGHTJACK_EVENTS_FILE` | Write structured events to JSONL file |
+| `--max-nest-depth <n>` | `THOUGHTJACK_MAX_NEST_DEPTH` | Max generator nesting depth |
+| `--max-payload-bytes <n>` | `THOUGHTJACK_MAX_PAYLOAD_BYTES` | Max generator payload size |
+| `--max-batch-size <n>` | `THOUGHTJACK_MAX_BATCH_SIZE` | Max generator batch size |
+
+**Delivery modes** for `--behavior`:
+
+| Mode | Description |
+|------|-------------|
+| `normal` | Standard immediate delivery |
+| `slow-loris` | Byte-by-byte drip with delay |
+| `unbounded-line` | No message terminator |
+| `nested-json` | Deeply nested JSON wrapper |
+| `response-delay` | Fixed delay before response |
+
+### `server validate`
+
+Validate a configuration file without running it.
+
+```bash
+thoughtjack server validate <path> [--format human|json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `<path>` | Configuration file path (positional, required) |
+| `--format <format>` | Output format: `human` (default), `json` |
+
+### `server list`
+
+List items from a configuration file.
+
+```bash
+thoughtjack server list --config <path> [--category <cat>] [--format human|json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Configuration file to list from |
+| `--category <cat>` | Category filter: `servers`, `tools`, `resources`, `prompts`, `behaviors`, `all` |
+| `--format <format>` | Output format: `human` (default), `json` |
+
+### `scenarios list`
+
+List all built-in attack scenarios.
+
+```bash
+thoughtjack scenarios list [--category <cat>] [--format human|json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--category <cat>` | Filter by category |
+| `--format <format>` | Output format: `human` (default), `json` |
+
+### `scenarios show`
+
+Show details of a built-in scenario.
+
+```bash
+thoughtjack scenarios show <name> [--format human|json] [--yaml]
+```
+
+| Flag | Description |
+|------|-------------|
+| `<name>` | Scenario name (positional, required). Supports fuzzy matching. |
+| `--format <format>` | Output format: `human` (default), `json` |
+| `--yaml` | Output the raw YAML configuration |
+
+### `diagram`
+
+Generate a Mermaid diagram from a configuration file.
+
+```bash
+thoughtjack diagram <config> [--diagram-type <type>] [--output <path>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `<config>` | Configuration file path (positional, required) |
+| `--diagram-type <type>` | Diagram type: `auto` (default), `state`, `sequence`, `flowchart` |
+| `--output <path>` | Write to file instead of stdout |
+
+### `docs generate`
+
+Generate documentation site pages from built-in scenarios.
+
+```bash
+thoughtjack docs generate [--output-dir <path>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--output-dir <path>` | Output directory for generated pages |
+
+### `docs validate`
+
+Validate generated documentation pages.
+
+```bash
+thoughtjack docs validate
+```
+
+### `completions`
+
+Generate shell completion scripts.
+
+```bash
+thoughtjack completions <shell>
+```
+
+| Shell | Description |
+|-------|-------------|
+| `bash` | Bash completions |
+| `zsh` | Zsh completions |
+| `fish` | Fish completions |
+| `powershell` | PowerShell completions |
+| `elvish` | Elvish completions |
+
+### `version`
+
+Display version and build information.
+
+```bash
+thoughtjack version
+```
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `THOUGHTJACK_CONFIG` | — | Default config file path |
+| `THOUGHTJACK_LIBRARY` | `./library` | Library root directory |
+| `THOUGHTJACK_STATE_SCOPE` | `per-connection` | Phase state scope |
+| `THOUGHTJACK_BEHAVIOR` | — | Override delivery behavior |
+| `THOUGHTJACK_SPOOF_CLIENT` | — | Client identity string |
+| `THOUGHTJACK_CAPTURE_DIR` | — | Traffic capture directory |
+| `THOUGHTJACK_METRICS_PORT` | — | Prometheus metrics port |
+| `THOUGHTJACK_EVENTS_FILE` | — | Structured event output file |
+| `THOUGHTJACK_MAX_PAYLOAD_BYTES` | — | Generator payload size limit |
+| `THOUGHTJACK_MAX_NEST_DEPTH` | — | Generator nesting depth limit |
+| `THOUGHTJACK_MAX_BATCH_SIZE` | — | Generator batch size limit |
+| `THOUGHTJACK_ALLOW_EXTERNAL_HANDLERS` | — | Enable external handler scripts |
+| `THOUGHTJACK_TIMER_INTERVAL_MS` | `100` | Phase engine timer check interval (ms) |
+| `THOUGHTJACK_COLOR` | `auto` | Color output control |
+| `THOUGHTJACK_LOG_LEVEL` | — | Override log level (trace, debug, info, warn, error) |
+| `NO_COLOR` | — | Disable color output (any value) |
+
+## Exit codes
+
+| Code | Name | Description |
+|------|------|-------------|
+| 0 | `SUCCESS` | Normal completion |
+| 1 | `ERROR` | General error |
+| 2 | `CONFIG_ERROR` | Configuration invalid |
+| 3 | `IO_ERROR` | File or network error |
+| 4 | `TRANSPORT_ERROR` | Transport failure |
+| 5 | `PHASE_ERROR` | Phase engine error |
+| 10 | `GENERATOR_ERROR` | Generator limit exceeded |
+| 64 | `USAGE_ERROR` | Invalid CLI usage |
+| 130 | `INTERRUPTED` | SIGINT received (Ctrl+C) |
+| 143 | `TERMINATED` | SIGTERM received |

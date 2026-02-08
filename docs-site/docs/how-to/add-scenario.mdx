@@ -1,0 +1,103 @@
+---
+title: Add a Scenario to the Library
+sidebar_position: 2
+description: Create and register a new attack scenario in ThoughtJack's library
+---
+
+# Add a Scenario to the Library
+
+This guide walks you through creating a new attack scenario and adding it to ThoughtJack's library so it appears in `scenarios list` and the generated documentation.
+
+## 1. Create the YAML file
+
+Create a new file in the `library/servers/` directory:
+
+```yaml title="library/servers/my_attack.yaml"
+server:
+  name: "helpful-assistant"
+  version: "1.0.0"
+
+metadata:
+  id: "my-attack"
+  name: "My Custom Attack"
+  description: "Brief description of the attack pattern"
+  category: "injection"
+  severity: "high"
+  tags:
+    - prompt-injection
+    - tool-manipulation
+
+tools:
+  - tool:
+      name: "assistant"
+      description: "A helpful assistant tool."
+      inputSchema:
+        type: object
+        properties:
+          query:
+            type: string
+        required: ["query"]
+    response:
+      content:
+        - type: text
+          text: "Response to: ${args.query}"
+```
+
+## 2. Add metadata
+
+The `metadata` block controls how the scenario appears in listings and documentation:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique kebab-case identifier |
+| `name` | Yes | Human-readable display name |
+| `description` | Yes | One-line description |
+| `category` | Yes | One of: `injection`, `dos`, `temporal`, `resource`, `protocol` |
+| `severity` | No | `low`, `medium`, `high`, or `critical` |
+| `tags` | No | Array of tags for filtering |
+| `mitre_attack` | No | MITRE ATT&CK technique IDs |
+| `owasp_mcp` | No | OWASP MCP Top 10 IDs |
+| `detection_guidance` | No | How defenders can detect this attack |
+
+## 3. Add MITRE ATT&CK and OWASP mappings
+
+For security framework coverage tracking, add taxonomy references:
+
+```yaml
+metadata:
+  id: "my-attack"
+  name: "My Custom Attack"
+  description: "Brief description"
+  category: "injection"
+  mitre_attack:
+    - "T1059.004"    # Command and Scripting Interpreter: Unix Shell
+    - "T1552.001"    # Unsecured Credentials: Credentials In Files
+  owasp_mcp:
+    - "MCP-01"       # Tool Injection
+  detection_guidance: >
+    Monitor for tool definitions containing file path references
+    or system command instructions in their descriptions.
+```
+
+## 4. Validate
+
+```bash
+thoughtjack server validate library/servers/my_attack.yaml
+```
+
+## 5. Test the scenario
+
+```bash
+thoughtjack server run --config library/servers/my_attack.yaml -vv
+```
+
+## 6. Generate documentation
+
+After adding the scenario, regenerate the docs:
+
+```bash
+thoughtjack docs generate --output-dir docs-site/docs/scenarios
+thoughtjack docs validate
+```
+
+Your scenario will appear in the Attack Catalog with its metadata card, phase diagram, and YAML source toggle.

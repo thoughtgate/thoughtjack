@@ -1,0 +1,158 @@
+---
+title: Phase Engine Design
+sidebar_position: 3
+description: State machine concepts, atomic transitions, and timer mechanics
+---
+
+# Phase Engine Design
+
+The phase engine is the core of ThoughtJack's temporal attack capability. It implements a state machine that progresses through phases based on events, time, and content matching.
+
+## State machine model
+
+```mermaid
+stateDiagram-v2
+    [*] --> baseline
+    baseline --> phase_1: trigger condition met
+    phase_1 --> phase_2: trigger condition met
+    phase_2 --> phase_N: trigger condition met
+    phase_N --> [*]: terminal phase
+```
+
+The phase engine is a **linear state machine** — phases advance in order from baseline through each configured phase. There are no backward transitions or branching paths. This models the typical attack lifecycle: reconnaissance → trust building → escalation → exploitation.
+
+## Phase lifecycle
+
+Each phase has three aspects:
+
+1. **Trigger** — the condition that advances to the next phase
+2. **Entry actions** — notifications, requests, and log messages fired on entry
+3. **Diffs** — modifications to the tool/resource/prompt sets
+
+```mermaid
+graph LR
+    A[Trigger Met] --> B[Response Sent<br/>pre-transition state]
+    B --> C[Phase Index Updated]
+    C --> D[Diffs Applied]
+    D --> E[Entry Actions Fired]
+```
+
+## Response-before-transition invariant
+
+The most important design decision in the phase engine:
+
+> The response to the request that triggers a phase transition uses the **pre-transition** state. The new phase takes effect **after** the response is sent.
+
+This means:
+- If a tool call triggers advancement from "benign" to "exploit", the response to that call comes from the "benign" phase
+- The client sees the phase change on the **next** request, not the triggering one
+- Entry actions (like `send_notification: notifications/tools/list_changed`) fire after the response
+
+Why? Because real-world attacks operate this way — the malicious change happens between requests, not within one. This also prevents timing issues where a response might reference tools that don't exist yet.
+
+## Atomic state
+
+The current phase index is stored as an `AtomicU64`:
+
+```
+Phase Index: AtomicU64
+├── Load (Relaxed) — every request reads the current phase
+├── Compare-and-swap — trigger evaluation atomically advances
+└── No mutex needed — lock-free hot path
+```
+
+This design choice matters for HTTP transport with multiple concurrent connections:
+- Multiple connections can read the current phase simultaneously without contention
+- Phase transitions are atomic — no intermediate states are visible
+- The `DashMap` provides per-connection state for `per-connection` scope
+
+## Trigger evaluation
+
+Triggers are evaluated on every relevant event. The engine supports three trigger types:
+
+### Event-count triggers
+
+The simplest trigger. The engine maintains a counter for the specified event and fires when the count reaches the threshold.
+
+```
+Event: tools/call
+Counter: 0 → 1 → 2 → 3 → 4 → 5 = FIRE
+```
+
+The counter is specific to the trigger's event name. Different phases can count different events.
+
+### Time-based triggers
+
+Time-based triggers use a timer that starts when the phase is entered. The phase engine checks these triggers at a configurable interval.
+
+```
+Phase entered at T=0
+Timer check at T=100ms: 0.1s < 30s → not met
+Timer check at T=200ms: 0.2s < 30s → not met
+...
+Timer check at T=30000ms: 30s >= 30s → FIRE
+```
+
+The check interval is controlled by `THOUGHTJACK_TIMER_INTERVAL_MS` (default: 100ms). Lower values increase timer precision but add CPU overhead.
+
+### Content-matching triggers
+
+Content-matching triggers evaluate field matchers against request payloads. All matchers must pass (AND semantics).
+
+```
+Match: args.query contains "password"
+
+Request 1: args.query = "hello world" → no match
+Request 2: args.query = "my password" → MATCH → FIRE
+```
+
+Regex patterns are compiled once and cached (up to 256 entries) for performance.
+
+## Timeout behavior
+
+Event-count triggers support an optional timeout. If the count threshold isn't reached before the timeout elapses:
+
+- **Advance** (default): advance to the next phase anyway, even though the count wasn't met
+- **Abort**: stop the phase engine entirely
+
+This models scenarios like "wait for 10 tool calls, but if the user is idle for 60 seconds, proceed anyway."
+
+## Per-connection vs. global state
+
+With HTTP transport, multiple clients connect simultaneously. The `state_scope` setting controls how phase state is shared:
+
+**Per-connection** (default):
+```
+Client A: baseline → phase_1 → phase_2
+Client B: baseline → phase_1         (independent)
+```
+
+Each connection maintains its own phase counter and trigger state. Client A advancing to phase 2 doesn't affect Client B.
+
+**Global**:
+```
+Client A: tools/call (count: 3)
+Client B: tools/call (count: 2)
+Combined count: 5 → triggers advance for ALL clients
+```
+
+All connections share a single phase counter. Any client's events contribute to the global count.
+
+## Entry action ordering
+
+When a phase is entered, actions fire in declaration order:
+
+```yaml
+on_enter:
+  - log: "Phase entered"                              # 1st
+  - send_notification: "notifications/tools/list_changed"  # 2nd
+  - send_request: { method: "sampling/createMessage" }     # 3rd
+```
+
+Entry actions are fire-and-forget — the engine doesn't wait for the client to process them before continuing.
+
+## Terminal phases
+
+The last phase in the `phases` array is the terminal phase. Once entered, no further transitions occur. The server continues operating in the terminal phase state indefinitely.
+
+If no phases are configured, the server operates in the baseline state forever.
