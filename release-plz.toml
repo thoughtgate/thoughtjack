@@ -1,7 +1,7 @@
 [workspace]
 git_release_enable = false          # cargo-dist handles GitHub Releases
 git_tag_enable = true               # release-plz creates tags that trigger cargo-dist
-tag_name = "v{{ version }}"         # unified tag: v0.3.0 (not thoughtjack-v0.3.0)
+git_tag_name = "v{{ version }}"     # unified tag: v0.3.0 (not thoughtjack-v0.3.0)
 dependencies_update = true          # runs cargo update before release
 semver_check = true                 # uses cargo-semver-checks for API changes
 changelog_update = true
