@@ -58,7 +58,7 @@ const config: Config = {
           ],
         },
         {
-          label: 'Attack Catalog',
+          label: 'Attack Library',
           to: '/docs/scenarios',
           position: 'left',
         },

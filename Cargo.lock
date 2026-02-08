@@ -1823,8 +1823,6 @@ dependencies = [
  "strsim",
  "tempfile",
  "thiserror",
- "thoughtjack-core",
- "thoughtjack-docs",
  "tokio",
  "tokio-stream",
  "tokio-test",
@@ -1833,35 +1831,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "thoughtjack-core"
-version = "0.3.0"
-dependencies = [
- "chrono",
- "clap",
- "glob",
- "indexmap",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "strsim",
- "thiserror",
-]
-
-[[package]]
-name = "thoughtjack-docs"
-version = "0.3.0"
-dependencies = [
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror",
- "thoughtjack-core",
 ]
 
 [[package]]

@@ -244,6 +244,7 @@ tokio::select! {
 ```
 thoughtjack/
 ├── Cargo.toml
+├── build.rs               # Build-time metadata (built crate)
 ├── CLAUDE.md              # This file
 ├── README.md
 ├── specs/                 # Specifications and architecture docs
@@ -286,6 +287,15 @@ thoughtjack/
 │   │   ├── nested_json.rs
 │   │   ├── garbage.rs
 │   │   └── ...
+│   ├── docgen/            # Documentation site generation
+│   │   ├── mod.rs
+│   │   ├── error.rs
+│   │   ├── registry.rs
+│   │   ├── sidebar.rs
+│   │   ├── validate.rs
+│   │   ├── coverage/
+│   │   ├── mdx/
+│   │   └── mermaid/
 │   ├── cli/
 │   │   ├── mod.rs
 │   │   ├── args.rs
@@ -295,6 +305,7 @@ thoughtjack/
 │       ├── logging.rs
 │       ├── metrics.rs
 │       └── events.rs
+├── scenarios/             # Built-in attack scenarios
 ├── library/               # Attack pattern library
 │   ├── tools/
 │   ├── servers/

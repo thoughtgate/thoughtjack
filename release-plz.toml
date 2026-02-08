@@ -8,16 +8,6 @@ changelog_update = true
 repo_url = "https://github.com/thoughtgate/thoughtjack"
 
 [[package]]
-name = "thoughtjack-core"
-publish = false
-
-[[package]]
-name = "thoughtjack-docs"
-publish = false
-git_tag_enable = false
-changelog_update = false
-
-[[package]]
 name = "thoughtjack"
 publish = false
 

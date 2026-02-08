@@ -1,31 +1,69 @@
-[workspace]
-members = ["thoughtjack", "thoughtjack-core", "thoughtjack-docs"]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "thoughtjack"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
+description = "Adversarial MCP server for security testing"
 license = "Apache-2.0"
+readme = "README.md"
 repository = "https://github.com/thoughtgate/thoughtjack"
+homepage = "https://github.com/thoughtgate/thoughtjack"
+publish = false
+keywords = ["mcp", "security", "testing", "adversarial"]
+categories = ["development-tools::testing"]
 
-[workspace.dependencies]
+[dependencies]
+tokio = { version = "1.49", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 thiserror = "2.0"
+async-trait = "0.1"
+dashmap = "6.1"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+base64 = "0.22"
+rand = "0.9"
 regex = "1.12"
 indexmap = { version = "2.13", features = ["serde"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 chrono = { version = "0.4", features = ["serde"] }
-strsim = "0.11"
+axum = "0.8"
+bytes = "1.11"
+futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
 glob = "0.3"
-thoughtjack-core = { path = "thoughtjack-core", version = "0.3.0", default-features = false }
-thoughtjack-docs = { path = "thoughtjack-docs", version = "0.3.0" }
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", features = ["json"] }
+strsim = "0.11"
 
-[workspace.lints.rust]
+[build-dependencies]
+built = { version = "0.8", features = ["git2", "chrono"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3.24"
+
+[[bin]]
+name = "thoughtjack"
+path = "src/main.rs"
+
+[lib]
+name = "thoughtjack"
+path = "src/lib.rs"
+
+[package.metadata.dist]
+dist = true
+
+[lints.rust]
 unsafe_code = "forbid"
 
-[workspace.lints.clippy]
+[lints.clippy]
 all = "warn"
 pedantic = "warn"
 nursery = "warn"

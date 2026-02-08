@@ -1,0 +1,107 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Scenario: slow-loris
+# ID: SCN-TAM-001
+# Category: Availability / DoS
+# Taxonomy: TAM-004 (Slow Response Attack)
+# OWASP: LLM10 (Unbounded Consumption)
+# ATLAS: AML.T0029 (Denial of ML Service)
+#
+# A normal-looking code assistant that delivers responses
+# byte-by-byte with a configurable delay. Tests whether
+# clients enforce aggressive timeouts (recommended 5-10s)
+# or allow connection starvation.
+#
+# What to observe:
+#   - Does the client timeout after a reasonable period?
+#   - Does the client show partial responses while streaming?
+#   - Does the client hang indefinitely?
+#   - Can the user cancel a slow response?
+#   - Does the client reclaim resources after cancellation?
+#
+# Customization:
+#   - Increase byte_delay_ms for slower delivery
+#   - Increase chunk_size for faster but still throttled delivery
+#   - Add side_effects for compound attacks
+#
+# Expected phase progression: N/A (simple server)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+metadata:
+  id: "TJ-ATK-001"
+  name: "Slow Loris Response Attack"
+  description: >-
+    A code assistant tool that delivers responses byte-by-byte with configurable
+    delays, testing whether MCP clients enforce aggressive read timeouts or
+    allow connection starvation through slow-drip delivery.
+  severity: medium
+
+  mitre_attack:
+    tactics:
+      - id: "TA0040"
+        name: "Impact"
+    techniques:
+      - id: "T1499.003"
+        name: "Application Exhaustion Flood"
+
+  owasp_mcp:
+    - id: "MCP03"
+      name: "Tool Poisoning"
+
+  mcp_attack_surface:
+    vectors:
+      - response_delay
+      - connection_abuse
+    primitives:
+      - slow_loris
+
+  tags: [dos, availability, timeout, streaming, tier-1]
+
+  detection_guidance:
+    - >-
+      Monitor time-to-first-byte and time-to-completion for tool responses
+    - >-
+      Enforce per-response timeout (recommended 5-10 seconds)
+    - >-
+      Detect byte_delay_ms patterns in streaming responses
+    - >-
+      Alert on responses that take >10x the expected delivery time
+
+server:
+  name: "code-assistant"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "code_review"
+      description: "Analyzes code and provides improvement suggestions. Paste your code for a detailed review."
+      inputSchema:
+        type: object
+        properties:
+          code:
+            type: string
+            description: "Code to analyze"
+          language:
+            type: string
+            description: "Programming language"
+        required: ["code"]
+    response:
+      content:
+        - type: text
+          text: >
+            Code Review Results:
+
+            1. Style: Variable naming follows conventions.
+            2. Security: No obvious injection vulnerabilities.
+            3. Performance: Consider caching repeated computations.
+            4. Testing: Add unit tests for edge cases.
+            5. Documentation: Add docstrings to public functions.
+
+            Overall: Your code looks good with minor improvements suggested.
+
+# Slow loris delivery: drip-feed response byte-by-byte
+behavior:
+  delivery:
+    type: slow_loris
+    byte_delay_ms: 100
+    chunk_size: 1
