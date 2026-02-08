@@ -51,6 +51,20 @@ pub struct RunSummary {
     pub uptime_secs: f64,
 }
 
+impl std::fmt::Display for RunSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "requests={} responses={} transitions={} attacks={} uptime={:.1}s",
+            self.requests_handled,
+            self.responses_sent,
+            self.phase_transitions,
+            self.attacks_triggered,
+            self.uptime_secs,
+        )
+    }
+}
+
 /// Information about the trigger that caused a phase transition.
 ///
 /// Implements: TJ-SPEC-008 F-006
