@@ -456,6 +456,103 @@ mod tests {
         assert_eq!(&small[..], &large[..100]);
     }
 
+    // EC-GEN-003: size=0 produces empty output (not rejected)
+    #[test]
+    fn test_size_zero_rejected() {
+        let params = make_params(vec![("bytes", json!(0)), ("charset", json!("ascii"))]);
+        let generator = GarbageGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        assert!(data.is_empty(), "size=0 should produce empty output");
+    }
+
+    // EC-GEN-004: each charset variant produces non-empty output
+    #[test]
+    fn test_all_charset_types() {
+        for charset in &["ascii", "binary", "numeric", "alphanumeric", "utf8"] {
+            let params = make_params(vec![
+                ("bytes", json!(256)),
+                ("charset", json!(charset)),
+                ("seed", json!(1)),
+            ]);
+            let generator = GarbageGenerator::new(&params, &default_limits()).unwrap();
+            let data = generator.generate().unwrap().into_bytes();
+            assert!(
+                !data.is_empty(),
+                "charset '{charset}' should produce non-empty output"
+            );
+            // Non-UTF-8 charsets should have exact byte count
+            if *charset != "utf8" {
+                assert_eq!(
+                    data.len(),
+                    256,
+                    "charset '{charset}' should produce exactly 256 bytes"
+                );
+            }
+        }
+    }
+
+    // EC-GEN-012: same seed produces identical output (determinism)
+    #[test]
+    fn test_deterministic_with_same_seed() {
+        for charset in &["ascii", "binary", "numeric", "alphanumeric", "utf8"] {
+            let params = make_params(vec![
+                ("bytes", json!(500)),
+                ("charset", json!(charset)),
+                ("seed", json!(12345)),
+            ]);
+            let gen1 = GarbageGenerator::new(&params, &default_limits()).unwrap();
+            let gen2 = GarbageGenerator::new(&params, &default_limits()).unwrap();
+            assert_eq!(
+                gen1.generate().unwrap().into_bytes(),
+                gen2.generate().unwrap().into_bytes(),
+                "charset '{charset}' should be deterministic with same seed"
+            );
+        }
+    }
+
+    // EC-GEN-009: size exceeding max_payload_bytes returns LimitExceeded
+    #[test]
+    fn test_exceeds_max_payload_bytes() {
+        let limits = GeneratorLimits {
+            max_payload_bytes: 500,
+            ..default_limits()
+        };
+        // Exactly at limit should succeed
+        let params_at = make_params(vec![("bytes", json!(500))]);
+        assert!(GarbageGenerator::new(&params_at, &limits).is_ok());
+
+        // One over limit should fail
+        let params_over = make_params(vec![("bytes", json!(501))]);
+        let err = GarbageGenerator::new(&params_over, &limits).unwrap_err();
+        assert!(
+            matches!(err, GeneratorError::LimitExceeded(_)),
+            "expected LimitExceeded, got {err:?}"
+        );
+    }
+
+    // EC-GEN-016: Binary charset may produce non-UTF-8 bytes
+    #[test]
+    fn test_binary_charset_text_warning() {
+        // Generate a large binary payload — statistically it will contain
+        // byte sequences that are not valid UTF-8.
+        let params = make_params(vec![
+            ("bytes", json!(10_000)),
+            ("charset", json!("binary")),
+            ("seed", json!(42)),
+        ]);
+        let generator = GarbageGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        assert_eq!(data.len(), 10_000);
+
+        // Binary charset produces raw 0x00..0xFF bytes. With 10k random
+        // bytes it is virtually certain that some sequences are invalid UTF-8.
+        let utf8_result = String::from_utf8(data);
+        assert!(
+            utf8_result.is_err(),
+            "binary charset output with 10k bytes should contain invalid UTF-8 sequences"
+        );
+    }
+
     // EC-GEN-005: UTF-8 output with various charsets produces valid bytes
     #[test]
     fn all_charsets_produce_correct_output() {

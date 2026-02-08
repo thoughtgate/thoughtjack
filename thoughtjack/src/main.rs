@@ -6,7 +6,7 @@
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
-use thoughtjack::cli::args::Cli;
+use thoughtjack::cli::args::{Cli, LogFormatChoice};
 use thoughtjack::cli::commands;
 use thoughtjack::error::ExitCode;
 use thoughtjack::observability::{LogFormat, init_logging};
@@ -16,7 +16,11 @@ async fn main() {
     let cli = Cli::parse();
 
     if !cli.quiet {
-        init_logging(LogFormat::Human, cli.verbose, cli.color);
+        let format = match cli.log_format {
+            LogFormatChoice::Human => LogFormat::Human,
+            LogFormatChoice::Json => LogFormat::Json,
+        };
+        init_logging(format, cli.verbose, cli.color);
     }
 
     // Create a single cancellation token shared across the entire process

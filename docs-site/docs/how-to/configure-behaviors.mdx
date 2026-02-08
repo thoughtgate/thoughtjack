@@ -1,0 +1,151 @@
+---
+title: Configure Delivery Behaviors
+sidebar_position: 3
+description: Set up slow-loris, unbounded-line, and other response delivery modes
+---
+
+# Configure Delivery Behaviors
+
+Delivery behaviors control **how** ThoughtJack transmits responses to the MCP client. They operate at the transport level, modifying timing, framing, or structure of the response bytes.
+
+## Available behaviors
+
+| Behavior | Effect | Transport |
+|----------|--------|-----------|
+| `normal` | Standard immediate delivery | stdio, HTTP |
+| `slow_loris` | Byte-by-byte drip with delay | stdio, HTTP |
+| `unbounded_line` | No newline terminator | stdio, HTTP |
+| `nested_json` | Wrap in deeply nested JSON | stdio, HTTP |
+| `response_delay` | Fixed delay before response | stdio, HTTP |
+
+## Set behavior in config
+
+Add a `behavior` block to your YAML:
+
+```yaml
+behavior:
+  delivery:
+    type: slow_loris
+    byte_delay_ms: 100
+    chunk_size: 1
+```
+
+## Set behavior via CLI
+
+Override the config's delivery behavior at runtime:
+
+```bash
+thoughtjack server run --config my_config.yaml --behavior slow-loris
+```
+
+CLI override takes precedence over config-level behavior.
+
+## Slow loris
+
+Delivers the response one byte (or chunk) at a time with a configurable delay between chunks. Tests client timeout handling and streaming resilience.
+
+```yaml
+behavior:
+  delivery:
+    type: slow_loris
+    byte_delay_ms: 100    # milliseconds between chunks
+    chunk_size: 1         # bytes per chunk
+```
+
+**What to test**: Does the client timeout? Does it accumulate partial responses correctly? Does it display partial content to the user?
+
+## Unbounded line
+
+Sends the response without a trailing newline. JSON-RPC over stdio expects newline-delimited messages — omitting it tests whether the client handles missing terminators.
+
+```yaml
+behavior:
+  delivery:
+    type: unbounded_line
+    target_bytes: 65536    # total padding size
+    padding_char: " "      # character used for padding
+```
+
+**What to test**: Does the client hang waiting for a newline? Does it apply a size limit?
+
+## Nested JSON
+
+Wraps the response in deeply nested JSON objects, testing the client's JSON parser for stack depth limits.
+
+```yaml
+behavior:
+  delivery:
+    type: nested_json
+    depth: 1000           # nesting levels
+    key: "data"           # key name at each level
+```
+
+**What to test**: Does the parser crash? Does it apply a depth limit?
+
+## Response delay
+
+Adds a fixed delay before sending the response. Simpler than slow loris — tests basic timeout configuration.
+
+```yaml
+behavior:
+  delivery:
+    type: response_delay
+    delay_ms: 5000        # milliseconds before response
+```
+
+**What to test**: Does the client timeout? Does it show a loading state?
+
+## Behavior scoping
+
+Behaviors can be set at multiple levels. The resolution order (highest priority first):
+
+1. **CLI override** (`--behavior`)
+2. **Tool-level** (per-tool `behavior` block)
+3. **Phase-level** (in phase configuration)
+4. **Baseline-level** (top-level `behavior` block)
+5. **Default** (`normal`)
+
+```yaml
+# Baseline behavior applies to all responses
+behavior:
+  delivery:
+    type: response_delay
+    delay_ms: 1000
+
+tools:
+  - tool:
+      name: "fast_tool"
+    response:
+      content:
+        - type: text
+          text: "Quick response"
+    # No behavior override — uses baseline delay
+
+  - tool:
+      name: "slow_tool"
+    response:
+      content:
+        - type: text
+          text: "Slow response"
+    behavior:
+      delivery:
+        type: slow_loris
+        byte_delay_ms: 200
+```
+
+## Combining with side effects
+
+Delivery behaviors and side effects are independent. You can combine them:
+
+```yaml
+behavior:
+  delivery:
+    type: slow_loris
+    byte_delay_ms: 50
+  side_effects:
+    - type: notification_flood
+      rate_per_second: 10
+      duration_ms: 5000
+```
+
+This delivers the response slowly while simultaneously flooding the client with notifications.

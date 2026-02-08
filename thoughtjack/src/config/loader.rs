@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn test_env_substitution_required_missing() {
-        // Use a unique variable name that won't be set
+        // EC-LOAD-009: Required env var missing → error
         let mut sub = EnvSubstitution::new();
         let result = sub.substitute(
             "value: ${THOUGHTJACK_TEST_REQUIRED_XYZ123:?must be set}",
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_env_substitution_missing_warning() {
-        // Use a unique variable name that won't be set
+        // EC-LOAD-008: Missing env var → warning + empty string
         let mut sub = EnvSubstitution::new();
         let result = sub
             .substitute(
@@ -1476,6 +1476,7 @@ mod tests {
 
     #[test]
     fn test_file_resolver_rejects_absolute_path() {
+        // EC-LOAD-014: Absolute path rejected in $file directive
         let resolver = FileResolver::new(PathBuf::from("/fake/library"));
         let abs_path = Value::String("/etc/passwd".to_string());
         let result = resolver.resolve_path(&abs_path, Path::new("/fake/config.yaml"));
@@ -1647,5 +1648,305 @@ tools:
             result.is_ok(),
             "Expected $generate to work in embedded mode: {result:?}"
         );
+    }
+
+    // ====================================================================
+    // Edge case tests
+    // ====================================================================
+
+    #[test]
+    fn test_load_empty_yaml() {
+        // EC-LOAD-001: Empty YAML file should produce a parse error
+        let mut loader = ConfigLoader::with_defaults();
+        let result = loader.load_from_str("");
+        assert!(result.is_err(), "Empty YAML should produce an error");
+        match result {
+            Err(ConfigError::ParseError { message, .. }) => {
+                assert!(
+                    message.contains("empty"),
+                    "Error message should mention empty: {message}"
+                );
+            }
+            Err(other) => panic!("Expected ParseError for empty YAML, got: {other}"),
+            Ok(_) => panic!("Expected error for empty YAML"),
+        }
+    }
+
+    #[test]
+    fn test_load_minimal_config() {
+        // Just server name, nothing else
+        let yaml = r#"
+server:
+  name: "bare-minimum"
+"#;
+        let mut loader = ConfigLoader::with_defaults();
+        let result = loader.load_from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "Minimal config with only server name should load: {result:?}"
+        );
+        let output = result.unwrap();
+        assert_eq!(output.config.server.name, "bare-minimum");
+        assert!(output.config.tools.is_none());
+        assert!(output.config.resources.is_none());
+        assert!(output.config.prompts.is_none());
+        assert!(output.config.phases.is_none());
+        assert!(output.config.baseline.is_none());
+    }
+
+    #[test]
+    fn test_yaml_with_unknown_fields() {
+        // EC-LOAD-020: Extra fields should be ignored (warnings only → load succeeds)
+        let yaml = r#"
+server:
+  name: "test-server"
+  version: "1.0.0"
+  completely_unknown_field: "should be ignored"
+extra_top_level_key: 42
+another_unknown:
+  nested: true
+tools:
+  - tool:
+      name: "test_tool"
+      description: "A test tool"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "hello"
+"#;
+        let mut loader = ConfigLoader::with_defaults();
+        let result = loader.load_from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "Unknown fields should be ignored, got error: {result:?}"
+        );
+        assert_eq!(result.unwrap().config.server.name, "test-server");
+    }
+
+    #[test]
+    fn test_config_limits_defaults() {
+        // ConfigLimits::default() has sane values
+        let limits = ConfigLimits::default();
+        assert!(limits.max_phases > 0, "max_phases should be positive");
+        assert!(limits.max_tools > 0, "max_tools should be positive");
+        assert!(limits.max_resources > 0, "max_resources should be positive");
+        assert!(limits.max_prompts > 0, "max_prompts should be positive");
+        assert!(
+            limits.max_include_depth > 0,
+            "max_include_depth should be positive"
+        );
+        assert!(
+            limits.max_config_size > 0,
+            "max_config_size should be positive"
+        );
+
+        // Verify specific default values
+        assert_eq!(limits.max_phases, 100);
+        assert_eq!(limits.max_tools, 1000);
+        assert_eq!(limits.max_resources, 1000);
+        assert_eq!(limits.max_prompts, 500);
+        assert_eq!(limits.max_include_depth, 10);
+        assert_eq!(limits.max_config_size, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_load_warning_debug_display() {
+        // LoadWarning Debug impl works and shows both fields
+        let warning_with_location = LoadWarning {
+            message: "test warning message".to_string(),
+            location: Some("config.yaml:10".to_string()),
+        };
+        let debug_str = format!("{warning_with_location:?}");
+        assert!(
+            debug_str.contains("test warning message"),
+            "Debug output should contain message: {debug_str}"
+        );
+        assert!(
+            debug_str.contains("config.yaml:10"),
+            "Debug output should contain location: {debug_str}"
+        );
+
+        let warning_without_location = LoadWarning {
+            message: "another warning".to_string(),
+            location: None,
+        };
+        let debug_str = format!("{warning_without_location:?}");
+        assert!(
+            debug_str.contains("another warning"),
+            "Debug output should contain message: {debug_str}"
+        );
+        assert!(
+            debug_str.contains("None"),
+            "Debug output should show None for location: {debug_str}"
+        );
+    }
+
+    #[test]
+    fn test_yaml_syntax_error_has_location() {
+        // EC-LOAD-002: Invalid YAML produces ParseError with line information
+        let mut loader = ConfigLoader::with_defaults();
+        let result = loader.load_from_str("key: [unclosed");
+        assert!(result.is_err(), "Invalid YAML should produce an error");
+        match result {
+            Err(ConfigError::ParseError { line, .. }) => {
+                assert!(
+                    line.is_some(),
+                    "ParseError for syntax error should include line information"
+                );
+            }
+            Err(other) => panic!("Expected ParseError for invalid YAML, got: {other}"),
+            Ok(_) => panic!("Expected error for invalid YAML"),
+        }
+    }
+
+    #[test]
+    fn test_unknown_directive_treated_as_key() {
+        // EC-LOAD-012: $unknown key is treated as a normal key, not a directive.
+        // Keys that start with $ but are not recognized directives ($include,
+        // $file, $generate) should be treated as regular YAML keys.
+        let yaml = r#"
+server:
+  name: "test-server"
+  version: "1.0.0"
+$unknown: "hello"
+some_extra_section:
+  $also_not_a_directive: 42
+"#;
+        let mut loader = ConfigLoader::with_defaults();
+        let result = loader.load_from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "YAML with $unknown key should load successfully: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_bom_stripped_before_parse() {
+        // EC-LOAD-019: UTF-8 BOM prefix is stripped before parsing
+        let yaml = "\u{feff}server:\n  name: \"bom-test\"\n";
+        let mut loader = ConfigLoader::with_defaults();
+        let result = loader.load_from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "YAML with UTF-8 BOM should load successfully: {result:?}"
+        );
+        assert_eq!(result.unwrap().config.server.name, "bom-test");
+    }
+
+    #[test]
+    fn test_orphan_override_warning() {
+        // EC-CFG-017: Config with orphan `override:` key (no sibling `$include:`)
+        // should load successfully. The warning is logged via tracing (cannot
+        // easily assert on log output in unit tests), so we verify no error.
+        let yaml = r#"
+server:
+  name: "test-server"
+  version: "1.0.0"
+tools:
+  - tool:
+      name: "test_tool"
+      description: "A test tool"
+      inputSchema:
+        type: object
+        properties:
+          input:
+            type: string
+        required: ["input"]
+    response:
+      content:
+        - type: text
+          text: "hello"
+    override:
+      description: "this override has no $include sibling"
+"#;
+        let mut loader = ConfigLoader::with_defaults();
+        let result = loader.load_from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "Config with orphan override should load without error: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_generate_exceeds_limit() {
+        // EC-LOAD-010: $generate with payload exceeding generator limits
+        let yaml = r#"
+server:
+  name: "test-server"
+  version: "1.0.0"
+tools:
+  - tool:
+      name: "big_tool"
+      description: "Tool with oversized generator"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text:
+            $generate:
+              type: garbage
+              bytes: 100000000
+"#;
+        let options = LoaderOptions {
+            generator_limits: GeneratorLimits {
+                max_payload_bytes: 1000,
+                ..GeneratorLimits::default()
+            },
+            ..LoaderOptions::default()
+        };
+        let mut loader = ConfigLoader::new(options);
+        let result = loader.load_from_str(yaml);
+        assert!(
+            result.is_err(),
+            "Generator exceeding max_payload_bytes should produce an error"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("$generate"),
+            "Error should mention $generate: {err}"
+        );
+    }
+
+    #[test]
+    fn test_large_generator_creates_factory() {
+        // EC-LOAD-022: $generate nested_json should load as a GeneratorConfig
+        // (factory object) without materializing bytes at config load time.
+        let yaml = r#"
+server:
+  name: "test-server"
+  version: "1.0.0"
+tools:
+  - tool:
+      name: "nest_tool"
+      description: "Tool with nested JSON generator"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text:
+            $generate:
+              type: nested_json
+              depth: 50
+              structure: object
+"#;
+        let mut loader = ConfigLoader::with_defaults();
+        let result = loader.load_from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "Config with $generate nested_json should load: {result:?}"
+        );
+        // The config loaded successfully, which means the $generate directive
+        // was validated (factory created) but bytes were not materialized.
+        // The deserialized config will have the text content as the YAML
+        // structure since $generate is not resolved into bytes at load time.
+        let config = result.unwrap().config;
+        assert_eq!(config.server.name, "test-server");
+        let tools = config.tools.as_ref().expect("tools should be present");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool.name, "nest_tool");
     }
 }

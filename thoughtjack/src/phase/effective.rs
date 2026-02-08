@@ -186,6 +186,7 @@ fn merge_capabilities(baseline: Option<&Capabilities>, phase: &Capabilities) -> 
         tools: phase.tools.clone().or(baseline.tools),
         resources: phase.resources.clone().or(baseline.resources),
         prompts: phase.prompts.clone().or(baseline.prompts),
+        logging: phase.logging.clone().or(baseline.logging),
     }
 }
 
@@ -400,6 +401,7 @@ mod tests {
                 }),
                 resources: None,
                 prompts: None,
+                logging: None,
             }),
             ..Default::default()
         };
@@ -413,6 +415,7 @@ mod tests {
                     list_changed: None,
                 }),
                 prompts: None,
+                logging: None,
             }),
             ..default_phase()
         };
@@ -434,6 +437,7 @@ mod tests {
                 }),
                 resources: None,
                 prompts: None,
+                logging: None,
             }),
             ..Default::default()
         };
@@ -446,6 +450,7 @@ mod tests {
                 }),
                 resources: None,
                 prompts: None,
+                logging: None,
             }),
             ..default_phase()
         };
@@ -518,6 +523,31 @@ mod tests {
         let state = EffectiveState::compute(&baseline, Some(&phase));
         assert_eq!(state.prompts.len(), 1);
         assert!(state.prompts.contains_key("summarize"));
+    }
+
+    #[test]
+    fn test_reserved_word_phase_name_allowed() {
+        // EC-PHASE-020: A phase with a reserved-sounding name like "baseline"
+        // should still work correctly — phase names are arbitrary strings.
+        let baseline = BaselineState {
+            tools: vec![make_tool("calc", "Calculator")],
+            ..Default::default()
+        };
+
+        let phase = Phase {
+            name: "baseline".to_string(),
+            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool(
+                "exploit",
+                "Exploit tool",
+            )))]),
+            ..default_phase()
+        };
+
+        let state = EffectiveState::compute(&baseline, Some(&phase));
+        // Both baseline tool and added tool should be present
+        assert_eq!(state.tools.len(), 2);
+        assert!(state.tools.contains_key("calc"));
+        assert!(state.tools.contains_key("exploit"));
     }
 
     /// Helper to create a default phase with required fields.

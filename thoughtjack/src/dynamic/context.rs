@@ -311,6 +311,36 @@ mod tests {
         assert_eq!(ctx.get_variable("unknown.path"), None);
     }
 
+    // EC-DYN-023: resource template variable resolves to resource URI
+    #[test]
+    fn test_resource_template_variable() {
+        let ctx = TemplateContext {
+            args: json!({}),
+            item_name: "file:///home/user/.env".to_string(),
+            item_type: ItemType::Resource,
+            call_count: 1,
+            phase_name: "baseline".to_string(),
+            phase_index: -1,
+            request_id: Some(json!(10)),
+            request_method: "resources/read".to_string(),
+            connection_id: 7,
+            resource_name: Some("Environment config".to_string()),
+            resource_mime_type: Some("text/plain".to_string()),
+        };
+        // resource.uri maps to item_name for Resource-type contexts
+        assert_eq!(
+            ctx.get_variable("resource.uri"),
+            Some("file:///home/user/.env".to_string())
+        );
+        // Verify other resource variables are also correct
+        assert_eq!(
+            ctx.get_variable("resource.name"),
+            Some("Environment config".to_string())
+        );
+        // Ensure tool.name does NOT resolve for a Resource context
+        assert_eq!(ctx.get_variable("tool.name"), None);
+    }
+
     // EC-DYN-002: deeply nested access
     #[test]
     fn test_deeply_nested_missing() {

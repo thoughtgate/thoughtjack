@@ -403,6 +403,7 @@ mod tests {
 
     #[test]
     fn test_matches_content_missing_field() {
+        // EC-PHASE-011: Match on missing field → false
         let mut conditions = IndexMap::new();
         conditions.insert(
             "path".to_string(),
@@ -528,6 +529,7 @@ mod tests {
 
     #[test]
     fn test_matches_content_non_string_fails() {
+        // EC-PHASE-012, EC-PHASE-024: Pattern match on non-string value → false
         let mut conditions = IndexMap::new();
         conditions.insert(
             "count".to_string(),
@@ -894,5 +896,138 @@ method:
         let predicate: MatchPredicate = serde_yaml::from_str(yaml).unwrap();
         let params = json!({"method": "write"});
         assert!(matches_content(&predicate, &params));
+    }
+
+    // ---- Edge Case Tests ----
+
+    #[test]
+    fn test_content_match_empty_string() {
+        // Matching against empty string with exact matcher
+        let mut conditions = IndexMap::new();
+        conditions.insert("field".to_string(), FieldMatcher::Exact(json!("")));
+        let predicate = MatchPredicate { conditions };
+
+        assert!(matches_content(&predicate, &json!({"field": ""})));
+        assert!(!matches_content(&predicate, &json!({"field": "notempty"})));
+    }
+
+    #[test]
+    fn test_content_match_unicode() {
+        // Matching against Unicode content
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "message".to_string(),
+            FieldMatcher::Pattern {
+                contains: Some("\u{1F512}".to_string()), // lock emoji
+                prefix: None,
+                suffix: None,
+                regex: None,
+            },
+        );
+        let predicate = MatchPredicate { conditions };
+
+        assert!(matches_content(
+            &predicate,
+            &json!({"message": "unlock \u{1F512} here"})
+        ));
+        assert!(!matches_content(
+            &predicate,
+            &json!({"message": "no emoji here"})
+        ));
+    }
+
+    #[test]
+    fn test_parse_duration_zero() {
+        // "0s" should parse to zero duration
+        assert_eq!(parse_duration("0s").unwrap(), Duration::from_secs(0));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        // "abc" has no recognized suffix and should fail
+        assert!(parse_duration("abc").is_err());
+    }
+
+    #[test]
+    fn test_count_zero_never_triggers() {
+        // count=0 means the threshold can never be reached because
+        // event_count starts at 0 and the check is count < threshold.
+        // With threshold=0, 0 < 0 is false so it fires immediately
+        // after the first matching event name check. This tests that
+        // a count of Some(0) means "fire on first matching event".
+        let state = PhaseState::new(3);
+        let event = EventType::new("tools/call");
+        let trigger = Trigger {
+            on: Some("tools/call".to_string()),
+            count: Some(0),
+            ..Default::default()
+        };
+
+        // Even without incrementing, count(0) >= threshold(0) is true
+        assert!(matches!(
+            evaluate(&trigger, &state, &event, None),
+            TriggerResult::Fired(_)
+        ));
+    }
+
+    #[test]
+    fn test_regex_catastrophic_backtracking() {
+        // EC-PHASE-025: The regex crate uses finite automata (not backtracking),
+        // so a pattern like (a+)+$ should complete quickly even on adversarial input.
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "input".to_string(),
+            FieldMatcher::Pattern {
+                contains: None,
+                prefix: None,
+                suffix: None,
+                regex: Some(r"(a+)+$".to_string()),
+            },
+        );
+        let predicate = MatchPredicate { conditions };
+
+        // Long non-matching string that would hang a backtracking engine
+        let long_input = "a".repeat(30) + "b";
+        let params = json!({"input": long_input});
+        // Should return false without hanging
+        assert!(!matches_content(&predicate, &params));
+    }
+
+    #[test]
+    fn test_resource_uri_content_match() {
+        // EC-PHASE-027: Match on `uri` field for a resource URI pattern
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "uri".to_string(),
+            FieldMatcher::Exact(json!("file:///etc/passwd")),
+        );
+        let predicate = MatchPredicate { conditions };
+
+        let params = json!({"uri": "file:///etc/passwd"});
+        assert!(matches_content(&predicate, &params));
+
+        let params_miss = json!({"uri": "file:///tmp/safe"});
+        assert!(!matches_content(&predicate, &params_miss));
+    }
+
+    #[test]
+    fn test_prompt_arguments_content_match() {
+        // EC-PHASE-029: Match on nested `arguments.topic` via dot-notation
+        let mut conditions = IndexMap::new();
+        conditions.insert(
+            "arguments.topic".to_string(),
+            FieldMatcher::Exact(json!("secrets")),
+        );
+        let predicate = MatchPredicate { conditions };
+
+        let params = json!({"arguments": {"topic": "secrets"}});
+        assert!(matches_content(&predicate, &params));
+
+        let params_miss = json!({"arguments": {"topic": "weather"}});
+        assert!(!matches_content(&predicate, &params_miss));
+
+        // Missing nested field should also fail
+        let params_no_topic = json!({"arguments": {"other": "value"}});
+        assert!(!matches_content(&predicate, &params_no_topic));
     }
 }

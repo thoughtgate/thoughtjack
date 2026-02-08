@@ -1332,24 +1332,30 @@ This section provides the authoritative Rust type definitions for the configurat
 **Top-Level Configuration:**
 
 ```rust
-/// Root configuration - the result of loading and resolving a YAML file
-#[derive(Debug, Clone)]
+/// Root configuration — deserialized from YAML, supports both simple and phased forms.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    pub server: ServerMeta,
-    pub baseline: BaselineState,
-    pub phases: Vec<Phase>,
+    pub server: ServerMetadata,
+    pub baseline: Option<BaselineState>,
+    pub tools: Option<Vec<ToolPattern>>,
+    pub resources: Option<Vec<ResourcePattern>>,
+    pub prompts: Option<Vec<PromptPattern>>,
+    pub phases: Option<Vec<Phase>>,
+    pub behavior: Option<BehaviorConfig>,
+    pub logging: Option<LoggingConfig>,
+    pub unknown_methods: Option<UnknownMethodHandling>,
 }
 
-/// Server metadata from the `server:` section
+/// Server identification and capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerMeta {
+pub struct ServerMetadata {
     pub name: String,
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
-    pub state_scope: StateScope,
+    pub state_scope: Option<StateScope>,
     #[serde(default)]
-    pub unknown_methods: UnknownMethodsPolicy,
+    pub capabilities: Option<Capabilities>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -1362,7 +1368,7 @@ pub enum StateScope {
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum UnknownMethodsPolicy {
+pub enum UnknownMethodHandling {
     #[default]
     Ignore,
     Error,
@@ -1383,60 +1389,64 @@ pub struct BaselineState {
     pub behavior: Option<BehaviorConfig>,
 }
 
-/// Server capabilities advertised in initialize response
+/// MCP server capabilities — serialized as camelCase (MCP wire format),
+/// accepts snake_case aliases in YAML config files.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Capabilities {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsCapability>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourcesCapability>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompts: Option<PromptsCapability>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingCapability>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolsCapability {
-    #[serde(default, rename = "listChanged")]
-    pub list_changed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
+    pub list_changed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourcesCapability {
-    #[serde(default)]
-    pub subscribe: bool,
-    #[serde(default, rename = "listChanged")]
-    pub list_changed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscribe: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
+    pub list_changed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptsCapability {
-    #[serde(default, rename = "listChanged")]
-    pub list_changed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "list_changed")]
+    pub list_changed: Option<bool>,
 }
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LoggingCapability {}
 ```
 
 **Tool Configuration:**
 
 ```rust
-/// A tool definition with its response configuration
-#[derive(Debug, Clone)]
-pub struct ToolConfig {
+/// A tool pattern defining an MCP tool and its response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPattern {
     pub tool: ToolDefinition,
     pub response: ResponseConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
 }
 
 /// MCP tool definition (sent in tools/list response)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
-    #[serde(rename = "inputSchema")]
     pub input_schema: serde_json::Value,
 }
 ```
@@ -1444,22 +1454,26 @@ pub struct ToolDefinition {
 **Resource Configuration:**
 
 ```rust
-/// A resource definition with its response configuration
-#[derive(Debug, Clone)]
-pub struct ResourceConfig {
+/// A resource pattern defining an MCP resource and its response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourcePattern {
     pub resource: ResourceDefinition,
-    pub response: ResourceResponseConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<ResourceResponse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
 }
 
 /// MCP resource definition (sent in resources/list response)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourceDefinition {
     pub uri: String,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, rename = "mimeType")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
 }
 ```
@@ -1467,28 +1481,32 @@ pub struct ResourceDefinition {
 **Prompt Configuration:**
 
 ```rust
-/// A prompt definition with its response configuration
-#[derive(Debug, Clone)]
-pub struct PromptConfig {
+/// A prompt pattern defining an MCP prompt and its response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptPattern {
     pub prompt: PromptDefinition,
     pub response: PromptResponseConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
 }
 
 /// MCP prompt definition (sent in prompts/list response)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptDefinition {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default)]
     pub arguments: Vec<PromptArgument>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptArgument {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default)]
     pub required: Option<bool>,

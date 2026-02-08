@@ -1,0 +1,44 @@
+[workspace]
+git_release_enable = false          # cargo-dist handles GitHub Releases
+git_tag_enable = true               # release-plz creates tags that trigger cargo-dist
+tag_name = "v{{ version }}"         # unified tag: v0.3.0 (not thoughtjack-v0.3.0)
+dependencies_update = true          # runs cargo update before release
+semver_check = true                 # uses cargo-semver-checks for API changes
+changelog_update = true
+repo_url = "https://github.com/thoughtgate/thoughtjack"
+
+[[package]]
+name = "thoughtjack-core"
+publish = true
+
+[[package]]
+name = "thoughtjack-docs"
+publish = false
+git_tag_enable = false
+changelog_update = false
+
+[[package]]
+name = "thoughtjack"
+publish = true
+
+[changelog]
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | upper_first }} ({{ commit.id | truncate(length=7, end="") }})\
+{% endfor %}
+{% endfor %}
+"""
+commit_parsers = [
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^docs", group = "Documentation" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Refactoring" },
+    { message = "^test", group = "Testing" },
+    { message = "^build", group = "Build" },
+    { message = "^ci", group = "CI/CD" },
+    { message = "^chore", skip = true },
+    { message = "^style", skip = true },
+]

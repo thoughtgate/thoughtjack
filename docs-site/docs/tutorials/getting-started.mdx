@@ -1,0 +1,141 @@
+---
+title: Getting Started
+sidebar_position: 2
+description: Install ThoughtJack, run your first scenario, and understand the output
+---
+
+# Getting Started
+
+In this tutorial you'll install ThoughtJack, run a built-in attack scenario, and learn to read the output. By the end you'll understand the core workflow for testing MCP clients.
+
+## 1. Install ThoughtJack
+
+Choose one method:
+
+```bash
+# Homebrew (macOS/Linux)
+brew install thoughtgate/tap/thoughtjack
+
+# Cargo
+cargo install thoughtjack
+
+# Or build from source
+git clone https://github.com/thoughtgate/thoughtjack.git
+cd thoughtjack
+cargo build --release
+```
+
+Verify the installation:
+
+```bash
+thoughtjack version
+```
+
+You should see output like:
+
+```
+thoughtjack 0.3.0 (rust 2024 edition)
+```
+
+## 2. Explore built-in scenarios
+
+ThoughtJack ships with 10 attack scenarios. List them:
+
+```bash
+thoughtjack scenarios list
+```
+
+```
+Category   Name                  Description
+─────────  ────────────────────  ────────────────────────────────────────
+Temporal   rug-pull              Trust-building then rug pull attack
+Temporal   response-sequence     Sequential response escalation
+Injection  prompt-injection      Prompt injection attack patterns
+Injection  credential-phishing   Credential phishing via tool descriptions
+Injection  unicode-obfuscation   Unicode-based obfuscation attacks
+DoS        slow-loris            Slow loris byte-at-a-time delivery
+DoS        nested-json-dos       Deeply nested JSON payload generation
+DoS        notification-flood    MCP notification flooding
+Resource   resource-exfiltration Resource-based data exfiltration
+Resource   resource-rug-pull     Resource content that changes over time
+```
+
+Get details on a specific scenario:
+
+```bash
+thoughtjack scenarios show rug-pull
+```
+
+This displays the scenario's description, MITRE ATT&CK mapping, what to observe, and customization tips.
+
+## 3. Run the rug pull scenario
+
+The **rug pull** is a temporal attack: the server starts with a benign calculator tool, builds trust over 5 calls, then injects a malicious `read_file` tool.
+
+```bash
+thoughtjack server run --scenario rug-pull
+```
+
+ThoughtJack is now listening on stdin/stdout using the MCP JSON-RPC protocol. It will:
+
+1. Respond to `initialize` with server capabilities
+2. Advertise a `calculator` tool via `tools/list`
+3. Return `"42"` for any `tools/call` to `calculator`
+4. After 5 tool calls, send a `notifications/tools/list_changed` notification
+5. On the next `tools/list`, include the injected `read_file` tool
+
+### What to observe
+
+When testing your MCP client against this scenario, watch for:
+
+- Does the client re-read tool definitions after receiving `list_changed`?
+- Does the client detect the prompt injection in the `read_file` description?
+- Does the agent follow the injected instructions?
+
+## 4. Add verbose logging
+
+Run the same scenario with debug-level logging to see internal state transitions:
+
+```bash
+thoughtjack server run --scenario rug-pull -vv
+```
+
+With `-vv` (debug level), you'll see log lines for:
+
+- Configuration loading and validation
+- Each incoming JSON-RPC request
+- Phase trigger evaluation (`tools/call count: 3/5`)
+- Phase transitions (`trust_building → exploit`)
+- Entry actions firing (`send_notification: notifications/tools/list_changed`)
+
+For machine-parseable logs, use JSON format:
+
+```bash
+thoughtjack server run --scenario rug-pull -vv --log-format json
+```
+
+## 5. Run from a config file
+
+Built-in scenarios are convenient, but real testing uses YAML config files. You can view a scenario's YAML:
+
+```bash
+thoughtjack scenarios show rug-pull --yaml
+```
+
+Config files from the `library/` directory work the same way:
+
+```bash
+thoughtjack server run --config library/servers/rug_pull.yaml
+```
+
+Always validate configs before running:
+
+```bash
+thoughtjack server validate library/servers/rug_pull.yaml
+```
+
+## Next steps
+
+- [Writing a Custom Scenario](./custom-scenario) — create your own YAML configuration
+- [Building Phased Attacks](./phased-attacks) — multi-phase state machines with advanced triggers
+- [CLI Reference](/docs/reference/cli) — all commands and flags

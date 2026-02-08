@@ -1,0 +1,192 @@
+---
+title: Payload Generators
+sidebar_position: 4
+description: Generator types, parameters, limits, and output formats
+---
+
+# Payload Generators
+
+Generators produce attack payloads via the `$generate` directive. They implement the `PayloadGenerator` trait and support lazy evaluation — factory objects are created at config load time, bytes are generated at response time.
+
+See [TJ-SPEC-005](https://github.com/thoughtgate/thoughtjack/blob/main/specs/TJ-SPEC-005_Payload_Generation.md) for the formal specification.
+
+## Generator types
+
+### `nested_json`
+
+Produces deeply nested JSON structures for parser stack exhaustion.
+
+```yaml
+$generate:
+  type: nested_json
+  depth: 50000
+  structure: object
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `depth` | integer | 1000 | Nesting depth |
+| `structure` | string | `object` | Structure type |
+
+**Structure types:**
+
+| Value | Output |
+|-------|--------|
+| `object` | `{"a":{"a":{"a":...}}}` |
+| `array` | `[[[[...]]]]` |
+| `mixed` | Alternating objects and arrays |
+
+**Limits**: Subject to `max_nest_depth` (default: 100,000).
+
+### `garbage`
+
+Produces random byte payloads in configurable character sets.
+
+```yaml
+$generate:
+  type: garbage
+  size: 10485760
+  charset: utf8
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `size` | integer | 1024 | Output size in bytes |
+| `charset` | string | `ascii` | Character set |
+
+**Character sets:**
+
+| Value | Characters |
+|-------|-----------|
+| `ascii` | Printable ASCII (0x20–0x7E) |
+| `utf8` | Valid UTF-8 multibyte sequences |
+| `binary` | Raw bytes (0x00–0xFF) |
+| `numeric` | Digits (0–9) |
+| `alphanumeric` | Letters and digits |
+
+**Limits**: Subject to `max_payload_bytes` (default: 100 MB).
+
+### `batch_notifications`
+
+Produces a JSON-RPC batch array of MCP notifications for amplification attacks.
+
+```yaml
+$generate:
+  type: batch_notifications
+  count: 10000
+  method: "notifications/message"
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `count` | integer | 100 | Number of notifications in batch |
+| `method` | string | `notifications/message` | Notification method name |
+
+**Limits**: Subject to `max_batch_size` (default: 100,000).
+
+### `repeated_keys`
+
+Produces a JSON object with duplicate keys for hash collision attacks.
+
+```yaml
+$generate:
+  type: repeated_keys
+  count: 100000
+  key_length: 8
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `count` | integer | 1000 | Number of duplicate keys |
+| `key_length` | integer | 8 | Length of each key string |
+
+**Limits**: Subject to `max_payload_bytes`.
+
+### `unicode_spam`
+
+Produces Unicode abuse payloads for display corruption and rendering attacks.
+
+```yaml
+$generate:
+  type: unicode_spam
+  size: 4096
+  categories:
+    - zero_width
+    - rtl
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `size` | integer | 1024 | Approximate output size in bytes |
+| `categories` | array | all | Unicode categories to include |
+
+**Unicode categories:**
+
+| Value | Characters | Effect |
+|-------|-----------|--------|
+| `zero_width` | U+200B, U+200C, U+200D, U+FEFF | Invisible characters |
+| `homoglyph` | Cyrillic/Greek lookalikes | Visual spoofing |
+| `combining` | U+0300–U+036F | Stacked diacritical marks |
+| `rtl` | U+202E, U+202D, U+2066 | Text direction override |
+| `emoji` | Various emoji sequences | Rendering complexity |
+
+**Limits**: Subject to `max_payload_bytes`.
+
+### `ansi_escape`
+
+Produces ANSI escape sequences for terminal injection attacks.
+
+```yaml
+$generate:
+  type: ansi_escape
+  sequences:
+    - title
+    - hyperlink
+    - cursor_move
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `sequences` | array | all | Sequence types to include |
+
+**Sequence types:**
+
+| Value | Escape | Effect |
+|-------|--------|--------|
+| `cursor_move` | `\x1b[H`, `\x1b[2J` | Move cursor, clear screen |
+| `color` | `\x1b[31m` | Change text colors |
+| `title` | `\x1b]0;...\x07` | Set terminal title |
+| `hyperlink` | `\x1b]8;;...\x07` | OSC 8 hyperlinks |
+| `clear` | `\x1b[2J`, `\x1b[3J` | Clear screen/scrollback |
+
+## Limits
+
+All generators respect configurable limits:
+
+| Limit | Default | CLI Flag | Environment Variable |
+|-------|---------|----------|---------------------|
+| Max payload size | 100 MB | `--max-payload-bytes` | `THOUGHTJACK_MAX_PAYLOAD_BYTES` |
+| Max nesting depth | 100,000 | `--max-nest-depth` | `THOUGHTJACK_MAX_NEST_DEPTH` |
+| Max batch size | 100,000 | `--max-batch-size` | `THOUGHTJACK_MAX_BATCH_SIZE` |
+
+Exceeding a limit causes exit code 10 (`GENERATOR_ERROR`).
+
+## Streaming
+
+Payloads larger than 1 MB (the `STREAMING_THRESHOLD`) are generated as streams via the `PayloadStream` trait. Streaming generates chunks incrementally instead of buffering the entire payload in memory.
+
+The `GeneratedPayload` enum has two variants:
+- `Buffered(Vec<u8>)` — small payloads held in memory
+- `Streamed(Box<dyn PayloadStream>)` — large payloads yielded incrementally
+
+## Determinism
+
+Generators that use randomness accept an optional `seed` parameter. Given the same seed, a generator produces identical output. This is useful for reproducible testing.
+
+```yaml
+$generate:
+  type: garbage
+  size: 1024
+  charset: ascii
+  seed: 42
+```

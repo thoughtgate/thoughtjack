@@ -1,0 +1,85 @@
+---
+title: Generating Documentation
+sidebar_position: 5
+description: Use thoughtjack docs generate to create a scenario documentation site
+---
+
+# Generating Documentation
+
+In this tutorial you'll use ThoughtJack's documentation generator to create an attack scenario catalog site. The generator reads built-in scenarios and produces Docusaurus-compatible MDX pages with metadata cards, Mermaid diagrams, and YAML source toggles.
+
+## 1. Generate scenario pages
+
+Run the documentation generator:
+
+```bash
+thoughtjack docs generate --output-dir docs-site/docs/scenarios
+```
+
+This creates one MDX page per built-in scenario in the output directory, plus a `sidebars.js` file for Docusaurus navigation.
+
+## 2. Validate generated docs
+
+Check that all generated pages are well-formed:
+
+```bash
+thoughtjack docs validate
+```
+
+This verifies:
+- All MDX files have valid frontmatter
+- Scenario metadata is complete (name, description, category, taxonomy)
+- Cross-references between pages are valid
+
+## 3. Understand the generated output
+
+Each scenario page includes:
+
+- **Frontmatter** — title, sidebar position, description for SEO
+- **Attack metadata card** — severity, MITRE ATT&CK IDs, OWASP MCP Top 10 mapping, tags
+- **Description** — what the scenario does and what to observe
+- **Phase diagram** — Mermaid state diagram showing phase transitions
+- **YAML source** — toggleable full scenario configuration
+
+The generator also creates:
+- `sidebars.js` — sidebar navigation grouped by category
+- Coverage pages linking scenarios to security framework mappings
+
+## 4. Build the docs site
+
+The documentation site uses Docusaurus. Install dependencies and build:
+
+```bash
+cd docs-site
+npm install
+npm run build
+```
+
+The generated site includes:
+- **Documentation** — tutorials, how-to guides, reference, and explanation pages
+- **Attack Catalog** — auto-generated scenario pages
+- **Coverage** — MITRE ATT&CK and OWASP MCP Top 10 matrices
+
+## 5. Preview locally
+
+```bash
+cd docs-site
+npm start
+```
+
+This starts a local development server at `http://localhost:3000/thoughtjack/`. Navigate to the Attack Catalog section to see your generated scenario pages.
+
+## How static and generated pages coexist
+
+The docs site has two sidebar configurations:
+
+- **`docs`** — static Diataxis pages (tutorials, how-to, reference, explanation) defined in `sidebars.ts`
+- **`scenarios`** — auto-generated sidebar from `sidebars.js` created by `thoughtjack docs generate`
+
+The `sidebars.ts` file conditionally loads the generated `sidebars.js`. If you haven't run `docs generate` yet, the site builds without the scenario catalog — the static documentation pages still work.
+
+## Next steps
+
+- [Add a Scenario to the Library](/docs/how-to/add-scenario) — create scenarios that appear in the generated catalog
+- [Configuration Schema](/docs/reference/config-schema) — complete YAML reference
+- [Documentation Structure](/docs/explanation/diataxis) — why the docs follow the Diataxis framework

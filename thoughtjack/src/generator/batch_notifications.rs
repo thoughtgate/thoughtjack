@@ -351,6 +351,67 @@ mod tests {
         }
     }
 
+    // EC-GEN-007: count=0 produces empty JSON array
+    #[test]
+    fn test_count_zero_rejected() {
+        let params = make_params(vec![("count", json!(0))]);
+        let generator = BatchNotificationsGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        assert_eq!(data, b"[]", "count=0 should produce empty JSON array");
+    }
+
+    // EC-GEN-011: count exceeding max_batch_size returns LimitExceeded
+    #[test]
+    fn test_exceeds_max_batch_size() {
+        let limits = GeneratorLimits {
+            max_batch_size: 20,
+            ..default_limits()
+        };
+        // Exactly at limit should succeed
+        let params_at = make_params(vec![("count", json!(20))]);
+        assert!(BatchNotificationsGenerator::new(&params_at, &limits).is_ok());
+
+        // One over limit should fail
+        let params_over = make_params(vec![("count", json!(21))]);
+        let err = BatchNotificationsGenerator::new(&params_over, &limits).unwrap_err();
+        assert!(
+            matches!(err, GeneratorError::LimitExceeded(_)),
+            "expected LimitExceeded, got {err:?}"
+        );
+    }
+
+    // Verify output parses as a valid JSON array with correct structure
+    #[test]
+    fn test_produces_json_array() {
+        let params = make_params(vec![
+            ("count", json!(5)),
+            ("method", json!("test/ping")),
+            ("params", json!({"status": "ok"})),
+        ]);
+        let generator = BatchNotificationsGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        let parsed: Value = serde_json::from_slice(&data).unwrap();
+        assert!(parsed.is_array(), "output should be a JSON array");
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 5, "array should have exactly 5 elements");
+        for (i, item) in arr.iter().enumerate() {
+            assert_eq!(item["jsonrpc"], "2.0", "item {i} should have jsonrpc=2.0");
+            assert_eq!(
+                item["method"], "test/ping",
+                "item {i} should have correct method"
+            );
+            assert_eq!(
+                item["params"]["status"], "ok",
+                "item {i} should have correct params"
+            );
+            // Notifications should NOT have an "id" field
+            assert!(
+                item.get("id").is_none(),
+                "notifications should not have an id field"
+            );
+        }
+    }
+
     // EC-GEN-003: single notification (count=1) produces valid single-element array
     #[test]
     fn single_notification_valid_array() {

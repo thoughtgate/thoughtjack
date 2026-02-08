@@ -259,7 +259,7 @@ mod tests {
                 let tracker = Arc::clone(&tracker);
                 thread::spawn(move || {
                     for _ in 0..100 {
-                        tracker.increment("concurrent_key");
+                        let _ = tracker.increment("concurrent_key");
                     }
                 })
             })

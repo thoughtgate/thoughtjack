@@ -1,0 +1,98 @@
+---
+title: Run Over HTTP Transport
+sidebar_position: 6
+description: Use HTTP/SSE transport instead of stdio for multi-client testing
+---
+
+# Run Over HTTP Transport
+
+By default ThoughtJack uses stdio (JSON-RPC over stdin/stdout). The HTTP transport enables multi-client testing with Server-Sent Events (SSE) for server-to-client messages.
+
+## Start with HTTP
+
+```bash
+thoughtjack server run --config my_config.yaml --http 8080
+```
+
+This binds an HTTP server on `http://localhost:8080`.
+
+## Specify host and port
+
+```bash
+# Bind to all interfaces
+thoughtjack server run --config my_config.yaml --http 0.0.0.0:8080
+
+# Bind to specific interface
+thoughtjack server run --config my_config.yaml --http 192.168.1.100:3000
+```
+
+## Test with curl
+
+Send an MCP `initialize` request:
+
+```bash
+curl -X POST http://localhost:8080 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2024-11-05",
+      "capabilities": {},
+      "clientInfo": { "name": "test-client", "version": "1.0.0" }
+    }
+  }'
+```
+
+## SSE endpoint
+
+Server-to-client messages (notifications, requests) are delivered via SSE. Connect to the SSE stream:
+
+```bash
+curl -N http://localhost:8080/sse
+```
+
+Notifications like `tools/list_changed` arrive as SSE events.
+
+## State scoping
+
+With HTTP transport, multiple clients can connect simultaneously. Control how phase state is shared:
+
+```bash
+# Each connection has independent phase state (default)
+thoughtjack server run --config my_config.yaml --http 8080 --state-scope per-connection
+
+# All connections share phase state
+thoughtjack server run --config my_config.yaml --http 8080 --state-scope global
+```
+
+**Per-connection** (default): Each client progresses through phases independently. Client A reaching the exploit phase doesn't affect client B.
+
+**Global**: All clients share one phase counter. If any client triggers a phase transition, all clients see the new phase.
+
+## When to use HTTP
+
+| Use case | Transport |
+|----------|-----------|
+| Testing a single MCP client | stdio |
+| Testing multiple concurrent clients | HTTP |
+| Automated test suites with HTTP clients | HTTP |
+| Integration with MCP clients that spawn subprocesses | stdio |
+| Testing SSE streaming behavior | HTTP |
+
+## Combining with other flags
+
+All `server run` flags work with HTTP transport:
+
+```bash
+thoughtjack server run \
+  --config my_config.yaml \
+  --http 8080 \
+  --behavior slow-loris \
+  --capture-dir ./captures \
+  --events-file events.jsonl \
+  -vv
+```
+
+Note: The `pipe_deadlock` side effect only works with stdio transport and is silently skipped on HTTP.

@@ -76,7 +76,9 @@ The system SHALL define a `Transport` trait that abstracts message sending and r
 **Acceptance Criteria:**
 - Trait provides async methods for sending and receiving JSON-RPC messages
 - Trait provides method for sending raw bytes (for behavioral attacks)
-- Trait provides connection lifecycle hooks (on_connect, on_disconnect)
+- Trait provides `finalize_response()` to signal response completion (HTTP: ends chunked stream; stdio: no-op)
+- Trait provides `connection_context()` for connection metadata
+- Graceful shutdown uses `CancellationToken` from `tokio_util` rather than an explicit `close()` method
 - Implementations exist for stdio and HTTP transports
 
 **Trait Definition:**
@@ -104,11 +106,6 @@ pub trait Transport: Send + Sync {
 
     /// Returns the connection context for the current request.
     fn connection_context(&self) -> ConnectionContext;
-
-    /// Close the transport (default: no-op).
-    async fn close(&self, _graceful: bool) -> Result<(), TransportError> {
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,7 +313,7 @@ The system SHALL adapt side effects to each transport, skipping unsupported effe
 | `duplicate_request_ids` | ✅ | ✅ | Same on both |
 
 - Unsupported side effects log warning and are skipped
-- `supports_side_effect()` method allows checking before execution
+- Each `SideEffect` implementation provides a `supports_transport(TransportType) -> bool` method (defined on the `SideEffect` trait in `behavior/side_effects.rs`) to check compatibility before execution, rather than the transport checking support for side effects
 
 ### F-006: Connection Lifecycle
 
@@ -416,7 +413,7 @@ pub enum TransportError {
 The system SHALL enforce message size limits to prevent resource exhaustion.
 
 **Acceptance Criteria:**
-- Default maximum message size: 10 MB
+- Default maximum message size: 10 MB (`DEFAULT_MAX_MESSAGE_SIZE = 10_485_760` bytes, defined as a constant in `transport/mod.rs`)
 - Configurable via `THOUGHTJACK_MAX_MESSAGE_SIZE` environment variable
 - Messages exceeding limit are rejected before full read
 - Clear error message indicates the limit
@@ -488,26 +485,23 @@ The system SHALL provide connection context for side effect targeting.
 **Connection Context:**
 ```rust
 /// Context for the current connection
+#[derive(Debug, Clone)]
 pub struct ConnectionContext {
     /// Unique connection ID (always 0 for stdio)
     pub connection_id: u64,
-    
-    /// Handle to close THIS specific connection
-    pub connection_handle: Arc<dyn ConnectionHandle>,
-    
+
     /// Remote address (for HTTP)
     pub remote_addr: Option<SocketAddr>,
-    
+
     /// Whether this is the only connection (stdio: always true)
     pub is_exclusive: bool,
-}
 
-#[async_trait]
-pub trait ConnectionHandle: Send + Sync {
-    /// Close this specific connection
-    async fn close(&self, graceful: bool) -> Result<(), TransportError>;
+    /// When this connection was established
+    pub connected_at: Instant,
 }
 ```
+
+**Note:** Connection closure is handled via `CancellationToken` from `tokio_util`, not via a method on the context. Side effects that need to close a connection return a `SideEffectOutcome::CloseConnection` value, and the server runtime acts on that outcome.
 
 ---
 
@@ -651,6 +645,7 @@ pub trait ConnectionHandle: Send + Sync {
 
 - Transport SHALL complete in-flight messages on SIGTERM (up to 5s timeout)
 - After timeout, force close all connections
+- Shutdown is coordinated via `CancellationToken` from `tokio_util`; there is no explicit `close()` method on the `Transport` trait
 
 ---
 

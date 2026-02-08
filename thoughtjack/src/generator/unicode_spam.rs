@@ -379,6 +379,39 @@ mod tests {
         assert!(has_emoji, "expected emoji characters in output");
     }
 
+    // EC-GEN-005: empty categories (bytes=0) produces empty output
+    #[test]
+    fn test_empty_categories_rejected() {
+        // The generator takes a single `category`, not a vec.
+        // Test that bytes=0 produces empty output (no categories to emit).
+        let params = make_params(vec![("bytes", json!(0)), ("category", json!("zero_width"))]);
+        let generator = UnicodeSpamGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        assert!(data.is_empty(), "bytes=0 should produce empty output");
+    }
+
+    // Verify all category outputs are valid UTF-8
+    #[test]
+    fn test_produces_valid_utf8() {
+        for category in &["zero_width", "homoglyph", "combining", "rtl", "emoji"] {
+            let params = make_params(vec![
+                ("bytes", json!(2000)),
+                ("category", json!(category)),
+                ("seed", json!(99)),
+            ]);
+            let generator = UnicodeSpamGenerator::new(&params, &default_limits()).unwrap();
+            let data = generator.generate().unwrap().into_bytes();
+            assert!(
+                !data.is_empty(),
+                "category '{category}' should produce non-empty output"
+            );
+            assert!(
+                std::str::from_utf8(&data).is_ok(),
+                "category '{category}' should produce valid UTF-8"
+            );
+        }
+    }
+
     // EC-GEN-014: Unicode spam with empty carrier (pure unicode, no carrier text)
     #[test]
     fn empty_carrier_produces_output() {

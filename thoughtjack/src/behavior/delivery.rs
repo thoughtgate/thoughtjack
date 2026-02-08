@@ -914,8 +914,8 @@ mod tests {
         assert!(result.completed);
         assert!(result.duration.as_millis() < 100);
         // Normal delivery should produce exactly 1 send_raw call
-        let sends = transport.raw_sends.lock().unwrap();
-        assert_eq!(sends.len(), 1, "normal delivery should produce one send");
+        let send_count = transport.raw_sends.lock().unwrap().len();
+        assert_eq!(send_count, 1, "normal delivery should produce one send");
     }
 
     // ========================================================================
@@ -941,5 +941,244 @@ mod tests {
         let effect = create_side_effect(&config);
         assert_eq!(effect.name(), "batch_amplify");
         // The effect is created successfully; batch_size is clamped to 1 via .max(1)
+    }
+
+    // ========================================================================
+    // EC-BEH-002: SlowLoris with byte_delay_ms=0 (edge case)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_slow_loris_zero_delay_completes_all_bytes() {
+        // EC-BEH-002: zero delay should send all bytes without sleeping
+        let transport = MockTransport::new();
+        let delivery = SlowLorisDelivery::new(Duration::ZERO, 1);
+        let msg = test_message();
+
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
+
+        let expected = serde_json::to_vec(&msg).unwrap().len() + 1;
+        assert_eq!(result.bytes_sent, expected);
+        assert!(result.completed);
+        // With zero delay the loop should skip all sleeps
+        assert!(result.duration < Duration::from_millis(200));
+    }
+
+    // ========================================================================
+    // EC-BEH-003: SlowLoris with very large chunk_size
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_slow_loris_large_chunk() {
+        // EC-BEH-003: chunk_size larger than payload sends in one chunk
+        let transport = MockTransport::new();
+        let delivery = SlowLorisDelivery::new(Duration::from_millis(10), 1_000_000);
+        let msg = test_message();
+
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
+
+        let expected = serde_json::to_vec(&msg).unwrap().len() + 1;
+        assert_eq!(result.bytes_sent, expected);
+        assert!(result.completed);
+        // Only one chunk ⇒ only one delay at most
+        let send_count = transport.raw_sends.lock().unwrap().len();
+        assert_eq!(
+            send_count, 1,
+            "should send entire payload in a single chunk"
+        );
+    }
+
+    // ========================================================================
+    // EC-BEH-004: UnboundedLine with target_bytes=0
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_unbounded_line_zero_target() {
+        // EC-BEH-004: target_bytes=0 sends just the serialized bytes, no padding
+        let transport = MockTransport::new();
+        let delivery = UnboundedLineDelivery::new(0, 'A');
+        let msg = test_message();
+
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
+
+        let serialized = serde_json::to_vec(&msg).unwrap();
+        assert_eq!(result.bytes_sent, serialized.len());
+        assert!(result.completed);
+
+        // Verify the sent bytes are exactly the JSON, no padding, no newline
+        let sent = transport.all_bytes();
+        assert_eq!(sent, serialized);
+    }
+
+    // ========================================================================
+    // EC-BEH-006: ResponseDelay with delay_ms=0
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_response_delay_zero_ms() {
+        // EC-BEH-006: zero delay should behave like normal delivery
+        let transport = MockTransport::new();
+        let delivery = ResponseDelayDelivery::new(Duration::ZERO);
+        let msg = test_message();
+
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
+
+        let expected = serde_json::to_vec(&msg).unwrap().len() + 1;
+        assert_eq!(result.bytes_sent, expected);
+        assert!(result.completed);
+        // Should complete nearly instantly
+        assert!(result.duration < Duration::from_millis(100));
+    }
+
+    // ========================================================================
+    // Normal delivery with empty payload
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_normal_delivery_empty_payload() {
+        // Sending a minimal message should still succeed
+        let transport = MockTransport::new();
+        let delivery = NormalDelivery;
+        // A response with null result produces a small but non-empty JSON
+        let msg = JsonRpcMessage::Response(JsonRpcResponse::success(json!(1), json!(null)));
+
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(result.completed);
+        assert!(result.bytes_sent > 1); // at least the newline + some JSON
+        let sent = transport.all_bytes();
+        assert_eq!(*sent.last().unwrap(), b'\n');
+    }
+
+    // ========================================================================
+    // EC-BEH-010: Graceful close with pending slow loris
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_graceful_close_with_pending_slow_loris() {
+        // EC-BEH-010: Start a slow loris delivery with a long delay, then
+        // cancel mid-stream via CancellationToken. The delivery should return
+        // with completed: false and partial bytes_sent.
+        let transport = Arc::new(MockTransport::new());
+        let delivery = SlowLorisDelivery::new(Duration::from_millis(50), 1);
+        let msg = test_message();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let transport_clone = transport.clone();
+
+        let handle = tokio::spawn(async move {
+            delivery
+                .deliver(&msg, transport_clone.as_ref(), cancel_clone)
+                .await
+        });
+
+        // Let the slow loris drip a few bytes, then cancel
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        cancel.cancel();
+
+        let result = handle.await.unwrap().unwrap();
+
+        assert!(
+            !result.completed,
+            "should not be completed after cancellation"
+        );
+
+        // Should have sent some bytes but not all
+        let full_size = serde_json::to_vec(&test_message()).unwrap().len() + 1;
+        assert!(
+            result.bytes_sent > 0,
+            "should have sent at least some bytes before cancellation"
+        );
+        assert!(
+            result.bytes_sent < full_size,
+            "should not have sent all bytes ({} >= {full_size})",
+            result.bytes_sent
+        );
+    }
+
+    // ========================================================================
+    // EC-BEH-013: Response delay exceeds timeout (cancelled)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_response_delay_exceeds_timeout() {
+        // EC-BEH-013: Create a response delay delivery with a very large delay
+        // (10 seconds). Cancel it after a short time using CancellationToken.
+        // Verify it returns promptly with completed: false.
+        let transport = Arc::new(MockTransport::new());
+        let delivery = ResponseDelayDelivery::new(Duration::from_secs(10));
+        let msg = test_message();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let transport_clone = transport.clone();
+
+        let start = std::time::Instant::now();
+
+        let handle = tokio::spawn(async move {
+            delivery
+                .deliver(&msg, transport_clone.as_ref(), cancel_clone)
+                .await
+        });
+
+        // Cancel after a short delay (50ms)
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let result = handle.await.unwrap().unwrap();
+        let wall_time = start.elapsed();
+
+        assert!(
+            !result.completed,
+            "should not be completed after cancellation"
+        );
+        assert_eq!(
+            result.bytes_sent, 0,
+            "should not send any bytes when cancelled during delay"
+        );
+        // Should return well before the 10-second delay
+        assert!(
+            wall_time < Duration::from_secs(2),
+            "should return promptly after cancellation, took {wall_time:?}"
+        );
+    }
+
+    // ========================================================================
+    // EC-BEH-005: NestedJson with nest_level=0
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_nested_json_depth_zero() {
+        // EC-BEH-005: depth=0 should produce the original message + newline
+        let transport = MockTransport::new();
+        let delivery = NestedJsonDelivery::new(0, "a".to_string());
+        let msg = test_message();
+
+        let result = delivery
+            .deliver(&msg, &transport, CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(result.completed);
+
+        let sent = transport.all_bytes();
+        let json_bytes = &sent[..sent.len() - 1]; // strip trailing newline
+        // With depth 0, no wrapping occurs — output should be the raw message
+        let expected = serde_json::to_vec(&msg).unwrap();
+        assert_eq!(json_bytes, &expected);
+        assert_eq!(*sent.last().unwrap(), b'\n');
     }
 }

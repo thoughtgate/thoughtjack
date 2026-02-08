@@ -197,22 +197,24 @@ The system SHALL attach context to log spans.
 - Tool name attached during tool call handling
 - Connection ID for HTTP transport
 
+> **Status: Future scope.** The `#[instrument]` attribute is not yet applied to request handlers in the current implementation. Contextual fields are added manually via `tracing` macros. The examples below show the target design.
+
 **Implementation:**
 ```rust
-#[instrument(skip(self, transport), fields(request_id = %request.id))]
+// Future: #[instrument(skip(self, transport), fields(request_id = %request.id))]
 async fn handle_request(&self, request: JsonRpcRequest, transport: &dyn Transport) {
     debug!("Request received");
-    
+
     // All logs within this function include request_id
     let result = self.process_request(request).await;
-    
+
     debug!(response_size = result.len(), "Response prepared");
 }
 
-#[instrument(skip(self), fields(phase = %self.current_phase_name()))]
+// Future: #[instrument(skip(self), fields(phase = %self.current_phase_name()))]
 async fn evaluate_trigger(&self, event: &Event) {
     debug!(event_type = %event.event_type, "Evaluating trigger");
-    
+
     if self.should_advance(event) {
         info!("Trigger fired, advancing phase");
     }
@@ -391,13 +393,14 @@ The system SHALL collect quantitative metrics.
 | `thoughtjack_requests_total` | Counter | method | Total requests received |
 | `thoughtjack_responses_total` | Counter | method, status, error_code | Total responses sent |
 | `thoughtjack_request_duration_ms` | Histogram | method | Request processing time |
+| `thoughtjack_delivery_duration_ms` | Histogram | — | Delivery duration |
 | `thoughtjack_phase_transitions_total` | Counter | from, to | Phase transitions |
-| `thoughtjack_delivery_bytes_total` | Counter | behavior | Bytes delivered |
-| `thoughtjack_delivery_duration_ms` | Histogram | behavior | Delivery duration |
-| `thoughtjack_side_effects_total` | Counter | effect_type | Side effects executed |
 | `thoughtjack_current_phase` | Gauge | phase_name | Current phase (1 = active) |
-| `thoughtjack_event_counts` | Gauge | event_type | Current event counts |
 | `thoughtjack_connections_active` | Gauge | — | Active connections |
+| `thoughtjack_delivery_bytes_total` | Counter | — | Bytes delivered |
+| `thoughtjack_side_effects_total` | Counter | effect_type, messages_sent, bytes_sent | Side effects executed |
+| `thoughtjack_side_effect_duration_ms` | Histogram | effect_type | Side effect duration |
+| `thoughtjack_event_counts` | Gauge | event | Current event counts |
 
 **Label Cardinality Protection:**
 
@@ -466,9 +469,8 @@ gauge!("thoughtjack_current_phase", "phase_name" => phase_name).set(1.0);
 The system SHALL support metrics export to external systems.
 
 **Acceptance Criteria:**
-- Prometheus exposition format (pull)
+- Prometheus exposition format (pull) via `metrics-exporter-prometheus`
 - Optional metrics endpoint for HTTP transport
-- StatsD push support (optional feature)
 - Metrics disabled by default (zero overhead)
 
 **Configuration:**
@@ -478,8 +480,7 @@ observability:
   metrics:
     enabled: true
     endpoint: /metrics        # For HTTP transport
-    format: prometheus        # prometheus | statsd
-    statsd_host: localhost:8125  # For statsd format
+    format: prometheus
 ```
 
 **CLI:**
@@ -551,7 +552,8 @@ pub enum ThoughtJackEvent {
     AttackTriggered {
         timestamp: DateTime<Utc>,
         attack_type: String,
-        details: serde_json::Value,
+        details: String,
+        phase: String,
     },
     
     ServerStopped {
@@ -643,7 +645,7 @@ thoughtjack server run -c config.yaml -vvv
 
 **Implementation:**
 ```rust
-#[instrument(skip_all, fields(request_id = %request.id))]
+// Future: #[instrument(skip_all, fields(request_id = %request.id))]
 async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
     // At debug level (-vv), log full payloads
     debug!(payload = ?request, "Full request payload");
@@ -665,6 +667,8 @@ async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
 ### F-014: Test Report Generation
 
 The system SHALL generate test reports on completion.
+
+> **Status: Partially implemented.** `RunSummary` struct exists but detailed report generation to file is not yet implemented.
 
 **Acceptance Criteria:**
 - Summary printed to stderr on exit
@@ -824,7 +828,7 @@ thoughtjack server --config attack.yaml --log-file server.log
 thoughtjack server --config attack.yaml --log-file server.json --log-file-format json
 ```
 
-### F-016: Request/Response Capture
+### F-017: Request/Response Capture
 
 The system SHALL support capturing full request/response pairs for debugging and replay.
 
@@ -1032,7 +1036,7 @@ observability:
   metrics:
     enabled: false
     endpoint: /metrics            # Path for HTTP transport
-    format: prometheus            # prometheus | statsd
+    format: prometheus
     
   events:
     enabled: false
@@ -1324,26 +1328,24 @@ impl EventEmitter {
 | `thoughtjack_requests_total` | method | Requests received |
 | `thoughtjack_responses_total` | method, status, error_code | Responses sent (error_code is string, e.g., "-32600" for invalid request) |
 | `thoughtjack_phase_transitions_total` | from, to | Phase changes |
-| `thoughtjack_delivery_bytes_total` | behavior | Bytes delivered |
-| `thoughtjack_side_effects_total` | effect_type | Side effects run |
-| `thoughtjack_errors_total` | error_type | Errors occurred |
+| `thoughtjack_delivery_bytes_total` | — | Bytes delivered |
+| `thoughtjack_side_effects_total` | effect_type, messages_sent, bytes_sent | Side effects run |
 
 ### B.2 Histograms
 
-| Name | Labels | Buckets | Description |
-|------|--------|---------|-------------|
-| `thoughtjack_request_duration_ms` | method | 1,5,10,50,100,500,1000 | Request latency |
-| `thoughtjack_delivery_duration_ms` | behavior | 10,100,1000,10000,60000 | Delivery time |
-| `thoughtjack_payload_size_bytes` | direction | 100,1K,10K,100K,1M | Payload sizes |
+| Name | Labels | Description |
+|------|--------|-------------|
+| `thoughtjack_request_duration_ms` | method | Request latency |
+| `thoughtjack_delivery_duration_ms` | — | Delivery time |
+| `thoughtjack_side_effect_duration_ms` | effect_type | Side effect duration |
 
 ### B.3 Gauges
 
 | Name | Labels | Description |
 |------|--------|-------------|
 | `thoughtjack_current_phase` | phase_name | Active phase (1=active) |
-| `thoughtjack_event_counts` | event_type | Current event counts |
 | `thoughtjack_connections_active` | — | Open connections |
-| `thoughtjack_uptime_seconds` | — | Server uptime |
+| `thoughtjack_event_counts` | event | Current event counts |
 
 ---
 
@@ -1369,6 +1371,6 @@ impl EventEmitter {
 | `PhaseEntered` | phase_name, phase_index, trigger |
 | `RequestReceived` | request_id, method |
 | `ResponseSent` | request_id, success, duration_ms |
-| `AttackTriggered` | attack_type, phase, details |
+| `AttackTriggered` | attack_type, phase, details (String) |
 | `SideEffectTriggered` | effect_name, trigger, messages_sent, bytes_sent, completed, connection_id |
 | `Error` | error_type, message, context |

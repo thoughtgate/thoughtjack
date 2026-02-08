@@ -1,0 +1,158 @@
+---
+title: Scenario Metadata Schema
+sidebar_position: 6
+description: Metadata block fields for scenario registration and documentation
+---
+
+# Scenario Metadata Schema
+
+The `metadata` block in a ThoughtJack configuration defines how a scenario appears in `scenarios list`, `scenarios show`, and the generated documentation site.
+
+## Schema
+
+```yaml
+metadata:
+  id: string                   # Required — unique identifier (kebab-case)
+  name: string                 # Required — human-readable display name
+  description: string          # Required — one-line description
+  category: string             # Required — scenario category
+  severity: string             # Optional — severity rating
+  tags: [string]               # Optional — searchable tags
+  mitre_attack: [string]       # Optional — MITRE ATT&CK technique IDs
+  owasp_mcp: [string]          # Optional — OWASP MCP Top 10 IDs
+  detection_guidance: string   # Optional — how defenders can detect this attack
+```
+
+## Fields
+
+### `id`
+
+Unique identifier for the scenario. Must be kebab-case (lowercase with hyphens).
+
+| Constraint | Value |
+|-----------|-------|
+| Format | kebab-case |
+| Uniqueness | Must be unique across all scenarios |
+| Examples | `rug-pull`, `nested-json-dos`, `credential-phishing` |
+
+### `name`
+
+Human-readable display name shown in listings and documentation.
+
+| Constraint | Value |
+|-----------|-------|
+| Format | Free text |
+| Examples | `"Rug Pull Attack"`, `"Nested JSON DoS"` |
+
+### `description`
+
+One-line description of the attack pattern. Shown in `scenarios list` output and documentation summaries.
+
+### `category`
+
+Scenario category for grouping and filtering.
+
+| Value | Description |
+|-------|-------------|
+| `injection` | Content injection attacks (prompt injection, phishing) |
+| `dos` | Denial of service attacks (resource exhaustion, flooding) |
+| `temporal` | Time-based attacks (rug pulls, sleeper agents) |
+| `resource` | Resource-based attacks (exfiltration, mutation) |
+| `protocol` | Protocol-level attacks (ID collision, batch abuse) |
+
+### `severity`
+
+Severity rating for the attack pattern.
+
+| Value | Description |
+|-------|-------------|
+| `low` | Minor impact, easily detected |
+| `medium` | Moderate impact |
+| `high` | Significant impact, harder to detect |
+| `critical` | Severe impact, difficult to detect |
+
+### `tags`
+
+Array of searchable tags for filtering and categorization.
+
+```yaml
+tags:
+  - prompt-injection
+  - tool-manipulation
+  - trust-building
+  - credential-theft
+```
+
+### `mitre_attack`
+
+MITRE ATT&CK technique IDs that this scenario maps to.
+
+```yaml
+mitre_attack:
+  - "T1059.004"    # Command and Scripting Interpreter: Unix Shell
+  - "T1552.001"    # Unsecured Credentials: Credentials In Files
+  - "T1027"        # Obfuscated Files or Information
+```
+
+These IDs appear on the generated scenario pages and in the MITRE ATT&CK coverage matrix.
+
+### `owasp_mcp`
+
+OWASP MCP Top 10 identifiers that this scenario maps to.
+
+```yaml
+owasp_mcp:
+  - "MCP-01"       # Tool Injection
+  - "MCP-03"       # Capability Mutation
+```
+
+### `detection_guidance`
+
+Free-text guidance for defenders on how to detect this attack pattern.
+
+```yaml
+detection_guidance: >
+  Monitor for tool definition changes after initialization.
+  Alert on notifications/tools/list_changed events that add
+  tools with file path references in descriptions.
+```
+
+## Example
+
+```yaml
+metadata:
+  id: "rug-pull"
+  name: "Rug Pull Attack"
+  description: "Trust-building calculator that swaps in malicious tools"
+  category: "temporal"
+  severity: "high"
+  tags:
+    - rug-pull
+    - tool-injection
+    - trust-building
+  mitre_attack:
+    - "T1059.004"
+  owasp_mcp:
+    - "MCP-01"
+    - "MCP-03"
+  detection_guidance: >
+    Monitor for notifications/tools/list_changed events. Compare tool
+    definitions before and after to detect added or modified tools.
+    Flag tools whose descriptions contain file path references or
+    instructions that differ from initial definitions.
+```
+
+## Built-in scenario categories
+
+The 10 built-in scenarios are distributed across categories:
+
+| Category | Scenarios |
+|----------|-----------|
+| Temporal | `rug-pull`, `response-sequence` |
+| Injection | `prompt-injection`, `credential-phishing`, `unicode-obfuscation` |
+| DoS | `slow-loris`, `nested-json-dos`, `notification-flood` |
+| Resource | `resource-exfiltration`, `resource-rug-pull` |
+
+## Fuzzy matching
+
+`scenarios show` supports fuzzy name matching using Damerau-Levenshtein distance (threshold ≤ 3). If you type `rug-pul` or `rug_pull`, ThoughtJack will suggest the correct scenario name.

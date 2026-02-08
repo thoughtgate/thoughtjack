@@ -1,0 +1,135 @@
+---
+title: Integrate with CI/CD
+sidebar_position: 7
+description: Run ThoughtJack in CI pipelines with machine-readable output
+---
+
+# Integrate with CI/CD
+
+ThoughtJack can run in CI/CD pipelines to validate configurations and test MCP client implementations against attack scenarios.
+
+## Validate configs in CI
+
+Add config validation to your pipeline to catch errors before deployment:
+
+```yaml title=".github/workflows/validate.yml"
+name: Validate ThoughtJack Configs
+on: [push, pull_request]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ThoughtJack
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/thoughtgate/thoughtjack/releases/latest/download/thoughtjack-installer.sh | sh
+
+      - name: Validate all configs
+        run: |
+          for f in library/servers/*.yaml; do
+            thoughtjack server validate "$f" --format json
+          done
+```
+
+## Machine-readable output
+
+Use `--format json` for structured output from validation and listing commands:
+
+```bash
+# JSON validation output
+thoughtjack server validate my_config.yaml --format json
+
+# JSON scenario listing
+thoughtjack scenarios list --format json
+```
+
+## JSON log format
+
+When running the server in CI, use JSON logs for machine parsing:
+
+```bash
+thoughtjack server run --config my_config.yaml --log-format json -vv
+```
+
+Each log line is a JSON object:
+
+```json
+{"timestamp":"2025-01-15T10:30:00Z","level":"INFO","target":"thoughtjack::phase","message":"Phase transition","phase":"exploit"}
+```
+
+## Event file output
+
+Write structured events to a JSONL file for post-run analysis:
+
+```bash
+thoughtjack server run \
+  --config my_config.yaml \
+  --events-file events.jsonl \
+  --log-format json
+```
+
+After the run, parse `events.jsonl`:
+
+```bash
+# Count phase transitions
+jq 'select(.event == "PhaseEntered")' events.jsonl | wc -l
+
+# Get run summary
+jq 'select(.event == "ServerStopped") | .summary' events.jsonl
+```
+
+## Traffic capture
+
+Capture all request/response traffic for analysis:
+
+```bash
+thoughtjack server run \
+  --config my_config.yaml \
+  --capture-dir ./captures \
+  --capture-redact
+```
+
+The `--capture-redact` flag removes potentially sensitive values from captured traffic.
+
+## Exit codes
+
+ThoughtJack uses specific exit codes that CI pipelines can check:
+
+| Code | Meaning | CI action |
+|------|---------|-----------|
+| 0 | Success | Pass |
+| 2 | Config invalid | Fail — fix config |
+| 10 | Generator limit exceeded | Fail — adjust limits |
+| 64 | Invalid CLI usage | Fail — fix command |
+| 130 | SIGINT | Informational |
+
+```yaml
+- name: Run scenario
+  run: thoughtjack server run --config test.yaml
+  continue-on-error: false
+```
+
+## Validate generated docs
+
+If you generate documentation, validate it in CI:
+
+```bash
+thoughtjack docs generate --output-dir docs-site/docs/scenarios
+thoughtjack docs validate
+```
+
+## Prometheus metrics
+
+For long-running test sessions, expose metrics:
+
+```bash
+thoughtjack server run \
+  --config my_config.yaml \
+  --http 8080 \
+  --metrics-port 9090
+```
+
+Scrape `http://localhost:9090/metrics` for request counts, phase transitions, delivery durations, and error rates.

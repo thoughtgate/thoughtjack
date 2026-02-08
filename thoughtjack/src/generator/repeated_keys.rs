@@ -239,6 +239,117 @@ mod tests {
         assert!(s.contains(r#":"x""#));
     }
 
+    // EC-GEN-008: count=0 produces empty JSON object
+    #[test]
+    fn test_count_zero_rejected() {
+        let params = make_params(vec![("count", json!(0))]);
+        let generator = RepeatedKeysGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        assert_eq!(data, b"{}", "count=0 should produce empty JSON object");
+    }
+
+    // Verify output has the specified key repeated the correct number of times
+    #[test]
+    fn test_produces_object_with_keys() {
+        let params = make_params(vec![
+            ("count", json!(5)),
+            ("key_length", json!(4)),
+            ("value", json!("test")),
+        ]);
+        let generator = RepeatedKeysGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        let s = String::from_utf8(data).unwrap();
+
+        // Key should be "kkkk" (length 4)
+        let key_pattern = "\"kkkk\"";
+        let occurrences = s.matches(key_pattern).count();
+        assert_eq!(
+            occurrences, 5,
+            "expected 5 occurrences of key \"kkkk\", got {occurrences}"
+        );
+
+        // Should contain the value
+        assert!(s.contains(r#":"test""#), "output should contain the value");
+
+        // Should start with { and end with }
+        assert!(s.starts_with('{'), "output should start with {{");
+        assert!(s.ends_with('}'), "output should end with }}");
+    }
+
+    // Count exceeding max_batch_size returns LimitExceeded
+    #[test]
+    fn test_exceeds_max_batch_size() {
+        let limits = GeneratorLimits {
+            max_batch_size: 25,
+            ..default_limits()
+        };
+        // Exactly at limit should succeed
+        let params_at = make_params(vec![("count", json!(25))]);
+        assert!(RepeatedKeysGenerator::new(&params_at, &limits).is_ok());
+
+        // One over limit should fail
+        let params_over = make_params(vec![("count", json!(26))]);
+        let err = RepeatedKeysGenerator::new(&params_over, &limits).unwrap_err();
+        assert!(
+            matches!(err, GeneratorError::LimitExceeded(_)),
+            "expected LimitExceeded, got {err:?}"
+        );
+    }
+
+    // EC-GEN-006: Duplicate key behavior — verify all keys are identical
+    #[test]
+    fn test_duplicate_key_behavior() {
+        let params = make_params(vec![("count", json!(5))]);
+        let generator = RepeatedKeysGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        let s = String::from_utf8(data).unwrap();
+
+        // The output should contain exactly 5 instances of the same key
+        let key = "\"kkkkkkkk\"";
+        let occurrences = s.matches(key).count();
+        assert_eq!(
+            occurrences, 5,
+            "expected 5 duplicate keys, got {occurrences}"
+        );
+
+        // Verify it starts/ends as a JSON object
+        assert!(s.starts_with('{'));
+        assert!(s.ends_with('}'));
+
+        // Standard JSON parsing deduplicates: serde_json should only see 1 key
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let obj = parsed.as_object().unwrap();
+        assert_eq!(
+            obj.len(),
+            1,
+            "JSON parser should deduplicate to 1 key, but the raw string has 5"
+        );
+    }
+
+    // EC-GEN-015: Value is a JSON object
+    #[test]
+    fn test_value_is_object() {
+        let nested_obj = json!({"nested": true});
+        let params = make_params(vec![("count", json!(3)), ("value", nested_obj.clone())]);
+        let generator = RepeatedKeysGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        let s = String::from_utf8(data).unwrap();
+
+        // The serialized nested object should appear 3 times
+        let value_json = serde_json::to_string(&nested_obj).unwrap();
+        let occurrences = s.matches(&value_json).count();
+        assert_eq!(
+            occurrences, 3,
+            "expected 3 occurrences of object value, got {occurrences}"
+        );
+
+        // Verify each key maps to the object value in the raw output
+        assert!(
+            s.contains(&format!(":{value_json}")),
+            "output should contain key:value with object value"
+        );
+    }
+
     // EC-GEN-017: Extremely long key in repeated keys
     #[test]
     fn long_key_respects_payload_limit() {

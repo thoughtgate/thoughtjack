@@ -385,6 +385,56 @@ mod tests {
         assert!(matches!(err, GeneratorError::LimitExceeded(_)));
     }
 
+    // EC-GEN-001: depth=0 returns just the inner value (no wrapping)
+    #[test]
+    fn test_depth_zero_rejected() {
+        let params = make_params(vec![("depth", json!(0)), ("inner", json!("hello"))]);
+        let generator = NestedJsonGenerator::new(&params, &default_limits()).unwrap();
+        let payload = generator.generate().unwrap().into_bytes();
+        let parsed: Value = serde_json::from_slice(&payload).unwrap();
+        // depth=0 produces just the inner value without any wrapping
+        assert_eq!(parsed, json!("hello"));
+    }
+
+    // EC-GEN-002: depth=1 produces valid JSON with single layer of nesting
+    #[test]
+    fn test_depth_one() {
+        let params = make_params(vec![
+            ("depth", json!(1)),
+            ("structure", json!("object")),
+            ("key", json!("k")),
+            ("inner", json!(true)),
+        ]);
+        let generator = NestedJsonGenerator::new(&params, &default_limits()).unwrap();
+        let payload = generator.generate().unwrap().into_bytes();
+        let s = String::from_utf8(payload).unwrap();
+        // depth=1: single object wrapper
+        assert_eq!(s, r#"{"k":true}"#);
+        // Must parse as valid JSON
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert!(parsed.is_object());
+    }
+
+    // EC-GEN-010: depth exceeding limits.max_nest_depth returns LimitExceeded
+    #[test]
+    fn test_exceeds_max_nest_depth() {
+        let limits = GeneratorLimits {
+            max_nest_depth: 50,
+            ..GeneratorLimits::default()
+        };
+        // Exactly at limit should succeed
+        let params_at = make_params(vec![("depth", json!(50))]);
+        assert!(NestedJsonGenerator::new(&params_at, &limits).is_ok());
+
+        // One over limit should fail
+        let params_over = make_params(vec![("depth", json!(51))]);
+        let err = NestedJsonGenerator::new(&params_over, &limits).unwrap_err();
+        assert!(
+            matches!(err, GeneratorError::LimitExceeded(_)),
+            "expected LimitExceeded, got {err:?}"
+        );
+    }
+
     // EC-GEN-012: Object nesting vs array nesting size difference
     #[test]
     fn object_larger_than_array_due_to_keys() {

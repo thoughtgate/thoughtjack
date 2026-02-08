@@ -1339,6 +1339,7 @@ mod tests {
             behavior: None,
             logging: None,
             unknown_methods: None,
+            metadata: None,
         }
     }
 
@@ -1660,6 +1661,7 @@ mod tests {
 
     #[test]
     fn test_validate_invalid_event_name() {
+        // EC-CFG-008: Invalid event name produces error
         let mut config = minimal_config();
         config.baseline = Some(BaselineState::default());
         config.phases = Some(vec![Phase {
@@ -1727,6 +1729,7 @@ mod tests {
 
     #[test]
     fn test_validate_invalid_duration() {
+        // EC-PHASE-019: Invalid durations (including "-5s") produce errors
         let mut validator = Validator::new();
 
         for duration in ["", "30", "abc", "30x", "-5s"] {
@@ -2480,7 +2483,7 @@ mod tests {
     ) -> SideEffectConfig {
         SideEffectConfig {
             type_,
-            trigger: Default::default(),
+            trigger: SideEffectTrigger::default(),
             params: params
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
@@ -2617,6 +2620,399 @@ mod tests {
                 .any(|w| w.message.contains("Unknown parameter 'typo_param'")),
             "tool-level side effect param validation should produce warning: {:?}",
             result.warnings
+        );
+    }
+
+    // ====================================================================
+    // Edge case tests
+    // ====================================================================
+
+    #[test]
+    fn test_empty_config_validates() {
+        // EC-CFG-001: Minimal valid config (only server name)
+        let config = minimal_config();
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+        assert!(
+            result.is_valid(),
+            "Minimal config with just server name should be valid, got errors: {:?}",
+            result.errors
+        );
+        assert!(
+            !result.has_errors(),
+            "has_errors should be false for valid minimal config"
+        );
+    }
+
+    #[test]
+    fn test_config_with_only_server() {
+        // EC-CFG-002: Config with server section, no tools/resources/prompts
+        let mut config = minimal_config();
+        config.server.version = Some("2.0.0".to_string());
+        // Leave tools, resources, prompts all as None
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+        assert!(
+            result.is_valid(),
+            "Config with only server section should be valid, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_missing_server_name_error() {
+        // EC-CFG-003: Empty server name produces error
+        let mut config = minimal_config();
+        config.server.name = String::new();
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.path == "server.name" && e.message.contains("Server name is required")),
+            "Expected error about empty server name, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_duplicate_tool_names_error() {
+        // EC-CFG-004: Two tools with same name produce warning (per SPEC-001 F-015)
+        let mut config = minimal_config();
+        config.tools = Some(vec![make_tool("duplicate"), make_tool("duplicate")]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        // Per SPEC-001 F-015 duplicate tool names produce a warning, not an error
+        assert!(
+            result.is_valid(),
+            "Duplicate tool names should not cause errors, got: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Duplicate tool name")
+                    && w.message.contains("duplicate")),
+            "Expected warning about duplicate tool name 'duplicate', got: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn test_tool_with_empty_name_error() {
+        // EC-CFG-012: Tool with "" name
+        let mut config = minimal_config();
+        let tool = make_tool("");
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Tool name is required")),
+            "Expected error about empty tool name, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_prompt_with_no_messages() {
+        // EC-CFG-014: Prompt with empty messages vec (no dynamic features)
+        let mut config = minimal_config();
+        let mut prompt = make_prompt("empty");
+        prompt.response.messages = vec![];
+        config.prompts = Some(vec![prompt]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result.errors.iter().any(|e| e
+                .message
+                .contains("Prompt response messages cannot be empty")),
+            "Expected error about empty prompt messages, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_generator_limits_boundary_values() {
+        // EC-CFG-015: GeneratorLimits with min/max values
+        let limits = GeneratorLimits {
+            max_payload_bytes: 0,
+            max_nest_depth: 0,
+            max_batch_size: 0,
+        };
+        assert_eq!(limits.max_payload_bytes, 0);
+        assert_eq!(limits.max_nest_depth, 0);
+        assert_eq!(limits.max_batch_size, 0);
+
+        let max_limits = GeneratorLimits {
+            max_payload_bytes: usize::MAX,
+            max_nest_depth: usize::MAX,
+            max_batch_size: usize::MAX,
+        };
+        assert_eq!(max_limits.max_payload_bytes, usize::MAX);
+        assert_eq!(max_limits.max_nest_depth, usize::MAX);
+        assert_eq!(max_limits.max_batch_size, usize::MAX);
+
+        // Verify defaults are reasonable
+        let default_limits = GeneratorLimits::default();
+        assert_eq!(
+            default_limits.max_payload_bytes,
+            GeneratorLimits::DEFAULT_MAX_PAYLOAD_BYTES
+        );
+        assert_eq!(
+            default_limits.max_nest_depth,
+            GeneratorLimits::DEFAULT_MAX_NEST_DEPTH
+        );
+        assert_eq!(
+            default_limits.max_batch_size,
+            GeneratorLimits::DEFAULT_MAX_BATCH_SIZE
+        );
+    }
+
+    #[test]
+    fn test_phase_referencing_nonexistent_tool_warns() {
+        // EC-CFG-009: remove_tools with unknown tool name produces error
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState {
+            tools: vec![make_tool("legit_tool")],
+            resources: vec![],
+            prompts: vec![],
+            capabilities: None,
+            behavior: None,
+        });
+        config.phases = Some(vec![Phase {
+            name: "attack".to_string(),
+            advance: None,
+            on_enter: None,
+            replace_tools: None,
+            add_tools: None,
+            remove_tools: Some(vec!["does_not_exist".to_string()]),
+            replace_resources: None,
+            add_resources: None,
+            remove_resources: None,
+            replace_prompts: None,
+            add_prompts: None,
+            remove_prompts: None,
+            replace_capabilities: None,
+            behavior: None,
+        }]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(result.has_errors());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Cannot remove unknown tool")
+                    && e.message.contains("does_not_exist")),
+            "Expected error about removing nonexistent tool, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_phases() {
+        // Multiple phases validate correctly
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState {
+            tools: vec![make_tool("calc")],
+            resources: vec![make_resource("file:///data")],
+            prompts: vec![make_prompt("greet")],
+            capabilities: None,
+            behavior: None,
+        });
+
+        let phase1 = Phase {
+            name: "reconnaissance".to_string(),
+            advance: Some(Trigger {
+                on: Some("tools/call".to_string()),
+                count: Some(5),
+                match_condition: None,
+                after: None,
+                timeout: None,
+                on_timeout: None,
+            }),
+            on_enter: None,
+            replace_tools: None,
+            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool("scanner")))]),
+            remove_tools: None,
+            replace_resources: None,
+            add_resources: None,
+            remove_resources: None,
+            replace_prompts: None,
+            add_prompts: None,
+            remove_prompts: None,
+            replace_capabilities: None,
+            behavior: None,
+        };
+
+        let phase2 = Phase {
+            name: "exploitation".to_string(),
+            advance: Some(Trigger {
+                on: Some("tools/call".to_string()),
+                count: Some(3),
+                match_condition: None,
+                after: None,
+                timeout: None,
+                on_timeout: None,
+            }),
+            on_enter: None,
+            replace_tools: None,
+            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool("exploit")))]),
+            remove_tools: None,
+            replace_resources: None,
+            add_resources: None,
+            remove_resources: None,
+            replace_prompts: None,
+            add_prompts: None,
+            remove_prompts: None,
+            replace_capabilities: None,
+            behavior: None,
+        };
+
+        let phase3 = Phase {
+            name: "exfiltration".to_string(),
+            advance: None, // Terminal phase, no advance
+            on_enter: None,
+            replace_tools: None,
+            add_tools: None,
+            remove_tools: None,
+            replace_resources: None,
+            add_resources: None,
+            remove_resources: None,
+            replace_prompts: None,
+            add_prompts: None,
+            remove_prompts: None,
+            replace_capabilities: None,
+            behavior: None,
+        };
+
+        config.phases = Some(vec![phase1, phase2, phase3]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result.is_valid(),
+            "Multi-phase config should validate successfully, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_override() {
+        // EC-CFG-018: Config with deeply nested phases — a baseline with tools
+        // and a phase with replace_tools pointing to a valid baseline tool.
+        let mut config = minimal_config();
+        config.baseline = Some(BaselineState {
+            tools: vec![make_tool("calc")],
+            resources: vec![],
+            prompts: vec![],
+            capabilities: None,
+            behavior: None,
+        });
+        config.phases = Some(vec![Phase {
+            name: "override_phase".to_string(),
+            advance: None,
+            on_enter: None,
+            replace_tools: Some(
+                std::iter::once((
+                    "calc".to_string(),
+                    ToolPatternRef::Inline(Box::new(make_tool("calc_evil"))),
+                ))
+                .collect(),
+            ),
+            add_tools: None,
+            remove_tools: None,
+            replace_resources: None,
+            add_resources: None,
+            remove_resources: None,
+            replace_prompts: None,
+            add_prompts: None,
+            remove_prompts: None,
+            replace_capabilities: None,
+            behavior: None,
+        }]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result.is_valid(),
+            "Config with deeply nested phase override should validate, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_tool_level_behavior_override() {
+        // EC-CFG-023: Tool with its own behavior block (delivery override)
+        let mut config = minimal_config();
+        let mut tool = make_tool("slow_tool");
+        tool.behavior = Some(BehaviorConfig {
+            delivery: Some(DeliveryConfig::ResponseDelay { delay_ms: 100 }),
+            side_effects: None,
+        });
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result.is_valid(),
+            "Tool with behavior override should validate, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_tool_behavior_without_server_behavior() {
+        // EC-CFG-024: Tool behavior present without any top-level/baseline behavior
+        let mut config = minimal_config();
+        // No top-level behavior set (config.behavior is None)
+        let mut tool = make_tool("delayed_tool");
+        tool.behavior = Some(BehaviorConfig {
+            delivery: Some(DeliveryConfig::ResponseDelay { delay_ms: 500 }),
+            side_effects: None,
+        });
+        config.tools = Some(vec![tool]);
+
+        let mut validator = Validator::new();
+        let result = validator.validate(&config, &default_limits());
+
+        assert!(
+            result.is_valid(),
+            "Tool behavior without server behavior should validate, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_very_long_duration_allowed() {
+        // EC-PHASE-018: Very long duration (24h) should be accepted
+        let mut validator = Validator::new();
+        validator.validate_duration("24h", "test");
+        assert!(
+            validator.errors.is_empty(),
+            "Duration '24h' should be valid, got errors: {:?}",
+            validator.errors
         );
     }
 }

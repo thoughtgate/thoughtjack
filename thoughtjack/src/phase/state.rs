@@ -504,4 +504,81 @@ mod tests {
         assert!(debug.contains("PhaseState"));
         assert!(debug.contains("current_phase: 0"));
     }
+
+    // ---- Edge Case Tests ----
+
+    #[test]
+    fn test_phase_state_initial() {
+        // PhaseState::new() starts at index 0 with correct num_phases
+        let state = PhaseState::new(5);
+        assert_eq!(state.current_phase(), 0);
+        assert_eq!(state.num_phases(), 5);
+        assert!(!state.is_terminal());
+    }
+
+    #[test]
+    fn test_phase_state_increment_count() {
+        // Incrementing request count returns monotonically increasing values
+        let state = PhaseState::new(3);
+        let event = EventType::new("resources/read");
+
+        assert_eq!(state.increment_event(&event), 1);
+        assert_eq!(state.increment_event(&event), 2);
+        assert_eq!(state.increment_event(&event), 3);
+        assert_eq!(state.event_count(&event), 3);
+    }
+
+    #[test]
+    fn test_phase_state_advance() {
+        // Advancing via try_advance updates the current phase
+        let state = PhaseState::new(5);
+
+        assert!(state.try_advance(0, 1));
+        assert_eq!(state.current_phase(), 1);
+
+        assert!(state.try_advance(1, 2));
+        assert_eq!(state.current_phase(), 2);
+
+        // Cannot skip phases (CAS from wrong index fails)
+        assert!(!state.try_advance(0, 3));
+        assert_eq!(state.current_phase(), 2);
+    }
+
+    #[test]
+    fn test_phase_state_timer_reset() {
+        // After advancing, resetting the timer updates the entry timestamp
+        let state = PhaseState::new(3);
+        let t_before = state.phase_entered_at();
+
+        // Advance and reset timer
+        state.try_advance(0, 1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        state.reset_phase_timer();
+
+        let t_after = state.phase_entered_at();
+        assert!(t_after > t_before);
+    }
+
+    #[test]
+    fn test_per_connection_state_isolation() {
+        // Different PhaseState instances have fully independent state
+        let state_a = PhaseState::new(3);
+        let state_b = PhaseState::new(3);
+
+        let event = EventType::new("tools/call");
+
+        // Increment only on state_a
+        state_a.increment_event(&event);
+        state_a.increment_event(&event);
+        state_a.increment_event(&event);
+
+        // Advance only state_a
+        state_a.try_advance(0, 1);
+
+        // state_b should be completely unaffected
+        assert_eq!(state_a.event_count(&event), 3);
+        assert_eq!(state_b.event_count(&event), 0);
+        assert_eq!(state_a.current_phase(), 1);
+        assert_eq!(state_b.current_phase(), 0);
+    }
 }

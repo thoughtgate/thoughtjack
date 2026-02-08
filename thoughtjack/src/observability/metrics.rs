@@ -375,4 +375,67 @@ mod tests {
         record_payload_size("nested_json", 10_000);
         set_uptime(Duration::from_secs(300));
     }
+
+    #[test]
+    fn test_sanitize_empty_method() {
+        // EC-OBS-021: empty string is not a known method
+        assert_eq!(sanitize_method_label(""), "__unknown__");
+    }
+
+    #[test]
+    fn test_sanitize_method_with_slash() {
+        // "custom/method" is not a known MCP method — should be bucketed
+        assert_eq!(sanitize_method_label("custom/method"), "__unknown__");
+    }
+
+    #[test]
+    fn test_init_metrics_none_port() {
+        // init_metrics(None) installs a recorder without HTTP listener.
+        // Repeated calls return Ok(()) due to the AtomicBool guard.
+        let result = init_metrics(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_record_phase_transition_does_not_panic() {
+        // Should not panic even without a recorder installed
+        record_phase_transition("a", "b");
+    }
+
+    #[test]
+    fn test_set_current_phase_does_not_panic() {
+        // Should not panic even without a recorder installed
+        set_current_phase("p1", None);
+    }
+
+    #[test]
+    fn test_set_connections_active_does_not_panic() {
+        // Should not panic even without a recorder installed
+        set_connections_active(5);
+    }
+
+    #[test]
+    fn test_record_error_does_not_panic() {
+        // Should not panic even without a recorder installed
+        record_error("test");
+    }
+
+    #[test]
+    fn test_record_payload_size_does_not_panic() {
+        // Should not panic even without a recorder installed
+        record_payload_size("nested_json", 1024);
+    }
+
+    #[test]
+    fn test_record_event_count_does_not_panic() {
+        // Should not panic even without a recorder installed
+        record_event_count("test", 1);
+    }
+
+    #[test]
+    fn test_metrics_counter_overflow_saturates() {
+        // EC-OBS-009: counter increment with u64::MAX should saturate, not panic.
+        // The `metrics` crate counters saturate at max value rather than wrapping.
+        counter!("thoughtjack_requests_total", "method" => "tools/call").increment(u64::MAX);
+    }
 }

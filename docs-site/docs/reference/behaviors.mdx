@@ -1,0 +1,237 @@
+---
+title: Behavioral Modes
+sidebar_position: 5
+description: Delivery behaviors and side effects with complete parameter reference
+---
+
+# Behavioral Modes
+
+Behavioral modes control how ThoughtJack transmits responses (delivery behaviors) and what additional actions it takes (side effects). See [TJ-SPEC-004](https://github.com/thoughtgate/thoughtjack/blob/main/specs/TJ-SPEC-004_Behavioral_Modes.md) for the formal specification.
+
+## Delivery behaviors
+
+Delivery behaviors modify the transport-level transmission of responses.
+
+### `normal`
+
+Standard immediate delivery. No modification to response transmission.
+
+```yaml
+behavior:
+  delivery:
+    type: normal
+```
+
+No additional parameters. This is the default when no behavior is configured.
+
+### `slow_loris`
+
+Delivers the response in small chunks with a delay between each chunk.
+
+```yaml
+behavior:
+  delivery:
+    type: slow_loris
+    byte_delay_ms: 100
+    chunk_size: 1
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `byte_delay_ms` | integer | 100 | Delay between chunks in milliseconds |
+| `chunk_size` | integer | 1 | Bytes per chunk |
+
+**Transport**: stdio, HTTP.
+
+### `unbounded_line`
+
+Sends the response without a trailing newline, optionally padded to a target size.
+
+```yaml
+behavior:
+  delivery:
+    type: unbounded_line
+    target_bytes: 65536
+    padding_char: " "
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `target_bytes` | integer | 65536 | Total message size with padding |
+| `padding_char` | string | `" "` | Character used for padding |
+
+**Transport**: stdio, HTTP.
+
+### `nested_json`
+
+Wraps the response in deeply nested JSON objects.
+
+```yaml
+behavior:
+  delivery:
+    type: nested_json
+    depth: 1000
+    key: "data"
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `depth` | integer | 1000 | Nesting depth |
+| `key` | string | `"data"` | Key name at each level |
+
+**Transport**: stdio, HTTP.
+
+### `response_delay`
+
+Adds a fixed delay before sending the response.
+
+```yaml
+behavior:
+  delivery:
+    type: response_delay
+    delay_ms: 5000
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `delay_ms` | integer | 1000 | Delay in milliseconds |
+
+**Transport**: stdio, HTTP.
+
+## Side effects
+
+Side effects are additional actions executed alongside or instead of normal responses.
+
+### `notification_flood`
+
+Sends MCP notifications at a configurable rate.
+
+```yaml
+behavior:
+  side_effects:
+    - type: notification_flood
+      rate_per_second: 100
+      duration_ms: 5000
+      trigger: on_request
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `rate_per_second` | integer | 10 | Notifications per second |
+| `duration_ms` | integer | 5000 | Duration of the flood |
+| `trigger` | string | `on_request` | When to activate |
+
+**Transport**: stdio, HTTP.
+
+### `batch_amplify`
+
+Sends oversized JSON-RPC notification batches.
+
+```yaml
+behavior:
+  side_effects:
+    - type: batch_amplify
+      count: 1000
+      trigger: on_request
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `count` | integer | 100 | Notifications per batch |
+| `trigger` | string | `on_request` | When to activate |
+
+**Transport**: stdio, HTTP.
+
+### `pipe_deadlock`
+
+Fills the stdout buffer without reading stdin, causing a bidirectional I/O deadlock.
+
+```yaml
+behavior:
+  side_effects:
+    - type: pipe_deadlock
+      trigger: on_request
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `trigger` | string | `on_request` | When to activate |
+
+**Transport**: stdio only. Silently skipped on HTTP.
+
+### `close_connection`
+
+Forces the transport connection closed.
+
+```yaml
+behavior:
+  side_effects:
+    - type: close_connection
+      graceful: false
+      trigger: on_request
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `graceful` | boolean | `true` | Clean close (`true`) or abrupt (`false`) |
+| `trigger` | string | `on_request` | When to activate |
+
+**Transport**: stdio, HTTP.
+
+### `duplicate_request_ids`
+
+Sends multiple responses with the same JSON-RPC request ID.
+
+```yaml
+behavior:
+  side_effects:
+    - type: duplicate_request_ids
+      trigger: on_request
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `trigger` | string | `on_request` | When to activate |
+
+**Transport**: stdio, HTTP.
+
+## Side effect triggers
+
+| Trigger | When it fires |
+|---------|---------------|
+| `on_connect` | Client connects |
+| `on_request` | Each incoming request (default) |
+| `on_subscribe` | Client subscribes to a resource |
+| `on_unsubscribe` | Client unsubscribes |
+| `continuous` | Background loop |
+
+## Behavior scoping
+
+Behaviors resolve in priority order (highest first):
+
+1. **CLI override** — `--behavior` flag
+2. **Tool-level** — per-tool `behavior` block
+3. **Phase-level** — phase `behavior` block
+4. **Baseline-level** — top-level `behavior` block
+5. **Default** — `normal` delivery, no side effects
+
+The `BehaviorCoordinator` resolves the effective behavior by walking this chain.
+
+## Delivery result
+
+Each delivery produces a `DeliveryResult`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bytes_sent` | `u64` | Total bytes transmitted |
+| `duration` | `Duration` | Time taken for delivery |
+| `completed` | `bool` | Whether delivery completed fully |
+
+## Side effect outcome
+
+Each side effect execution produces a `SideEffectOutcome`:
+
+| Variant | Description |
+|---------|-------------|
+| `Completed` | Side effect ran to completion |
+| `CloseConnection { graceful }` | Connection should be closed |

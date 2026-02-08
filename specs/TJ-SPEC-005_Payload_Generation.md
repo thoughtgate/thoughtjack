@@ -32,10 +32,10 @@ The `$generate` directive solves this by declaratively specifying payload charac
 | Principle | Rationale |
 |-----------|-----------|
 | **Declarative** | Specify what you want, not how to build it |
-| **Deterministic** | Same parameters produce same output (seeded RNG) |
-| **Load-time generation** | Generate once, use many times (no runtime overhead) |
+| **Deterministic** | Same parameters produce same output (seeded RNG for randomized generators; inherently deterministic for others) |
+| **Lazy generation** | Generator factories stored at config load time; bytes produced at response time |
 | **Safety limits** | Prevent accidental resource exhaustion |
-| **Streaming for large payloads** | Don't buffer multi-MB payloads in memory |
+| **Streaming for large payloads** | Don't buffer multi-MB payloads in memory *(future scope — see F-009)* |
 
 ### 1.3 Generation vs Behavioral Modes
 
@@ -57,8 +57,8 @@ They compose: `$generate: nested_json` creates the payload; `delivery: slow_lori
 - Parameter validation
 - Safety limit enforcement
 - Deterministic seeding
-- Streaming generation for large payloads
-- Caching generated content
+- Streaming generation for large payloads *(future scope — see F-009)*
+- Caching generated content *(future scope — see F-010)*
 
 **Out of scope:**
 - Delivery behaviors (TJ-SPEC-004)
@@ -803,18 +803,21 @@ The system SHALL enforce safety limits on generated payloads.
 **Acceptance Criteria:**
 - Maximum payload size enforced
 - Maximum nesting depth enforced
-- Limits configurable via environment variables
+- Limits configurable via CLI flags and environment variables (see TJ-SPEC-007)
 - Clear error messages when limits exceeded
 - Limits checked before generation (via estimated_size)
 
 **Default Limits:**
 
-| Limit | Environment Variable | Default | Description |
-|-------|---------------------|---------|-------------|
-| Max payload size | `THOUGHTJACK_MAX_PAYLOAD_BYTES` | 100 MB | Maximum generated payload |
-| Max nesting depth | `THOUGHTJACK_MAX_NEST_DEPTH` | 100,000 | Maximum JSON nesting |
-| Max batch size | `THOUGHTJACK_MAX_BATCH_SIZE` | 100,000 | Maximum batch array size |
-| Max key count | `THOUGHTJACK_MAX_KEY_COUNT` | 100,000 | Maximum object keys |
+| Limit | Default | Description |
+|-------|---------|-------------|
+| Max payload size | 100 MB | Maximum generated payload |
+| Max nesting depth | 100,000 | Maximum JSON nesting |
+| Max batch size | 100,000 | Maximum batch array size |
+
+> **Note:** Generator limits are constructed by the CLI from command-line flags and environment variables (see TJ-SPEC-007). There is no `from_env()` method on `GeneratorLimits`.
+
+> **Note:** The `repeated_keys` generator uses `max_batch_size` as its key count limit. There is no separate `max_key_count` field.
 
 **Implementation:**
 ```rust
@@ -823,7 +826,6 @@ pub struct GeneratorLimits {
     pub max_payload_bytes: usize,
     pub max_nest_depth: usize,
     pub max_batch_size: usize,
-    pub max_key_count: usize,
 }
 
 impl Default for GeneratorLimits {
@@ -832,21 +834,11 @@ impl Default for GeneratorLimits {
             max_payload_bytes: 100 * 1024 * 1024,  // 100 MB
             max_nest_depth: 100_000,
             max_batch_size: 100_000,
-            max_key_count: 100_000,
         }
     }
 }
 
 impl GeneratorLimits {
-    pub fn from_env() -> Self {
-        Self {
-            max_payload_bytes: env_or("THOUGHTJACK_MAX_PAYLOAD_BYTES", 100 * 1024 * 1024),
-            max_nest_depth: env_or("THOUGHTJACK_MAX_NEST_DEPTH", 100_000),
-            max_batch_size: env_or("THOUGHTJACK_MAX_BATCH_SIZE", 100_000),
-            max_key_count: env_or("THOUGHTJACK_MAX_KEY_COUNT", 100_000),
-        }
-    }
-    
     pub fn check(&self, generator: &dyn PayloadGenerator) -> Result<(), GeneratorError> {
         let estimated = generator.estimated_size();
         if estimated > self.max_payload_bytes {
@@ -861,6 +853,8 @@ impl GeneratorLimits {
 ```
 
 ### F-009: Streaming Generation
+
+> **Status: Future scope.** Streaming generation is not yet implemented. All generators currently produce `GeneratedPayload::Buffered` output. The `PayloadStream` trait is defined but unused.
 
 The system SHALL support streaming generation for large payloads.
 
@@ -913,6 +907,8 @@ impl PayloadStream for GarbageStream {
 ```
 
 ### F-010: Generator Caching
+
+> **Status: Future scope.** Generator caching is not yet implemented. Generators produce fresh output on each `generate()` call. The caching infrastructure described below is planned for a future release.
 
 The system SHALL cache generated payloads for reuse.
 
@@ -967,17 +963,17 @@ impl GeneratorCache {
 
 ### F-011: Deterministic Generation
 
-The system SHALL ensure deterministic payload generation with meaningful variation.
+The system SHALL ensure deterministic payload generation.
 
 **Acceptance Criteria:**
 - Same parameters always produce same output
-- RNG seeded from config or hardcoded default
-- Seed can be specified per-generator via `seed` parameter
+- Generators that use randomness (`GarbageGenerator`) accept an optional `seed` parameter for the `rand` crate's `StdRng`
+- Generators that are inherently deterministic given their parameters (`nested_json`, `batch_notifications`, `repeated_keys`) do not require a seed — identical parameters always produce identical output
 - Useful for reproducible test cases
 
 **Per-Generator Seeding:**
 
-Each generator accepts an optional `seed` parameter. If omitted, a hardcoded default seed is used (e.g., `0xDEADBEEF`).
+Only generators that use randomness (currently `GarbageGenerator`) accept a `seed` parameter. If omitted, a default seed of `0` is used. Other generators (`nested_json`, `batch_notifications`, `repeated_keys`) produce deterministic output solely from their configuration parameters.
 
 ```yaml
 # Explicit seeds for reproducibility:
