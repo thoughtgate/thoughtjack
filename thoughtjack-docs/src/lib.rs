@@ -4,4 +4,5 @@
 //! sidebar configuration from `ThoughtJack` YAML scenario definitions.
 
 pub mod error;
+pub mod mdx;
 pub mod mermaid;
