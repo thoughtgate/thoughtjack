@@ -13,6 +13,9 @@ on:
       - 'docs-site/**'
       - 'thoughtjack-docs/**'
 
+permissions:
+  contents: write
+
 jobs:
   build-docs:
     name: Build Documentation Site

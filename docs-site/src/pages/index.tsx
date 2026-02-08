@@ -72,14 +72,14 @@ const quickLinks: QuickLinkProps[] = [
   {
     title: 'Coverage Matrices',
     description: 'MITRE ATT&CK, OWASP MCP, and attack surface coverage.',
-    to: '/docs/coverage/mitre',
+    to: '/docs/coverage/mitre-matrix',
   },
 ];
 
 export default function Home(): React.ReactElement {
   const {siteConfig} = useDocusaurusContext();
   return (
-    <Layout title={siteConfig.title} description={siteConfig.tagline}>
+    <Layout description={siteConfig.tagline}>
       <Hero />
       <main>
         <section className={styles.quickLinks}>

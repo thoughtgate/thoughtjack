@@ -15,11 +15,11 @@
   --ifm-color-primary-lightest: #3cad6e;
   --ifm-code-font-size: 95%;
 
-  /* Severity badge colors */
-  --tj-severity-low: #4caf50;
-  --tj-severity-medium: #ff9800;
-  --tj-severity-high: #f44336;
-  --tj-severity-critical: #9c27b0;
+  /* Severity badge colors (WCAG AA 4.5:1 contrast with white text) */
+  --tj-severity-low: #2e7d32;
+  --tj-severity-medium: #b56b00;
+  --tj-severity-high: #c62828;
+  --tj-severity-critical: #7b1fa2;
 
   /* Framework pill colors */
   --tj-pill-mitre-bg: #e3f2fd;
@@ -48,10 +48,10 @@
   --ifm-color-primary-lighter: #32d8b4;
   --ifm-color-primary-lightest: #4fddbf;
 
-  --tj-severity-low: #66bb6a;
-  --tj-severity-medium: #ffa726;
-  --tj-severity-high: #ef5350;
-  --tj-severity-critical: #ba68c8;
+  --tj-severity-low: #388e3c;
+  --tj-severity-medium: #b56b00;
+  --tj-severity-high: #d32f2f;
+  --tj-severity-critical: #8e24aa;
 
   --tj-pill-mitre-bg: #1a237e;
   --tj-pill-mitre-text: #90caf9;
@@ -79,7 +79,6 @@
   font-size: 0.75rem;
   font-weight: 700;
   color: #fff;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 

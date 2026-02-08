@@ -67,9 +67,9 @@ const config: Config = {
           label: 'Coverage',
           position: 'left',
           items: [
-            {label: 'MITRE ATT&CK', to: '/docs/coverage/mitre'},
-            {label: 'OWASP MCP Top 10', to: '/docs/coverage/owasp'},
-            {label: 'Attack Surface', to: '/docs/coverage/attack-surface'},
+            {label: 'MITRE ATT&CK', to: '/docs/coverage/mitre-matrix'},
+            {label: 'OWASP MCP Top 10', to: '/docs/coverage/owasp-mcp'},
+            {label: 'Attack Surface', to: '/docs/coverage/mcp-attack-surface'},
           ],
         },
         {
