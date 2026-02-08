@@ -9,7 +9,7 @@ repo_url = "https://github.com/thoughtgate/thoughtjack"
 
 [[package]]
 name = "thoughtjack"
-publish = false
+publish = true
 
 [changelog]
 body = """
