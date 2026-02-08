@@ -7,6 +7,7 @@ description = "Adversarial MCP server for security testing"
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
+homepage = "https://github.com/thoughtgate/thoughtjack"
 keywords = ["mcp", "security", "testing", "adversarial"]
 categories = ["development-tools::testing"]
 
