@@ -588,7 +588,7 @@ behavior:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `trigger` | enum | on_request | When to start (on_connect, on_request, on_subscribe, on_unsubscribe, continuous) |
-| `rate_per_sec` | u64 | 1000 | Notifications per second |
+| `rate_per_sec` | u64 | 1000 | Notifications per second (clamped to `[1, 10_000]` at runtime) |
 | `duration_sec` | u64 | 10 | Duration in seconds |
 | `method` | String | "notifications/message" | Notification method |
 | `params` | Value | null | Notification params |
@@ -612,7 +612,9 @@ impl SideEffect for NotificationFlood {
         cancel: CancellationToken,
     ) -> Result<SideEffectResult, BehaviorError> {
         let start = Instant::now();
-        let interval = Duration::from_secs_f64(1.0 / self.rate_per_sec as f64);
+        // Clamp rate to [1, 10_000] to prevent busy loops from tiny intervals.
+        let effective_rate = self.rate_per_sec.clamp(1, 10_000);
+        let interval = Duration::from_nanos(1_000_000_000 / effective_rate);
         let mut messages_sent = 0u64;
         let mut bytes_sent = 0usize;
         
@@ -994,7 +996,7 @@ behavior:
 |-----------|------|---------|-------------|
 | `trigger` | enum | on_request | When to send |
 | `count` | usize | 3 | Number of duplicate requests |
-| `id` | JsonRpcId | null | Explicit ID (null = copy last client request ID) |
+| `id` | JsonRpcId | `1` | Explicit ID (defaults to `json!(1)` when omitted) |
 | `method` | String | required | Request method |
 | `params` | Value | null | Request params |
 
@@ -1221,54 +1223,91 @@ The system SHALL coordinate side effect execution with request processing.
 **Execution Model:**
 ```rust
 pub struct SideEffectManager {
-    effects: Vec<Box<dyn SideEffect>>,
-    running: Vec<JoinHandle<SideEffectResult>>,
+    transport: Arc<dyn Transport>,
     cancel: CancellationToken,
+    running: Vec<JoinHandle<()>>,
 }
 
 impl SideEffectManager {
-    /// Called when client connects
-    pub async fn on_connect(&mut self, transport: &dyn Transport) {
-        self.trigger_effects(SideEffectTrigger::OnConnect, transport).await;
-        self.trigger_effects(SideEffectTrigger::Continuous, transport).await;
+    /// Create a new manager bound to a transport and cancellation token.
+    pub fn new(transport: Arc<dyn Transport>, cancel: CancellationToken) -> Self {
+        Self { transport, cancel, running: Vec::new() }
     }
-    
-    /// Called when request is received
-    pub async fn on_request(&mut self, transport: &dyn Transport) {
-        self.trigger_effects(SideEffectTrigger::OnRequest, transport).await;
+
+    /// Fire all effects matching the given trigger synchronously.
+    ///
+    /// Returns a list of `(name, result)` pairs for successfully completed
+    /// effects. Transport-incompatible effects are skipped with a warning.
+    pub async fn trigger(
+        &self,
+        effects: &[Box<dyn SideEffect>],
+        trigger: SideEffectTrigger,
+    ) -> Vec<(String, SideEffectResult)> {
+        let mut results = Vec::new();
+        let transport_type = self.transport.transport_type();
+
+        for effect in effects {
+            if effect.trigger() != trigger { continue; }
+            if !effect.supports_transport(transport_type) {
+                tracing::warn!(
+                    effect = effect.name(),
+                    transport = ?transport_type,
+                    "side effect not supported on this transport, skipping"
+                );
+                continue;
+            }
+
+            let child_cancel = self.cancel.child_token();
+            match effect
+                .execute(
+                    self.transport.as_ref(),
+                    &self.transport.connection_context(),
+                    child_cancel,
+                )
+                .await
+            {
+                Ok(result) => results.push((effect.name().to_string(), result)),
+                Err(e) => {
+                    tracing::warn!(effect = effect.name(), error = %e, "side effect failed");
+                }
+            }
+        }
+        results
     }
-    
-    /// Cancel all running side effects
+
+    /// Spawn a single owned side effect as a background task.
+    ///
+    /// Use this for `Continuous` effects where ownership can be transferred.
+    pub fn spawn(&mut self, effect: Box<dyn SideEffect>) {
+        let transport = Arc::clone(&self.transport);
+        let ctx = transport.connection_context();
+        let cancel = self.cancel.child_token();
+
+        self.running.push(tokio::spawn(async move {
+            let _ = effect.execute(transport.as_ref(), &ctx, cancel).await;
+        }));
+    }
+
+    /// Cancel all running background effects and wait for them to finish.
+    ///
+    /// Each task is given a **2-second grace period** before being considered
+    /// timed out. After the grace period the task is abandoned (though Tokio
+    /// will still cancel it when the `JoinHandle` is dropped).
     pub async fn shutdown(&mut self) {
         self.cancel.cancel();
         for handle in self.running.drain(..) {
-            let _ = handle.await;
-        }
-    }
-    
-    async fn trigger_effects(&mut self, trigger: SideEffectTrigger, transport: &dyn Transport) {
-        for effect in &self.effects {
-            if effect.trigger() == trigger {
-                if !effect.supports_transport(transport.transport_type()) {
-                    tracing::warn!(
-                        effect = effect.name(),
-                        transport = ?transport.transport_type(),
-                        "Side effect not supported on this transport, skipping"
-                    );
-                    continue;
-                }
-                
-                let effect = effect.clone();
-                let transport = transport.clone();
-                let cancel = self.cancel.child_token();
-                
-                let handle = tokio::spawn(async move {
-                    effect.execute(&*transport, cancel).await
-                });
-                
-                self.running.push(handle);
+            match tokio::time::timeout(Duration::from_secs(2), handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if e.is_cancelled() => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "background side effect panicked"),
+                Err(_) => tracing::warn!("background side effect did not finish within 2s"),
             }
         }
+    }
+
+    /// Returns the number of currently running background tasks.
+    pub fn running_count(&self) -> usize {
+        self.running.len()
     }
 }
 ```
@@ -1353,10 +1392,10 @@ gauge!("thoughtjack_side_effect_active", "effect" => effect_name);
 **Scenario:** `close_connection(graceful=true)` while slow_loris is mid-delivery  
 **Expected:** Slow loris completes (or times out), then connection closes
 
-### EC-BEH-011: Duplicate Request IDs With ID: null
+### EC-BEH-011: Duplicate Request IDs With No Explicit ID
 
-**Scenario:** `duplicate_request_ids` without explicit ID  
-**Expected:** Uses ID `1` as default (not null, which is invalid)
+**Scenario:** `duplicate_request_ids` without explicit `id` parameter
+**Expected:** Defaults to `json!(1)` (integer 1) since null is not a valid JSON-RPC ID
 
 ### EC-BEH-012: Batch Amplify With batch_size: 0
 
