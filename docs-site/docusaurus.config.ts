@@ -6,7 +6,7 @@ const config: Config = {
   title: 'ThoughtJack',
   tagline: 'Adversarial MCP server for security testing',
   url: 'https://thoughtgate.github.io',
-  baseUrl: '/thoughtjack/',
+  baseUrl: '/',
 
   organizationName: 'thoughtgate',
   projectName: 'thoughtjack',
