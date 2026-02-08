@@ -1,0 +1,30 @@
+[workspace]
+members = ["thoughtjack", "thoughtjack-core", "thoughtjack-docs"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/example/thoughtjack"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+regex = "1.12"
+indexmap = { version = "2.13", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+strsim = "0.11"
+glob = "0.3"
+thoughtjack-core = { path = "thoughtjack-core", default-features = false }
+thoughtjack-docs = { path = "thoughtjack-docs" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

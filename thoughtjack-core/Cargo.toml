@@ -1,0 +1,27 @@
+[package]
+name = "thoughtjack-core"
+version = "0.1.0"
+description = "Shared types and configuration schema for ThoughtJack"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+indexmap = { workspace = true }
+chrono = { workspace = true }
+strsim = { workspace = true }
+glob = { workspace = true }
+clap = { version = "4.5", features = ["derive"], optional = true }
+
+[features]
+default = []
+clap = ["dep:clap"]
+
+[lints]
+workspace = true

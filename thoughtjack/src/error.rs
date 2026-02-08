@@ -3,8 +3,10 @@
 //! This module provides a comprehensive error hierarchy matching TJ-SPEC-007
 //! exit codes and TJ-SPEC-006 configuration error requirements.
 
-use std::path::PathBuf;
 use thiserror::Error;
+
+// Re-export config/validation errors from core
+pub use thoughtjack_core::error::{ConfigError, Severity, ValidationIssue};
 
 // ============================================================================
 // Exit Codes (TJ-SPEC-007)
@@ -125,120 +127,6 @@ impl ThoughtJackError {
             Self::Usage(_) => ExitCode::USAGE_ERROR,
         }
     }
-}
-
-// ============================================================================
-// Configuration Errors (TJ-SPEC-006)
-// ============================================================================
-
-/// Configuration loading and validation errors.
-///
-/// These errors cover all failure modes during configuration parsing,
-/// validation, and directive processing as specified in TJ-SPEC-006.
-///
-/// Implements: TJ-SPEC-006 F-008
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    /// YAML parsing failed
-    #[error("parse error in {path}{}: {message}", line.map_or_else(String::new, |l| format!(" (line {l})")))]
-    ParseError {
-        /// Path to the configuration file
-        path: PathBuf,
-        /// Line number where the error occurred (if available)
-        line: Option<usize>,
-        /// Error message from the parser
-        message: String,
-    },
-
-    /// Configuration validation failed
-    #[error("validation failed for {path}")]
-    ValidationError {
-        /// Path to the configuration file
-        path: String,
-        /// List of validation issues found
-        errors: Vec<ValidationIssue>,
-    },
-
-    /// Circular include detected in configuration files
-    #[error("circular include detected: {cycle:?}")]
-    CircularInclude {
-        /// The cycle of file paths that form the circular reference
-        cycle: Vec<PathBuf>,
-    },
-
-    /// Referenced configuration file not found
-    #[error("file not found: {path}")]
-    MissingFile {
-        /// Path to the missing file
-        path: PathBuf,
-    },
-
-    /// Field has an invalid value
-    #[error("invalid value for '{field}': got '{value}', expected {expected}")]
-    InvalidValue {
-        /// Name of the field with invalid value
-        field: String,
-        /// The actual value provided
-        value: String,
-        /// Description of what was expected
-        expected: String,
-    },
-
-    /// Environment variable referenced in configuration is not set
-    #[error("environment variable '{var}' not set (referenced at {location})")]
-    EnvVarNotSet {
-        /// Name of the environment variable
-        var: String,
-        /// Location in the configuration where it was referenced
-        location: String,
-    },
-
-    /// One or more configuration files failed validation.
-    ///
-    /// Implements: TJ-SPEC-007 EC-CLI-016
-    #[error("{count} file(s) failed validation")]
-    ValidationFailed {
-        /// Number of files that failed validation.
-        count: usize,
-    },
-}
-
-// ============================================================================
-// Validation Types
-// ============================================================================
-
-/// A single validation issue found during configuration validation.
-///
-/// Implements: TJ-SPEC-006 F-008
-#[derive(Debug, Clone)]
-pub struct ValidationIssue {
-    /// JSON path to the problematic field (e.g., "phases[2].advance.trigger")
-    pub path: String,
-    /// Description of the validation issue
-    pub message: String,
-    /// Severity level of the issue
-    pub severity: Severity,
-}
-
-impl std::fmt::Display for ValidationIssue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let prefix = match self.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-        };
-        write!(f, "{}: {} at {}", prefix, self.message, self.path)
-    }
-}
-
-/// Severity level for validation issues.
-///
-/// Implements: TJ-SPEC-006 F-008
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
-    /// Error - validation failure that prevents configuration from being used
-    Error,
-    /// Warning - potential issue that does not prevent configuration loading
-    Warning,
 }
 
 // ============================================================================
@@ -397,6 +285,8 @@ pub type Result<T> = std::result::Result<T, ThoughtJackError>;
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
