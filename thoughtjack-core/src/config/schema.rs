@@ -58,6 +58,13 @@ pub struct ServerConfig {
     /// How to handle unknown MCP methods (F-013)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unknown_methods: Option<UnknownMethodHandling>,
+
+    /// Scenario metadata for documentation generation (TJ-SPEC-011).
+    ///
+    /// Optional — scenarios without metadata are still valid and executable.
+    /// The documentation generator requires metadata for inclusion in the site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ScenarioMetadata>,
 }
 
 // ============================================================================
@@ -1599,6 +1606,236 @@ pub enum HandlerConfig {
 }
 
 // ============================================================================
+// Scenario Metadata (TJ-SPEC-011 F-001)
+// ============================================================================
+
+/// Scenario metadata for documentation generation and framework mappings.
+///
+/// This block is optional on `ServerConfig`. Scenarios without metadata are
+/// still valid and executable, but the documentation generator requires it
+/// for inclusion in the site.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ScenarioMetadata {
+    /// Unique scenario identifier (e.g., `"TJ-ATK-001"`).
+    pub id: String,
+
+    /// Human-readable scenario name.
+    pub name: String,
+
+    /// One-paragraph summary of the attack.
+    pub description: String,
+
+    /// Scenario author or team.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+
+    /// Creation date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<chrono::NaiveDate>,
+
+    /// Last modification date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<chrono::NaiveDate>,
+
+    /// Attack severity rating.
+    pub severity: MetadataSeverity,
+
+    /// MITRE ATT&CK framework mappings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mitre_attack: Option<MitreAttackMapping>,
+
+    /// OWASP MCP Top 10 mappings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owasp_mcp: Option<Vec<OwaspMcpEntry>>,
+
+    /// Reserved for A2A extension. Parsed but not used in coverage
+    /// generation until A2A scenario support is implemented.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owasp_agentic: Option<Vec<OwaspAgenticEntry>>,
+
+    /// `ThoughtJack`-native attack classification.
+    pub mcp_attack_surface: McpAttackSurface,
+
+    /// Free-form tags for filtering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+
+    /// Detection guidance — what defenses should catch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detection_guidance: Vec<String>,
+
+    /// External references.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<Reference>,
+}
+
+/// Attack severity rating for scenario metadata.
+///
+/// Named `MetadataSeverity` to avoid collision with the validation
+/// `Severity` enum in `thoughtjack_core::error`.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataSeverity {
+    /// Low severity
+    Low,
+    /// Medium severity
+    Medium,
+    /// High severity
+    High,
+    /// Critical severity
+    Critical,
+}
+
+/// MITRE ATT&CK framework mappings.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MitreAttackMapping {
+    /// Mapped tactics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tactics: Vec<MitreTactic>,
+
+    /// Mapped techniques and sub-techniques.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub techniques: Vec<MitreTechnique>,
+}
+
+/// A MITRE ATT&CK tactic reference.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MitreTactic {
+    /// Tactic ID (e.g., `"TA0001"`).
+    pub id: String,
+
+    /// Tactic name (e.g., `"Initial Access"`).
+    pub name: String,
+}
+
+/// A MITRE ATT&CK technique reference.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MitreTechnique {
+    /// Technique ID (e.g., `"T1195.002"`).
+    pub id: String,
+
+    /// Technique name.
+    pub name: String,
+
+    /// Optional sub-technique ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_technique: Option<String>,
+}
+
+/// An OWASP MCP Top 10 risk mapping.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwaspMcpEntry {
+    /// Risk ID (e.g., `"MCP03"`).
+    pub id: String,
+
+    /// Risk name (e.g., `"Tool Poisoning"`).
+    pub name: String,
+}
+
+/// An OWASP Agentic AI Top 10 risk mapping.
+///
+/// Reserved for A2A extension.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwaspAgenticEntry {
+    /// Risk ID (e.g., `"ASI01"`).
+    pub id: String,
+
+    /// Risk name (e.g., `"Agentic Goal Hijacking"`).
+    pub name: String,
+}
+
+/// `ThoughtJack`-native attack surface classification.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpAttackSurface {
+    /// Attack vectors used by this scenario.
+    pub vectors: Vec<AttackVector>,
+
+    /// Behavioral primitives used by this scenario.
+    pub primitives: Vec<AttackPrimitive>,
+}
+
+/// MCP attack vector classification.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttackVector {
+    /// Tool definition injection or manipulation
+    ToolInjection,
+    /// Resource content injection
+    ResourceInjection,
+    /// Prompt poisoning via system context
+    PromptPoisoning,
+    /// Runtime capability mutation (rug pull)
+    CapabilityMutation,
+    /// Notification abuse (flooding, fake list-changed)
+    NotificationAbuse,
+    /// JSON Schema manipulation for tool inputs
+    SchemaManipulation,
+    /// Tool/resource description hijacking
+    DescriptionHijack,
+    /// Response timing attacks (delays, slow loris)
+    ResponseDelay,
+    /// Connection-level abuse (close, deadlock)
+    ConnectionAbuse,
+}
+
+/// `ThoughtJack` behavioral attack primitive.
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttackPrimitive {
+    /// Trust-then-betray pattern
+    RugPull,
+    /// Dormant attack activated by trigger
+    Sleeper,
+    /// Byte-at-a-time response delivery
+    SlowLoris,
+    /// High-rate notification or response flooding
+    Flood,
+    /// Deeply nested JSON structure attack
+    NestedJson,
+    /// Never-terminated line delivery
+    UnboundedLine,
+    /// Random/malformed payload fuzzing
+    Fuzzing,
+    /// Duplicate request/response ID collision
+    IdCollision,
+    /// Time-delayed attack activation
+    TimeBomb,
+}
+
+/// An external reference (URL + title).
+///
+/// Implements: TJ-SPEC-011 F-001
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reference {
+    /// Reference URL.
+    pub url: String,
+
+    /// Reference title.
+    pub title: String,
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -2654,5 +2891,228 @@ server:
         );
         // Capabilities still use camelCase (MCP protocol)
         assert!(yaml.contains("listChanged: true"));
+    }
+
+    #[test]
+    fn test_scenario_metadata_round_trip() {
+        let yaml = r#"
+id: TJ-ATK-001
+name: Classic Rug Pull
+description: Trust-building phase followed by tool replacement
+author: ThoughtJack Team
+created: 2025-01-15
+updated: 2025-03-01
+severity: high
+mitre_attack:
+  tactics:
+    - id: TA0001
+      name: Initial Access
+  techniques:
+    - id: T1195.002
+      name: Supply Chain Compromise
+owasp_mcp:
+  - id: MCP03
+    name: Tool Poisoning
+owasp_agentic:
+  - id: ASI01
+    name: Agentic Goal Hijacking
+mcp_attack_surface:
+  vectors:
+    - tool_injection
+    - capability_mutation
+  primitives:
+    - rug_pull
+tags:
+  - temporal
+  - tool-replacement
+detection_guidance:
+  - Monitor for tools/list_changed notifications after trust-building phase
+  - Compare tool definitions before and after phase transitions
+references:
+  - url: https://example.com/rug-pull
+    title: Rug Pull Attack Pattern
+"#;
+
+        let meta: ScenarioMetadata = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(meta.id, "TJ-ATK-001");
+        assert_eq!(meta.name, "Classic Rug Pull");
+        assert_eq!(meta.severity, MetadataSeverity::High);
+        assert_eq!(meta.author, Some("ThoughtJack Team".to_string()));
+        assert!(meta.created.is_some());
+        assert!(meta.updated.is_some());
+
+        let mitre = meta.mitre_attack.as_ref().unwrap();
+        assert_eq!(mitre.tactics.len(), 1);
+        assert_eq!(mitre.tactics[0].id, "TA0001");
+        assert_eq!(mitre.techniques.len(), 1);
+        assert_eq!(mitre.techniques[0].id, "T1195.002");
+
+        let owasp = meta.owasp_mcp.as_ref().unwrap();
+        assert_eq!(owasp.len(), 1);
+        assert_eq!(owasp[0].id, "MCP03");
+
+        let agentic = meta.owasp_agentic.as_ref().unwrap();
+        assert_eq!(agentic.len(), 1);
+        assert_eq!(agentic[0].id, "ASI01");
+
+        assert_eq!(meta.mcp_attack_surface.vectors.len(), 2);
+        assert_eq!(
+            meta.mcp_attack_surface.vectors[0],
+            AttackVector::ToolInjection
+        );
+        assert_eq!(meta.mcp_attack_surface.primitives.len(), 1);
+        assert_eq!(
+            meta.mcp_attack_surface.primitives[0],
+            AttackPrimitive::RugPull
+        );
+
+        assert_eq!(meta.tags.len(), 2);
+        assert_eq!(meta.detection_guidance.len(), 2);
+        assert_eq!(meta.references.len(), 1);
+
+        // Round-trip: serialize back and deserialize again
+        let json = serde_json::to_string(&meta).unwrap();
+        let meta2: ScenarioMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta2.id, "TJ-ATK-001");
+        assert_eq!(meta2.severity, MetadataSeverity::High);
+    }
+
+    #[test]
+    fn test_scenario_metadata_minimal() {
+        let yaml = r#"
+id: TJ-ATK-002
+name: Simple Injection
+description: Basic tool injection without phases
+severity: medium
+mcp_attack_surface:
+  vectors:
+    - tool_injection
+  primitives:
+    - fuzzing
+"#;
+
+        let meta: ScenarioMetadata = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(meta.id, "TJ-ATK-002");
+        assert_eq!(meta.severity, MetadataSeverity::Medium);
+        assert!(meta.author.is_none());
+        assert!(meta.created.is_none());
+        assert!(meta.mitre_attack.is_none());
+        assert!(meta.owasp_mcp.is_none());
+        assert!(meta.tags.is_empty());
+        assert!(meta.detection_guidance.is_empty());
+        assert!(meta.references.is_empty());
+    }
+
+    #[test]
+    fn test_server_config_with_metadata() {
+        let yaml = r#"
+server:
+  name: "test-server"
+
+metadata:
+  id: TJ-ATK-001
+  name: Test Attack
+  description: A test attack scenario
+  severity: critical
+  mcp_attack_surface:
+    vectors:
+      - tool_injection
+    primitives:
+      - rug_pull
+
+tools:
+  - tool:
+      name: "echo"
+      description: "Echoes input"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "Hello"
+"#;
+
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.metadata.is_some());
+        let meta = config.metadata.unwrap();
+        assert_eq!(meta.id, "TJ-ATK-001");
+        assert_eq!(meta.severity, MetadataSeverity::Critical);
+    }
+
+    #[test]
+    fn test_server_config_without_metadata() {
+        let yaml = r#"
+server:
+  name: "test-server"
+
+tools:
+  - tool:
+      name: "echo"
+      description: "Echoes input"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "Hello"
+"#;
+
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.metadata.is_none());
+    }
+
+    #[test]
+    fn test_attack_vector_variants() {
+        let variants = [
+            ("tool_injection", AttackVector::ToolInjection),
+            ("resource_injection", AttackVector::ResourceInjection),
+            ("prompt_poisoning", AttackVector::PromptPoisoning),
+            ("capability_mutation", AttackVector::CapabilityMutation),
+            ("notification_abuse", AttackVector::NotificationAbuse),
+            ("schema_manipulation", AttackVector::SchemaManipulation),
+            ("description_hijack", AttackVector::DescriptionHijack),
+            ("response_delay", AttackVector::ResponseDelay),
+            ("connection_abuse", AttackVector::ConnectionAbuse),
+        ];
+        for (yaml, expected) in variants {
+            let parsed: AttackVector =
+                serde_yaml::from_str(yaml).unwrap_or_else(|e| panic!("{yaml}: {e}"));
+            assert_eq!(parsed, expected);
+        }
+    }
+
+    #[test]
+    fn test_attack_primitive_variants() {
+        let variants = [
+            ("rug_pull", AttackPrimitive::RugPull),
+            ("sleeper", AttackPrimitive::Sleeper),
+            ("slow_loris", AttackPrimitive::SlowLoris),
+            ("flood", AttackPrimitive::Flood),
+            ("nested_json", AttackPrimitive::NestedJson),
+            ("unbounded_line", AttackPrimitive::UnboundedLine),
+            ("fuzzing", AttackPrimitive::Fuzzing),
+            ("id_collision", AttackPrimitive::IdCollision),
+            ("time_bomb", AttackPrimitive::TimeBomb),
+        ];
+        for (yaml, expected) in variants {
+            let parsed: AttackPrimitive =
+                serde_yaml::from_str(yaml).unwrap_or_else(|e| panic!("{yaml}: {e}"));
+            assert_eq!(parsed, expected);
+        }
+    }
+
+    #[test]
+    fn test_metadata_severity_variants() {
+        let variants = [
+            ("low", MetadataSeverity::Low),
+            ("medium", MetadataSeverity::Medium),
+            ("high", MetadataSeverity::High),
+            ("critical", MetadataSeverity::Critical),
+        ];
+        for (yaml, expected) in variants {
+            let parsed: MetadataSeverity =
+                serde_yaml::from_str(yaml).unwrap_or_else(|e| panic!("{yaml}: {e}"));
+            assert_eq!(parsed, expected);
+        }
     }
 }

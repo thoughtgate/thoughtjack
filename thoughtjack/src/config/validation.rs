@@ -1339,6 +1339,7 @@ mod tests {
             behavior: None,
             logging: None,
             unknown_methods: None,
+            metadata: None,
         }
     }
 

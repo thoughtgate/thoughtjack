@@ -129,6 +129,7 @@ pub async fn run(args: &ServerRunArgs, cancel: CancellationToken) -> Result<(), 
             behavior: None,
             logging: None,
             unknown_methods: None,
+            metadata: None,
         })
     } else {
         unreachable!("validated above");

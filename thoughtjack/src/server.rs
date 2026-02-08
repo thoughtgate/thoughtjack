@@ -798,6 +798,7 @@ mod tests {
             behavior: None,
             logging: None,
             unknown_methods: None,
+            metadata: None,
         }
     }
 
@@ -1056,6 +1057,7 @@ mod tests {
             behavior: None,
             logging: None,
             unknown_methods: None,
+            metadata: None,
         };
 
         let (baseline, phases) = build_baseline_and_phases(&config);
