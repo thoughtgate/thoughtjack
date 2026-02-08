@@ -62,5 +62,8 @@ path = "src/main.rs"
 name = "thoughtjack"
 path = "src/lib.rs"
 
+[package.metadata.dist]
+dist = true
+
 [lints]
 workspace = true
