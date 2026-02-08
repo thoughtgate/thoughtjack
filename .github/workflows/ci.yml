@@ -91,7 +91,7 @@ jobs:
           exit 1
 
       - name: Run conformance tests
-        uses: modelcontextprotocol/conformance@bd1a195ab439841b58d90face7c96333d227e098 # v0.1.11
+        uses: modelcontextprotocol/conformance@a1b8aaae5e1ebbcb8d460f325cc9e3a652c09da4 # v0.1.13
         with:
           mode: server
           url: http://localhost:3001/message
