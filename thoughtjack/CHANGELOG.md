@@ -1,0 +1,168 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Bug Fixes
+
+- Move deny.toml to workspace root and set license to Apache-2.0 (2fa2e97)
+- Consume initialize response body in HTTP integration tests (cee9f57)
+- Accept snake_case aliases for camelCase capability fields (0718294)
+- Hide unimplemented agent command from help output (efa21cc)
+- Validate side effect params and catch typos at config time (9ba87eb)
+- Warn when phase targets exist via earlier phase but not baseline (6b89a57)
+- Warn on orphan override and binary $file resolution (741d65d)
+- Remove router-level timeout that caused flaky streaming responses (c511aa5)
+- Harden security and improve code quality (afb1a4b)
+- Resolve clippy warnings for stable 1.93 with --all-targets (58d7d63)
+- Resolve clippy warnings from CI (stable toolchain) (2870f90)
+- Update license badge to Apache-2.0 and apply rustfmt (0461fdc)
+- Improve parameter extraction error handling (15f2b87)
+- Add idempotency guard to init_metrics (0d731cf)
+- Log HTTP Response::builder errors instead of silent 500 (a10d0a8)
+- Pretty-print version JSON for consistency with other commands (9abfef4)
+- Include line number in ParseError display output (db26a78)
+- Add 10 MB size limit for $file/$include directives (3baec79)
+- Cap NotificationFlood rate to prevent busy loops (7886665)
+- Log effective_cache mutex poison instead of silent skip (b42e62b)
+- Warn on non-2.0 JSON-RPC version in requests (3981312)
+- Eliminate double serialization in NotificationFlood (8944418)
+- Bound regex cache to prevent unbounded memory growth (78b76bf)
+- Sanitize phase transition labels in metrics (2de0562)
+- Use append mode for event log files (17aa5d3)
+- Correct HttpTransport initial context and log SSE lag (98a9fdb)
+- Log recv_transition errors instead of silently discarding (3e7a56f)
+- Add trailing newline to BatchAmplify for NDJSON framing (db50dc8)
+- Warn on unparseable env var values instead of silent fallback (ab1ed66)
+- Handle specific event names in record_event_count (7b83caa)
+- Add Usage error variant for correct exit codes (0cbabcc)
+- Set DefaultBodyLimit to match configured max_message_size (34d4fa0)
+- Preserve JSON-RPC result:null on round-trip (230aa49)
+- Cap NestedJsonDelivery key length to prevent OOM (65e9d6e)
+- Send notification before sleep in NotificationFlood (422cda7)
+- Warn on ambiguous colon in env var references (716be3b)
+- Propagate error in verify_within_base instead of fallback (df0829f)
+- Validate empty FieldMatcher::Pattern from serde untagged (0ecf502)
+- Use SeqCst ordering for HTTP connection_id counter (103f8cb)
+- Eliminate TOCTOU race in increment_event cardinality guard (e952623)
+- Validate bind address in parse_bind_addr (52c9344)
+- Make --verbose and --quiet mutually exclusive (0fd7454)
+- Use serde_json for version JSON output (32c0bdc)
+- Zero previous phase gauge on transition (e135dd4)
+- Add recursion depth limit to deep_merge (1bf5cbd)
+- Cap NestedJsonDelivery depth to 100,000 (bf1b993)
+- Add max_batch_size check to AnsiEscapeGenerator (b7e94a4)
+- Prevent infinite loop in GarbageStream UTF-8 mode (1593697)
+- P1 correctness and robustness fixes from deep code review (eb7bf8d)
+- P0 security and concurrency fixes from deep code review (49c2203)
+- Replace tautological assertion in cancellation test (14c858d)
+- Expand UTF-8 range and warn on unknown ANSI sequences (3dedeeb)
+- Return error for unimplemented server list (aff433a)
+- Sanitize log output for untrusted input (0354d33)
+- Add recursion depth limits to validators (af80af5)
+- Add path validation for ContentValue::File (f2f6cdd)
+- Remove dead code in event_matches and cache regex (747882b)
+- Correct PhaseEntered event and strip error details (7b7e76b)
+- Harden path traversal checks and add inputSchema type validation (4c79fb2)
+- Fix metric naming, HTTP remote addr, and batch_size validation (6b2d252)
+- Accept any JSON value in FieldMatcher::Exact per SPEC-003 (f73a01a)
+- Always count both generic and specific events per SPEC-003 (0628a58)
+- Honor cancellation tokens in all side effects (89e9761)
+- Align metric names with TJ-SPEC-008 (afe912d)
+- Skip side effects unsupported on current transport (74e433d)
+- Change nested_json default key to "a" per SPEC-005 (64db3ca)
+- Add missing MCP events to validation whitelist (83b7043)
+- Emit warning instead of error for duplicate tool names (e31ce73)
+- Align side effect defaults with TJ-SPEC-004 (8f479a3)
+- Correct duration validation error message (b78051f)
+- Reject path traversal in FileResolver (41611bd)
+- Wire signal handling, metrics init, event output, and dual event types (247db0b)
+
+### Build
+
+- Configure cargo-dist for cross-platform releases (0646060)
+- Unify workspace versioning and fix repository URLs (991d21e)
+
+### CI/CD
+
+- Add GitHub Actions pipeline with fmt, clippy, test, deny, and conformance jobs (f814a70)
+
+### Documentation
+
+- Clarify TODO comments with tracking context (476b2bf)
+- Clarify intended usage of test-accessible methods (43bb9db)
+- Document LoggingConfig as not yet wired to runtime (e05ede1)
+- Fix misleading doc comments and warning messages (63f8fda)
+- Align all 10 TJ-SPEC documents with implementation (44a3b12)
+- Document intentional UTF-8 truncation in UnboundedLine padding (90eb81a)
+- Add TODO for cumulative phase cross-reference validation (ccfed55)
+- Add TODO for float equality in AnyOfValue::matches_json (d99363b)
+- Add TODOs for deferred P1 issues (HTTP timeout, UTF-8 streaming) (0a6f110)
+- Add Implements: requirement traceability annotations across codebase (fd4f63f)
+
+### Features
+
+- Add THOUGHTJACK_TIMER_INTERVAL_MS env var (7dd3f7f)
+- Add Display impl for RunSummary (183d7bb)
+- Add --log-format flag for JSON logging (cfb942e)
+- Add LoggingCapability to Capabilities struct (ba393c9)
+- Add diagram and docs subcommands (085e8e4)
+- Add scenario metadata schema types (3d85404)
+- Implement per-connection state tracking (2e3b22a)
+- Add built-in attack scenarios (TJ-SPEC-010) (283b2f5)
+- Add dynamic responses and enhanced MCP handlers (b0bb8f7)
+- Improve MCP conformance with handler, security, and config fixes (9d36018)
+- Add explicit flush method to EventEmitter (f29917f)
+- Implement server list and wire remaining flags (7d20e15)
+- Add --capture-redact support (7fcc674)
+- Add ConnectionGuard RAII cleanup and traffic capture module (91fbb7e)
+- Add PhaseStateHandle, server_started_at, state scoping, and CAS guard test (7dbef9c)
+- Add subscribe/unsubscribe stubs, JSON validate output, and generator limits CLI (fc2f2e0)
+- Add produces_json() trait method and validate generators at load time (1460c42)
+- Add close(), cancellation to delivery, and transport helper functions (b368b2f)
+- Add version build metadata (65d38ab)
+- Add subscription triggers and side effect events (60fc45d)
+- Add subscription side effect triggers (2e6017a)
+- Support default server subcommand (27b178d)
+- Implement HTTP transport with SSE (bec2ca0)
+- Implement server runtime and MCP request handlers (2806ab5)
+- Implement logging, metrics, and events per TJ-SPEC-008 (fc2a8dc)
+- Implement CLI interface per TJ-SPEC-007 (84563aa)
+- Implement payload generators per TJ-SPEC-005 (115f4df)
+- Implement delivery behaviors and side effects per TJ-SPEC-004 (9980aa1)
+- Implement transport abstraction and JSON-RPC types per TJ-SPEC-002 (c3fdc4a)
+- Implement phase engine state machine (fbea1ec)
+- Implement configuration loader and validation per TJ-SPEC-006 (4cc78da)
+- Implement configuration schema types per TJ-SPEC-001 (40bbf08)
+- Add resource and prompt types per TJ-SPEC-001 (263c605)
+- Add generator types per TJ-SPEC-005 (c8b46f4)
+- Add behavior types per TJ-SPEC-004 (f4b177e)
+- Add phase-related types (TJ-SPEC-001 F-007, F-008) (abaffff)
+- Add core configuration schema types (TJ-SPEC-001) (c5a8ee9)
+- Add comprehensive error types and exit codes (cfd2f7d)
+- Initialize ThoughtJack adversarial MCP server project (822a1a6)
+
+### Performance
+
+- Serialize DuplicateRequestIds message once outside loop (fc87c1b)
+- Cache effective state and add generator caching TODO (5ad267c)
+
+### Refactoring
+
+- Extract timer interval as named constant (ee60545)
+- Restructure into three-crate workspace (0b14c8d)
+- Remove unused generator parameter structs (9120902)
+- Introduce ServerOptions and wire CLI flags (f6ee1c2)
+- Remove --profile flag and make --state-scope optional (b7c7c72)
+- Extract helper methods from main_loop (69c5702)
+
+### Testing
+
+- Add 162 edge case tests across all TJ-SPEC modules (07b4d01)
+- Add integration tests for events file and metrics endpoint (330428d)
+- Add P0-P2 test coverage for integration and unit gaps (206a901)
+- Add integration tests and example attack configs (06a3828)
