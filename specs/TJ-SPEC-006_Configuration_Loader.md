@@ -101,63 +101,34 @@ The system SHALL parse YAML configuration files with detailed error reporting.
 
 **Duplicate Key Handling:**
 
-Standard YAML parsers (`serde_yaml`) silently overwrite duplicate keys. To emit warnings, ThoughtJack uses a two-pass approach:
-
-1. Parse with `yaml-rust2` to detect duplicates
-2. Emit warnings for any duplicates found
-3. Convert to `serde_yaml::Value` for further processing
-4. Last value wins (YAML 1.2 compliant)
-
-**Note:** This is best-effort detection. Some edge cases (anchors, merges) may not detect all duplicates.
+Standard YAML parsers (`serde_yaml`) silently overwrite duplicate keys. The current implementation relies on `serde_yaml`'s default behavior (last value wins, YAML 1.2 compliant). Duplicate key detection and warnings are not yet implemented.
 
 **Implementation:**
+
+Error reporting uses the file path and `serde_yaml` error positions (line/column) rather than a custom source map. The `serde_yaml` parser provides location information on parse errors via `e.location()`.
+
 ```rust
-pub struct ParsedConfig {
-    pub root: serde_yaml::Value,
-    pub source_path: PathBuf,
-    pub source_map: SourceMap,  // Maps Value nodes to source locations
-    pub warnings: Vec<ParseWarning>,  // Includes duplicate key warnings
-}
-
-pub struct SourceLocation {
-    pub file: PathBuf,
-    pub line: usize,
-    pub column: usize,
-}
-
-pub struct SourceMap {
-    locations: HashMap<ValueId, SourceLocation>,
-}
-
 impl ConfigLoader {
-    pub fn parse_yaml(&self, path: &Path) -> Result<ParsedConfig, ParseError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ParseError::FileRead { path: path.to_owned(), source: e })?;
-        
-        // First pass: detect duplicate keys
-        let warnings = self.detect_duplicate_keys(&content, path);
-        
-        let root: serde_yaml::Value = serde_yaml::from_str(&content)
-            .map_err(|e| ParseError::YamlSyntax {
-                path: path.to_owned(),
+    pub fn load(&mut self, path: &Path) -> Result<LoadResult, ConfigError> {
+        let raw_content = std::fs::read_to_string(path)
+            .map_err(|_| ConfigError::MissingFile { path: path.to_path_buf() })?;
+
+        // Handle UTF-8 BOM
+        let raw_content = raw_content.strip_prefix('\u{feff}').unwrap_or(&raw_content);
+
+        // Stage 1: Environment variable substitution (before YAML parsing)
+        let mut env_sub = EnvSubstitution::new();
+        let substituted = env_sub.substitute(raw_content, path)?;
+
+        // Stage 2: YAML parsing
+        let root: serde_yaml::Value = serde_yaml::from_str(&substituted)
+            .map_err(|e| ConfigError::ParseError {
+                path: path.to_path_buf(),
                 line: e.location().map(|l| l.line()),
                 message: e.to_string(),
             })?;
-        
-        let source_map = self.build_source_map(&content, &root);
-        
-        Ok(ParsedConfig {
-            root,
-            source_path: path.to_owned(),
-            source_map,
-            warnings,
-        })
-    }
-    
-    fn detect_duplicate_keys(&self, content: &str, path: &Path) -> Vec<ParseWarning> {
-        // Use yaml-rust2 for duplicate detection
-        // Returns warnings for any duplicate keys found
-        // ...
+
+        // ... directive resolution, validation, freeze ...
     }
 }
 ```
@@ -406,25 +377,11 @@ impl FileResolver {
 The system SHALL resolve `$generate` directives by creating payload generator instances.
 
 **Acceptance Criteria:**
-- `$generate: { type: ..., ... }` creates appropriate generator instance
-- Generator instances (factories) stored in config, NOT materialized bytes
+- `$generate: { type: ..., ... }` validates generator configuration at load time
+- Generator configuration (including type and params) stored in config as `GeneratorConfig`
 - Actual payload generation deferred to response time
-- Payloads below pre-generation threshold MAY be pre-generated and cached
-- Large payloads MUST store generator factory for lazy evaluation
-- Generator errors include directive location
+- Generator errors include directive context
 - `estimated_size()` called at load time for limit checking
-
-**Pre-generation Threshold:**
-
-| Env Variable | Default | Description |
-|--------------|---------|-------------|
-| `THOUGHTJACK_PREGEN_THRESHOLD` | 65536 (64KB) | Max bytes to pre-generate at load time |
-
-Payloads with `estimated_size() <= THOUGHTJACK_PREGEN_THRESHOLD` MAY be pre-generated and cached in memory at config load time. Larger payloads are always generated lazily at response time.
-
-Set to `0` to disable all pre-generation (always lazy).
-
-**Rationale:** A config with 1,000 tools each having 500KB payloads would consume 500MB RAM at startup if all were pre-generated. The conservative 64KB default prevents this while still optimizing common small payloads.
 
 **Syntax:**
 ```yaml
@@ -462,65 +419,52 @@ $generate directive
 ```
 
 **Implementation:**
+
+The loader validates `$generate` directives at load time by parsing the `GeneratorConfig`, checking estimated sizes, and actually creating the generator to catch constructor errors — but does NOT materialize bytes. The `$generate` node remains in the YAML tree as a `GeneratorConfig` value that is deserialized into the typed config.
+
 ```rust
-/// Content that may be generated lazily
-pub enum ResolvedContent {
-    /// Static text from config
-    Static(String),
-    
-    /// Generator factory - NOT materialized bytes
-    Generated {
-        generator: Box<dyn PayloadGenerator>,
-        estimated_size: usize,
-    },
-}
+/// Validates `$generate` directives without materializing bytes.
+///
+/// Creates each generator to catch constructor-level errors
+/// (e.g., invalid parameters, seed validation) at config load time.
+fn validate_generators(
+    value: &Value,
+    limits: &GeneratorLimits,
+    depth: usize,
+) -> Result<(), ConfigError> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(ConfigError::InvalidValue { /* ... */ });
+    }
 
-impl ResolvedContent {
-    /// Materialize content at response time
-    pub fn materialize(&self) -> Result<Vec<u8>, GeneratorError> {
-        match self {
-            ResolvedContent::Static(s) => Ok(s.as_bytes().to_vec()),
-            ResolvedContent::Generated { generator, .. } => {
-                generator.generate().map(|p| p.into_bytes())
+    match value {
+        Value::Mapping(map) => {
+            if let Some(generate_value) = map.get(Value::String("$generate".to_string())) {
+                // Parse the generator config to validate it
+                let config: GeneratorConfig = serde_yaml::from_value(generate_value.clone())
+                    .map_err(|e| ConfigError::InvalidValue { /* ... */ })?;
+
+                // Check estimated size against limits
+                let estimated_size = estimate_generator_size(&config);
+                if estimated_size > limits.max_payload_bytes {
+                    return Err(ConfigError::InvalidValue { /* ... */ });
+                }
+
+                // Actually create the generator to catch constructor errors
+                create_generator(&config, limits)?;
+            } else {
+                for (_, v) in map {
+                    validate_generators(v, limits, depth + 1)?;
+                }
             }
         }
-    }
-}
-
-pub struct GenerateResolver {
-    limits: GeneratorLimits,
-}
-
-impl GenerateResolver {
-    pub fn resolve(
-        &self,
-        value: &mut serde_yaml::Value,
-        location: &SourceLocation,
-    ) -> Result<Option<ResolvedContent>, ResolveError> {
-        if let serde_yaml::Value::Mapping(map) = value {
-            if let Some(generate_config) = map.get(&serde_yaml::Value::String("$generate".into())) {
-                let config = self.parse_generate_config(generate_config)?;
-                let generator = create_generator(&config)?;
-                
-                // Check limits using estimated_size (no generation yet!)
-                let estimated = generator.estimated_size();
-                self.limits.check_size(estimated).map_err(|e| {
-                    ResolveError::GeneratorLimit {
-                        location: location.clone(),
-                        source: e,
-                    }
-                })?;
-                
-                // Return generator factory, NOT bytes
-                return Ok(Some(ResolvedContent::Generated {
-                    generator,
-                    estimated_size: estimated,
-                }));
+        Value::Sequence(seq) => {
+            for item in seq {
+                validate_generators(item, limits, depth + 1)?;
             }
         }
-        
-        Ok(None)
+        _ => {}
     }
+    Ok(())
 }
 ```
 
@@ -1033,79 +977,45 @@ The system SHALL collect all errors and report them with context.
 - Human-readable error messages
 - Suggest fixes for common mistakes
 
-**Error Types:**
+**Warning Structure:**
+
+Warnings during loading are collected in `LoadWarning` structs and returned alongside the configuration in `LoadResult`:
+
 ```rust
+/// Warning during configuration loading.
+#[derive(Debug, Clone)]
+pub struct LoadWarning {
+    /// Warning message.
+    pub message: String,
+
+    /// Location where the warning occurred (e.g., file path or field path).
+    pub location: Option<String>,
+}
+
+/// Result of loading a configuration file.
 #[derive(Debug)]
+pub struct LoadResult {
+    /// The loaded and validated configuration.
+    pub config: Arc<ServerConfig>,
+
+    /// Warnings encountered during loading.
+    pub warnings: Vec<LoadWarning>,
+}
+```
+
+**Error Type:**
+
+All loader errors use the shared `ConfigError` enum (defined in `error.rs`). Error reporting uses the file path and `serde_yaml` error positions rather than a custom source map. Key variants used by the loader include:
+
+```rust
 pub enum ConfigError {
-    // Parse errors
-    FileNotFound { path: PathBuf },
-    FileRead { path: PathBuf, source: std::io::Error },
-    YamlSyntax { path: PathBuf, line: Option<usize>, message: String },
-    
-    // Resolution errors
+    MissingFile { path: PathBuf },
+    ParseError { path: PathBuf, line: Option<usize>, message: String },
     CircularInclude { cycle: Vec<PathBuf> },
-    IncludeNotFound { path: PathBuf, referenced_from: PathBuf },
-    FileReferenceNotFound { path: PathBuf, referenced_from: PathBuf },
-    GeneratorError { location: SourceLocation, source: GeneratorError },
-    RequiredEnvVar { var: String },
-    
-    // Validation errors
-    MissingField { path: String, field: String },
-    TypeMismatch { path: String, expected: &'static str, actual: String },
-    InvalidValue { path: String, value: String, allowed: Vec<String> },
-    UnknownTarget { path: String, target_type: &'static str, target_name: String },
-    DuplicateName { path: String, name: String, name_type: &'static str },
-    LimitExceeded { path: String, limit_name: String, value: usize, max: usize },
-    MixedServerForms { message: String },
-}
-
-impl ConfigError {
-    pub fn format_with_context(&self, source_map: &SourceMap) -> String {
-        match self {
-            ConfigError::MissingField { path, field } => {
-                format!("Missing required field '{}' at {}", field, path)
-            }
-            ConfigError::CircularInclude { cycle } => {
-                let chain = cycle.iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(" → ");
-                format!("Circular include detected: {}", chain)
-            }
-            // ... other error formatting
-        }
-    }
-}
-
-pub struct ConfigErrors {
-    pub errors: Vec<ConfigError>,
-    pub warnings: Vec<ConfigWarning>,
-}
-
-impl ConfigErrors {
-    pub fn has_errors(&self) -> bool {
-        !self.errors.is_empty()
-    }
-    
-    pub fn format_report(&self) -> String {
-        let mut report = String::new();
-        
-        if !self.errors.is_empty() {
-            report.push_str(&format!("Found {} error(s):\n", self.errors.len()));
-            for (i, error) in self.errors.iter().enumerate() {
-                report.push_str(&format!("  {}. {}\n", i + 1, error));
-            }
-        }
-        
-        if !self.warnings.is_empty() {
-            report.push_str(&format!("\nFound {} warning(s):\n", self.warnings.len()));
-            for (i, warning) in self.warnings.iter().enumerate() {
-                report.push_str(&format!("  {}. {}\n", i + 1, warning));
-            }
-        }
-        
-        report
-    }
+    InvalidValue { field: String, value: String, expected: String },
+    EnvVarNotSet { var: String, location: String },
+    ValidationError { path: String, errors: Vec<String> },
+    // ...
 }
 ```
 
@@ -1152,51 +1062,58 @@ impl ServerConfig {
 }
 
 pub struct ConfigLoader {
-    library_root: PathBuf,
-    limits: GeneratorLimits,
+    options: LoaderOptions,
+    include_cache: HashMap<PathBuf, Value>,
+    file_cache: HashMap<PathBuf, FileContent>,
 }
 
 impl ConfigLoader {
-    pub fn load(&self, path: &Path) -> Result<Arc<ServerConfig>, ConfigErrors> {
-        // 1. Parse YAML
-        let mut parsed = self.parse_yaml(path)?;
+    pub fn load(&mut self, path: &Path) -> Result<LoadResult, ConfigError> {
+        let mut warnings = Vec::new();
 
-        // 2. Resolve directives
-        let mut include_resolver = IncludeResolver::new(&self.library_root);
-        include_resolver.resolve(&mut parsed.root, path)?;
+        // Check file size limit
+        // Stage 0: Read raw file content
+        // Stage 1: Environment variable substitution (before YAML parsing)
+        let mut env_sub = EnvSubstitution::new();
+        let substituted = env_sub.substitute(raw_content, path)?;
+        warnings.extend(env_sub.warnings);
 
-        let mut file_resolver = FileResolver::new(&self.library_root);
-        file_resolver.resolve(&mut parsed.root, path)?;
+        // Stage 2: YAML parsing
+        let mut root: Value = serde_yaml::from_str(&substituted)
+            .map_err(|e| ConfigError::ParseError { ... })?;
 
-        let mut generate_resolver = GenerateResolver::new(self.limits.clone());
-        generate_resolver.resolve(&mut parsed.root, &parsed.source_map)?;
+        // Stage 3: $include resolution
+        let mut include_resolver = IncludeResolver::new(...);
+        include_resolver.resolve(&mut root, &mut self.include_cache)?;
 
-        let mut env_resolver = EnvResolver::new();
-        env_resolver.resolve(&mut parsed.root)?;
+        // Stage 4: $file resolution
+        let file_resolver = FileResolver::new(...);
+        file_resolver.resolve(&mut root, path, &mut self.file_cache, 0)?;
 
-        // 3. Deserialize to typed config
-        let config: ServerConfig = serde_yaml::from_value(parsed.root)
-            .map_err(|e| ConfigErrors::single(ConfigError::DeserializeError {
-                message: e.to_string(),
-            }))?;
+        // Stage 5: $generate validation (stores GeneratorConfig, not bytes)
+        validate_generators(&root, &self.options.generator_limits, 0)?;
 
-        // 4. Validate
-        let mut validator = SchemaValidator::new();
-        validator.validate(&config)?;
+        // Stage 6: Deserialize to typed config
+        let config: ServerConfig = serde_yaml::from_value(root)?;
 
-        // 5. Freeze
-        Ok(config.freeze())
+        // Stage 7: Validation
+        let mut validator = Validator::new();
+        let validation_result = validator.validate(&config, &self.options.config_limits);
+
+        // Stage 8: Freeze
+        Ok(LoadResult { config: Arc::new(config), warnings })
     }
 
     /// Load configuration from in-memory YAML string (B43)
     ///
     /// Runs the same pipeline as `load()` but skips file I/O.
     /// In embedded mode (`options.embedded == true`), `$include` and `$file`
-    /// directives are rejected.
-    pub fn load_from_str(&mut self, yaml: &str) -> Result<Arc<ServerConfig>, ConfigErrors> {
+    /// directives are rejected, and environment variable substitution is skipped.
+    pub fn load_from_str(&mut self, yaml: &str) -> Result<LoadResult, ConfigError> {
         // Same pipeline as load(), but from string
         // Environment substitution skipped if embedded == true
         // Filesystem directives rejected if embedded == true
+        // $generate directives are allowed in embedded mode
         // ...
     }
 }
