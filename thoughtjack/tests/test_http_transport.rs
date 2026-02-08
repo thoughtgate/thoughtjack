@@ -298,52 +298,66 @@ async fn http_per_request_independent_state() {
     let server = HttpTestServer::start(&config_path).await;
 
     // Two separate initialize calls (simulating two clients)
-    let init1 = server.post_jsonrpc(&json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "client-1", "version": "0.0.1" }
-        }
-    })).await;
+    let init1 = server
+        .post_jsonrpc(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "client-1", "version": "0.0.1" }
+            }
+        }))
+        .await;
     assert_eq!(init1.status(), 200, "client-1 init should succeed");
     let _: serde_json::Value = init1.json().await.unwrap();
 
-    let init2 = server.post_jsonrpc(&json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "client-2", "version": "0.0.1" }
-        }
-    })).await;
+    let init2 = server
+        .post_jsonrpc(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "client-2", "version": "0.0.1" }
+            }
+        }))
+        .await;
     assert_eq!(init2.status(), 200, "client-2 init should succeed");
     let _: serde_json::Value = init2.json().await.unwrap();
 
     // Both clients can call tools independently
-    let call1 = server.post_jsonrpc(&json!({
-        "jsonrpc": "2.0",
-        "id": 10,
-        "method": "tools/call",
-        "params": {"name": "calculator", "arguments": {"a": 1, "b": 2}}
-    })).await;
+    let call1 = server
+        .post_jsonrpc(&json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {"name": "calculator", "arguments": {"a": 1, "b": 2}}
+        }))
+        .await;
     assert_eq!(call1.status(), 200);
     let body1: serde_json::Value = call1.json().await.unwrap();
-    assert!(body1.pointer("/result/content").is_some(), "client-1 call should return content");
+    assert!(
+        body1.pointer("/result/content").is_some(),
+        "client-1 call should return content"
+    );
 
-    let call2 = server.post_jsonrpc(&json!({
-        "jsonrpc": "2.0",
-        "id": 20,
-        "method": "tools/call",
-        "params": {"name": "calculator", "arguments": {"a": 3, "b": 4}}
-    })).await;
+    let call2 = server
+        .post_jsonrpc(&json!({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tools/call",
+            "params": {"name": "calculator", "arguments": {"a": 3, "b": 4}}
+        }))
+        .await;
     assert_eq!(call2.status(), 200);
     let body2: serde_json::Value = call2.json().await.unwrap();
-    assert!(body2.pointer("/result/content").is_some(), "client-2 call should return content");
+    assert!(
+        body2.pointer("/result/content").is_some(),
+        "client-2 call should return content"
+    );
 
     server.shutdown().await;
 }

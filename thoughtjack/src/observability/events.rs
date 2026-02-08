@@ -621,8 +621,14 @@ mod tests {
         };
         let json_minimal = serde_json::to_value(&trigger_minimal).unwrap();
         assert_eq!(json_minimal["kind"], "timer");
-        assert!(json_minimal.get("event").is_none(), "None event should be skipped");
-        assert!(json_minimal.get("count").is_none(), "None count should be skipped");
+        assert!(
+            json_minimal.get("event").is_none(),
+            "None event should be skipped"
+        );
+        assert!(
+            json_minimal.get("count").is_none(),
+            "None count should be skipped"
+        );
     }
 
     #[test]

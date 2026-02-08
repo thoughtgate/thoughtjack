@@ -37,7 +37,12 @@ pub struct Cli {
     pub color: ColorChoice,
 
     /// Log output format.
-    #[arg(long, default_value = "human", global = true, env = "THOUGHTJACK_LOG_FORMAT")]
+    #[arg(
+        long,
+        default_value = "human",
+        global = true,
+        env = "THOUGHTJACK_LOG_FORMAT"
+    )]
     pub log_format: LogFormatChoice,
 }
 
@@ -1054,10 +1059,7 @@ mod tests {
                 "x.yaml",
             ])
             .unwrap();
-            assert_eq!(
-                cli.log_format, variant,
-                "Unexpected log-format for {input}"
-            );
+            assert_eq!(cli.log_format, variant, "Unexpected log-format for {input}");
         }
     }
 
@@ -1135,8 +1137,8 @@ mod tests {
     /// `server` alone (without explicit `run`) should default to run behavior.
     #[test]
     fn test_server_run_default_subcommand() {
-        let cli = Cli::try_parse_from(["thoughtjack", "server", "--config", "default.yaml"])
-            .unwrap();
+        let cli =
+            Cli::try_parse_from(["thoughtjack", "server", "--config", "default.yaml"]).unwrap();
         if let Commands::Server(cmd) = cli.command {
             // When no subcommand is given, subcommand is None and
             // run_args captures the flags directly.

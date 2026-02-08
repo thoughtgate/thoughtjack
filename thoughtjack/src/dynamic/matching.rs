@@ -610,10 +610,8 @@ mod tests {
                 ),
                 (
                     "prompt.name".into(),
-                    MatchCondition::compile(&MatchConditionConfig::Single(
-                        "analyze_*".into(),
-                    ))
-                    .unwrap(),
+                    MatchCondition::compile(&MatchConditionConfig::Single("analyze_*".into()))
+                        .unwrap(),
                 ),
             ],
         };
@@ -658,10 +656,7 @@ mod tests {
                                 "request.method".into(),
                                 MatchCondition::Contains("subscribe".into()),
                             ),
-                            (
-                                "resource.uri".into(),
-                                MatchCondition::Suffix(".log".into()),
-                            ),
+                            ("resource.uri".into(), MatchCondition::Suffix(".log".into())),
                         ],
                     },
                     index: 0,

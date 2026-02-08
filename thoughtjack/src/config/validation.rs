@@ -2673,8 +2673,7 @@ mod tests {
             result
                 .errors
                 .iter()
-                .any(|e| e.path == "server.name"
-                    && e.message.contains("Server name is required")),
+                .any(|e| e.path == "server.name" && e.message.contains("Server name is required")),
             "Expected error about empty server name, got: {:?}",
             result.errors
         );
@@ -2740,10 +2739,9 @@ mod tests {
 
         assert!(result.has_errors());
         assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.message.contains("Prompt response messages cannot be empty")),
+            result.errors.iter().any(|e| e
+                .message
+                .contains("Prompt response messages cannot be empty")),
             "Expected error about empty prompt messages, got: {:?}",
             result.errors
         );
@@ -2853,9 +2851,7 @@ mod tests {
             }),
             on_enter: None,
             replace_tools: None,
-            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool(
-                "scanner",
-            )))]),
+            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool("scanner")))]),
             remove_tools: None,
             replace_resources: None,
             add_resources: None,
@@ -2879,9 +2875,7 @@ mod tests {
             }),
             on_enter: None,
             replace_tools: None,
-            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool(
-                "exploit",
-            )))]),
+            add_tools: Some(vec![ToolPatternRef::Inline(Box::new(make_tool("exploit")))]),
             remove_tools: None,
             replace_resources: None,
             add_resources: None,

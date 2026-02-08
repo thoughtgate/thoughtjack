@@ -116,12 +116,8 @@ fn list_missing_library() {
 // EC-SCN-001: Unknown scenario name produces error with suggestion.
 #[test]
 fn scenario_unknown_name_suggests() {
-    let output =
-        ThoughtJackProcess::spawn_command(&["scenarios", "show", "rug-pullz"]);
-    assert!(
-        !output.status.success(),
-        "unknown scenario should fail"
-    );
+    let output = ThoughtJackProcess::spawn_command(&["scenarios", "show", "rug-pullz"]);
+    assert!(!output.status.success(), "unknown scenario should fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stderr}{stdout}");
@@ -155,12 +151,7 @@ fn scenario_with_behavior_override() {
 // EC-SCN-010: `scenarios list --format json` produces valid JSON array.
 #[test]
 fn scenario_list_json_format() {
-    let output = ThoughtJackProcess::spawn_command(&[
-        "scenarios",
-        "list",
-        "--format",
-        "json",
-    ]);
+    let output = ThoughtJackProcess::spawn_command(&["scenarios", "list", "--format", "json"]);
     assert!(
         output.status.success(),
         "scenarios list --format json should succeed: {}",
@@ -177,15 +168,20 @@ fn scenario_list_json_format() {
     // Each entry should have name, description, category
     let first = &arr[0];
     assert!(first.get("name").is_some(), "entry should have name");
-    assert!(first.get("description").is_some(), "entry should have description");
-    assert!(first.get("category").is_some(), "entry should have category");
+    assert!(
+        first.get("description").is_some(),
+        "entry should have description"
+    );
+    assert!(
+        first.get("category").is_some(),
+        "entry should have category"
+    );
 }
 
 // EC-SCN-011: `scenarios show <name>` prints raw YAML to stdout.
 #[test]
 fn scenario_show_prints_yaml() {
-    let output =
-        ThoughtJackProcess::spawn_command(&["scenarios", "show", "rug-pull"]);
+    let output = ThoughtJackProcess::spawn_command(&["scenarios", "show", "rug-pull"]);
     assert!(
         output.status.success(),
         "scenarios show should succeed: {}",

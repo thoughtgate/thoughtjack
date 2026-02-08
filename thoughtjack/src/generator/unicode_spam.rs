@@ -384,10 +384,7 @@ mod tests {
     fn test_empty_categories_rejected() {
         // The generator takes a single `category`, not a vec.
         // Test that bytes=0 produces empty output (no categories to emit).
-        let params = make_params(vec![
-            ("bytes", json!(0)),
-            ("category", json!("zero_width")),
-        ]);
+        let params = make_params(vec![("bytes", json!(0)), ("category", json!("zero_width"))]);
         let generator = UnicodeSpamGenerator::new(&params, &default_limits()).unwrap();
         let data = generator.generate().unwrap().into_bytes();
         assert!(data.is_empty(), "bytes=0 should produce empty output");

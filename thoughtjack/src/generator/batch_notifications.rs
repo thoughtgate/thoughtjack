@@ -395,10 +395,7 @@ mod tests {
         let arr = parsed.as_array().unwrap();
         assert_eq!(arr.len(), 5, "array should have exactly 5 elements");
         for (i, item) in arr.iter().enumerate() {
-            assert_eq!(
-                item["jsonrpc"], "2.0",
-                "item {i} should have jsonrpc=2.0"
-            );
+            assert_eq!(item["jsonrpc"], "2.0", "item {i} should have jsonrpc=2.0");
             assert_eq!(
                 item["method"], "test/ping",
                 "item {i} should have correct method"

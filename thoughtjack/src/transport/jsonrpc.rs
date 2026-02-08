@@ -627,7 +627,10 @@ mod tests {
     #[test]
     fn test_empty_json_message() {
         let result = serde_json::from_str::<JsonRpcMessage>("");
-        assert!(result.is_err(), "empty string should not parse as a message");
+        assert!(
+            result.is_err(),
+            "empty string should not parse as a message"
+        );
     }
 
     /// EC-TRANS-004: Various malformed JSON inputs must fail deserialization.
@@ -648,7 +651,10 @@ mod tests {
         );
         // serde_json::Value accepts any JSON value for id, so this parses
         // but the id will be an array — verify it parses and captures the array
-        assert!(result.is_ok(), "array id is accepted by Value-based id field");
+        assert!(
+            result.is_ok(),
+            "array id is accepted by Value-based id field"
+        );
         if let Ok(JsonRpcMessage::Request(r)) = result {
             assert!(r.id.is_array());
         }
@@ -669,16 +675,11 @@ mod tests {
     #[test]
     fn test_missing_jsonrpc_version() {
         // Request-like object missing jsonrpc
-        let result =
-            serde_json::from_str::<JsonRpcMessage>(r#"{"method":"test","id":1}"#);
-        assert!(
-            result.is_err(),
-            "request without jsonrpc field should fail"
-        );
+        let result = serde_json::from_str::<JsonRpcMessage>(r#"{"method":"test","id":1}"#);
+        assert!(result.is_err(), "request without jsonrpc field should fail");
 
         // Response-like object missing jsonrpc
-        let result =
-            serde_json::from_str::<JsonRpcMessage>(r#"{"result":42,"id":1}"#);
+        let result = serde_json::from_str::<JsonRpcMessage>(r#"{"result":42,"id":1}"#);
         assert!(
             result.is_err(),
             "response without jsonrpc field should fail"
@@ -882,10 +883,7 @@ mod tests {
         let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
         match &msg {
             JsonRpcMessage::Request(r) => {
-                assert!(
-                    r.method.contains('\0'),
-                    "method should contain null byte"
-                );
+                assert!(r.method.contains('\0'), "method should contain null byte");
             }
             _ => panic!("Expected Request variant"),
         }
@@ -903,8 +901,7 @@ mod tests {
         }
 
         // Escaped control characters
-        let json_str =
-            r#"{"jsonrpc":"2.0","method":"test","params":{"data":"\t\n\r"},"id":3}"#;
+        let json_str = r#"{"jsonrpc":"2.0","method":"test","params":{"data":"\t\n\r"},"id":3}"#;
         let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
         assert!(matches!(msg, JsonRpcMessage::Request(_)));
     }

@@ -987,7 +987,10 @@ mod tests {
         assert!(result.completed);
         // Only one chunk ⇒ only one delay at most
         let send_count = transport.raw_sends.lock().unwrap().len();
-        assert_eq!(send_count, 1, "should send entire payload in a single chunk");
+        assert_eq!(
+            send_count, 1,
+            "should send entire payload in a single chunk"
+        );
     }
 
     // ========================================================================
