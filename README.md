@@ -127,18 +127,10 @@ thoughtjack server run --scenario rug-pull
 │                 │Responses │   │ Library  │                            │
 │                 └──────────┘   └──────────┘                            │
 │                                                                         │
-│                 ┌─────────────────────────────────────────┐            │
-│                 │        Configuration Schema              │            │
-│                 │     (thoughtjack-core crate)             │            │
-│                 └─────────────────────────────────────────┘            │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-The workspace is organized into three crates:
-
-- **`thoughtjack`** — Main binary with server runtime, CLI, and all modules
-- **`thoughtjack-core`** — Shared configuration schema and types
-- **`thoughtjack-docs`** — Documentation generation for the scenario catalog site
+ThoughtJack is a single Rust crate containing all modules: server runtime, CLI, configuration schema, payload generators, documentation generation (`src/docgen/`), and observability.
 
 The **phase engine** drives temporal attacks through a state machine:
 
@@ -483,7 +475,7 @@ The attack scenario catalog is auto-generated from built-in scenarios using `tho
 
 ## Project Status
 
-**Current: v0.3** — Rich data and dynamic response system. Core engine with all transports, generators, delivery behaviors, and side effects. Phase engine state machine with event count, time-based, and content-matching triggers. Dynamic responses with `$handler` directive for HTTP and command handlers, response sequences, match blocks, and template interpolation. 10 built-in attack scenarios with `scenarios list`/`show` commands. Mermaid diagram generation from configs. Documentation site with auto-generated scenario pages. Full CLI with config validation, library listing, and shell completions. Observability via structured logging (human/JSON), Prometheus metrics, and JSONL event streams. Workspace split into `thoughtjack`, `thoughtjack-core`, and `thoughtjack-docs` crates.
+**Current: v0.3** — Rich data and dynamic response system. Core engine with all transports, generators, delivery behaviors, and side effects. Phase engine state machine with event count, time-based, and content-matching triggers. Dynamic responses with `$handler` directive for HTTP and command handlers, response sequences, match blocks, and template interpolation. 10 built-in attack scenarios with `scenarios list`/`show` commands. Mermaid diagram generation from configs. Documentation site with auto-generated scenario pages. Full CLI with config validation, library listing, and shell completions. Observability via structured logging (human/JSON), Prometheus metrics, and JSONL event streams.
 
 **Implemented**:
 - Dynamic response templates (`$handler`, `match`, `sequence`)

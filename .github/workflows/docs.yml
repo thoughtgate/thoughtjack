@@ -5,14 +5,14 @@ on:
   push:
     branches: [main]
     paths:
-      - 'thoughtjack/scenarios/**'
+      - 'scenarios/**'
+      - 'src/docgen/**'
       - 'docs-site/**'
-      - 'thoughtjack-docs/**'
   pull_request:
     paths:
-      - 'thoughtjack/scenarios/**'
+      - 'scenarios/**'
+      - 'src/docgen/**'
       - 'docs-site/**'
-      - 'thoughtjack-docs/**'
 
 permissions:
   contents: write
@@ -30,7 +30,7 @@ jobs:
       - run: cargo build --release
 
       - name: Generate docs
-        run: ./target/release/thoughtjack docs generate --scenarios ./thoughtjack/scenarios --registry ./thoughtjack/scenarios/registry.yaml --output ./docs-site
+        run: ./target/release/thoughtjack docs generate --scenarios ./scenarios --registry ./scenarios/registry.yaml --output ./docs-site
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
