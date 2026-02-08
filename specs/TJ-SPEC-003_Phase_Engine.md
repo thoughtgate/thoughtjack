@@ -382,7 +382,7 @@ The system SHALL support content-based trigger conditions.
 - Nested field access via dot notation: `args.options.path`
 - Missing fields do not match
 - Type coercion: numbers compared as numbers, strings as strings
-- Regex patterns compiled at config load, evaluated at runtime
+- Regex patterns in content match triggers are compiled lazily at first evaluation and cached in a 256-entry LRU cache
 
 **Match Operators:**
 
@@ -882,7 +882,7 @@ thoughtjack server --config x.yaml --state-scope global
 ### EC-PHASE-005: Count Trigger with count: 0
 
 **Scenario:** `advance: { on: tools/call, count: 0 }`  
-**Expected:** Validation error: "count must be positive"
+**Expected:** Validation error: "count must be positive". This validation is performed in the config validator (`validation.rs`), not in the phase engine itself.
 
 ### EC-PHASE-006: Time Trigger Fires Between Requests
 
@@ -1068,7 +1068,7 @@ phases:
 ### NFR-003: Timer Precision
 
 - Time-based triggers SHALL fire within 100ms of specified duration
-- Polling interval configurable via `THOUGHTJACK_TIMER_INTERVAL_MS`
+- The timer check interval is currently 100ms (hardcoded); a future release will make this configurable via `THOUGHTJACK_TIMER_INTERVAL_MS` environment variable.
 
 ### NFR-004: Concurrent Request Handling
 
