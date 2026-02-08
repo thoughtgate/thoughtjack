@@ -6,7 +6,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/thoughtgate/thoughtjack"
 
 [workspace.dependencies]
@@ -19,8 +19,8 @@ indexmap = { version = "2.13", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 strsim = "0.11"
 glob = "0.3"
-thoughtjack-core = { path = "thoughtjack-core", default-features = false }
-thoughtjack-docs = { path = "thoughtjack-docs" }
+thoughtjack-core = { path = "thoughtjack-core", version = "0.1.0", default-features = false }
+thoughtjack-docs = { path = "thoughtjack-docs", version = "0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
