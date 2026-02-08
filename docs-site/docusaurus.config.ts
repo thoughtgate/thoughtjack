@@ -3,8 +3,8 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'ThoughtJack Attack Catalog',
-  tagline: 'MCP adversarial scenario reference',
+  title: 'ThoughtJack',
+  tagline: 'Adversarial MCP server for security testing',
   url: 'https://thoughtgate.github.io',
   baseUrl: '/thoughtjack/',
 
