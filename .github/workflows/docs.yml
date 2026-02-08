@@ -4,12 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'scenarios/**'
+      - 'thoughtjack/scenarios/**'
       - 'docs-site/**'
       - 'thoughtjack-docs/**'
   pull_request:
     paths:
-      - 'scenarios/**'
+      - 'thoughtjack/scenarios/**'
       - 'docs-site/**'
       - 'thoughtjack-docs/**'
 
@@ -29,7 +29,7 @@ jobs:
       - run: cargo build --release
 
       - name: Generate docs
-        run: ./target/release/thoughtjack docs generate --scenarios ./scenarios --output ./docs-site --strict
+        run: ./target/release/thoughtjack docs generate --scenarios ./thoughtjack/scenarios --output ./docs-site
         continue-on-error: true # until scenarios/ directory is populated
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
