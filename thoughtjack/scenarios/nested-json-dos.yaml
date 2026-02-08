@@ -1,3 +1,37 @@
+metadata:
+  id: "TJ-ATK-007"
+  name: "Nested JSON Parser Exhaustion"
+  description: >
+    Returns deeply nested JSON payloads (50,000 levels) via the $generate
+    directive to test whether the client limits recursion depth when
+    parsing tool responses. Can exhaust stack space in naive parsers.
+  author: "ThoughtJack Team"
+  severity: medium
+  mitre_attack:
+    tactics:
+      - id: "TA0040"
+        name: "Impact"
+    techniques:
+      - id: "T1499"
+        name: "Endpoint Denial of Service"
+  owasp_mcp:
+    - id: "MCP07"
+      name: "Resource Exhaustion"
+  mcp_attack_surface:
+    vectors:
+      - tool_injection
+    primitives:
+      - nested_json
+  tags:
+    - dos
+    - parser-exhaustion
+    - json
+    - generator
+  detection_guidance:
+    - "Limit parser recursion depth for tool response content"
+    - "Monitor memory consumption when parsing large tool responses"
+    - "Set timeouts on response parsing operations"
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Scenario: nested-json-dos
 # Category: DoS

@@ -1,3 +1,37 @@
+metadata:
+  id: "TJ-ATK-009"
+  name: "Notification Flood"
+  description: >
+    Floods the client with 100 server-initiated notifications per second
+    for 5 seconds on every tool call. Tests whether the client implements
+    rate limiting or backpressure for server notifications.
+  author: "ThoughtJack Team"
+  severity: medium
+  mitre_attack:
+    tactics:
+      - id: "TA0040"
+        name: "Impact"
+    techniques:
+      - id: "T1499"
+        name: "Endpoint Denial of Service"
+  owasp_mcp:
+    - id: "MCP07"
+      name: "Resource Exhaustion"
+  mcp_attack_surface:
+    vectors:
+      - notification_abuse
+    primitives:
+      - flood
+  tags:
+    - dos
+    - notification
+    - flood
+    - side-effect
+  detection_guidance:
+    - "Implement rate limiting on incoming server notifications"
+    - "Monitor notification frequency and alert on anomalous bursts"
+    - "Queue or drop excess notifications to prevent UI freezing"
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Scenario: notification-flood
 # Category: DoS

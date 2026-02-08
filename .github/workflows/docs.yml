@@ -30,8 +30,7 @@ jobs:
       - run: cargo build --release
 
       - name: Generate docs
-        run: ./target/release/thoughtjack docs generate --scenarios ./thoughtjack/scenarios --output ./docs-site
-        continue-on-error: true # until scenarios/ directory is populated
+        run: ./target/release/thoughtjack docs generate --scenarios ./thoughtjack/scenarios --registry ./thoughtjack/scenarios/registry.yaml --output ./docs-site
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

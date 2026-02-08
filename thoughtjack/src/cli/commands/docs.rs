@@ -2,9 +2,9 @@
 //!
 //! TJ-SPEC-011 F-006
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::cli::args::{DocsGenerateArgs, DocsValidateArgs};
 use crate::error::ThoughtJackError;
@@ -44,7 +44,7 @@ pub fn generate(args: &DocsGenerateArgs) -> Result<(), ThoughtJackError> {
 
     let generated = write_scenario_pages(&configs, &args.output)?;
     write_coverage_pages(&configs, &args.output)?;
-    write_sidebar(&reg, &args.output)?;
+    write_sidebar(&reg, &configs, base_dir(&args.scenarios), &args.output)?;
 
     eprintln!("Generated {generated} scenario pages");
     eprintln!("Generated 3 coverage pages");
@@ -337,10 +337,24 @@ fn write_coverage_pages(
 }
 
 /// Generate and write sidebar configuration.
+///
+/// Builds a mapping from registry scenario paths to metadata IDs so that
+/// the sidebar references the correct MDX filenames (e.g. `tj-atk-001`).
 fn write_sidebar(
     reg: &thoughtjack_docs::registry::Registry,
+    configs: &[(String, ServerConfig)],
+    base: &Path,
     output: &Path,
 ) -> Result<(), ThoughtJackError> {
-    let sidebars_js = sidebar::generate_sidebars_js(reg);
+    let mut id_map: HashMap<PathBuf, String> = HashMap::new();
+    for (path, config) in configs {
+        if let Some(ref metadata) = config.metadata {
+            if let Ok(rel) = Path::new(path).strip_prefix(base) {
+                id_map.insert(rel.to_path_buf(), metadata.id.to_lowercase());
+            }
+        }
+    }
+
+    let sidebars_js = sidebar::generate_sidebars_js(reg, &id_map);
     fs::write(output.join("sidebars.js"), sidebars_js).map_err(ThoughtJackError::Io)
 }
