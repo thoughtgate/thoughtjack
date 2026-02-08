@@ -29,20 +29,38 @@ async fn main() {
 
     // Spawn signal handler for graceful shutdown
     tokio::spawn(async move {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to register SIGTERM handler");
+        #[cfg(unix)]
+        {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler");
 
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = sigterm.recv() => {}
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+
+            cancel_for_signal.cancel();
+            eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
+
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => std::process::exit(ExitCode::INTERRUPTED),
+                _ = sigterm.recv() => std::process::exit(ExitCode::TERMINATED),
+            }
         }
 
-        cancel_for_signal.cancel();
-        eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to register Ctrl+C handler");
+            cancel_for_signal.cancel();
+            eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
 
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => std::process::exit(ExitCode::INTERRUPTED),
-            _ = sigterm.recv() => std::process::exit(ExitCode::TERMINATED),
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to register Ctrl+C handler");
+            std::process::exit(ExitCode::INTERRUPTED);
         }
     });
 
