@@ -93,6 +93,27 @@ pub async fn handle_read(
         ));
     };
 
+    // Native MCP-style contents array — return directly without dynamic pipeline
+    if let Some(ref entries) = resp.contents {
+        let contents: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|entry| {
+                let mut obj = json!({
+                    "uri": entry.uri,
+                    "text": entry.text.as_deref().unwrap_or(""),
+                });
+                if let Some(ref mime) = entry.mime_type {
+                    obj["mimeType"] = json!(mime);
+                }
+                obj
+            })
+            .collect();
+        return Ok(JsonRpcResponse::success(
+            request.id.clone(),
+            json!({ "contents": contents }),
+        ));
+    }
+
     // Increment call counter
     let tracker_key = CallTracker::make_key(rctx.connection_id, rctx.state_scope, "resource", uri);
     let call_count = rctx.call_tracker.increment(&tracker_key);

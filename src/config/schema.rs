@@ -624,6 +624,14 @@ pub struct ResourceResponse {
     /// External handler for dynamic response generation
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handler: Option<HandlerConfig>,
+
+    /// Native MCP-style resource contents array.
+    ///
+    /// When present, these entries are returned directly as the `contents`
+    /// array in the `resources/read` response, bypassing the single-content
+    /// pipeline. Each entry has its own `uri`, `text`, and optional `mimeType`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contents: Option<Vec<ResourceContentConfig>>,
 }
 
 impl ResourceResponse {
@@ -640,6 +648,7 @@ impl Default for ResourceResponse {
             sequence: None,
             on_exhausted: None,
             handler: None,
+            contents: None,
         }
     }
 }

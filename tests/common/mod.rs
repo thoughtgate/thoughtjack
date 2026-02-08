@@ -69,6 +69,40 @@ impl ThoughtJackProcess {
         }
     }
 
+    /// Spawns a new server running a built-in scenario by name.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn spawn_scenario(name: &str) -> Self {
+        Self::spawn_scenario_with_args(name, &[])
+    }
+
+    /// Spawns a new server running a built-in scenario by name with extra CLI args.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn spawn_scenario_with_args(name: &str, extra_args: &[&str]) -> Self {
+        let bin = env!("CARGO_BIN_EXE_thoughtjack");
+        let mut args = vec!["server", "run", "--scenario", name, "--quiet"];
+        args.extend_from_slice(extra_args);
+
+        let mut child = Command::new(bin)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("failed to spawn thoughtjack");
+
+        let stdin = child.stdin.take().expect("stdin not captured");
+        let stdout = child.stdout.take().expect("stdout not captured");
+
+        Self {
+            child,
+            stdin,
+            reader: BufReader::new(stdout),
+            next_id: 1,
+            pending_notifications: Vec::new(),
+        }
+    }
+
     /// Reads one NDJSON message from the server's stdout.
     ///
     /// Panics on EOF, I/O error, or if no message arrives within `timeout`.
