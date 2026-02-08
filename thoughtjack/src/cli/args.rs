@@ -35,6 +35,10 @@ pub struct Cli {
     /// Color output control.
     #[arg(long, default_value = "auto", global = true, env = "THOUGHTJACK_COLOR")]
     pub color: ColorChoice,
+
+    /// Log output format.
+    #[arg(long, default_value = "human", global = true, env = "THOUGHTJACK_LOG_FORMAT")]
+    pub log_format: LogFormatChoice,
 }
 
 // ============================================================================
@@ -437,6 +441,18 @@ pub enum ColorChoice {
     Always,
     /// Never use color.
     Never,
+}
+
+/// Log output format choice.
+///
+/// Implements: TJ-SPEC-008 F-002, F-003
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum LogFormatChoice {
+    /// Human-readable format with optional ANSI colors.
+    #[default]
+    Human,
+    /// Newline-delimited JSON for machine consumption.
+    Json,
 }
 
 /// Delivery behavior override for CLI.
