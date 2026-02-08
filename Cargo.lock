@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "thoughtjack"
-version = "0.1.0"
+version = "0.3.0-rc1"
 dependencies = [
  "async-trait",
  "axum",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "thoughtjack-core"
-version = "0.1.0"
+version = "0.3.0-rc1"
 dependencies = [
  "chrono",
  "clap",
@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "thoughtjack-docs"
-version = "0.1.0"
+version = "0.3.0-rc1"
 dependencies = [
  "chrono",
  "regex",
