@@ -48,6 +48,12 @@ thoughtjack
 │   ├── list            # List available scenarios
 │   └── show            # Display scenario YAML configuration
 │
+├── diagram             # Generate Mermaid diagrams from config files
+│
+├── docs                # Documentation generation
+│   ├── generate        # Generate documentation pages from scenarios
+│   └── validate        # Validate scenario metadata and registry
+│
 ├── agent               # (Future) Run adversarial A2A agent
 │   └── ...
 │
@@ -92,6 +98,9 @@ thoughtjack [OPTIONS] <COMMAND>
 
 Commands:
   server       Run an adversarial MCP server
+  scenarios    List and inspect built-in attack scenarios
+  diagram      Generate a Mermaid diagram from a scenario file
+  docs         Generate documentation site from scenarios
   agent        Run an adversarial A2A agent (coming soon)
   completions  Generate shell completions
   version      Show version information
@@ -109,38 +118,48 @@ Options:
 ```rust
 #[derive(Parser)]
 #[command(name = "thoughtjack")]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about)]
 #[command(propagate_version = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
-    
-    /// Increase logging verbosity (-v, -vv, -vvv)
-    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+
+    /// Increase verbosity (-v info, -vv debug, -vvv trace)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true, conflicts_with = "quiet")]
     pub verbose: u8,
-    
-    /// Suppress non-essential output
-    #[arg(short, long, global = true)]
+
+    /// Suppress all non-error output
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
-    
-    /// Colorize output
-    #[arg(long, default_value = "auto", global = true)]
+
+    /// Color output control
+    #[arg(long, default_value = "auto", global = true, env = "THOUGHTJACK_COLOR")]
     pub color: ColorChoice,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Run an adversarial MCP server
-    Server(ServerCommand),
-    
-    /// Run an adversarial A2A agent (coming soon)
+    /// Start or manage the adversarial MCP server
+    Server(Box<ServerCommand>),
+
+    /// List and inspect built-in attack scenarios
+    Scenarios(ScenariosCommand),
+
+    /// Generate a Mermaid diagram from a scenario file
+    Diagram(DiagramArgs),
+
+    /// Generate documentation site from scenarios
+    Docs(DocsCommand),
+
+    /// Run as an MCP client agent (coming soon)
+    #[command(hide = true)]
     Agent(AgentCommand),
-    
-    /// Generate shell completions
-    Completions(CompletionsCommand),
-    
-    /// Show version information
-    Version,
+
+    /// Generate shell completion scripts
+    Completions(CompletionsArgs),
+
+    /// Display version and build information
+    Version(VersionArgs),
 }
 ```
 
@@ -170,6 +189,8 @@ Options:
       --behavior <MODE>      Override delivery behavior [env: THOUGHTJACK_BEHAVIOR]
       --state-scope <SCOPE>  Phase state scope for HTTP [default: per-connection]
                              [env: THOUGHTJACK_STATE_SCOPE] [values: per-connection, global]
+      --profile <PROFILE>    Server profile [default: default]
+                             [possible values: default, aggressive, stealth]
       --library <PATH>       Library root directory [default: ./library] [env: THOUGHTJACK_LIBRARY]
       --metrics-port <PORT>  Start Prometheus metrics exporter on port [env: THOUGHTJACK_METRICS_PORT]
       --capture-dir <PATH>   Capture request/response pairs [env: THOUGHTJACK_CAPTURE_DIR]
@@ -608,6 +629,172 @@ pub struct ScenariosShowArgs {
 
 See TJ-SPEC-010 for complete scenario specification.
 
+### F-004b: Diagram Command
+
+The system SHALL provide `thoughtjack diagram` to generate Mermaid diagrams from scenario configuration files.
+
+**Acceptance Criteria:**
+- Accepts a scenario YAML file as positional argument
+- Supports diagram type selection (auto, state, sequence, flowchart)
+- Defaults to auto-detecting the diagram type from scenario structure
+- Supports writing output to a file via `--output`
+- Outputs to stdout by default
+
+**Usage:**
+```bash
+thoughtjack diagram [OPTIONS] <SCENARIO>
+
+Arguments:
+  <SCENARIO>  Path to scenario YAML file
+
+Options:
+      --diagram-type <TYPE>  Diagram type override [default: auto]
+                             [possible values: auto, state, sequence, flowchart]
+  -o, --output <PATH>       Write output to file instead of stdout
+  -h, --help                Print help
+
+Examples:
+  # Generate diagram to stdout
+  thoughtjack diagram attacks/rug_pull.yaml
+
+  # Generate a state diagram and write to file
+  thoughtjack diagram attacks/rug_pull.yaml --diagram-type state -o diagram.mmd
+
+  # Generate a sequence diagram
+  thoughtjack diagram attacks/injection.yaml --diagram-type sequence
+```
+
+**Implementation:**
+```rust
+#[derive(Args, Debug)]
+pub struct DiagramArgs {
+    /// Path to scenario YAML file
+    pub scenario: PathBuf,
+
+    /// Diagram type override (default: auto-detect)
+    #[arg(long, default_value = "auto")]
+    pub diagram_type: DiagramTypeChoice,
+
+    /// Write output to file instead of stdout
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(Clone, ValueEnum, Default)]
+pub enum DiagramTypeChoice {
+    #[default]
+    Auto,
+    State,
+    Sequence,
+    Flowchart,
+}
+```
+
+See TJ-SPEC-011 for complete documentation site specification.
+
+### F-004c: Docs Command
+
+The system SHALL provide `thoughtjack docs` to generate and validate documentation from scenarios.
+
+**Acceptance Criteria:**
+- `thoughtjack docs generate` generates documentation pages from scenarios
+- `thoughtjack docs validate` validates scenario metadata and registry
+- Supports configurable scenarios directory, output directory, and registry file
+- Supports strict mode (warnings become errors)
+
+**Usage:**
+```bash
+thoughtjack docs <SUBCOMMAND>
+
+Subcommands:
+  generate   Generate documentation pages from scenarios
+  validate   Validate scenario metadata and registry
+
+thoughtjack docs generate [OPTIONS]
+
+Options:
+      --scenarios <PATH>   Scenarios directory [default: ./scenarios] [env: TJ_SCENARIOS_DIR]
+      --output <PATH>      Output directory [default: ./docs-site] [env: TJ_DOCS_OUTPUT_DIR]
+      --registry <PATH>    Registry file path [default: ./scenarios/registry.yaml] [env: TJ_REGISTRY_PATH]
+      --strict             Promote warnings to errors [env: TJ_DOCS_STRICT]
+  -h, --help               Print help
+
+thoughtjack docs validate [OPTIONS]
+
+Options:
+      --scenarios <PATH>   Scenarios directory [default: ./scenarios] [env: TJ_SCENARIOS_DIR]
+      --registry <PATH>    Registry file path [default: ./scenarios/registry.yaml] [env: TJ_REGISTRY_PATH]
+      --strict             Promote warnings to errors [env: TJ_DOCS_STRICT]
+  -h, --help               Print help
+
+Examples:
+  # Generate documentation site
+  thoughtjack docs generate
+
+  # Generate with custom paths
+  thoughtjack docs generate --scenarios ./my-scenarios --output ./site
+
+  # Validate scenario metadata
+  thoughtjack docs validate
+
+  # Strict validation (warnings become errors)
+  thoughtjack docs validate --strict
+```
+
+**Implementation:**
+```rust
+#[derive(Args, Debug)]
+pub struct DocsCommand {
+    #[command(subcommand)]
+    pub subcommand: DocsSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DocsSubcommand {
+    /// Generate documentation pages from scenarios
+    Generate(DocsGenerateArgs),
+
+    /// Validate scenario metadata and registry
+    Validate(DocsValidateArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DocsGenerateArgs {
+    /// Scenarios directory
+    #[arg(long, default_value = "./scenarios", env = "TJ_SCENARIOS_DIR")]
+    pub scenarios: PathBuf,
+
+    /// Output directory
+    #[arg(long, default_value = "./docs-site", env = "TJ_DOCS_OUTPUT_DIR")]
+    pub output: PathBuf,
+
+    /// Registry file path
+    #[arg(long, default_value = "./scenarios/registry.yaml", env = "TJ_REGISTRY_PATH")]
+    pub registry: PathBuf,
+
+    /// Promote warnings to errors
+    #[arg(long, env = "TJ_DOCS_STRICT")]
+    pub strict: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DocsValidateArgs {
+    /// Scenarios directory
+    #[arg(long, default_value = "./scenarios", env = "TJ_SCENARIOS_DIR")]
+    pub scenarios: PathBuf,
+
+    /// Registry file path
+    #[arg(long, default_value = "./scenarios/registry.yaml", env = "TJ_REGISTRY_PATH")]
+    pub registry: PathBuf,
+
+    /// Promote warnings to errors
+    #[arg(long, env = "TJ_DOCS_STRICT")]
+    pub strict: bool,
+}
+```
+
+See TJ-SPEC-011 for complete documentation site specification.
+
 ### F-005: Server Default Subcommand
 
 The system SHALL treat `run` as the default server subcommand.
@@ -770,9 +957,7 @@ ThoughtJack 0.1.0
   Build Date:  2025-02-04
   Target:      x86_64-unknown-linux-gnu
   Features:    http, generators
-  
-  Rust:        1.75.0
-  LLVM:        17.0
+  Rust:        1.85.0
 ```
 
 **Output (JSON):**
@@ -784,7 +969,7 @@ ThoughtJack 0.1.0
   "build_date": "2025-02-04",
   "target": "x86_64-unknown-linux-gnu",
   "features": ["http", "generators"],
-  "rust_version": "1.75.0"
+  "rust_version": "1.85.0"
 }
 ```
 
@@ -1101,34 +1286,6 @@ async fn run_server(config: Config, cancel: CancellationToken) -> Result<()> {
 }
 ```
 
-### F-014: Progress Indicators
-
-The system SHALL show progress for long-running operations.
-
-**Acceptance Criteria:**
-- Loading indicator during config parsing
-- Progress bar for payload generation (large payloads)
-- Spinner during server startup
-- Disabled when not a TTY or `--quiet`
-
-**Implementation:**
-```rust
-fn with_spinner<T>(message: &str, f: impl FnOnce() -> T) -> T {
-    if atty::is(atty::Stream::Stderr) && !is_quiet() {
-        let spinner = indicatif::ProgressBar::new_spinner();
-        spinner.set_message(message.to_string());
-        spinner.enable_steady_tick(Duration::from_millis(100));
-        
-        let result = f();
-        
-        spinner.finish_and_clear();
-        result
-    } else {
-        f()
-    }
-}
-```
-
 ---
 
 ## 3. Edge Cases
@@ -1277,6 +1434,7 @@ thoughtjack
 │   │   ├── --spoof-client <NAME>   Override client name
 │   │   ├── --behavior <MODE>       Override delivery behavior
 │   │   ├── --state-scope <SCOPE>   Phase state scope
+│   │   ├── --profile <PROFILE>     Server profile
 │   │   ├── --library <PATH>        Library root directory
 │   │   └── --metrics-port <PORT>   Prometheus metrics port
 │   │
@@ -1300,6 +1458,23 @@ thoughtjack
 │   │   └── --format <FORMAT>       Output format
 │   │
 │   └── show <NAME>                 Display scenario YAML
+│
+├── diagram <SCENARIO>              Generate Mermaid diagram
+│   ├── --diagram-type <TYPE>       Diagram type override
+│   └── -o, --output <PATH>        Write to file
+│
+├── docs                            Documentation generation
+│   │
+│   ├── generate                    Generate docs from scenarios
+│   │   ├── --scenarios <PATH>      Scenarios directory
+│   │   ├── --output <PATH>         Output directory
+│   │   ├── --registry <PATH>       Registry file path
+│   │   └── --strict                Promote warnings to errors
+│   │
+│   └── validate                    Validate scenario metadata
+│       ├── --scenarios <PATH>      Scenarios directory
+│       ├── --registry <PATH>       Registry file path
+│       └── --strict                Promote warnings to errors
 │
 ├── agent                           Run adversarial A2A agent
 │   └── (coming soon)
@@ -1333,7 +1508,6 @@ thoughtjack
 | `clap` | Command-line parsing (derive mode) |
 | `clap_complete` | Shell completions |
 | `colored` | Terminal colors |
-| `indicatif` | Progress indicators |
 | `atty` | TTY detection |
 | `tokio` / `tokio_util` | Signal handling and cancellation |
 | `tracing` / `tracing-subscriber` | Logging |
@@ -1350,6 +1524,9 @@ thoughtjack/
     │   ├── commands/
     │   │   ├── mod.rs
     │   │   ├── server.rs    # Server subcommands
+    │   │   ├── scenarios.rs # Scenarios subcommands
+    │   │   ├── diagram.rs   # Diagram generation
+    │   │   ├── docs.rs      # Documentation generation
     │   │   ├── agent.rs     # Agent subcommand
     │   │   ├── completions.rs
     │   │   └── version.rs
@@ -1421,6 +1598,9 @@ impl ThoughtJackError {
 - [ ] `server validate` command with all flags
 - [ ] `server list` command with all flags
 - [ ] `server` defaults to `run` subcommand
+- [ ] `scenarios list` and `scenarios show` commands
+- [ ] `diagram` command with diagram type selection
+- [ ] `docs generate` and `docs validate` commands
 - [ ] `agent` placeholder command
 - [ ] `completions` command for all shells
 - [ ] `version` command with build info
@@ -1429,7 +1609,6 @@ impl ThoughtJackError {
 - [ ] Logging verbosity levels work
 - [ ] Color output respects settings
 - [ ] Signal handling (SIGINT, SIGTERM)
-- [ ] Progress indicators for long operations
 - [ ] All 20 edge cases (EC-CLI-001 through EC-CLI-020) have tests
 - [ ] Startup time < 100ms (NFR-001)
 - [ ] Binary size < 20 MB stripped (NFR-003)
@@ -1462,11 +1641,12 @@ ThoughtJack - Adversarial MCP server for security testing
 Usage: thoughtjack [OPTIONS] <COMMAND>
 
 Commands:
-  server       Run an adversarial MCP server
+  server       Start or manage the adversarial MCP server
   scenarios    List and inspect built-in attack scenarios
-  agent        Run an adversarial A2A agent (coming soon)
-  completions  Generate shell completions
-  version      Show version information
+  diagram      Generate a Mermaid diagram from a scenario file
+  docs         Generate documentation site from scenarios
+  completions  Generate shell completion scripts
+  version      Display version and build information
   help         Print help for a command
 
 Options:
@@ -1485,6 +1665,12 @@ Examples:
 
   # List all built-in scenarios
   thoughtjack scenarios list
+
+  # Generate a Mermaid diagram from a scenario
+  thoughtjack diagram attacks/rug_pull.yaml
+
+  # Generate documentation site
+  thoughtjack docs generate
 
   # Validate all attack configurations
   thoughtjack server validate attacks/*.yaml
