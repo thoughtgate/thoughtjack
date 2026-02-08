@@ -1,0 +1,49 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scenarios/**'
+      - 'docs-site/**'
+      - 'thoughtjack-docs/**'
+  pull_request:
+    paths:
+      - 'scenarios/**'
+      - 'docs-site/**'
+      - 'thoughtjack-docs/**'
+
+jobs:
+  build-docs:
+    name: Build Documentation Site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release
+
+      - name: Generate docs
+        run: ./target/release/thoughtjack docs generate --scenarios ./scenarios --output ./docs-site --strict
+        continue-on-error: true # until scenarios/ directory is populated
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - run: npm ci
+        working-directory: docs-site
+
+      - run: npm run build
+        working-directory: docs-site
+
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs-site/build
