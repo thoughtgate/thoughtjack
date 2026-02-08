@@ -19,7 +19,7 @@ changelog_update = false
 
 [[package]]
 name = "thoughtjack"
-publish = true
+publish = false
 
 [changelog]
 body = """

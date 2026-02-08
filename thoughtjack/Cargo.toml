@@ -8,6 +8,7 @@ license.workspace = true
 readme = "../README.md"
 repository.workspace = true
 homepage = "https://github.com/thoughtgate/thoughtjack"
+publish = false
 keywords = ["mcp", "security", "testing", "adversarial"]
 categories = ["development-tools::testing"]
 
