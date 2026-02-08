@@ -1,6 +1,6 @@
 [package]
 name = "thoughtjack"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Adversarial MCP server for security testing"
@@ -8,7 +8,7 @@ license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/thoughtgate/thoughtjack"
 homepage = "https://github.com/thoughtgate/thoughtjack"
-publish = false
+publish = true
 keywords = ["mcp", "security", "testing", "adversarial"]
 categories = ["development-tools::testing"]
 
