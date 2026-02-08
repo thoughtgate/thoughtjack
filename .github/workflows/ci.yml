@@ -19,7 +19,6 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt -- --check
-        working-directory: thoughtjack
 
   clippy:
     name: Clippy
@@ -30,10 +29,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: thoughtjack -> thoughtjack/target
-      - run: cargo clippy -- -D warnings
-        working-directory: thoughtjack
+      - run: cargo clippy --workspace -- -D warnings
 
   test:
     name: Test
@@ -42,10 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: thoughtjack -> thoughtjack/target
-      - run: cargo test
-        working-directory: thoughtjack
+      - run: cargo test --workspace
 
   deny:
     name: Cargo Deny
@@ -54,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          manifest-path: thoughtjack/Cargo.toml
+          manifest-path: Cargo.toml
 
   mcp-conformance:
     name: MCP Conformance
@@ -65,19 +58,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: thoughtjack -> thoughtjack/target
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: Build release binary
         run: cargo build --release
-        working-directory: thoughtjack
 
       - name: Start server
         run: |
-          ./thoughtjack/target/release/thoughtjack server run \
+          ./target/release/thoughtjack server run \
             --config thoughtjack/tests/fixtures/conformance.yaml \
             --http 127.0.0.1:3001 &
           echo "SERVER_PID=$!" >> "$GITHUB_ENV"
