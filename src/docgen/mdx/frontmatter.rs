@@ -17,7 +17,7 @@ pub fn generate_frontmatter(metadata: &ScenarioMetadata) -> String {
     lines.push(format!("title: {}", quote_yaml_string(&metadata.name)));
     lines.push(format!(
         "sidebar_label: {}",
-        quote_yaml_string(&metadata.name)
+        quote_yaml_string(&metadata.name.to_uppercase())
     ));
 
     if !metadata.tags.is_empty() {
@@ -76,7 +76,7 @@ mod tests {
         assert!(fm.ends_with("---"));
         assert!(fm.contains("id: TJ-ATK-001"));
         assert!(fm.contains("title: Classic Rug Pull"));
-        assert!(fm.contains("sidebar_label: Classic Rug Pull"));
+        assert!(fm.contains("sidebar_label: CLASSIC RUG PULL"));
     }
 
     #[test]
