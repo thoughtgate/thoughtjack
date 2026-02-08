@@ -5,10 +5,10 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'ThoughtJack Attack Catalog',
   tagline: 'MCP adversarial scenario reference',
-  url: 'https://thoughtjack.github.io',
+  url: 'https://thoughtgate.github.io',
   baseUrl: '/thoughtjack/',
 
-  organizationName: 'thoughtjack',
+  organizationName: 'thoughtgate',
   projectName: 'thoughtjack',
 
   onBrokenLinks: 'warn',
@@ -73,7 +73,7 @@ const config: Config = {
           ],
         },
         {
-          href: 'https://github.com/thoughtjack/thoughtjack',
+          href: 'https://github.com/thoughtgate/thoughtjack',
           label: 'GitHub',
           position: 'right',
         },
@@ -92,7 +92,7 @@ const config: Config = {
         {
           title: 'More',
           items: [
-            {label: 'GitHub', href: 'https://github.com/thoughtjack/thoughtjack'},
+            {label: 'GitHub', href: 'https://github.com/thoughtgate/thoughtjack'},
           ],
         },
       ],

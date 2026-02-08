@@ -1824,6 +1824,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "thoughtjack-core",
+ "thoughtjack-docs",
  "tokio",
  "tokio-stream",
  "tokio-test",

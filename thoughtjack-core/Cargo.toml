@@ -1,6 +1,6 @@
 [package]
 name = "thoughtjack-core"
-version = "0.1.0"
+version.workspace = true
 description = "Shared types and configuration schema for ThoughtJack"
 edition.workspace = true
 rust-version.workspace = true
