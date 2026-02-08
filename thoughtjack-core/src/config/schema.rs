@@ -2909,7 +2909,7 @@ server:
 
     #[test]
     fn test_scenario_metadata_round_trip() {
-        let yaml = r#"
+        let yaml = r"
 id: TJ-ATK-001
 name: Classic Rug Pull
 description: Trust-building phase followed by tool replacement
@@ -2945,7 +2945,7 @@ detection_guidance:
 references:
   - url: https://example.com/rug-pull
     title: Rug Pull Attack Pattern
-"#;
+";
 
         let meta: ScenarioMetadata = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(meta.id, "TJ-ATK-001");
@@ -2993,7 +2993,7 @@ references:
 
     #[test]
     fn test_scenario_metadata_minimal() {
-        let yaml = r#"
+        let yaml = r"
 id: TJ-ATK-002
 name: Simple Injection
 description: Basic tool injection without phases
@@ -3003,7 +3003,7 @@ mcp_attack_surface:
     - tool_injection
   primitives:
     - fuzzing
-"#;
+";
 
         let meta: ScenarioMetadata = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(meta.id, "TJ-ATK-002");

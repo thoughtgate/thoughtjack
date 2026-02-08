@@ -711,6 +711,7 @@ mod tests {
         assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 
+    // EC-SCN-002: --scenario and --config are mutually exclusive via arg group.
     #[test]
     fn test_scenario_and_config_mutually_exclusive() {
         let cli = Cli::try_parse_from([
@@ -725,6 +726,7 @@ mod tests {
         assert!(cli.is_err(), "Expected mutual exclusion error");
     }
 
+    // EC-SCN-003: --scenario and --tool are mutually exclusive via arg group.
     #[test]
     fn test_scenario_and_tool_mutually_exclusive() {
         let cli = Cli::try_parse_from([
@@ -835,5 +837,320 @@ mod tests {
     fn test_docs_validate_command() {
         let cli = Cli::try_parse_from(["thoughtjack", "docs", "validate", "--strict"]);
         assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    // ========================================================================
+    // Edge-case tests
+    // ========================================================================
+
+    /// EC-CLI-001: No arguments at all should fail (subcommand required).
+    #[test]
+    fn test_no_args_fails() {
+        let result = Cli::try_parse_from(["thoughtjack"]);
+        assert!(result.is_err(), "Expected error when no subcommand given");
+    }
+
+    /// EC-CLI-002: Unknown subcommand should fail.
+    #[test]
+    fn test_unknown_subcommand_fails() {
+        let result = Cli::try_parse_from(["thoughtjack", "foobar"]);
+        assert!(result.is_err(), "Expected error for unknown subcommand");
+    }
+
+    /// EC-CLI-005: --verbose and --quiet conflict.
+    #[test]
+    fn test_verbose_quiet_conflict() {
+        let result = Cli::try_parse_from([
+            "thoughtjack",
+            "--verbose",
+            "--quiet",
+            "server",
+            "run",
+            "--config",
+            "x.yaml",
+        ]);
+        assert!(result.is_err(), "Expected conflict error for -v + -q");
+    }
+
+    /// EC-CLI-006: Excessive verbosity still parses (count = 4).
+    #[test]
+    fn test_excessive_verbosity_clamps() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "-vvvv",
+            "server",
+            "run",
+            "--config",
+            "x.yaml",
+        ])
+        .unwrap();
+        assert_eq!(cli.verbose, 4, "Expected verbosity count of 4");
+    }
+
+    /// EC-CLI-007: All valid --color values parse correctly.
+    #[test]
+    fn test_color_values() {
+        let expected = [
+            ("auto", ColorChoice::Auto),
+            ("always", ColorChoice::Always),
+            ("never", ColorChoice::Never),
+        ];
+        for (input, variant) in expected {
+            let cli = Cli::try_parse_from([
+                "thoughtjack",
+                "--color",
+                input,
+                "server",
+                "run",
+                "--config",
+                "x.yaml",
+            ])
+            .unwrap();
+            assert_eq!(cli.color, variant, "Unexpected color variant for {input}");
+        }
+    }
+
+    /// Invalid --color value should fail.
+    #[test]
+    fn test_invalid_color_value() {
+        let result = Cli::try_parse_from([
+            "thoughtjack",
+            "--color",
+            "rainbow",
+            "server",
+            "run",
+            "--config",
+            "x.yaml",
+        ]);
+        assert!(result.is_err(), "Expected error for invalid color value");
+    }
+
+    /// EC-CLI-008: --http with an address parses correctly.
+    #[test]
+    fn test_http_flag_parsing() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "server",
+            "run",
+            "--config",
+            "x.yaml",
+            "--http",
+            "0.0.0.0:8080",
+        ])
+        .unwrap();
+
+        if let Commands::Server(cmd) = cli.command {
+            if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
+                assert_eq!(
+                    args.http.as_deref(),
+                    Some("0.0.0.0:8080"),
+                    "Expected http bind address"
+                );
+                return;
+            }
+        }
+        panic!("Expected ServerRunArgs with --http");
+    }
+
+    /// EC-CLI-010: All valid --state-scope values parse correctly.
+    #[test]
+    fn test_profile_values() {
+        let expected = [
+            ("per-connection", StateScope::PerConnection),
+            ("global", StateScope::Global),
+        ];
+        for (input, variant) in expected {
+            let cli = Cli::try_parse_from([
+                "thoughtjack",
+                "server",
+                "run",
+                "--config",
+                "x.yaml",
+                "--state-scope",
+                input,
+            ])
+            .unwrap();
+
+            if let Commands::Server(cmd) = cli.command {
+                if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
+                    assert_eq!(
+                        args.state_scope,
+                        Some(variant),
+                        "Unexpected state-scope for {input}"
+                    );
+                    continue;
+                }
+            }
+            panic!("Expected ServerRunArgs for state-scope={input}");
+        }
+    }
+
+    /// EC-CLI-011: Unknown --state-scope value should fail.
+    #[test]
+    fn test_unknown_profile_fails() {
+        let result = Cli::try_parse_from([
+            "thoughtjack",
+            "server",
+            "run",
+            "--config",
+            "x.yaml",
+            "--state-scope",
+            "turbo",
+        ]);
+        assert!(
+            result.is_err(),
+            "Expected error for unknown state-scope value"
+        );
+    }
+
+    /// EC-CLI-012: Completions command with each supported shell type.
+    #[test]
+    fn test_completions_all_shells() {
+        let shells = ["bash", "zsh", "fish", "powershell", "elvish"];
+        for shell_name in shells {
+            let cli = Cli::try_parse_from(["thoughtjack", "completions", shell_name]).unwrap();
+            assert!(
+                matches!(cli.command, Commands::Completions(_)),
+                "Expected Completions command for shell={shell_name}"
+            );
+        }
+    }
+
+    /// EC-CLI-013: `version` subcommand parses.
+    #[test]
+    fn test_version_command() {
+        let cli = Cli::try_parse_from(["thoughtjack", "version"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Version(_)),
+            "Expected Version command"
+        );
+    }
+
+    /// `server validate` requires at least one path argument.
+    #[test]
+    fn test_server_validate_requires_path() {
+        let result = Cli::try_parse_from(["thoughtjack", "server", "validate"]);
+        assert!(
+            result.is_err(),
+            "Expected error when validate has no file paths"
+        );
+    }
+
+    /// Test --log-format accepts both human and json values.
+    #[test]
+    fn test_log_format_values() {
+        let expected = [
+            ("human", LogFormatChoice::Human),
+            ("json", LogFormatChoice::Json),
+        ];
+        for (input, variant) in expected {
+            let cli = Cli::try_parse_from([
+                "thoughtjack",
+                "--log-format",
+                input,
+                "server",
+                "run",
+                "--config",
+                "x.yaml",
+            ])
+            .unwrap();
+            assert_eq!(
+                cli.log_format, variant,
+                "Unexpected log-format for {input}"
+            );
+        }
+    }
+
+    /// EC-CLI-004: --config and --tool are mutually exclusive via arg group.
+    #[test]
+    fn test_config_and_tool_mutual_exclusion() {
+        let result = Cli::try_parse_from([
+            "thoughtjack",
+            "server",
+            "run",
+            "--config",
+            "test.yaml",
+            "--tool",
+            "calc",
+        ]);
+        assert!(
+            result.is_err(),
+            "Expected parse error when both --config and --tool are provided"
+        );
+    }
+
+    /// EC-CLI-009: Invalid --behavior value should fail.
+    #[test]
+    fn test_invalid_behavior_mode() {
+        let result = Cli::try_parse_from([
+            "thoughtjack",
+            "server",
+            "run",
+            "--tool",
+            "calc",
+            "--behavior",
+            "invalid_mode",
+        ]);
+        assert!(
+            result.is_err(),
+            "Expected parse error for invalid behavior mode"
+        );
+    }
+
+    /// EC-CLI-018: --log-format json is parsed correctly.
+    #[test]
+    fn test_json_output_with_error() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "--log-format",
+            "json",
+            "server",
+            "run",
+            "--config",
+            "x.yaml",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.log_format,
+            LogFormatChoice::Json,
+            "Expected --log-format json to parse as LogFormatChoice::Json"
+        );
+
+        // Also verify invalid log format is rejected
+        let invalid = Cli::try_parse_from([
+            "thoughtjack",
+            "--log-format",
+            "xml",
+            "server",
+            "run",
+            "--config",
+            "x.yaml",
+        ]);
+        assert!(
+            invalid.is_err(),
+            "Expected parse error for invalid log format 'xml'"
+        );
+    }
+
+    /// `server` alone (without explicit `run`) should default to run behavior.
+    #[test]
+    fn test_server_run_default_subcommand() {
+        let cli = Cli::try_parse_from(["thoughtjack", "server", "--config", "default.yaml"])
+            .unwrap();
+        if let Commands::Server(cmd) = cli.command {
+            // When no subcommand is given, subcommand is None and
+            // run_args captures the flags directly.
+            assert!(
+                cmd.subcommand.is_none(),
+                "Expected None subcommand (implicit run)"
+            );
+            assert_eq!(
+                cmd.run_args.config,
+                Some(PathBuf::from("default.yaml")),
+                "Expected --config in run_args"
+            );
+        } else {
+            panic!("Expected Server command");
+        }
     }
 }

@@ -488,6 +488,7 @@ mod tests {
 
     #[test]
     fn test_non_tool_request_uses_phase_behavior() {
+        // EC-BEH-015: Non-tool request uses phase behavior
         let mut tools = IndexMap::new();
         tools.insert(
             "calc".to_string(),
@@ -516,6 +517,7 @@ mod tests {
 
     #[test]
     fn test_unknown_tool_falls_through() {
+        // EC-BEH-022: Unknown tool uses phase behavior
         let mut tools = IndexMap::new();
         tools.insert(
             "calc".to_string(),
@@ -776,5 +778,35 @@ mod tests {
             mgr.shutdown().await;
             assert_eq!(mgr.running_count(), 0);
         }
+    }
+
+    // ========================================================================
+    // Metric helper tests
+    // ========================================================================
+
+    #[test]
+    fn test_record_delivery_metrics_zero_bytes() {
+        // Recording metrics with 0 bytes_sent should not panic
+        let result = DeliveryResult {
+            bytes_sent: 0,
+            duration: Duration::ZERO,
+            completed: true,
+        };
+        // Should succeed without panic
+        record_delivery_metrics("test_delivery", &result);
+    }
+
+    #[test]
+    fn test_record_side_effect_metrics_basic() {
+        // Recording metrics with realistic values should not panic
+        let result = SideEffectResult {
+            messages_sent: 42,
+            bytes_sent: 1024,
+            duration: Duration::from_millis(500),
+            completed: true,
+            outcome: SideEffectOutcome::Completed,
+        };
+        // Should succeed without panic
+        record_side_effect_metrics("test_effect", &result);
     }
 }

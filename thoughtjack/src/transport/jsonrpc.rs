@@ -618,4 +618,324 @@ mod tests {
         assert!(parsed.get("result").is_none());
         assert!(parsed.get("error").is_some());
     }
+
+    // ========================================================================
+    // Edge case tests (EC-TRANS-*)
+    // ========================================================================
+
+    /// EC-TRANS-001: Empty string is not valid JSON and must fail.
+    #[test]
+    fn test_empty_json_message() {
+        let result = serde_json::from_str::<JsonRpcMessage>("");
+        assert!(result.is_err(), "empty string should not parse as a message");
+    }
+
+    /// EC-TRANS-004: Various malformed JSON inputs must fail deserialization.
+    #[test]
+    fn test_malformed_json() {
+        // Missing closing brace
+        let result = serde_json::from_str::<JsonRpcMessage>(r#"{"jsonrpc":"2.0","method":"test""#);
+        assert!(result.is_err(), "truncated JSON should fail");
+
+        // Wrong type for method (number instead of string)
+        let result =
+            serde_json::from_str::<JsonRpcMessage>(r#"{"jsonrpc":"2.0","method":42,"id":1}"#);
+        assert!(result.is_err(), "numeric method should fail");
+
+        // Wrong type for id (array instead of scalar)
+        let result = serde_json::from_str::<JsonRpcMessage>(
+            r#"{"jsonrpc":"2.0","method":"test","id":[1,2]}"#,
+        );
+        // serde_json::Value accepts any JSON value for id, so this parses
+        // but the id will be an array — verify it parses and captures the array
+        assert!(result.is_ok(), "array id is accepted by Value-based id field");
+        if let Ok(JsonRpcMessage::Request(r)) = result {
+            assert!(r.id.is_array());
+        }
+
+        // Missing required `method` field in what looks like a request (has id, no result/error)
+        let result =
+            serde_json::from_str::<JsonRpcMessage>(r#"{"jsonrpc":"2.0","id":1,"params":{}}"#);
+        assert!(
+            result.is_err(),
+            "object with id but no method/result/error should fail"
+        );
+    }
+
+    /// EC-TRANS-012: JSON object without the "jsonrpc" field.
+    ///
+    /// The custom `JsonRpcMessage` deserializer dispatches based on `method`/`result`/`error`
+    /// presence, then delegates to the inner struct which requires `jsonrpc`.
+    #[test]
+    fn test_missing_jsonrpc_version() {
+        // Request-like object missing jsonrpc
+        let result =
+            serde_json::from_str::<JsonRpcMessage>(r#"{"method":"test","id":1}"#);
+        assert!(
+            result.is_err(),
+            "request without jsonrpc field should fail"
+        );
+
+        // Response-like object missing jsonrpc
+        let result =
+            serde_json::from_str::<JsonRpcMessage>(r#"{"result":42,"id":1}"#);
+        assert!(
+            result.is_err(),
+            "response without jsonrpc field should fail"
+        );
+
+        // Notification-like object missing jsonrpc
+        let result = serde_json::from_str::<JsonRpcMessage>(r#"{"method":"test"}"#);
+        assert!(
+            result.is_err(),
+            "notification without jsonrpc field should fail"
+        );
+    }
+
+    /// EC-TRANS-014: Request with null id. JSON-RPC 2.0 allows null id
+    /// for responses but it is unusual for requests. Our `Value`-based id
+    /// field accepts it.
+    #[test]
+    fn test_null_request_id() {
+        let json_str = r#"{"jsonrpc":"2.0","method":"test","id":null}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Request(r) => {
+                assert!(r.id.is_null(), "id should be null");
+                assert_eq!(r.method, "test");
+            }
+            _ => panic!("Expected Request variant"),
+        }
+    }
+
+    /// EC-TRANS-015: Request with a negative integer id.
+    #[test]
+    fn test_negative_integer_request_id() {
+        let json_str = r#"{"jsonrpc":"2.0","method":"test","id":-42}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Request(r) => {
+                assert_eq!(r.id, json!(-42));
+            }
+            _ => panic!("Expected Request variant"),
+        }
+    }
+
+    /// EC-TRANS-016: Request with a very large integer id.
+    #[test]
+    fn test_very_large_request_id() {
+        // i64::MAX
+        let json_str = r#"{"jsonrpc":"2.0","method":"test","id":9223372036854775807}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Request(r) => {
+                assert_eq!(r.id, json!(9_223_372_036_854_775_807_i64));
+            }
+            _ => panic!("Expected Request variant"),
+        }
+
+        // Beyond i64::MAX — serde_json represents as u64 or f64
+        let json_str = r#"{"jsonrpc":"2.0","method":"test","id":18446744073709551615}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        assert!(matches!(msg, JsonRpcMessage::Request(_)));
+    }
+
+    /// EC-TRANS-017: Notification has method and params but no id.
+    #[test]
+    fn test_notification_no_id() {
+        let json_str =
+            r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{"token":"abc"}}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Notification(ref n) => {
+                assert_eq!(msg.id(), None, "notification must have no id");
+                assert_eq!(n.method, "notifications/progress");
+                assert_eq!(n.params, Some(json!({"token": "abc"})));
+            }
+            _ => panic!("Expected Notification variant"),
+        }
+    }
+
+    /// EC-TRANS-018: Batch request (array of request objects).
+    ///
+    /// `JsonRpcMessage` deserializer expects a single object, so a JSON array
+    /// should fail. Batch parsing would require a separate `Vec<JsonRpcMessage>`.
+    #[test]
+    fn test_batch_request_parse() {
+        let json_str = r#"[
+            {"jsonrpc":"2.0","method":"a","id":1},
+            {"jsonrpc":"2.0","method":"b","id":2}
+        ]"#;
+        // Parsing as single JsonRpcMessage must fail (array, not object)
+        let single_result = serde_json::from_str::<JsonRpcMessage>(json_str);
+        assert!(
+            single_result.is_err(),
+            "batch array should not parse as single message"
+        );
+
+        // But parsing as Vec<JsonRpcMessage> should succeed
+        let batch: Vec<JsonRpcMessage> = serde_json::from_str(json_str).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert!(matches!(&batch[0], JsonRpcMessage::Request(_)));
+        assert!(matches!(&batch[1], JsonRpcMessage::Request(_)));
+    }
+
+    /// EC-TRANS-019: Empty batch array.
+    #[test]
+    fn test_empty_batch_request() {
+        // Single message: fails (not an object)
+        let single_result = serde_json::from_str::<JsonRpcMessage>("[]");
+        assert!(
+            single_result.is_err(),
+            "empty array should not parse as single message"
+        );
+
+        // As Vec: succeeds with zero elements
+        let batch: Vec<JsonRpcMessage> = serde_json::from_str("[]").unwrap();
+        assert!(batch.is_empty());
+    }
+
+    /// Test request with string id (complements existing `test_string_id`
+    /// which tests via `JsonRpcMessage::id()` accessor).
+    #[test]
+    fn test_string_request_id() {
+        let json_str =
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{},"id":"uuid-1234-abcd"}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Request(r) => {
+                assert_eq!(r.id, json!("uuid-1234-abcd"));
+                assert_eq!(r.method, "tools/call");
+            }
+            _ => panic!("Expected Request variant"),
+        }
+    }
+
+    /// Test that a request without the optional `params` field parses correctly.
+    #[test]
+    fn test_request_with_no_params() {
+        let json_str = r#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Request(r) => {
+                assert!(r.params.is_none(), "params should be None when absent");
+                assert_eq!(r.method, "tools/list");
+            }
+            _ => panic!("Expected Request variant"),
+        }
+    }
+
+    /// Ambiguous response containing both `result` and `error` fields.
+    ///
+    /// JSON-RPC 2.0 spec says exactly one of result/error should be present,
+    /// but our permissive deserialization accepts both (useful for adversarial testing).
+    #[test]
+    fn test_response_both_result_and_error() {
+        let json_str = r#"{
+            "jsonrpc":"2.0",
+            "result":42,
+            "error":{"code":-32600,"message":"Invalid Request"},
+            "id":1
+        }"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Response(r) => {
+                assert!(
+                    r.result.is_some(),
+                    "result should be present even with error"
+                );
+                assert!(
+                    r.error.is_some(),
+                    "error should be present even with result"
+                );
+                assert_eq!(r.result, Some(json!(42)));
+                assert_eq!(r.error.as_ref().unwrap().code, error_codes::INVALID_REQUEST);
+            }
+            _ => panic!("Expected Response variant"),
+        }
+    }
+
+    /// Request with an unknown/non-standard method name still parses successfully.
+    #[test]
+    fn test_unknown_method_parse() {
+        let json_str =
+            r#"{"jsonrpc":"2.0","method":"x-custom/frobnicate","params":{"x":1},"id":99}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Request(r) => {
+                assert_eq!(r.method, "x-custom/frobnicate");
+                assert_eq!(r.params, Some(json!({"x": 1})));
+            }
+            _ => panic!("Expected Request variant"),
+        }
+    }
+
+    /// EC-TRANS-009: Non-UTF8-safe content in string fields.
+    ///
+    /// JSON itself requires valid Unicode, so truly invalid bytes cannot appear
+    /// in well-formed JSON. Instead we test Unicode edge cases: embedded null,
+    /// surrogate-pair emoji, and control characters within JSON strings.
+    #[test]
+    fn test_binary_in_string_field() {
+        // Embedded escaped null character in method name
+        let json_str = r#"{"jsonrpc":"2.0","method":"test\u0000method","id":1}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match &msg {
+            JsonRpcMessage::Request(r) => {
+                assert!(
+                    r.method.contains('\0'),
+                    "method should contain null byte"
+                );
+            }
+            _ => panic!("Expected Request variant"),
+        }
+
+        // Emoji (multi-byte UTF-8) in params
+        let json_str = r#"{"jsonrpc":"2.0","method":"test","params":{"text":"Hello 🌍🔥"},"id":2}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        match msg {
+            JsonRpcMessage::Request(r) => {
+                let text = r.params.unwrap()["text"].as_str().unwrap().to_string();
+                assert!(text.contains("🌍"));
+                assert!(text.contains("🔥"));
+            }
+            _ => panic!("Expected Request variant"),
+        }
+
+        // Escaped control characters
+        let json_str =
+            r#"{"jsonrpc":"2.0","method":"test","params":{"data":"\t\n\r"},"id":3}"#;
+        let msg: JsonRpcMessage = serde_json::from_str(json_str).unwrap();
+        assert!(matches!(msg, JsonRpcMessage::Request(_)));
+    }
+
+    /// Serialize then deserialize a request with complex params, verifying
+    /// full round-trip fidelity (complements the existing basic round-trip test
+    /// with more complex nested data).
+    #[test]
+    fn test_request_complex_round_trip() {
+        let original = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "calculator",
+                "arguments": {
+                    "expression": "2 + 2",
+                    "nested": [1, null, true, {"deep": "value"}],
+                    "empty_obj": {},
+                    "empty_arr": []
+                }
+            })),
+            id: json!("req-abc-123"),
+        });
+
+        let serialized = serde_json::to_string(&original).unwrap();
+        let deserialized: JsonRpcMessage = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(original, deserialized);
+
+        // Also verify via Value comparison for structural equality
+        let original_value = serde_json::to_value(&original).unwrap();
+        let deserialized_value = serde_json::to_value(&deserialized).unwrap();
+        assert_eq!(original_value, deserialized_value);
+    }
 }

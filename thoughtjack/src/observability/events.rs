@@ -509,4 +509,177 @@ mod tests {
         emitter.emit(sample_event());
         assert_eq!(emitter.event_count(), 1);
     }
+
+    #[test]
+    fn test_run_summary_display() {
+        let summary = RunSummary {
+            requests_handled: 42,
+            responses_sent: 40,
+            phase_transitions: 3,
+            attacks_triggered: 2,
+            uptime_secs: 12.5,
+        };
+        let display = format!("{summary}");
+        assert_eq!(
+            display,
+            "requests=42 responses=40 transitions=3 attacks=2 uptime=12.5s"
+        );
+    }
+
+    #[test]
+    fn test_run_summary_display_zero_values() {
+        let summary = RunSummary {
+            requests_handled: 0,
+            responses_sent: 0,
+            phase_transitions: 0,
+            attacks_triggered: 0,
+            uptime_secs: 0.0,
+        };
+        let display = format!("{summary}");
+        assert_eq!(
+            display,
+            "requests=0 responses=0 transitions=0 attacks=0 uptime=0.0s"
+        );
+    }
+
+    #[test]
+    fn test_run_summary_serialize() {
+        let summary = RunSummary {
+            requests_handled: 10,
+            responses_sent: 8,
+            phase_transitions: 2,
+            attacks_triggered: 1,
+            uptime_secs: 5.5,
+        };
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["requests_handled"], 10);
+        assert_eq!(json["responses_sent"], 8);
+        assert_eq!(json["phase_transitions"], 2);
+        assert_eq!(json["attacks_triggered"], 1);
+        assert_eq!(json["uptime_secs"], 5.5);
+    }
+
+    #[test]
+    fn test_event_serialize_server_started() {
+        let event = sample_event();
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "ServerStarted");
+        assert_eq!(json["server_name"], "test-server");
+        assert_eq!(json["transport"], "stdio");
+    }
+
+    #[test]
+    fn test_event_serialize_attack_triggered() {
+        let event = Event::AttackTriggered {
+            timestamp: DateTime::parse_from_rfc3339("2025-02-04T10:15:30Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            attack_type: "rug_pull".to_owned(),
+            details: "Tool description changed".to_owned(),
+            phase: "exploit".to_owned(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "AttackTriggered");
+        assert_eq!(json["attack_type"], "rug_pull");
+        assert_eq!(json["details"], "Tool description changed");
+        assert_eq!(json["phase"], "exploit");
+    }
+
+    #[test]
+    fn test_stop_reason_debug() {
+        // All StopReason variants have Debug
+        let variants = [
+            StopReason::Completed,
+            StopReason::Interrupted,
+            StopReason::Terminated,
+            StopReason::TerminalPhase,
+            StopReason::Error,
+        ];
+        for variant in &variants {
+            let debug_str = format!("{variant:?}");
+            assert!(!debug_str.is_empty(), "Debug output should not be empty");
+        }
+    }
+
+    #[test]
+    fn test_trigger_info_serialize() {
+        let trigger = TriggerInfo {
+            kind: "event".to_owned(),
+            event: Some("tools/call".to_owned()),
+            count: Some(5),
+        };
+        let json = serde_json::to_value(&trigger).unwrap();
+        assert_eq!(json["kind"], "event");
+        assert_eq!(json["event"], "tools/call");
+        assert_eq!(json["count"], 5);
+
+        // Also verify skip_serializing_if works for None fields
+        let trigger_minimal = TriggerInfo {
+            kind: "timer".to_owned(),
+            event: None,
+            count: None,
+        };
+        let json_minimal = serde_json::to_value(&trigger_minimal).unwrap();
+        assert_eq!(json_minimal["kind"], "timer");
+        assert!(json_minimal.get("event").is_none(), "None event should be skipped");
+        assert!(json_minimal.get("count").is_none(), "None count should be skipped");
+    }
+
+    #[test]
+    fn test_empty_server_lifecycle_events() {
+        // EC-OBS-011: emit ServerStarted and ServerStopped, verify 2 JSONL entries.
+        let tw = TestWriter::new();
+        let emitter = EventEmitter::new(Box::new(tw.clone()));
+
+        emitter.emit(Event::ServerStarted {
+            timestamp: Utc::now(),
+            server_name: "lifecycle-test".to_owned(),
+            transport: "stdio".to_owned(),
+        });
+        emitter.emit(Event::ServerStopped {
+            timestamp: Utc::now(),
+            reason: StopReason::Completed,
+            summary: None,
+        });
+
+        let contents = tw.contents();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2, "expected exactly 2 JSONL entries");
+
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["type"], "ServerStarted");
+
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(second["type"], "ServerStopped");
+    }
+
+    #[test]
+    fn test_timestamp_is_utc() {
+        // EC-OBS-018: verify that emitted event timestamps are in UTC.
+        let tw = TestWriter::new();
+        let emitter = EventEmitter::new(Box::new(tw.clone()));
+
+        emitter.emit(Event::ServerStarted {
+            timestamp: Utc::now(),
+            server_name: "utc-test".to_owned(),
+            transport: "stdio".to_owned(),
+        });
+
+        let contents = tw.contents();
+        let parsed: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        let ts = parsed["timestamp"]
+            .as_str()
+            .expect("timestamp field should be a string");
+        assert!(
+            ts.ends_with('Z') || ts.contains("+00:00"),
+            "timestamp should be in UTC (ends with Z or +00:00), got: {ts}"
+        );
+    }
+
+    #[test]
+    fn test_metrics_with_no_requests() {
+        // EC-OBS-019: recording metrics with zero/no-op values should not panic.
+        use crate::observability::metrics::record_request;
+        record_request("tools/call");
+    }
 }

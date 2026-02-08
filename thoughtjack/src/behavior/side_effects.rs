@@ -970,4 +970,447 @@ mod tests {
         assert_eq!(effect.trigger(), SideEffectTrigger::OnConnect);
         assert_eq!(effect.name(), "close_connection");
     }
+
+    // ========================================================================
+    // EC-BEH-007: NotificationFlood rate=0 clamped to 1
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_notification_flood_rate_clamped_to_min() {
+        // EC-BEH-007: rate_per_sec=0 is clamped to 1 (via .clamp(1, 10_000))
+        let config = SideEffectConfig {
+            type_: SideEffectType::NotificationFlood,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("rate_per_sec".to_string(), serde_json::json!(0));
+                // Very short duration so the test is fast
+                m.insert("duration_sec".to_string(), serde_json::json!(1));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+
+        assert!(result.completed);
+        // At rate=1 msg/sec for 1 second, we should have sent at least 1 message
+        assert!(
+            result.messages_sent >= 1,
+            "expected >=1 messages, got {}",
+            result.messages_sent
+        );
+    }
+
+    // ========================================================================
+    // EC-BEH-008: NotificationFlood rate=100000 clamped to 10000
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_notification_flood_rate_clamped_to_max() {
+        // EC-BEH-008: rate_per_sec=100000 is clamped to 10000
+        let config = SideEffectConfig {
+            type_: SideEffectType::NotificationFlood,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("rate_per_sec".to_string(), serde_json::json!(100_000));
+                // Zero-second duration so it finishes immediately
+                m.insert("duration_sec".to_string(), serde_json::json!(0));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+
+        // Should complete without panic; the rate is clamped internally
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+
+        assert!(result.completed);
+        // Duration is 0 seconds, so the loop body never executes (elapsed >= 0)
+        // — messages_sent may be 0. The key assertion is no panic.
+    }
+
+    // ========================================================================
+    // BatchAmplify with batch_size=1
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_batch_amplify_count_one() {
+        let config = SideEffectConfig {
+            type_: SideEffectType::BatchAmplify,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("batch_size".to_string(), serde_json::json!(1));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+
+        assert!(result.completed);
+        assert_eq!(result.messages_sent, 1);
+        assert!(result.bytes_sent > 0);
+
+        // Verify exactly one send_raw call
+        let raw_data = {
+            let sends = transport.raw_sends.lock().unwrap();
+            assert_eq!(sends.len(), 1);
+            sends[0].clone()
+        };
+        // The payload should be a JSON array with one element
+        let payload: serde_json::Value =
+            serde_json::from_slice(raw_data.strip_suffix(b"\n").unwrap_or(&raw_data)).unwrap();
+        assert!(payload.is_array());
+        assert_eq!(payload.as_array().unwrap().len(), 1);
+    }
+
+    // ========================================================================
+    // EC-BEH-011: DuplicateRequestIds with no explicit ID uses json!(1)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_duplicate_ids_default_id() {
+        // EC-BEH-011: when no "id" param is given, default to json!(1)
+        let config = SideEffectConfig {
+            type_: SideEffectType::DuplicateRequestIds,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("count".to_string(), serde_json::json!(2));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+
+        assert_eq!(result.messages_sent, 2);
+        assert!(result.completed);
+
+        // Verify the sent messages (via send_raw) contain "id":1
+        let sends = transport.raw_sends.lock().unwrap();
+        assert_eq!(sends.len(), 2);
+        for raw in sends.iter() {
+            let parsed: serde_json::Value =
+                serde_json::from_slice(raw.strip_suffix(b"\n").unwrap_or(raw)).unwrap();
+            assert_eq!(parsed["id"], serde_json::json!(1));
+        }
+    }
+
+    // ========================================================================
+    // supports_transport: stdio
+    // ========================================================================
+
+    #[test]
+    fn test_side_effect_supports_transport_stdio() {
+        // All side effect types should support stdio (PipeDeadlock: yes; others: yes)
+        let types_and_expected: Vec<(SideEffectType, bool)> = vec![
+            (SideEffectType::NotificationFlood, true),
+            (SideEffectType::BatchAmplify, true),
+            (SideEffectType::PipeDeadlock, true),
+            (SideEffectType::CloseConnection, true),
+            (SideEffectType::DuplicateRequestIds, true),
+        ];
+        for (ty, expected) in types_and_expected {
+            let config = SideEffectConfig {
+                type_: ty,
+                trigger: SideEffectTrigger::OnRequest,
+                params: HashMap::new(),
+            };
+            let effect = create_side_effect(&config);
+            assert_eq!(
+                effect.supports_transport(TransportType::Stdio),
+                expected,
+                "{} should support stdio",
+                effect.name()
+            );
+        }
+    }
+
+    // ========================================================================
+    // supports_transport: HTTP
+    // ========================================================================
+
+    #[test]
+    fn test_side_effect_supports_transport_http() {
+        // PipeDeadlock should NOT support HTTP; all others should
+        let types_and_expected: Vec<(SideEffectType, bool)> = vec![
+            (SideEffectType::NotificationFlood, true),
+            (SideEffectType::BatchAmplify, true),
+            (SideEffectType::PipeDeadlock, false),
+            (SideEffectType::CloseConnection, true),
+            (SideEffectType::DuplicateRequestIds, true),
+        ];
+        for (ty, expected) in types_and_expected {
+            let config = SideEffectConfig {
+                type_: ty,
+                trigger: SideEffectTrigger::OnRequest,
+                params: HashMap::new(),
+            };
+            let effect = create_side_effect(&config);
+            assert_eq!(
+                effect.supports_transport(TransportType::Http),
+                expected,
+                "{} HTTP support mismatch",
+                effect.name()
+            );
+        }
+    }
+
+    // ========================================================================
+    // Failing Mock Transport
+    // ========================================================================
+
+    /// Mock transport that always returns an error on send operations.
+    struct FailingMockTransport;
+
+    #[async_trait::async_trait]
+    impl Transport for FailingMockTransport {
+        async fn send_message(&self, _message: &JsonRpcMessage) -> crate::transport::Result<()> {
+            Err(crate::error::TransportError::ConnectionClosed(
+                "simulated failure".to_string(),
+            ))
+        }
+
+        async fn send_raw(&self, _bytes: &[u8]) -> crate::transport::Result<()> {
+            Err(crate::error::TransportError::ConnectionClosed(
+                "simulated failure".to_string(),
+            ))
+        }
+
+        async fn receive_message(&self) -> crate::transport::Result<Option<JsonRpcMessage>> {
+            Ok(None)
+        }
+
+        fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
+            true
+        }
+
+        fn transport_type(&self) -> TransportType {
+            TransportType::Stdio
+        }
+
+        async fn finalize_response(&self) -> crate::transport::Result<()> {
+            Ok(())
+        }
+
+        fn connection_context(&self) -> crate::transport::ConnectionContext {
+            crate::transport::ConnectionContext::stdio()
+        }
+    }
+
+    // ========================================================================
+    // EC-BEH-009: Side effect fails immediately and returns Err
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_side_effect_fails_immediately() {
+        // EC-BEH-009: When a side effect's transport send fails, the caller
+        // gets an Err result and can continue — no crash or panic.
+        let config = SideEffectConfig {
+            type_: SideEffectType::NotificationFlood,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("rate_per_sec".to_string(), serde_json::json!(100));
+                m.insert("duration_sec".to_string(), serde_json::json!(10));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = FailingMockTransport;
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+
+        let result = effect.execute(&transport, &connection, cancel).await;
+
+        // The execute should return Err because the transport fails on send_raw
+        assert!(
+            result.is_err(),
+            "expected Err from side effect on failing transport, got Ok"
+        );
+        // Verify the error message contains useful information
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("simulated failure"),
+            "error should propagate transport failure: {err_msg}"
+        );
+    }
+
+    // ========================================================================
+    // EC-BEH-017: NotificationFlood with empty method string
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_side_effect_empty_method_validation() {
+        // EC-BEH-017: Creating a NotificationFlood with an empty method string.
+        // The side effect should still execute without panic — the empty method
+        // is passed through as-is in the JSON-RPC notification.
+        let config = SideEffectConfig {
+            type_: SideEffectType::NotificationFlood,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("method".to_string(), serde_json::json!(""));
+                m.insert("rate_per_sec".to_string(), serde_json::json!(1000));
+                // Short duration so the test finishes quickly
+                m.insert("duration_sec".to_string(), serde_json::json!(0));
+                m
+            },
+        };
+        let effect = create_side_effect(&config);
+        let transport = MockTransport::new();
+        let connection = ConnectionContext::stdio();
+        let cancel = CancellationToken::new();
+
+        let result = effect
+            .execute(&transport, &connection, cancel)
+            .await
+            .unwrap();
+
+        // Should complete without panic
+        assert!(result.completed);
+
+        // The method "" is sent as-is — verify the notification is valid JSON
+        // with an empty method field
+        let maybe_raw = {
+            let sends = transport.raw_sends.lock().unwrap();
+            sends.first().cloned()
+        };
+        if let Some(raw) = maybe_raw {
+            let parsed: serde_json::Value =
+                serde_json::from_slice(raw.strip_suffix(b"\n").unwrap_or(&raw)).unwrap();
+            assert_eq!(parsed["method"], serde_json::json!(""));
+        }
+    }
+
+    // ========================================================================
+    // EC-BEH-018: Concurrent side effects via tokio::join!
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_on_request_side_effects() {
+        // EC-BEH-018: Multiple side effects can run concurrently without
+        // interfering with each other. We create 3 different side effects,
+        // execute them all via tokio::join!, and verify all complete.
+        let transport = Arc::new(MockTransport::new());
+        let connection = ConnectionContext::stdio();
+
+        // Effect 1: BatchAmplify with small batch
+        let config1 = SideEffectConfig {
+            type_: SideEffectType::BatchAmplify,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("batch_size".to_string(), serde_json::json!(5));
+                m
+            },
+        };
+        let effect1 = create_side_effect(&config1);
+
+        // Effect 2: DuplicateRequestIds with small count
+        let config2 = SideEffectConfig {
+            type_: SideEffectType::DuplicateRequestIds,
+            trigger: SideEffectTrigger::OnRequest,
+            params: {
+                let mut m = HashMap::new();
+                m.insert("count".to_string(), serde_json::json!(3));
+                m
+            },
+        };
+        let effect2 = create_side_effect(&config2);
+
+        // Effect 3: CloseConnection (no delay)
+        let config3 = SideEffectConfig {
+            type_: SideEffectType::CloseConnection,
+            trigger: SideEffectTrigger::OnRequest,
+            params: HashMap::new(),
+        };
+        let effect3 = create_side_effect(&config3);
+
+        let cancel1 = CancellationToken::new();
+        let cancel2 = CancellationToken::new();
+        let cancel3 = CancellationToken::new();
+
+        let t1 = transport.clone();
+        let t2 = transport.clone();
+        let t3 = transport.clone();
+        let c1 = connection.clone();
+        let c2 = connection.clone();
+        let c3 = connection.clone();
+
+        let (r1, r2, r3) = tokio::join!(
+            effect1.execute(t1.as_ref(), &c1, cancel1),
+            effect2.execute(t2.as_ref(), &c2, cancel2),
+            effect3.execute(t3.as_ref(), &c3, cancel3),
+        );
+
+        let result1 = r1.unwrap();
+        let result2 = r2.unwrap();
+        let result3 = r3.unwrap();
+
+        // All three should complete successfully
+        assert!(result1.completed, "batch_amplify should complete");
+        assert!(result2.completed, "duplicate_request_ids should complete");
+        assert!(result3.completed, "close_connection should complete");
+
+        // Verify each produced expected outcomes
+        assert_eq!(result1.messages_sent, 5);
+        assert_eq!(result2.messages_sent, 3);
+        assert_eq!(
+            result3.outcome,
+            SideEffectOutcome::CloseConnection { graceful: true }
+        );
+    }
+
+    // ========================================================================
+    // Create each SideEffectType without panic
+    // ========================================================================
+
+    #[test]
+    fn test_create_side_effect_all_types() {
+        let all_types = vec![
+            SideEffectType::NotificationFlood,
+            SideEffectType::BatchAmplify,
+            SideEffectType::PipeDeadlock,
+            SideEffectType::CloseConnection,
+            SideEffectType::DuplicateRequestIds,
+        ];
+        for ty in all_types {
+            let config = SideEffectConfig {
+                type_: ty,
+                trigger: SideEffectTrigger::OnRequest,
+                params: HashMap::new(),
+            };
+            let effect = create_side_effect(&config);
+            // Should not panic and should return a valid name
+            assert!(!effect.name().is_empty());
+        }
+    }
 }

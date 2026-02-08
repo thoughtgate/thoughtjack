@@ -107,21 +107,21 @@ mod tests {
 
     #[test]
     fn test_auto_select_phased() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 phases:
   - name: phase1
 baseline:
   tools: []
-"#;
+";
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(auto_select(&config), DiagramType::State);
     }
 
     #[test]
     fn test_auto_select_simple() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 tools:
@@ -134,7 +134,7 @@ tools:
       content:
         - type: text
           text: hello
-"#;
+";
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(auto_select(&config), DiagramType::Flowchart);
     }

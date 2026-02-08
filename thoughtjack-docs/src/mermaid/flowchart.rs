@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_simple_flowchart() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 tools:
@@ -113,7 +113,7 @@ tools:
       content:
         - type: text
           text: hello
-"#;
+";
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let renderer = FlowchartRenderer;
@@ -127,7 +127,7 @@ tools:
 
     #[test]
     fn test_behavioral_flowchart() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 tools:
@@ -148,7 +148,7 @@ behavior:
     - type: notification_flood
       trigger: on_connect
       rate_per_sec: 100
-"#;
+";
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let renderer = FlowchartRenderer;
@@ -161,10 +161,10 @@ behavior:
 
     #[test]
     fn test_empty_flowchart() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
-"#;
+";
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let renderer = FlowchartRenderer;

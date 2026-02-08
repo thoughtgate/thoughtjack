@@ -384,8 +384,47 @@ mod tests {
         let generator = AnsiEscapeGenerator::new(&params, &default_limits()).unwrap();
         let data = generator.generate().unwrap().into_bytes();
         // All ANSI sequences start with ESC (0x1B)
+        #[allow(clippy::naive_bytecount)]
         let esc_count = data.iter().filter(|&&b| b == 0x1B).count();
         assert!(esc_count >= 10, "expected >= 10 ESC chars, got {esc_count}");
+    }
+
+    // EC-GEN-006: empty sequences list produces empty output
+    #[test]
+    fn test_empty_sequences_rejected() {
+        let params = make_params(vec![("sequences", json!([])), ("count", json!(50))]);
+        let generator = AnsiEscapeGenerator::new(&params, &default_limits()).unwrap();
+        let data = generator.generate().unwrap().into_bytes();
+        // Empty sequences list means nothing to generate
+        assert!(
+            data.is_empty(),
+            "empty sequences should produce empty output"
+        );
+        assert_eq!(
+            generator.estimated_size(),
+            0,
+            "estimated size should be 0 for empty sequences"
+        );
+    }
+
+    // Verify output contains ESC byte (0x1B) for all sequence types
+    #[test]
+    fn test_produces_ansi_escape_sequences() {
+        for seq_type in &["cursor_move", "color", "title", "hyperlink", "clear"] {
+            let params = make_params(vec![
+                ("sequences", json!([seq_type])),
+                ("count", json!(5)),
+                ("seed", json!(0)),
+            ]);
+            let generator = AnsiEscapeGenerator::new(&params, &default_limits()).unwrap();
+            let data = generator.generate().unwrap().into_bytes();
+            #[allow(clippy::naive_bytecount)]
+            let esc_count = data.iter().filter(|&&b| b == 0x1B).count();
+            assert!(
+                esc_count > 0,
+                "sequence type '{seq_type}' should produce at least one ESC (0x1B) byte"
+            );
+        }
     }
 
     // Unknown sequence types are silently ignored

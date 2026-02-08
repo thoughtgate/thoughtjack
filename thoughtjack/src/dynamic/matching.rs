@@ -573,6 +573,123 @@ mod tests {
         assert!(!cond.matches(Some("present")));
     }
 
+    // EC-DYN-024: resource URI pattern match using Contains
+    #[test]
+    fn test_resource_uri_pattern_match() {
+        let cond = MatchCondition::Contains(".env".to_string());
+        assert!(cond.matches(Some("config.env")));
+        assert!(!cond.matches(Some("config.yaml")));
+        // Also matches in the middle of the string
+        assert!(cond.matches(Some("/path/to/.env.local")));
+        // Does not match without the dot
+        assert!(!cond.matches(Some("environment")));
+    }
+
+    // EC-DYN-026: prompt argument match via WhenClause and TemplateContext
+    #[test]
+    fn test_prompt_argument_match() {
+        let ctx = TemplateContext {
+            args: json!({"topic": "security audit", "verbosity": "high"}),
+            item_name: "analyze_code".to_string(),
+            item_type: ItemType::Prompt,
+            call_count: 1,
+            phase_name: "baseline".to_string(),
+            phase_index: -1,
+            request_id: Some(json!(1)),
+            request_method: "prompts/get".to_string(),
+            connection_id: 1,
+            resource_name: None,
+            resource_mime_type: None,
+        };
+        // Match on a prompt argument value
+        let clause = WhenClause {
+            conditions: vec![
+                (
+                    "args.topic".into(),
+                    MatchCondition::Contains("security".into()),
+                ),
+                (
+                    "prompt.name".into(),
+                    MatchCondition::compile(&MatchConditionConfig::Single(
+                        "analyze_*".into(),
+                    ))
+                    .unwrap(),
+                ),
+            ],
+        };
+        assert!(clause.matches(&ctx));
+
+        // Should not match with a different prompt argument
+        let clause_no_match = WhenClause {
+            conditions: vec![(
+                "args.topic".into(),
+                MatchCondition::Contains("performance".into()),
+            )],
+        };
+        assert!(!clause_no_match.matches(&ctx));
+    }
+
+    // EC-DYN-027: resource subscription trigger via match on request method
+    #[test]
+    fn test_resource_subscription_trigger() {
+        // Simulate a resource subscription event by matching on request.method
+        // containing "subscribe" and the resource URI
+        let ctx = TemplateContext {
+            args: json!({}),
+            item_name: "file:///var/log/app.log".to_string(),
+            item_type: ItemType::Resource,
+            call_count: 1,
+            phase_name: "baseline".to_string(),
+            phase_index: -1,
+            request_id: Some(json!(1)),
+            request_method: "resources/subscribe".to_string(),
+            connection_id: 1,
+            resource_name: Some("App log".to_string()),
+            resource_mime_type: Some("text/plain".to_string()),
+        };
+
+        // Match block that triggers on subscribe requests for log files
+        let block = MatchBlock {
+            branches: vec![
+                CompiledBranch::When {
+                    clause: WhenClause {
+                        conditions: vec![
+                            (
+                                "request.method".into(),
+                                MatchCondition::Contains("subscribe".into()),
+                            ),
+                            (
+                                "resource.uri".into(),
+                                MatchCondition::Suffix(".log".into()),
+                            ),
+                        ],
+                    },
+                    index: 0,
+                },
+                CompiledBranch::Default { index: 1 },
+            ],
+        };
+
+        // Should match the subscribe branch
+        assert_eq!(block.evaluate(&ctx), Some(0));
+
+        // Non-subscribe request should fall through to default
+        let ctx_read = TemplateContext {
+            args: json!({}),
+            item_name: "file:///var/log/app.log".to_string(),
+            item_type: ItemType::Resource,
+            call_count: 1,
+            phase_name: "baseline".to_string(),
+            phase_index: -1,
+            request_id: Some(json!(2)),
+            request_method: "resources/read".to_string(),
+            connection_id: 1,
+            resource_name: Some("App log".to_string()),
+            resource_mime_type: Some("text/plain".to_string()),
+        };
+        assert_eq!(block.evaluate(&ctx_read), Some(1));
+    }
+
     // Numeric comparison with non-numeric string
     #[test]
     fn test_gt_non_numeric_returns_false() {

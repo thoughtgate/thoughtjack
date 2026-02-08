@@ -415,4 +415,40 @@ mod tests {
         let payload = GeneratedPayload::Buffered(data.clone());
         assert_eq!(payload.into_bytes(), data);
     }
+
+    // EC-GEN-020: Concurrent generation from multiple threads
+    #[test]
+    fn test_concurrent_generation() {
+        use std::sync::Arc;
+
+        let mut params = HashMap::new();
+        params.insert("bytes".to_string(), json!(256));
+        params.insert("charset".to_string(), json!("ascii"));
+        params.insert("seed".to_string(), json!(42));
+        let config = make_config(GeneratorType::Garbage, params);
+        let generator: Arc<dyn PayloadGenerator> =
+            Arc::from(create_generator(&config, &default_limits()).unwrap());
+
+        // Use std::thread::scope for structured concurrency — all threads
+        // are guaranteed to join before the scope exits.
+        std::thread::scope(|s| {
+            // Collect is needed: s.spawn borrows s, preventing chained iteration.
+            #[allow(clippy::needless_collect)]
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let gen_ref = Arc::clone(&generator);
+                    s.spawn(move || gen_ref.generate().unwrap().into_bytes())
+                })
+                .collect();
+
+            let results: Vec<Vec<u8>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+            // Same seed + same config = identical output from both threads
+            assert_eq!(
+                results[0], results[1],
+                "concurrent calls with same seed should produce identical output"
+            );
+            assert_eq!(results[0].len(), 256);
+        });
+    }
 }

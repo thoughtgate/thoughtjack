@@ -140,4 +140,61 @@ mod tests {
     fn verbosity_255_is_trace() {
         assert_eq!(verbosity_to_directive(255), "trace");
     }
+
+    #[test]
+    fn test_log_format_debug() {
+        // LogFormat::Human has a Debug impl
+        let human = LogFormat::Human;
+        let debug_str = format!("{human:?}");
+        assert_eq!(debug_str, "Human");
+    }
+
+    #[test]
+    fn test_log_format_json_ne_human() {
+        assert_ne!(LogFormat::Json, LogFormat::Human);
+    }
+
+    #[test]
+    fn test_verbosity_saturates_at_255() {
+        // Edge case: maximum u8 value should still resolve to "trace"
+        assert_eq!(verbosity_to_directive(255), "trace");
+        // Also verify all values >= 3 saturate
+        for v in 3..=255 {
+            assert_eq!(
+                verbosity_to_directive(v),
+                "trace",
+                "verbosity {v} should saturate to trace"
+            );
+        }
+    }
+
+    #[test]
+    fn test_multiple_verbosity_flags() {
+        // EC-OBS-015: three -v flags (verbosity=3) should yield trace-level directive.
+        assert_eq!(verbosity_to_directive(3), "trace");
+    }
+
+    #[test]
+    fn test_quiet_and_verbose_conflict() {
+        // EC-OBS-016: quiet mode corresponds to verbosity 0, which maps to warn.
+        // The actual CLI conflict detection is in args.rs; here we verify
+        // that the quiet default (verbosity 0) produces a warn-level directive.
+        assert_eq!(verbosity_to_directive(0), "warn");
+    }
+
+    #[test]
+    fn test_unicode_in_log_messages() {
+        // EC-OBS-007: tracing macros must handle Unicode content without panicking.
+        tracing::info!("CJK: \u{4F60}\u{597D}\u{4E16}\u{754C} Emoji: \u{1F512}");
+        tracing::warn!("RTL: \u{0645}\u{0631}\u{062D}\u{0628}\u{0627}");
+        tracing::debug!("Mixed: caf\u{00E9} na\u{00EF}ve \u{00FC}ber");
+    }
+
+    #[test]
+    fn test_invalid_log_level_fallback() {
+        // EC-OBS-003: extreme verbosity value saturates at trace.
+        assert_eq!(verbosity_to_directive(255), "trace");
+        assert_eq!(verbosity_to_directive(128), "trace");
+        assert_eq!(verbosity_to_directive(42), "trace");
+    }
 }

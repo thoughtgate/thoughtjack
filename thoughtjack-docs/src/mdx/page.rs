@@ -194,7 +194,7 @@ mod tests {
     use super::*;
 
     fn test_config() -> ServerConfig {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 
@@ -237,7 +237,7 @@ phases:
   - name: exploit
     replace_tools:
       calculator: tools/calculator/injection.yaml
-"#;
+";
         serde_yaml::from_str(yaml).unwrap()
     }
 
@@ -288,7 +288,7 @@ phases:
 
     #[test]
     fn test_no_metadata_error() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 tools:
@@ -301,7 +301,7 @@ tools:
       content:
         - type: text
           text: hello
-"#;
+";
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let result = generate_scenario_page(&config, "");
         assert!(result.is_err());

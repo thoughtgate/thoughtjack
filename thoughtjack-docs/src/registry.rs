@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_parse_registry() {
-        let yaml = r#"
+        let yaml = r"
 site:
   title: ThoughtJack Attack Catalog
   description: Reference catalog of MCP attack scenarios
@@ -195,7 +195,7 @@ categories:
     order: 2
     scenarios:
       - scenarios/phased/rug-pull.yaml
-"#;
+";
 
         let registry = parse_registry(yaml).unwrap();
         assert_eq!(registry.site.title, "ThoughtJack Attack Catalog");
@@ -207,7 +207,7 @@ categories:
 
     #[test]
     fn test_empty_category_detection() {
-        let yaml = r#"
+        let yaml = r"
 site:
   title: Test
   description: Test
@@ -220,7 +220,7 @@ categories:
     name: Full Category
     scenarios:
       - scenarios/test.yaml
-"#;
+";
 
         let registry = parse_registry(yaml).unwrap();
         let validation = validate_registry(
@@ -234,7 +234,7 @@ categories:
 
     #[test]
     fn test_orphan_detection() {
-        let yaml = r#"
+        let yaml = r"
 site:
   title: Test
   description: Test
@@ -244,7 +244,7 @@ categories:
     name: Test
     scenarios:
       - scenarios/registered.yaml
-"#;
+";
 
         let registry = parse_registry(yaml).unwrap();
         let mut metadata_files = HashSet::new();
@@ -265,7 +265,7 @@ categories:
 
     #[test]
     fn test_include_targets_not_orphans() {
-        let yaml = r#"
+        let yaml = r"
 site:
   title: Test
   description: Test
@@ -274,7 +274,7 @@ categories:
   - id: test
     name: Test
     scenarios: []
-"#;
+";
 
         let registry = parse_registry(yaml).unwrap();
         let mut include_targets = HashSet::new();
@@ -294,7 +294,7 @@ categories:
 
     #[test]
     fn test_all_scenario_paths() {
-        let yaml = r#"
+        let yaml = r"
 site:
   title: Test
   description: Test
@@ -309,7 +309,7 @@ categories:
     name: B
     scenarios:
       - s3.yaml
-"#;
+";
 
         let registry = parse_registry(yaml).unwrap();
         let paths = all_scenario_paths(&registry);

@@ -171,8 +171,8 @@ pub(crate) mod tests {
     use super::*;
 
     /// Shared test fixture: two scenarios with overlapping metadata.
-    pub(crate) fn test_configs_from_yaml() -> Vec<ServerConfig> {
-        let yaml1 = r#"
+    pub fn test_configs_from_yaml() -> Vec<ServerConfig> {
+        let yaml1 = r"
 server:
   name: test1
 metadata:
@@ -199,9 +199,9 @@ metadata:
   tags: [temporal]
 baseline:
   tools: []
-"#;
+";
 
-        let yaml2 = r#"
+        let yaml2 = r"
 server:
   name: test2
 metadata:
@@ -229,7 +229,7 @@ metadata:
   tags: [dos]
 baseline:
   tools: []
-"#;
+";
 
         vec![
             serde_yaml::from_str(yaml1).unwrap(),
@@ -275,7 +275,7 @@ baseline:
 
     #[test]
     fn test_config_without_metadata_skipped() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: no-metadata
 tools:
@@ -288,7 +288,7 @@ tools:
       content:
         - type: text
           text: hello
-"#;
+";
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let matrix = build_coverage_matrix(&[config]);
         assert!(matrix.mitre_tactics.is_empty());

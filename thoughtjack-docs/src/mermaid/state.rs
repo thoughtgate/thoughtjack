@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_basic_phased_render() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 
@@ -201,7 +201,7 @@ phases:
   - name: exploit
     replace_tools:
       calculator: tools/calculator/injection.yaml
-"#;
+";
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let renderer = StateDiagramRenderer;
@@ -216,7 +216,7 @@ phases:
 
     #[test]
     fn test_three_phase_render() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 
@@ -239,7 +239,7 @@ phases:
   - name: exploit
     replace_tools:
       calculator: tools/calculator/injection.yaml
-"#;
+";
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let renderer = StateDiagramRenderer;
@@ -256,7 +256,7 @@ phases:
 
     #[test]
     fn test_empty_phases_error() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 
@@ -264,7 +264,7 @@ baseline:
   tools: []
 
 phases: []
-"#;
+";
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let renderer = StateDiagramRenderer;
@@ -273,7 +273,7 @@ phases: []
 
     #[test]
     fn test_no_phases_error() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
 
@@ -287,7 +287,7 @@ tools:
       content:
         - type: text
           text: hello
-"#;
+";
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let renderer = StateDiagramRenderer;

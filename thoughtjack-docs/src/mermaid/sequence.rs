@@ -156,10 +156,10 @@ tools:
 
     #[test]
     fn test_sequence_no_tools_error() {
-        let yaml = r#"
+        let yaml = r"
 server:
   name: test
-"#;
+";
 
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let renderer = SequenceDiagramRenderer;

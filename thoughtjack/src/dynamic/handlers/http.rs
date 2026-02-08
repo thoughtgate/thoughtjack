@@ -156,6 +156,29 @@ mod tests {
         assert!(matches!(result.unwrap_err(), HandlerError::ToolError(_)));
     }
 
+    // EC-DYN-016: handler returns error object with details preserved
+    #[test]
+    fn test_handler_returns_error_object() {
+        let error_payload = json!({
+            "code": -32600,
+            "message": "invalid request",
+            "data": {"detail": "missing required field"}
+        });
+        let resp = HandlerResponse::Error {
+            error: error_payload,
+        };
+        let result = parse_handler_response(resp);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::ToolError(val) => {
+                assert_eq!(val["code"], -32600);
+                assert_eq!(val["message"], "invalid request");
+                assert_eq!(val["data"]["detail"], "missing required field");
+            }
+            other => panic!("expected ToolError, got {other:?}"),
+        }
+    }
+
     // EC-DYN-021: handler not enabled
     #[tokio::test]
     async fn test_not_enabled() {
