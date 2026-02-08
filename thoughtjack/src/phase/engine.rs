@@ -27,6 +27,25 @@ use super::trigger::{self, TriggerResult};
 /// Implements: TJ-SPEC-003 F-008
 const TIMER_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Minimum allowed timer interval (10ms).
+const TIMER_INTERVAL_MIN_MS: u64 = 10;
+/// Maximum allowed timer interval (5000ms).
+const TIMER_INTERVAL_MAX_MS: u64 = 5000;
+
+/// Reads the timer interval from `THOUGHTJACK_TIMER_INTERVAL_MS` environment variable.
+///
+/// Falls back to [`TIMER_CHECK_INTERVAL`] if not set or invalid.
+/// Clamps the value to `[10, 5000]` ms for safety.
+///
+/// Implements: TJ-SPEC-003 F-008
+fn timer_interval_from_env() -> Duration {
+    std::env::var("THOUGHTJACK_TIMER_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|ms| ms.clamp(TIMER_INTERVAL_MIN_MS, TIMER_INTERVAL_MAX_MS))
+        .map_or(TIMER_CHECK_INTERVAL, Duration::from_millis)
+}
+
 /// Phase engine managing server state and phase transitions.
 ///
 /// Coordinates:
@@ -455,7 +474,7 @@ impl PhaseEngine {
     pub fn start_timer_task(self: &Arc<Self>) -> JoinHandle<()> {
         let engine = Arc::clone(self);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(TIMER_CHECK_INTERVAL);
+            let mut interval = tokio::time::interval(timer_interval_from_env());
             loop {
                 tokio::select! {
                     () = engine.cancel.cancelled() => {
