@@ -1,1 +1,233 @@
-/* ThoughtJack custom styles — populated in commit 3 */
+/* ThoughtJack — Custom CSS for scenario components */
+
+/* ============================================================
+   CSS Custom Properties
+   ============================================================ */
+
+:root {
+  /* Docusaurus theme colors */
+  --ifm-color-primary: #2e8555;
+  --ifm-color-primary-dark: #29784c;
+  --ifm-color-primary-darker: #277148;
+  --ifm-color-primary-darkest: #205d3b;
+  --ifm-color-primary-light: #33925d;
+  --ifm-color-primary-lighter: #359962;
+  --ifm-color-primary-lightest: #3cad6e;
+  --ifm-code-font-size: 95%;
+
+  /* Severity badge colors */
+  --tj-severity-low: #4caf50;
+  --tj-severity-medium: #ff9800;
+  --tj-severity-high: #f44336;
+  --tj-severity-critical: #9c27b0;
+
+  /* Framework pill colors */
+  --tj-pill-mitre-bg: #e3f2fd;
+  --tj-pill-mitre-text: #1565c0;
+  --tj-pill-owasp-bg: #e8f5e9;
+  --tj-pill-owasp-text: #2e7d32;
+  --tj-pill-tag-bg: #f5f5f5;
+  --tj-pill-tag-text: #616161;
+
+  /* Coverage matrix colors */
+  --tj-coverage-covered: #c8e6c9;
+  --tj-coverage-gap: #ffe0b2;
+  --tj-coverage-out-of-scope: #e0e0e0;
+
+  /* Metadata card */
+  --tj-card-border: #e0e0e0;
+  --tj-card-bg: #fafafa;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #25c2a0;
+  --ifm-color-primary-dark: #21af90;
+  --ifm-color-primary-darker: #1fa588;
+  --ifm-color-primary-darkest: #1a8870;
+  --ifm-color-primary-light: #29d5b0;
+  --ifm-color-primary-lighter: #32d8b4;
+  --ifm-color-primary-lightest: #4fddbf;
+
+  --tj-severity-low: #66bb6a;
+  --tj-severity-medium: #ffa726;
+  --tj-severity-high: #ef5350;
+  --tj-severity-critical: #ba68c8;
+
+  --tj-pill-mitre-bg: #1a237e;
+  --tj-pill-mitre-text: #90caf9;
+  --tj-pill-owasp-bg: #1b5e20;
+  --tj-pill-owasp-text: #a5d6a7;
+  --tj-pill-tag-bg: #424242;
+  --tj-pill-tag-text: #bdbdbd;
+
+  --tj-coverage-covered: #2e7d32;
+  --tj-coverage-gap: #e65100;
+  --tj-coverage-out-of-scope: #424242;
+
+  --tj-card-border: #424242;
+  --tj-card-bg: #1e1e1e;
+}
+
+/* ============================================================
+   Severity Badge
+   ============================================================ */
+
+.tj-severity-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tj-severity-badge--low {
+  background-color: var(--tj-severity-low);
+}
+
+.tj-severity-badge--medium {
+  background-color: var(--tj-severity-medium);
+}
+
+.tj-severity-badge--high {
+  background-color: var(--tj-severity-high);
+}
+
+.tj-severity-badge--critical {
+  background-color: var(--tj-severity-critical);
+}
+
+/* ============================================================
+   Mermaid Diagram Container
+   ============================================================ */
+
+.tj-mermaid-container {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 1px solid var(--tj-card-border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.tj-mermaid-title {
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+  color: var(--ifm-color-emphasis-700);
+}
+
+/* ============================================================
+   Framework Mapping Pills
+   ============================================================ */
+
+.tj-mapping {
+  margin: 0.5rem 0;
+}
+
+.tj-mapping-section {
+  margin-bottom: 0.5rem;
+}
+
+.tj-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  margin: 2px 4px;
+  border-radius: 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.tj-pill:hover {
+  opacity: 0.8;
+  text-decoration: none;
+}
+
+.tj-pill--mitre {
+  background-color: var(--tj-pill-mitre-bg);
+  color: var(--tj-pill-mitre-text);
+}
+
+.tj-pill--owasp {
+  background-color: var(--tj-pill-owasp-bg);
+  color: var(--tj-pill-owasp-text);
+}
+
+.tj-pill--tag {
+  background-color: var(--tj-pill-tag-bg);
+  color: var(--tj-pill-tag-text);
+}
+
+/* ============================================================
+   Attack Metadata Card
+   ============================================================ */
+
+.tj-metadata-card {
+  border: 1px solid var(--tj-card-border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0 1.5rem;
+  background: var(--tj-card-bg);
+}
+
+.tj-metadata-card__header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.tj-metadata-card__id {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.tj-metadata-card__section {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--tj-card-border);
+}
+
+/* ============================================================
+   Coverage Matrix
+   ============================================================ */
+
+.tj-coverage-matrix {
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+
+.tj-coverage-matrix table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.tj-coverage-matrix th,
+.tj-coverage-matrix td {
+  border: 1px solid var(--tj-card-border);
+  padding: 6px 10px;
+  text-align: center;
+}
+
+.tj-coverage-matrix th {
+  background: var(--tj-card-bg);
+  font-weight: 600;
+}
+
+.tj-coverage-cell--covered {
+  background-color: var(--tj-coverage-covered);
+  font-weight: 700;
+}
+
+.tj-coverage-cell--gap {
+  background-color: var(--tj-coverage-gap);
+}
+
+.tj-coverage-cell--out_of_scope {
+  background-color: var(--tj-coverage-out-of-scope);
+  font-style: italic;
+}
