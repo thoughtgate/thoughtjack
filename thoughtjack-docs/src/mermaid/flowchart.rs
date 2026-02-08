@@ -34,10 +34,7 @@ impl DiagramRenderer for FlowchartRenderer {
         if let Some(ref tools) = config.tools {
             for (i, tool) in tools.iter().enumerate() {
                 let id = format!("tool{i}");
-                lines.push(format!(
-                    "    {id}[{}]",
-                    quote_label(&tool.tool.name)
-                ));
+                lines.push(format!("    {id}[{}]", quote_label(&tool.tool.name)));
                 lines.push(format!("    req --> {id}"));
             }
         }

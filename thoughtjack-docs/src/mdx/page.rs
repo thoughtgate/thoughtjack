@@ -24,9 +24,10 @@ pub fn generate_scenario_page(
     config: &ServerConfig,
     yaml_source: &str,
 ) -> Result<String, DocsError> {
-    let metadata = config.metadata.as_ref().ok_or_else(|| {
-        DocsError::Validation("scenario has no metadata block".to_string())
-    })?;
+    let metadata = config
+        .metadata
+        .as_ref()
+        .ok_or_else(|| DocsError::Validation("scenario has no metadata block".to_string()))?;
 
     let mut sections = Vec::new();
 
@@ -39,10 +40,15 @@ pub fn generate_scenario_page(
     sections.push(String::new());
 
     // Component imports (placeholders for React components)
-    sections.push("import { AttackMetadataCard } from '@site/src/components/AttackMetadataCard';".to_string());
-    sections.push("import { MermaidDiagram } from '@site/src/components/MermaidDiagram';".to_string());
+    sections.push(
+        "import { AttackMetadataCard } from '@site/src/components/AttackMetadataCard';".to_string(),
+    );
+    sections
+        .push("import { MermaidDiagram } from '@site/src/components/MermaidDiagram';".to_string());
     sections.push("import { MitreMapping } from '@site/src/components/MitreMapping';".to_string());
-    sections.push("import { OwaspMcpMapping } from '@site/src/components/OwaspMcpMapping';".to_string());
+    sections.push(
+        "import { OwaspMcpMapping } from '@site/src/components/OwaspMcpMapping';".to_string(),
+    );
     sections.push(String::new());
 
     // Metadata card
@@ -135,11 +141,13 @@ fn render_framework_mappings(sections: &mut Vec<String>, metadata: &ScenarioMeta
             sections.push("<MitreMapping".to_string());
             if !mitre.tactics.is_empty() {
                 let tactic_ids: Vec<&str> = mitre.tactics.iter().map(|t| t.id.as_str()).collect();
-                sections.push(format!("  tactics={{[{}]}}", format_string_array(&tactic_ids)));
+                sections.push(format!(
+                    "  tactics={{[{}]}}",
+                    format_string_array(&tactic_ids)
+                ));
             }
             if !mitre.techniques.is_empty() {
-                let tech_ids: Vec<&str> =
-                    mitre.techniques.iter().map(|t| t.id.as_str()).collect();
+                let tech_ids: Vec<&str> = mitre.techniques.iter().map(|t| t.id.as_str()).collect();
                 sections.push(format!(
                     "  techniques={{[{}]}}",
                     format_string_array(&tech_ids)
@@ -184,10 +192,6 @@ const fn severity_str(severity: MetadataSeverity) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thoughtjack_core::config::schema::{
-        AttackPrimitive, AttackVector, McpAttackSurface, MitreAttackMapping, MitreTactic,
-        MitreTechnique, OwaspMcpEntry,
-    };
 
     fn test_config() -> ServerConfig {
         let yaml = r#"

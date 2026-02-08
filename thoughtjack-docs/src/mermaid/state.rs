@@ -16,12 +16,15 @@ pub struct StateDiagramRenderer;
 
 impl DiagramRenderer for StateDiagramRenderer {
     fn render(&self, config: &ServerConfig) -> Result<String, DiagramError> {
-        let phases = config.phases.as_ref().ok_or_else(|| {
-            DiagramError::EmptyScenario("no phases defined".to_string())
-        })?;
+        let phases = config
+            .phases
+            .as_ref()
+            .ok_or_else(|| DiagramError::EmptyScenario("no phases defined".to_string()))?;
 
         if phases.is_empty() {
-            return Err(DiagramError::EmptyScenario("phases array is empty".to_string()));
+            return Err(DiagramError::EmptyScenario(
+                "phases array is empty".to_string(),
+            ));
         }
 
         let mut lines = Vec::new();
@@ -37,7 +40,11 @@ impl DiagramRenderer for StateDiagramRenderer {
 
             // Render state label if name differs from slug
             if slug != phase.name {
-                lines.push(format!("    state {} as {}", quote_label(&phase.name), slug));
+                lines.push(format!(
+                    "    state {} as {}",
+                    quote_label(&phase.name),
+                    slug
+                ));
             }
 
             // Transition to next phase (if not terminal)
@@ -45,7 +52,10 @@ impl DiagramRenderer for StateDiagramRenderer {
                 if let Some(next_phase) = phases.get(i + 1) {
                     let next_slug = slugify_phase_name(&next_phase.name, i + 1);
                     let label = format_trigger_label(advance);
-                    lines.push(format!("    {slug} --> {next_slug} : {}", quote_label(&label)));
+                    lines.push(format!(
+                        "    {slug} --> {next_slug} : {}",
+                        quote_label(&label)
+                    ));
                 }
             }
 

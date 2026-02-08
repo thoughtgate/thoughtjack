@@ -38,19 +38,17 @@ pub fn prose_for_trigger(trigger: &Trigger) -> String {
 
     // Timeout modifier
     if let Some(ref timeout) = trigger.timeout {
-        let timeout_behavior = trigger
-            .on_timeout
-            .map_or_else(
-                || format!("or after {timeout} of inactivity (whichever comes first)"),
-                |behavior| match behavior {
-                    thoughtjack_core::config::schema::TimeoutBehavior::Advance => {
-                        format!("or after {timeout} of inactivity (whichever comes first)")
-                    }
-                    thoughtjack_core::config::schema::TimeoutBehavior::Abort => {
-                        format!("; aborts scenario after {timeout}")
-                    }
-                },
-            );
+        let timeout_behavior = trigger.on_timeout.map_or_else(
+            || format!("or after {timeout} of inactivity (whichever comes first)"),
+            |behavior| match behavior {
+                thoughtjack_core::config::schema::TimeoutBehavior::Advance => {
+                    format!("or after {timeout} of inactivity (whichever comes first)")
+                }
+                thoughtjack_core::config::schema::TimeoutBehavior::Abort => {
+                    format!("; aborts scenario after {timeout}")
+                }
+            },
+        );
         parts.push(timeout_behavior);
     }
 
@@ -141,24 +139,15 @@ fn prose_for_delivery(delivery: &DeliveryConfig) -> String {
         } => {
             let delay = byte_delay_ms.unwrap_or(100);
             let chunk = chunk_size.unwrap_or(1);
-            format!(
-                "Delivers response using slow-loris pattern ({delay}ms per {chunk} byte(s))."
-            )
+            format!("Delivers response using slow-loris pattern ({delay}ms per {chunk} byte(s)).")
         }
-        DeliveryConfig::UnboundedLine {
-            target_bytes,
-            ..
-        } => {
-            target_bytes.map_or_else(
-                || "Delivers response as unbounded line (no newline terminator).".to_string(),
-                |bytes| format!("Delivers response as unbounded line ({bytes} bytes, no newline)."),
-            )
-        }
+        DeliveryConfig::UnboundedLine { target_bytes, .. } => target_bytes.map_or_else(
+            || "Delivers response as unbounded line (no newline terminator).".to_string(),
+            |bytes| format!("Delivers response as unbounded line ({bytes} bytes, no newline)."),
+        ),
         DeliveryConfig::NestedJson { depth, key } => {
             let key_str = key.as_deref().unwrap_or("data");
-            format!(
-                "Wraps response in deeply nested JSON ({depth} levels, key: `{key_str}`)."
-            )
+            format!("Wraps response in deeply nested JSON ({depth} levels, key: `{key_str}`).")
         }
         DeliveryConfig::ResponseDelay { delay_ms } => {
             format!("Delays response by {delay_ms}ms before sending.")
@@ -174,12 +163,10 @@ fn prose_for_side_effect(effect: &SideEffectConfig) -> String {
         .and_then(serde_json::Value::as_u64);
 
     match effect.type_ {
-        thoughtjack_core::config::schema::SideEffectType::NotificationFlood => {
-            rate.map_or_else(
-                || "Triggers notification flood side effect.".to_string(),
-                |r| format!("Triggers notification flood side effect at {r} notifications/sec."),
-            )
-        }
+        thoughtjack_core::config::schema::SideEffectType::NotificationFlood => rate.map_or_else(
+            || "Triggers notification flood side effect.".to_string(),
+            |r| format!("Triggers notification flood side effect at {r} notifications/sec."),
+        ),
         thoughtjack_core::config::schema::SideEffectType::BatchAmplify => {
             "Triggers batch amplification side effect.".to_string()
         }
@@ -351,10 +338,9 @@ mod tests {
     #[test]
     fn test_entry_action_single() {
         let actions = vec![EntryAction::SendNotification {
-            send_notification:
-                thoughtjack_core::config::schema::SendNotificationConfig::Short(
-                    "notifications/tools/list_changed".to_string(),
-                ),
+            send_notification: thoughtjack_core::config::schema::SendNotificationConfig::Short(
+                "notifications/tools/list_changed".to_string(),
+            ),
         }];
         let prose = prose_for_entry_actions(&actions);
         assert!(prose.contains("sends `notifications/tools/list_changed`"));
@@ -364,10 +350,9 @@ mod tests {
     fn test_entry_action_multiple() {
         let actions = vec![
             EntryAction::SendNotification {
-                send_notification:
-                    thoughtjack_core::config::schema::SendNotificationConfig::Short(
-                        "notifications/tools/list_changed".to_string(),
-                    ),
+                send_notification: thoughtjack_core::config::schema::SendNotificationConfig::Short(
+                    "notifications/tools/list_changed".to_string(),
+                ),
             },
             EntryAction::Log {
                 log: "Phase activated".to_string(),

@@ -6,3 +6,5 @@
 pub mod error;
 pub mod mdx;
 pub mod mermaid;
+pub mod registry;
+pub mod sidebar;

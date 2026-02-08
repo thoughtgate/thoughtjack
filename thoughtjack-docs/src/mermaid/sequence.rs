@@ -62,10 +62,8 @@ fn render_tool_sequence(lines: &mut Vec<String>, tool: &ToolPattern) {
                     messages: _,
                     ..
                 } => {
-                    let conditions: Vec<String> = when
-                        .iter()
-                        .map(|(field, _cond)| field.clone())
-                        .collect();
+                    let conditions: Vec<String> =
+                        when.iter().map(|(field, _cond)| field.clone()).collect();
                     let condition_str = truncate(&conditions.join(" & "), 50);
 
                     if first {

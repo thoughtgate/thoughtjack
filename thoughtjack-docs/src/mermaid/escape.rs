@@ -155,7 +155,10 @@ mod tests {
 
     #[test]
     fn test_escape_mermaid_chars() {
-        assert_eq!(escape_mermaid_chars("a < b & c > d"), "a #lt; b #amp; c #gt; d");
+        assert_eq!(
+            escape_mermaid_chars("a < b & c > d"),
+            "a #lt; b #amp; c #gt; d"
+        );
     }
 
     #[test]

@@ -85,18 +85,16 @@ fn has_conditional_responses(config: &ServerConfig) -> bool {
         }
     }
     if let Some(resources) = &config.resources {
-        if resources
-            .iter()
-            .any(|r| r.response.as_ref().is_some_and(|resp| resp.match_block.is_some()))
-        {
+        if resources.iter().any(|r| {
+            r.response
+                .as_ref()
+                .is_some_and(|resp| resp.match_block.is_some())
+        }) {
             return true;
         }
     }
     if let Some(prompts) = &config.prompts {
-        if prompts
-            .iter()
-            .any(|p| p.response.match_block.is_some())
-        {
+        if prompts.iter().any(|p| p.response.match_block.is_some()) {
             return true;
         }
     }
