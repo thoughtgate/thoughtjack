@@ -1,0 +1,70 @@
+---
+sidebar_position: 0
+title: Attack Catalog
+description: Browse all ThoughtJack attack scenarios organized by category
+---
+
+# Attack Catalog
+
+ThoughtJack ships with built-in attack scenarios that simulate real-world MCP security threats. Each scenario is a self-contained YAML configuration that can be run directly with `thoughtjack server run --scenario <name>`.
+
+## Categories
+
+### Temporal Attacks
+
+Trust-building and time-based attacks that evolve during a session.
+
+| ID | Scenario | Severity |
+|----|----------|----------|
+| [TJ-ATK-001](/docs/scenarios/tj-atk-001) | Classic Rug Pull | High |
+| [TJ-ATK-002](/docs/scenarios/tj-atk-002) | Resource Rug Pull | High |
+| [TJ-ATK-003](/docs/scenarios/tj-atk-003) | Response Sequence Attack | Medium |
+
+### Injection Attacks
+
+Prompt injection and content manipulation attacks via tool responses.
+
+| ID | Scenario | Severity |
+|----|----------|----------|
+| [TJ-ATK-004](/docs/scenarios/tj-atk-004) | Conditional Prompt Injection | High |
+| [TJ-ATK-005](/docs/scenarios/tj-atk-005) | Credential Phishing via Tool Response | Critical |
+| [TJ-ATK-010](/docs/scenarios/tj-atk-010) | Unicode Obfuscation | Medium |
+
+### Resource Attacks
+
+Resource-based attacks targeting sensitive data exposure.
+
+| ID | Scenario | Severity |
+|----|----------|----------|
+| [TJ-ATK-006](/docs/scenarios/tj-atk-006) | Resource-Based Data Exfiltration | Critical |
+
+### Denial of Service
+
+Resource exhaustion and availability attacks against MCP clients.
+
+| ID | Scenario | Severity |
+|----|----------|----------|
+| [TJ-ATK-007](/docs/scenarios/tj-atk-007) | Nested JSON Parser Exhaustion | Medium |
+| [TJ-ATK-008](/docs/scenarios/tj-atk-008) | Slow Loris Response Attack | Medium |
+| [TJ-ATK-009](/docs/scenarios/tj-atk-009) | Notification Flood | Medium |
+
+## Quick Start
+
+```bash
+# List all scenarios
+thoughtjack scenarios list
+
+# View a scenario's YAML
+thoughtjack scenarios show rug-pull
+
+# Run a scenario
+thoughtjack server run --scenario rug-pull
+```
+
+## Coverage
+
+See how scenarios map to security frameworks:
+
+- [MITRE ATT&CK Matrix](/docs/coverage/mitre-matrix)
+- [OWASP MCP Top 10](/docs/coverage/owasp-mcp)
+- [MCP Attack Surface](/docs/coverage/mcp-attack-surface)

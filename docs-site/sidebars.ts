@@ -30,7 +30,14 @@ const sidebars: SidebarsConfig = {
       dirName: 'explanation',
     },
   ],
-  scenarios: scenariosSidebar,
+  scenarios: [
+    {
+      type: 'doc' as const,
+      id: 'scenarios/index',
+      label: 'Attack Catalog',
+    },
+    ...scenariosSidebar,
+  ],
 };
 
 export default sidebars;
