@@ -10,8 +10,11 @@ categories:
     order: 1
     scenarios:
       - scenarios/rug-pull.yaml
+      - scenarios/sleeper-agent.yaml
+      - scenarios/bait-and-switch.yaml
+      - scenarios/escalation-ladder.yaml
+      - scenarios/capability-confusion.yaml
       - scenarios/resource-rug-pull.yaml
-      - scenarios/response-sequence.yaml
 
   - id: injection
     name: "Injection Attacks"
@@ -19,8 +22,14 @@ categories:
     order: 2
     scenarios:
       - scenarios/prompt-injection.yaml
-      - scenarios/credential-phishing.yaml
+      - scenarios/prompt-template-injection.yaml
+      - scenarios/schema-poisoning.yaml
       - scenarios/unicode-obfuscation.yaml
+      - scenarios/ansi-terminal-injection.yaml
+      - scenarios/credential-harvester.yaml
+      - scenarios/context-persistence.yaml
+      - scenarios/adaptive-injection.yaml
+      - scenarios/markdown-beacon.yaml
 
   - id: resource
     name: "Resource Attacks"
@@ -34,6 +43,25 @@ categories:
     description: "Resource exhaustion and availability attacks against MCP clients"
     order: 4
     scenarios:
-      - scenarios/nested-json-dos.yaml
       - scenarios/slow-loris.yaml
+      - scenarios/nested-json-dos.yaml
       - scenarios/notification-flood.yaml
+      - scenarios/pipe-deadlock.yaml
+      - scenarios/token-flush.yaml
+      - scenarios/zombie-process.yaml
+
+  - id: protocol
+    name: "Protocol Attacks"
+    description: "Protocol-level attacks exploiting JSON-RPC and MCP specification gaps"
+    order: 5
+    scenarios:
+      - scenarios/id-collision.yaml
+      - scenarios/batch-amplification.yaml
+
+  - id: multi_vector
+    name: "Multi-Vector Attacks"
+    description: "Compound attacks combining multiple techniques across MCP primitives"
+    order: 6
+    scenarios:
+      - scenarios/multi-vector-attack.yaml
+      - scenarios/cross-server-pivot.yaml

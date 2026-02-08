@@ -61,20 +61,38 @@ thoughtjack server validate library/servers/rug_pull.yaml
 
 ## Built-in Scenarios
 
-ThoughtJack ships with 10 built-in attack scenarios covering injection, denial-of-service, temporal, and resource attacks.
+ThoughtJack ships with 26 attack scenarios (24 built-in, 2 library-only) covering temporal, injection, denial-of-service, resource, protocol, and multi-vector attacks.
 
 | Scenario | Category | Description |
 |----------|----------|-------------|
-| `rug-pull` | Temporal | Trust-building calculator that swaps in malicious tools after 5 calls |
-| `response-sequence` | Temporal | Sequential response escalation — benign results then injection |
-| `prompt-injection` | Injection | Web search tool that injects instructions on sensitive queries |
-| `credential-phishing` | Injection | Credential phishing via tool descriptions |
-| `unicode-obfuscation` | Injection | Unicode-based obfuscation (zero-width, RTL, homoglyphs) |
-| `slow-loris` | DoS | Byte-at-a-time response delivery with configurable delay |
-| `nested-json-dos` | DoS | Deeply nested JSON payload for parser stack exhaustion |
-| `notification-flood` | DoS | MCP notification flooding at configurable rate |
-| `resource-exfiltration` | Resource | Resource-based data exfiltration patterns |
-| `resource-rug-pull` | Resource | Resource content that changes over time |
+| `rug-pull` | Temporal | Trust-building calculator that swaps tool definitions after 5 calls |
+| `sleeper-agent` | Temporal | Time-bomb activation after configurable dormancy period |
+| `bait-and-switch` | Temporal | Content-triggered activation on sensitive file path queries |
+| `escalation-ladder` | Temporal | Four-phase gradual escalation from benign to full exploit |
+| `capability-confusion` | Temporal | Advertises listChanged: false then sends list_changed anyway |
+| `resource-rug-pull` | Temporal | Benign resource content that swaps to malicious after subscription |
+| `prompt-injection` | Injection | Web search tool injecting hidden instructions on sensitive queries |
+| `prompt-template-injection` | Injection | MCP prompts used as injection vectors |
+| `schema-poisoning`* | Injection | Tool description and parameter field weaponization |
+| `unicode-obfuscation` | Injection | Homoglyphs, zero-width characters, and BiDi overrides |
+| `ansi-terminal-injection` | Injection | ANSI escape sequences to overwrite terminal content |
+| `credential-harvester` | Injection | Response sequence social-engineering credential retrieval |
+| `context-persistence` | Injection | Memory poisoning via persistent rule injection |
+| `adaptive-injection`* | Injection | LLM-powered adaptive injection via external handler |
+| `markdown-beacon` | Injection | Tracking pixels via Markdown images and CSS references |
+| `resource-exfiltration` | Resource | Fake credentials and injection for sensitive file paths |
+| `slow-loris` | DoS | Byte-by-byte response delivery with configurable delay |
+| `nested-json-dos` | DoS | 50,000-level deep JSON for parser stack exhaustion |
+| `notification-flood` | DoS | Server-initiated notification flood at 10,000/sec |
+| `pipe-deadlock` | DoS | Stdio pipe deadlock by filling OS buffers |
+| `token-flush` | DoS | 500KB+ garbage payload to flush LLM context window |
+| `zombie-process` | DoS | Ignores cancellation and continues slow-dripping responses |
+| `id-collision` | Protocol | Request ID collision via forced sampling/createMessage IDs |
+| `batch-amplification` | Protocol | Single request triggers 10,000 JSON-RPC notification batch |
+| `multi-vector-attack` | Multi-Vector | Four-phase compound attack across tools, resources, and prompts |
+| `cross-server-pivot` | Multi-Vector | Confused deputy attack pivoting through a benign weather tool |
+
+*Library-only scenarios requiring external dependencies (not embedded in binary).
 
 ```bash
 # List all scenarios
@@ -475,7 +493,7 @@ The attack scenario catalog is auto-generated from built-in scenarios using `tho
 
 ## Project Status
 
-**Current: v0.3** — Rich data and dynamic response system. Core engine with all transports, generators, delivery behaviors, and side effects. Phase engine state machine with event count, time-based, and content-matching triggers. Dynamic responses with `$handler` directive for HTTP and command handlers, response sequences, match blocks, and template interpolation. 10 built-in attack scenarios with `scenarios list`/`show` commands. Mermaid diagram generation from configs. Documentation site with auto-generated scenario pages. Full CLI with config validation, library listing, and shell completions. Observability via structured logging (human/JSON), Prometheus metrics, and JSONL event streams.
+**Current: v0.4** — Single-crate architecture with 26 attack scenarios. Core engine with all transports, generators, delivery behaviors, and side effects. Phase engine state machine with event count, time-based, and content-matching triggers. Dynamic responses with `$handler` directive for HTTP and command handlers, response sequences, match blocks, and template interpolation. 26 attack scenarios (24 built-in, 2 library-only) across 6 categories with `scenarios list`/`show` commands. Mermaid diagram generation from configs. Documentation site with auto-generated scenario pages. Full CLI with config validation, library listing, and shell completions. Observability via structured logging (human/JSON), Prometheus metrics, and JSONL event streams.
 
 **Implemented**:
 - Dynamic response templates (`$handler`, `match`, `sequence`)

@@ -55,6 +55,9 @@ pub enum ScenarioCategory {
     Resource,
     /// Protocol-level attacks.
     Protocol,
+    /// Compound attacks combining multiple techniques.
+    #[value(name = "multi_vector")]
+    MultiVector,
 }
 
 impl ScenarioCategory {
@@ -69,6 +72,7 @@ impl ScenarioCategory {
             Self::Temporal => "Temporal",
             Self::Resource => "Resource",
             Self::Protocol => "Protocol",
+            Self::MultiVector => "Multi-Vector",
         }
     }
 
@@ -76,11 +80,12 @@ impl ScenarioCategory {
     #[must_use]
     pub const fn all() -> &'static [Self] {
         &[
-            Self::Injection,
-            Self::DoS,
             Self::Temporal,
+            Self::Injection,
             Self::Resource,
+            Self::DoS,
             Self::Protocol,
+            Self::MultiVector,
         ]
     }
 }
@@ -93,6 +98,7 @@ impl fmt::Display for ScenarioCategory {
             Self::Temporal => write!(f, "temporal"),
             Self::Resource => write!(f, "resource"),
             Self::Protocol => write!(f, "protocol"),
+            Self::MultiVector => write!(f, "multi_vector"),
         }
     }
 }
@@ -106,95 +112,331 @@ impl fmt::Display for ScenarioCategory {
 /// Implements: TJ-SPEC-010 F-001, F-002
 static BUILTIN_SCENARIOS: LazyLock<Vec<BuiltinScenario>> = LazyLock::new(|| {
     vec![
+        // ── Temporal (order 1) ──────────────────────────────────
+        BuiltinScenario {
+            name: "rug-pull",
+            description: "Trust-building calculator that swaps tool definitions after 5 calls",
+            category: ScenarioCategory::Temporal,
+            taxonomy: &["CPM-002"],
+            tags: &[
+                "supply-chain",
+                "phased",
+                "trust-building",
+                "tool-swap",
+                "tier-1",
+            ],
+            features: &[
+                "phases",
+                "replace-tools",
+                "add-tools",
+                "list-changed-notification",
+            ],
+            yaml: include_str!("../../scenarios/rug-pull.yaml"),
+        },
+        BuiltinScenario {
+            name: "sleeper-agent",
+            description: "Time-bomb activation after configurable dormancy period",
+            category: ScenarioCategory::Temporal,
+            taxonomy: &["CPM-002"],
+            tags: &["supply-chain", "phased", "time-based", "dormant", "tier-2"],
+            features: &["phases", "replace-tools", "list-changed-notification"],
+            yaml: include_str!("../../scenarios/sleeper-agent.yaml"),
+        },
+        BuiltinScenario {
+            name: "bait-and-switch",
+            description: "Content-triggered activation on sensitive file path queries",
+            category: ScenarioCategory::Temporal,
+            taxonomy: &["CPM-002"],
+            tags: &[
+                "supply-chain",
+                "phased",
+                "content-triggered",
+                "evasion",
+                "tier-2",
+            ],
+            features: &["phases", "match-conditions", "replace-tools"],
+            yaml: include_str!("../../scenarios/bait-and-switch.yaml"),
+        },
+        BuiltinScenario {
+            name: "escalation-ladder",
+            description: "Four-phase gradual escalation from benign to full exploit",
+            category: ScenarioCategory::Temporal,
+            taxonomy: &["CPM-002"],
+            tags: &[
+                "supply-chain",
+                "phased",
+                "gradual",
+                "evasion",
+                "multi-phase",
+                "tier-2",
+            ],
+            features: &["phases", "replace-tools", "list-changed-notification"],
+            yaml: include_str!("../../scenarios/escalation-ladder.yaml"),
+        },
+        BuiltinScenario {
+            name: "capability-confusion",
+            description: "Advertises listChanged: false then sends list_changed notifications",
+            category: ScenarioCategory::Temporal,
+            taxonomy: &["PRT-001"],
+            tags: &["protocol", "trust", "capability", "negotiation", "phased"],
+            features: &[
+                "phases",
+                "replace-capabilities",
+                "list-changed-notification",
+            ],
+            yaml: include_str!("../../scenarios/capability-confusion.yaml"),
+        },
+        BuiltinScenario {
+            name: "resource-rug-pull",
+            description: "Benign resource content that swaps to malicious after subscription",
+            category: ScenarioCategory::Temporal,
+            taxonomy: &["RSC-006"],
+            tags: &[
+                "supply-chain",
+                "phased",
+                "resource",
+                "content-swap",
+                "tier-2",
+            ],
+            features: &["phases", "replace-resources", "list-changed-notification"],
+            yaml: include_str!("../../scenarios/resource-rug-pull.yaml"),
+        },
+        // ── Injection (order 2) ─────────────────────────────────
         BuiltinScenario {
             name: "prompt-injection",
-            description: "Context-aware prompt injection via web search tool",
+            description: "Web search tool injecting hidden instructions on sensitive queries",
             category: ScenarioCategory::Injection,
-            taxonomy: &["CPM-001", "CPM-005"],
-            tags: &["injection", "dynamic", "search"],
-            features: &["template-interpolation", "match-conditions"],
+            taxonomy: &["CPM-001"],
+            tags: &[
+                "injection",
+                "integrity",
+                "credential-theft",
+                "conditional",
+                "tier-1",
+            ],
+            features: &["match-conditions"],
             yaml: include_str!("../../scenarios/prompt-injection.yaml"),
         },
         BuiltinScenario {
-            name: "credential-phishing",
-            description: "Search tool returning fake credentials with injection",
+            name: "prompt-template-injection",
+            description: "MCP prompts used as injection vectors via user and assistant messages",
             category: ScenarioCategory::Injection,
-            taxonomy: &["CPM-001"],
-            tags: &["injection", "credentials", "phishing"],
-            features: &["template-interpolation"],
-            yaml: include_str!("../../scenarios/credential-phishing.yaml"),
+            taxonomy: &["PRM"],
+            tags: &["injection", "integrity", "prompt", "multi-turn", "tier-2"],
+            features: &["prompts"],
+            yaml: include_str!("../../scenarios/prompt-template-injection.yaml"),
         },
         BuiltinScenario {
             name: "unicode-obfuscation",
-            description: "Unicode homoglyphs and invisibles in tool responses",
+            description: "Homoglyphs, zero-width characters, and BiDi overrides in responses",
             category: ScenarioCategory::Injection,
             taxonomy: &["CPM-003"],
-            tags: &["injection", "unicode", "obfuscation"],
+            tags: &["evasion", "integrity", "unicode", "homoglyph", "zero-width"],
             features: &["generate-unicode-spam"],
             yaml: include_str!("../../scenarios/unicode-obfuscation.yaml"),
         },
         BuiltinScenario {
+            name: "ansi-terminal-injection",
+            description: "ANSI escape sequences to overwrite terminal content and inject links",
+            category: ScenarioCategory::Injection,
+            taxonomy: &["CPM"],
+            tags: &["evasion", "integrity", "terminal", "ansi", "cli"],
+            features: &["generate-ansi-escape"],
+            yaml: include_str!("../../scenarios/ansi-terminal-injection.yaml"),
+        },
+        BuiltinScenario {
+            name: "credential-harvester",
+            description: "Response sequence that social-engineers credential retrieval via fake errors",
+            category: ScenarioCategory::Injection,
+            taxonomy: &["CPM"],
+            tags: &[
+                "agentic",
+                "confidentiality",
+                "credential-theft",
+                "social-engineering",
+                "sequence",
+                "tier-2",
+            ],
+            features: &["sequence"],
+            yaml: include_str!("../../scenarios/credential-harvester.yaml"),
+        },
+        BuiltinScenario {
+            name: "context-persistence",
+            description: "Memory poisoning via persistent rule injection in tool responses",
+            category: ScenarioCategory::Injection,
+            taxonomy: &["AGT"],
+            tags: &[
+                "agentic",
+                "integrity",
+                "persistence",
+                "memory-poisoning",
+                "multi-turn",
+            ],
+            features: &["sequence"],
+            yaml: include_str!("../../scenarios/context-persistence.yaml"),
+        },
+        BuiltinScenario {
+            name: "markdown-beacon",
+            description: "Tracking pixels via Markdown images, HTML img tags, and CSS references",
+            category: ScenarioCategory::Injection,
+            taxonomy: &["PRV"],
+            tags: &[
+                "privacy",
+                "tracking",
+                "beacon",
+                "markdown",
+                "rendering",
+                "tier-2",
+            ],
+            features: &["template-interpolation"],
+            yaml: include_str!("../../scenarios/markdown-beacon.yaml"),
+        },
+        // ── Resource (order 3) ──────────────────────────────────
+        BuiltinScenario {
+            name: "resource-exfiltration",
+            description: "Fake credentials and injection payloads for sensitive file paths",
+            category: ScenarioCategory::Resource,
+            taxonomy: &["RSC-001"],
+            tags: &[
+                "integrity",
+                "confidentiality",
+                "resource",
+                "credential-theft",
+            ],
+            features: &["resources"],
+            yaml: include_str!("../../scenarios/resource-exfiltration.yaml"),
+        },
+        // ── DoS (order 4) ───────────────────────────────────────
+        BuiltinScenario {
             name: "slow-loris",
-            description: "Slow loris delivery to test client timeout handling",
+            description: "Byte-by-byte response delivery with configurable delay",
             category: ScenarioCategory::DoS,
             taxonomy: &["TAM-004"],
-            tags: &["dos", "slow-loris", "timeout"],
+            tags: &["dos", "availability", "timeout", "streaming", "tier-1"],
             features: &["slow-loris-delivery"],
             yaml: include_str!("../../scenarios/slow-loris.yaml"),
         },
         BuiltinScenario {
             name: "nested-json-dos",
-            description: "Deeply nested JSON payloads for parser DoS",
+            description: "50,000-level deep JSON payloads for parser stack exhaustion",
             category: ScenarioCategory::DoS,
             taxonomy: &["TAM-001"],
-            tags: &["dos", "nested-json", "parser"],
+            tags: &["dos", "availability", "parser", "stack-overflow", "tier-1"],
             features: &["generate-nested-json"],
             yaml: include_str!("../../scenarios/nested-json-dos.yaml"),
         },
         BuiltinScenario {
             name: "notification-flood",
-            description: "Server-initiated notification flood on tool calls",
+            description: "Server-initiated notification flood at 10,000/sec on tool calls",
             category: ScenarioCategory::DoS,
             taxonomy: &["TAM-006"],
-            tags: &["dos", "notification", "flood"],
+            tags: &[
+                "dos",
+                "availability",
+                "notification",
+                "rate-limiting",
+                "side-effect",
+            ],
             features: &["notification-flood", "side-effects"],
             yaml: include_str!("../../scenarios/notification-flood.yaml"),
         },
         BuiltinScenario {
-            name: "rug-pull",
-            description: "Trust-building phase followed by tool definition swap",
-            category: ScenarioCategory::Temporal,
-            taxonomy: &["CPM-002"],
-            tags: &["phased", "rug-pull", "tool-shadowing"],
-            features: &["phases", "list-changed-notification"],
-            yaml: include_str!("../../scenarios/rug-pull.yaml"),
+            name: "pipe-deadlock",
+            description: "Stdio pipe deadlock by filling OS buffers without reading",
+            category: ScenarioCategory::DoS,
+            taxonomy: &["TAM-005"],
+            tags: &["dos", "availability", "stdio", "transport", "deadlock"],
+            features: &["unbounded-line", "pipe-deadlock", "side-effects"],
+            yaml: include_str!("../../scenarios/pipe-deadlock.yaml"),
         },
         BuiltinScenario {
-            name: "response-sequence",
-            description: "Benign responses initially, injection on third call",
-            category: ScenarioCategory::Temporal,
-            taxonomy: &["CPM-005"],
-            tags: &["phased", "sequence", "trust-building"],
-            features: &["response-sequence"],
-            yaml: include_str!("../../scenarios/response-sequence.yaml"),
+            name: "token-flush",
+            description: "500KB+ garbage payload to flush LLM context window",
+            category: ScenarioCategory::DoS,
+            taxonomy: &["TAM"],
+            tags: &["dos", "cognitive", "context-window", "llm", "tier-2"],
+            features: &["generate-garbage"],
+            yaml: include_str!("../../scenarios/token-flush.yaml"),
         },
         BuiltinScenario {
-            name: "resource-exfiltration",
-            description: "Fake credentials for sensitive file paths",
-            category: ScenarioCategory::Resource,
-            taxonomy: &["RSC-001", "RSC-002"],
-            tags: &["resource", "exfiltration", "credentials"],
-            features: &["resource-patterns"],
-            yaml: include_str!("../../scenarios/resource-exfiltration.yaml"),
+            name: "zombie-process",
+            description: "Ignores cancellation and continues slow-dripping responses",
+            category: ScenarioCategory::DoS,
+            taxonomy: &["TAM"],
+            tags: &[
+                "dos",
+                "availability",
+                "cancellation",
+                "resource-leak",
+                "tier-3",
+            ],
+            features: &["slow-loris-delivery", "generate-garbage"],
+            yaml: include_str!("../../scenarios/zombie-process.yaml"),
+        },
+        // ── Protocol (order 5) ──────────────────────────────────
+        BuiltinScenario {
+            name: "id-collision",
+            description: "Request ID collision via forced sampling/createMessage IDs",
+            category: ScenarioCategory::Protocol,
+            taxonomy: &["PRT-002"],
+            tags: &["protocol", "state-corruption", "sampling", "phased"],
+            features: &[
+                "phases",
+                "send-request",
+                "duplicate-request-ids",
+                "side-effects",
+            ],
+            yaml: include_str!("../../scenarios/id-collision.yaml"),
         },
         BuiltinScenario {
-            name: "resource-rug-pull",
-            description: "Benign content then malicious after subscription",
-            category: ScenarioCategory::Resource,
-            taxonomy: &["RSC-006"],
-            tags: &["phased", "resource", "rug-pull"],
-            features: &["phases", "replace-resources", "list-changed-notification"],
-            yaml: include_str!("../../scenarios/resource-rug-pull.yaml"),
+            name: "batch-amplification",
+            description: "Single request triggers 10,000 JSON-RPC notification batch",
+            category: ScenarioCategory::Protocol,
+            taxonomy: &["TAM-002"],
+            tags: &["dos", "availability", "batch", "amplification", "protocol"],
+            features: &[
+                "generate-batch-notifications",
+                "batch-amplify",
+                "side-effects",
+            ],
+            yaml: include_str!("../../scenarios/batch-amplification.yaml"),
+        },
+        // ── Multi-Vector (order 6) ──────────────────────────────
+        BuiltinScenario {
+            name: "multi-vector-attack",
+            description: "Four-phase compound attack across tools, resources, and prompts",
+            category: ScenarioCategory::MultiVector,
+            taxonomy: &["CPM", "RSC", "PRM"],
+            tags: &[
+                "compound",
+                "phased",
+                "multi-vector",
+                "defense-in-depth",
+                "tier-3",
+            ],
+            features: &[
+                "phases",
+                "replace-tools",
+                "replace-resources",
+                "replace-prompts",
+                "slow-loris-delivery",
+            ],
+            yaml: include_str!("../../scenarios/multi-vector-attack.yaml"),
+        },
+        BuiltinScenario {
+            name: "cross-server-pivot",
+            description: "Confused deputy attack pivoting through a benign weather tool",
+            category: ScenarioCategory::MultiVector,
+            taxonomy: &["AGT"],
+            tags: &[
+                "agentic",
+                "lateral-movement",
+                "confused-deputy",
+                "cross-server",
+                "tier-2",
+            ],
+            features: &["template-interpolation"],
+            yaml: include_str!("../../scenarios/cross-server-pivot.yaml"),
         },
     ]
 });
@@ -313,8 +555,8 @@ mod tests {
             .map(|s| s.yaml.len())
             .sum();
         assert!(
-            total_bytes < 50_000,
-            "Total embedded YAML is {total_bytes} bytes, exceeds 50KB budget"
+            total_bytes < 200_000,
+            "Total embedded YAML is {total_bytes} bytes, exceeds 200KB budget"
         );
     }
 
@@ -377,9 +619,24 @@ mod tests {
     }
 
     #[test]
-    fn list_filter_empty_result() {
+    fn list_filter_protocol() {
         let result = list_scenarios(Some(ScenarioCategory::Protocol), None);
-        assert!(result.is_empty(), "No protocol scenarios should exist yet");
+        assert!(result.len() >= 2, "Expected at least 2 protocol scenarios");
+        for s in &result {
+            assert_eq!(s.category, ScenarioCategory::Protocol);
+        }
+    }
+
+    #[test]
+    fn list_filter_multi_vector() {
+        let result = list_scenarios(Some(ScenarioCategory::MultiVector), None);
+        assert!(
+            result.len() >= 2,
+            "Expected at least 2 multi-vector scenarios"
+        );
+        for s in &result {
+            assert_eq!(s.category, ScenarioCategory::MultiVector);
+        }
     }
 
     #[test]
@@ -389,6 +646,7 @@ mod tests {
         assert_eq!(ScenarioCategory::Temporal.to_string(), "temporal");
         assert_eq!(ScenarioCategory::Resource.to_string(), "resource");
         assert_eq!(ScenarioCategory::Protocol.to_string(), "protocol");
+        assert_eq!(ScenarioCategory::MultiVector.to_string(), "multi_vector");
     }
 
     #[test]
@@ -398,12 +656,13 @@ mod tests {
         assert_eq!(ScenarioCategory::Temporal.label(), "Temporal");
         assert_eq!(ScenarioCategory::Resource.label(), "Resource");
         assert_eq!(ScenarioCategory::Protocol.label(), "Protocol");
+        assert_eq!(ScenarioCategory::MultiVector.label(), "Multi-Vector");
     }
 
     #[test]
     fn list_scenario_names_returns_all() {
         let names = list_scenario_names();
-        assert_eq!(names.len(), 10, "Expected exactly 10 built-in scenarios");
+        assert_eq!(names.len(), 24, "Expected exactly 24 built-in scenarios");
         assert!(names.contains(&"rug-pull"));
         assert!(names.contains(&"prompt-injection"));
         assert!(names.contains(&"slow-loris"));
