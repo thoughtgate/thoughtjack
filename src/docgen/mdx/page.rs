@@ -101,9 +101,9 @@ pub fn generate_scenario_page(
     sections.push("<details>".to_string());
     sections.push("<summary>View YAML source</summary>".to_string());
     sections.push(String::new());
-    sections.push("```yaml".to_string());
+    sections.push("````yaml".to_string());
     sections.push(yaml_source.to_string());
-    sections.push("```".to_string());
+    sections.push("````".to_string());
     sections.push(String::new());
     sections.push("</details>".to_string());
 
