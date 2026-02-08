@@ -12,6 +12,7 @@ categories = ["development-tools::testing"]
 
 [dependencies]
 thoughtjack-core = { workspace = true, features = ["clap"] }
+thoughtjack-docs = { workspace = true }
 tokio = { version = "1.49", features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

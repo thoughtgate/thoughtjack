@@ -56,6 +56,12 @@ pub enum Commands {
     #[command(hide = true)]
     Agent(AgentCommand),
 
+    /// Generate a Mermaid diagram from a scenario file.
+    Diagram(DiagramArgs),
+
+    /// Generate documentation site from scenarios.
+    Docs(DocsCommand),
+
     /// Generate shell completion scripts.
     Completions(CompletionsArgs),
 
@@ -279,6 +285,117 @@ pub struct AgentCommand {
     /// Path to agent configuration file.
     #[arg(short, long)]
     pub config: Option<PathBuf>,
+}
+
+// ============================================================================
+// Diagram Command
+// ============================================================================
+
+/// Arguments for `diagram` command.
+///
+/// Implements: TJ-SPEC-011 F-006
+#[derive(Args, Debug)]
+pub struct DiagramArgs {
+    /// Path to scenario YAML file.
+    pub scenario: PathBuf,
+
+    /// Diagram type override (default: auto-detect).
+    #[arg(long, default_value = "auto")]
+    pub diagram_type: DiagramTypeChoice,
+
+    /// Write output to file instead of stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+}
+
+/// Diagram type selection.
+///
+/// Implements: TJ-SPEC-011 F-006
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum DiagramTypeChoice {
+    /// Auto-detect based on scenario structure.
+    #[default]
+    Auto,
+    /// State diagram for phased scenarios.
+    State,
+    /// Sequence diagram for match-block scenarios.
+    Sequence,
+    /// Flowchart for behavioral scenarios.
+    Flowchart,
+}
+
+// ============================================================================
+// Docs Command
+// ============================================================================
+
+/// Documentation generation commands.
+///
+/// Implements: TJ-SPEC-011 F-006
+#[derive(Args, Debug)]
+pub struct DocsCommand {
+    /// Docs subcommand.
+    #[command(subcommand)]
+    pub subcommand: DocsSubcommand,
+}
+
+/// Docs subcommands.
+///
+/// Implements: TJ-SPEC-011 F-006
+#[derive(Subcommand, Debug)]
+pub enum DocsSubcommand {
+    /// Generate documentation pages from scenarios.
+    Generate(DocsGenerateArgs),
+
+    /// Validate scenario metadata and registry.
+    Validate(DocsValidateArgs),
+}
+
+/// Arguments for `docs generate`.
+///
+/// Implements: TJ-SPEC-011 F-006
+#[derive(Args, Debug)]
+pub struct DocsGenerateArgs {
+    /// Scenarios directory.
+    #[arg(long, default_value = "./scenarios", env = "TJ_SCENARIOS_DIR")]
+    pub scenarios: PathBuf,
+
+    /// Output directory.
+    #[arg(long, default_value = "./docs-site", env = "TJ_DOCS_OUTPUT_DIR")]
+    pub output: PathBuf,
+
+    /// Registry file path.
+    #[arg(
+        long,
+        default_value = "./scenarios/registry.yaml",
+        env = "TJ_REGISTRY_PATH"
+    )]
+    pub registry: PathBuf,
+
+    /// Promote warnings to errors.
+    #[arg(long, env = "TJ_DOCS_STRICT")]
+    pub strict: bool,
+}
+
+/// Arguments for `docs validate`.
+///
+/// Implements: TJ-SPEC-011 F-006
+#[derive(Args, Debug)]
+pub struct DocsValidateArgs {
+    /// Scenarios directory.
+    #[arg(long, default_value = "./scenarios", env = "TJ_SCENARIOS_DIR")]
+    pub scenarios: PathBuf,
+
+    /// Registry file path.
+    #[arg(
+        long,
+        default_value = "./scenarios/registry.yaml",
+        env = "TJ_REGISTRY_PATH"
+    )]
+    pub registry: PathBuf,
+
+    /// Promote warnings to errors.
+    #[arg(long, env = "TJ_DOCS_STRICT")]
+    pub strict: bool,
 }
 
 // ============================================================================
@@ -670,5 +787,37 @@ mod tests {
         for (err, expected) in cases {
             assert_eq!(err.exit_code(), expected, "Wrong exit code for {err}");
         }
+    }
+
+    #[test]
+    fn test_diagram_command() {
+        let cli = Cli::try_parse_from(["thoughtjack", "diagram", "scenario.yaml"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    #[test]
+    fn test_diagram_command_with_type() {
+        for dtype in ["auto", "state", "sequence", "flowchart"] {
+            let cli = Cli::try_parse_from([
+                "thoughtjack",
+                "diagram",
+                "scenario.yaml",
+                "--diagram-type",
+                dtype,
+            ]);
+            assert!(cli.is_ok(), "Failed to parse diagram-type={dtype}");
+        }
+    }
+
+    #[test]
+    fn test_docs_generate_command() {
+        let cli = Cli::try_parse_from(["thoughtjack", "docs", "generate"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    #[test]
+    fn test_docs_validate_command() {
+        let cli = Cli::try_parse_from(["thoughtjack", "docs", "validate", "--strict"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 }
