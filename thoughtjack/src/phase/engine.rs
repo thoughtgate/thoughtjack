@@ -19,6 +19,14 @@ use super::effective::EffectiveState;
 use super::state::{EventType, PhaseState, PhaseStateHandle, PhaseTransition};
 use super::trigger::{self, TriggerResult};
 
+/// Default interval for the timer task that checks time-based and timeout triggers.
+///
+/// Set to 100ms as a balance between responsiveness and CPU overhead.
+/// See TJ-SPEC-003 F-008 for the timer precision requirements.
+///
+/// Implements: TJ-SPEC-003 F-008
+const TIMER_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Phase engine managing server state and phase transitions.
 ///
 /// Coordinates:
@@ -447,7 +455,7 @@ impl PhaseEngine {
     pub fn start_timer_task(self: &Arc<Self>) -> JoinHandle<()> {
         let engine = Arc::clone(self);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(100));
+            let mut interval = tokio::time::interval(TIMER_CHECK_INTERVAL);
             loop {
                 tokio::select! {
                     () = engine.cancel.cancelled() => {
