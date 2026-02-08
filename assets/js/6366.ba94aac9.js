@@ -1,0 +1,1 @@
+"use strict";(globalThis.webpackChunkthoughtjack_docs_site=globalThis.webpackChunkthoughtjack_docs_site||[]).push([[6366],{6366(c,e,t){t.d(e,{createArchitectureServices:()=>h.S});var h=t(8980);t(7960)}}]);
