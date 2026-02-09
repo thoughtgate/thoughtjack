@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::args::{DocsGenerateArgs, DocsValidateArgs};
 use crate::config::schema::ServerConfig;
 use crate::docgen::coverage;
+use crate::docgen::mdx::index::generate_index_page;
 use crate::docgen::mdx::page::generate_scenario_page;
 use crate::docgen::registry;
 use crate::docgen::sidebar;
@@ -43,10 +44,12 @@ pub fn generate(args: &DocsGenerateArgs) -> Result<(), ThoughtJackError> {
     check_metadata(&configs, args.strict)?;
 
     let generated = write_scenario_pages(&configs, &args.output)?;
+    write_index_page(&reg, &configs, base_dir(&args.scenarios), &args.output)?;
     write_coverage_pages(&configs, &args.output)?;
     write_sidebar(&reg, &configs, base_dir(&args.scenarios), &args.output)?;
 
     eprintln!("Generated {generated} scenario pages");
+    eprintln!("Generated scenarios/index.mdx");
     eprintln!("Generated 3 coverage pages");
     eprintln!("Generated sidebars.js");
 
@@ -301,6 +304,29 @@ fn write_scenario_pages(
     }
 
     Ok(generated)
+}
+
+/// Generate and write the scenario index page.
+fn write_index_page(
+    reg: &crate::docgen::registry::Registry,
+    configs: &[(String, ServerConfig)],
+    base: &Path,
+    output: &Path,
+) -> Result<(), ThoughtJackError> {
+    let scenarios_out = output.join("docs/scenarios");
+    fs::create_dir_all(&scenarios_out).map_err(ThoughtJackError::Io)?;
+
+    let mut id_map: HashMap<PathBuf, String> = HashMap::new();
+    for (path, config) in configs {
+        if let Some(ref metadata) = config.metadata {
+            if let Ok(rel) = Path::new(path).strip_prefix(base) {
+                id_map.insert(rel.to_path_buf(), metadata.id.to_lowercase());
+            }
+        }
+    }
+
+    let mdx = generate_index_page(reg, configs, base, &id_map);
+    fs::write(scenarios_out.join("index.mdx"), mdx).map_err(ThoughtJackError::Io)
 }
 
 /// Generate and write coverage MDX pages.

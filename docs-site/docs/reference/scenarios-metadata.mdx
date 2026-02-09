@@ -33,7 +33,7 @@ Unique identifier for the scenario. Must be kebab-case (lowercase with hyphens).
 |-----------|-------|
 | Format | kebab-case |
 | Uniqueness | Must be unique across all scenarios |
-| Examples | `rug-pull`, `nested-json-dos`, `credential-phishing` |
+| Examples | `rug-pull`, `nested-json-dos`, `credential-harvester` |
 
 ### `name`
 
@@ -144,14 +144,7 @@ metadata:
 
 ## Built-in scenario categories
 
-The 10 built-in scenarios are distributed across categories:
-
-| Category | Scenarios |
-|----------|-----------|
-| Temporal | `rug-pull`, `response-sequence` |
-| Injection | `prompt-injection`, `credential-phishing`, `unicode-obfuscation` |
-| DoS | `slow-loris`, `nested-json-dos`, `notification-flood` |
-| Resource | `resource-exfiltration`, `resource-rug-pull` |
+Scenarios are organized into six categories: Temporal, Injection, Resource, Denial of Service, Protocol, and Multi-Vector. Browse the full [Attack Catalog](/docs/scenarios) for the complete list, or see the auto-generated [coverage pages](/docs/coverage/mitre-matrix) for framework mappings.
 
 ## Fuzzy matching
 

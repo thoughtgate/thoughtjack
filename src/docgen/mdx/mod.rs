@@ -9,5 +9,6 @@
 //! TJ-SPEC-011 F-003
 
 pub mod frontmatter;
+pub mod index;
 pub mod page;
 pub mod prose;

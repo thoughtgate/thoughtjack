@@ -11,7 +11,7 @@ const config: Config = {
   organizationName: 'thoughtgate',
   projectName: 'thoughtjack',
 
-  onBrokenLinks: 'warn',
+  onBrokenLinks: 'throw',
 
   i18n: {
     defaultLocale: 'en',

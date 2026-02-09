@@ -26,7 +26,7 @@ MCP attacks don't always have direct ATT&CK equivalents. ThoughtJack maps to the
 |-----------|-------------------|-----------|
 | Prompt injection in tool responses | T1059 (Command and Scripting Interpreter) | Injected instructions cause the agent to execute actions |
 | Tool description injection | T1036 (Masquerading) | Malicious tool disguised as legitimate |
-| Credential phishing via descriptions | T1556 (Modify Authentication Process) | Social engineering through tool interfaces |
+| Credential harvesting via descriptions | T1556 (Modify Authentication Process) | Social engineering through tool interfaces |
 | Rug pull (tool swap) | T1574 (Hijack Execution Flow) | Legitimate tool replaced with malicious version |
 | Resource exfiltration | T1552 (Unsecured Credentials) | Data extracted via resource content |
 | Unicode obfuscation | T1027 (Obfuscated Files or Information) | Content disguised using Unicode tricks |
@@ -37,7 +37,7 @@ MCP attacks don't always have direct ATT&CK equivalents. ThoughtJack maps to the
 
 ATT&CK was designed for traditional computing environments. Some MCP-specific attacks have no direct parallel:
 
-- **Response sequences** — gradual trust manipulation over multiple calls
+- **Escalation ladders** — gradual trust manipulation over multiple calls
 - **`list_changed` abuse** — exploiting MCP's dynamic capability protocol
 - **Bidirectional protocol attacks** — exploiting the server's ability to send unsolicited messages
 
@@ -54,13 +54,13 @@ The OWASP MCP Top 10 is a categorization of risks specific to Model Context Prot
 | MCP-01 | Tool Injection | `rug-pull`, `prompt-injection` |
 | MCP-02 | Resource Poisoning | `resource-exfiltration`, `resource-rug-pull` |
 | MCP-03 | Capability Mutation | `rug-pull`, `resource-rug-pull` |
-| MCP-04 | Prompt Injection via Tools | `prompt-injection`, `credential-phishing` |
+| MCP-04 | Prompt Injection via Tools | `prompt-injection`, `credential-harvester` |
 | MCP-05 | Data Exfiltration | `resource-exfiltration` |
 | MCP-06 | Denial of Service | `slow-loris`, `nested-json-dos`, `notification-flood` |
 | MCP-07 | Protocol Abuse | `notification-flood` (batch amplify, pipe deadlock) |
 | MCP-08 | Unicode/Encoding Attacks | `unicode-obfuscation` |
-| MCP-09 | Trust Boundary Violation | `rug-pull`, `response-sequence` |
-| MCP-10 | Credential Theft | `credential-phishing` |
+| MCP-09 | Trust Boundary Violation | `rug-pull`, `escalation-ladder` |
+| MCP-10 | Credential Theft | `credential-harvester` |
 
 ### Coverage matrix
 

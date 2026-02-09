@@ -39,26 +39,24 @@ thoughtjack 0.3.0 (rust 2024 edition)
 
 ## 2. Explore built-in scenarios
 
-ThoughtJack ships with 10 attack scenarios. List them:
+ThoughtJack ships with built-in attack scenarios across six categories. List them:
 
 ```bash
 thoughtjack scenarios list
 ```
 
 ```
-Category   Name                  Description
-─────────  ────────────────────  ────────────────────────────────────────
-Temporal   rug-pull              Trust-building then rug pull attack
-Temporal   response-sequence     Sequential response escalation
-Injection  prompt-injection      Prompt injection attack patterns
-Injection  credential-phishing   Credential phishing via tool descriptions
-Injection  unicode-obfuscation   Unicode-based obfuscation attacks
-DoS        slow-loris            Slow loris byte-at-a-time delivery
-DoS        nested-json-dos       Deeply nested JSON payload generation
-DoS        notification-flood    MCP notification flooding
-Resource   resource-exfiltration Resource-based data exfiltration
-Resource   resource-rug-pull     Resource content that changes over time
+Category      Name                   Description
+────────────  ─────────────────────  ──────────────────────────────────────
+Temporal      rug-pull               Trust-building then rug pull attack
+Temporal      sleeper-agent          Time-delayed phase transition attack
+Injection     prompt-injection       Prompt injection attack patterns
+Injection     credential-harvester   Credential harvesting via tool descriptions
+DoS           slow-loris             Slow loris byte-at-a-time delivery
+... and more
 ```
+
+Run `thoughtjack scenarios list` to see all available scenarios, or browse the full [Attack Catalog](/docs/scenarios).
 
 Get details on a specific scenario:
 

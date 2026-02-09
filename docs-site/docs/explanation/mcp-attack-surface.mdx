@@ -30,7 +30,7 @@ Exploit the text-based nature of MCP to inject instructions into tool responses 
 |--------|--------|---------------------|
 | Prompt injection | Malicious text in tool responses | `prompt-injection` |
 | Tool description injection | Instructions hidden in tool descriptions | `rug-pull` (exploit phase) |
-| Credential phishing | Fake credential prompts in descriptions | `credential-phishing` |
+| Credential harvesting | Fake credential prompts in descriptions | `credential-harvester` |
 | Unicode obfuscation | Invisible/lookalike characters in responses | `unicode-obfuscation` |
 
 **Why it works**: AI agents process tool output as context for their next action. If the output contains instructions, the agent may follow them — especially if the instructions mimic system-level directives.
@@ -42,7 +42,7 @@ Exploit the time dimension to build trust before attacking.
 | Attack | Vector | ThoughtJack scenario |
 |--------|--------|---------------------|
 | Rug pull | Benign behavior → malicious tool swap | `rug-pull` |
-| Response sequence | Benign responses → injection payload | `response-sequence` |
+| Escalation ladder | Benign responses → injection payload | `escalation-ladder` |
 | Sleeper agent | Time-delayed phase transition | (phased config) |
 | Resource mutation | Resource content changes over time | `resource-rug-pull` |
 
