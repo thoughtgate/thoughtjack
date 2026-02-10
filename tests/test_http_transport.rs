@@ -361,3 +361,106 @@ async fn http_per_request_independent_state() {
 
     server.shutdown().await;
 }
+
+// ============================================================================
+// HTTP error path tests
+// ============================================================================
+
+/// GET to /message should be rejected — only POST is accepted.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_get_method_not_allowed() {
+    let config_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/simple_server.yaml");
+    let server = HttpTestServer::start(&config_path).await;
+
+    let resp = server
+        .client
+        .get(server.message_url())
+        .header("host", "localhost")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        405,
+        "GET /message should return 405 Method Not Allowed"
+    );
+
+    server.shutdown().await;
+}
+
+/// POST with non-JSON content-type but valid JSON body should still work.
+/// The server parses the body as bytes, not via a JSON content-type filter.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_text_content_type_accepted() {
+    let config_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/simple_server.yaml");
+    let server = HttpTestServer::start(&config_path).await;
+
+    let body = serde_json::to_string(&make_initialize()).unwrap();
+    let resp = server
+        .client
+        .post(server.message_url())
+        .header("content-type", "text/plain")
+        .header("host", "localhost")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+
+    // The server accepts any content-type — it parses the body as JSON regardless
+    assert_eq!(
+        resp.status(),
+        200,
+        "text/plain content-type should still be accepted"
+    );
+
+    server.shutdown().await;
+}
+
+/// Requesting a non-existent path should return 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_unknown_path_404() {
+    let config_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/simple_server.yaml");
+    let server = HttpTestServer::start(&config_path).await;
+
+    let resp = server
+        .client
+        .get(format!("{}/health", server.base_url))
+        .header("host", "localhost")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 404, "unknown path should return 404");
+
+    server.shutdown().await;
+}
+
+/// Requests with a non-local Host header are rejected (DNS rebinding protection).
+#[tokio::test(flavor = "multi_thread")]
+async fn http_non_local_host_rejected() {
+    let config_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/simple_server.yaml");
+    let server = HttpTestServer::start(&config_path).await;
+
+    let body = serde_json::to_string(&make_initialize()).unwrap();
+    let resp = server
+        .client
+        .post(server.message_url())
+        .header("host", "evil.attacker.com")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "non-local host header should be rejected"
+    );
+
+    server.shutdown().await;
+}
