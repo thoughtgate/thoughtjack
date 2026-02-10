@@ -31,16 +31,16 @@ pub fn generate_index_page<S: BuildHasher>(
 ) -> String {
     let mut sections = Vec::new();
 
-    // Header comment
-    sections.push("<!-- AUTO-GENERATED — DO NOT EDIT -->".to_string());
-    sections.push(String::new());
-
-    // Frontmatter
+    // Frontmatter must be first in MDX files
     sections.push("---".to_string());
     sections.push("sidebar_position: 0".to_string());
     sections.push(format!("title: {}", registry.site.title));
     sections.push(format!("description: {}", registry.site.description));
     sections.push("---".to_string());
+    sections.push(String::new());
+
+    // Header comment
+    sections.push("<!-- AUTO-GENERATED — DO NOT EDIT -->".to_string());
     sections.push(String::new());
 
     // Title and description

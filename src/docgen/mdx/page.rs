@@ -31,12 +31,12 @@ pub fn generate_scenario_page(
 
     let mut sections = Vec::new();
 
-    // Header comment
-    sections.push("<!-- AUTO-GENERATED — DO NOT EDIT -->".to_string());
+    // Frontmatter must be first in MDX files
+    sections.push(generate_frontmatter(metadata));
     sections.push(String::new());
 
-    // Frontmatter
-    sections.push(generate_frontmatter(metadata));
+    // Header comment
+    sections.push("<!-- AUTO-GENERATED — DO NOT EDIT -->".to_string());
     sections.push(String::new());
 
     // Component imports (placeholders for React components)
