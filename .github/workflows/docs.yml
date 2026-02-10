@@ -45,7 +45,7 @@ jobs:
         working-directory: docs-site
 
       - name: Check for broken links
-        uses: lycheeverse/lychee-action@6cd313fc1a4da582a8e5f3f555e0c7d7baf5f0d0 # v2
+        uses: lycheeverse/lychee-action@a8c4c7cb88f0c7386610c35eb25108e448569cb0 # v2.7.0
         with:
           args: >-
             --verbose
