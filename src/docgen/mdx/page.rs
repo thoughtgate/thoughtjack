@@ -246,9 +246,9 @@ phases:
         let config = test_config();
         let page = generate_scenario_page(&config, "# raw yaml").unwrap();
 
-        assert!(page.starts_with("<!-- AUTO-GENERATED"));
-        assert!(page.contains("---"));
-        assert!(page.contains("id: TJ-ATK-001"));
+        assert!(page.starts_with("---"), "page should start with frontmatter");
+        assert!(page.contains("<!-- AUTO-GENERATED"));
+        assert!(page.contains("id: tj-atk-001"));
         assert!(page.contains("## Overview"));
         assert!(page.contains("## Attack Flow"));
         assert!(page.contains("```mermaid"));

@@ -38,6 +38,22 @@ impl ThoughtJackProcess {
     /// Spawns a new server with the given YAML config and extra CLI args.
     #[allow(clippy::missing_panics_doc)]
     pub fn spawn_with_args(config_path: &Path, extra_args: &[&str]) -> Self {
+        Self::spawn_with_args_and_envs(config_path, extra_args, &[])
+    }
+
+    /// Spawns a new server with custom environment variables.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn spawn_with_envs(config_path: &Path, envs: &[(&str, &str)]) -> Self {
+        Self::spawn_with_args_and_envs(config_path, &[], envs)
+    }
+
+    /// Spawns a new server with extra CLI args and custom environment variables.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn spawn_with_args_and_envs(
+        config_path: &Path,
+        extra_args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Self {
         let bin = env!("CARGO_BIN_EXE_thoughtjack");
         let mut args = vec![
             "server",
@@ -48,14 +64,18 @@ impl ThoughtJackProcess {
         ];
         args.extend_from_slice(extra_args);
 
-        let mut child = Command::new(bin)
-            .args(&args)
+        let mut cmd = Command::new(bin);
+        cmd.args(&args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .expect("failed to spawn thoughtjack");
+            .kill_on_drop(true);
+
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+
+        let mut child = cmd.spawn().expect("failed to spawn thoughtjack");
 
         let stdin = child.stdin.take().expect("stdin not captured");
         let stdout = child.stdout.take().expect("stdout not captured");
@@ -103,6 +123,14 @@ impl ThoughtJackProcess {
         }
     }
 
+    /// Writes raw bytes to the server's stdin.
+    ///
+    /// Returns `Ok(())` on success, `Err` if the pipe is broken (server closed).
+    pub async fn stdin_write(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.stdin.write_all(data).await?;
+        self.stdin.flush().await
+    }
+
     /// Reads one NDJSON message from the server's stdout.
     ///
     /// Panics on EOF, I/O error, or if no message arrives within `timeout`.
@@ -122,6 +150,37 @@ impl ThoughtJackProcess {
                 if !trimmed.is_empty() {
                     return serde_json::from_str::<Value>(trimmed)
                         .unwrap_or_else(|e| panic!("invalid JSON from server: {e}\nline: {line}"));
+                }
+            }
+        })
+        .await;
+        result.expect("timed out waiting for message from server")
+    }
+
+    /// Reads one NDJSON message from the server's stdout, returning `None` on EOF.
+    ///
+    /// Unlike `read_message`, this does not panic on EOF — it returns `None`.
+    /// Panics on I/O error or timeout.
+    #[allow(clippy::missing_panics_doc)]
+    pub async fn try_read_message(&mut self, timeout: Duration) -> Option<Value> {
+        let mut line = String::new();
+        let result = tokio::time::timeout(timeout, async {
+            loop {
+                line.clear();
+                let n = self
+                    .reader
+                    .read_line(&mut line)
+                    .await
+                    .expect("read_line I/O error");
+                if n == 0 {
+                    return None; // EOF
+                }
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    return Some(
+                        serde_json::from_str::<Value>(trimmed)
+                            .unwrap_or_else(|e| panic!("invalid JSON from server: {e}\nline: {line}")),
+                    );
                 }
             }
         })
@@ -301,5 +360,20 @@ impl ThoughtJackProcess {
             .args(args)
             .output()
             .expect("failed to run thoughtjack")
+    }
+
+    /// Runs the binary with arbitrary args and custom environment variables.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn spawn_command_with_envs(
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> std::process::Output {
+        let bin = env!("CARGO_BIN_EXE_thoughtjack");
+        let mut cmd = std::process::Command::new(bin);
+        cmd.args(args);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        cmd.output().expect("failed to run thoughtjack")
     }
 }

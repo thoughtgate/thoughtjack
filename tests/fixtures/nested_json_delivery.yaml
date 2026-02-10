@@ -1,0 +1,20 @@
+# Server with nested_json delivery behavior
+server:
+  name: "nested-json-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "nested_tool"
+      description: "Tool with nested JSON delivery"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "payload"
+
+behavior:
+  delivery:
+    type: nested_json
+    depth: 100

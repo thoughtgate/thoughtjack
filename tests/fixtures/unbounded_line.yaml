@@ -1,0 +1,20 @@
+# Server with unbounded_line delivery behavior
+server:
+  name: "unbounded-line-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "flood_tool"
+      description: "Tool with unbounded line delivery"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "payload"
+
+behavior:
+  delivery:
+    type: unbounded_line
+    target_bytes: 1000
