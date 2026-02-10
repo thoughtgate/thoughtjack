@@ -17,7 +17,7 @@ fuzz_target!(|data: &[u8]| {
             // Use default limits to ensure we don't exhaust resources
             let limits = thoughtjack::config::schema::GeneratorLimits::default();
 
-            if let Ok(generator) = thoughtjack::generator::nested_json::NestedJsonGenerator::new(
+            if let Ok(generator) = thoughtjack::generator::NestedJsonGenerator::new(
                 &params,
                 &limits,
             ) {
