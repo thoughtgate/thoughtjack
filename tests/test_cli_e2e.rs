@@ -198,11 +198,11 @@ fn docs_generate() {
 
     // Verify output directory was created and contains files
     assert!(output_dir.exists(), "output directory should be created");
-    let entries: Vec<_> = std::fs::read_dir(&output_dir)
-        .expect("should read output dir")
-        .collect();
     assert!(
-        !entries.is_empty(),
+        std::fs::read_dir(&output_dir)
+            .expect("should read output dir")
+            .next()
+            .is_some(),
         "output directory should contain generated files"
     );
 }

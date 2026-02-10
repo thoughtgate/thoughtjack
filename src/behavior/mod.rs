@@ -422,7 +422,7 @@ mod tests {
         }
     }
 
-    fn slow_loris_config() -> BehaviorConfig {
+    const fn slow_loris_config() -> BehaviorConfig {
         BehaviorConfig {
             delivery: Some(DeliveryConfig::SlowLoris {
                 byte_delay_ms: Some(50),
@@ -432,14 +432,14 @@ mod tests {
         }
     }
 
-    fn response_delay_config() -> BehaviorConfig {
+    const fn response_delay_config() -> BehaviorConfig {
         BehaviorConfig {
             delivery: Some(DeliveryConfig::ResponseDelay { delay_ms: 200 }),
             side_effects: None,
         }
     }
 
-    fn make_state(
+    const fn make_state(
         tools: IndexMap<String, ToolPattern>,
         resources: IndexMap<String, ResourcePattern>,
         prompts: IndexMap<String, PromptPattern>,

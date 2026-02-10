@@ -866,7 +866,7 @@ mod tests {
     // DNS rebinding protection
     // ------------------------------------------------------------------
 
-    fn valid_jsonrpc_body() -> &'static str {
+    const fn valid_jsonrpc_body() -> &'static str {
         r#"{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}"#
     }
 
