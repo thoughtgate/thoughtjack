@@ -1,0 +1,19 @@
+# Dynamic template interpolation fixture
+server:
+  name: "dynamic-template-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "greet"
+      description: "Greeting tool with template interpolation"
+      inputSchema:
+        type: object
+        properties:
+          name:
+            type: string
+        required: ["name"]
+    response:
+      content:
+        - type: text
+          text: "Hello, $${args.name}! Welcome aboard."
