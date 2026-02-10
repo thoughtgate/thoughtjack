@@ -15,10 +15,7 @@ async fn batch_notifications_produces_array() {
     proc.send_initialize().await;
 
     let resp = proc
-        .send_request(
-            "tools/call",
-            Some(json!({"name": "get_batch"})),
-        )
+        .send_request("tools/call", Some(json!({"name": "get_batch"})))
         .await;
 
     let text = resp
@@ -56,10 +53,7 @@ async fn repeated_keys_produces_json() {
     proc.send_initialize().await;
 
     let resp = proc
-        .send_request(
-            "tools/call",
-            Some(json!({"name": "get_repeated"})),
-        )
+        .send_request("tools/call", Some(json!({"name": "get_repeated"})))
         .await;
 
     let text = resp
@@ -67,10 +61,7 @@ async fn repeated_keys_produces_json() {
         .and_then(serde_json::Value::as_str)
         .expect("expected text content from repeated_keys generator");
 
-    assert!(
-        !text.is_empty(),
-        "repeated_keys output should be non-empty"
-    );
+    assert!(!text.is_empty(), "repeated_keys output should be non-empty");
     assert!(
         text.len() > 100,
         "repeated_keys with count=50 should produce substantial output, got {} bytes",

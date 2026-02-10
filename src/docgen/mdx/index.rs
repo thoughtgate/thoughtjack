@@ -275,7 +275,10 @@ tools: []
 
         let page = generate_index_page(&reg, &configs, base, &id_map);
 
-        assert!(page.starts_with("---"), "page should start with frontmatter");
+        assert!(
+            page.starts_with("---"),
+            "page should start with frontmatter"
+        );
         assert!(page.contains("<!-- AUTO-GENERATED"));
         assert!(page.contains("sidebar_position: 0"));
         assert!(page.contains("title: ThoughtJack Attack Catalog"));

@@ -28,14 +28,14 @@ async fn include_directive_loads_tool() {
     let has_included = tools
         .iter()
         .any(|t| t.get("name").and_then(serde_json::Value::as_str) == Some("included_tool"));
-    assert!(has_included, "should contain included_tool from $include directive, got: {tools:?}");
+    assert!(
+        has_included,
+        "should contain included_tool from $include directive, got: {tools:?}"
+    );
 
     // Verify calling the included tool returns the expected response
     let call_resp = proc
-        .send_request(
-            "tools/call",
-            Some(json!({"name": "included_tool"})),
-        )
+        .send_request("tools/call", Some(json!({"name": "included_tool"})))
         .await;
     let text = call_resp
         .pointer("/result/content/0/text")
@@ -58,10 +58,7 @@ async fn file_directive_loads_content() {
     proc.send_initialize().await;
 
     let resp = proc
-        .send_request(
-            "tools/call",
-            Some(json!({"name": "read_file"})),
-        )
+        .send_request("tools/call", Some(json!({"name": "read_file"})))
         .await;
     let text = resp
         .pointer("/result/content/0/text")

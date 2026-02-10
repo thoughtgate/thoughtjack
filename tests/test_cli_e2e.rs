@@ -105,8 +105,7 @@ fn completions_fish() {
 fn diagram_phased() {
     let scenarios_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scenarios");
     let path = scenarios_dir.join("rug-pull.yaml");
-    let output =
-        ThoughtJackProcess::spawn_command(&["diagram", path.to_str().unwrap()]);
+    let output = ThoughtJackProcess::spawn_command(&["diagram", path.to_str().unwrap()]);
     assert!(
         output.status.success(),
         "diagram should exit 0: {}",
@@ -115,7 +114,9 @@ fn diagram_phased() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("stateDiagram") || stdout.contains("graph") || stdout.contains("sequenceDiagram"),
+        stdout.contains("stateDiagram")
+            || stdout.contains("graph")
+            || stdout.contains("sequenceDiagram"),
         "diagram output should contain mermaid syntax: {stdout}"
     );
 }
@@ -124,8 +125,7 @@ fn diagram_phased() {
 fn diagram_simple() {
     let scenarios_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scenarios");
     let path = scenarios_dir.join("prompt-injection.yaml");
-    let output =
-        ThoughtJackProcess::spawn_command(&["diagram", path.to_str().unwrap()]);
+    let output = ThoughtJackProcess::spawn_command(&["diagram", path.to_str().unwrap()]);
     assert!(
         output.status.success(),
         "diagram (simple scenario) should exit 0: {}",
@@ -133,10 +133,7 @@ fn diagram_simple() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.is_empty(),
-        "diagram output should be non-empty"
-    );
+    assert!(!stdout.is_empty(), "diagram output should be non-empty");
 }
 
 #[test]

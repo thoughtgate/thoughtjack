@@ -67,9 +67,7 @@ async fn resource_exfiltration_serves_resources() {
     );
 
     // Verify content has text
-    let text = contents[0]
-        .get("text")
-        .and_then(serde_json::Value::as_str);
+    let text = contents[0].get("text").and_then(serde_json::Value::as_str);
     assert!(
         text.is_some(),
         "resource content should have text: {contents:?}"

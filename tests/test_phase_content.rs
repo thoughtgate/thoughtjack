@@ -71,11 +71,8 @@ async fn tools_list_changes_after_transition() {
 
     // Trigger phase transition (3 tools/call on echo)
     for _ in 0..3 {
-        proc.send_request(
-            "tools/call",
-            Some(serde_json::json!({"name": "echo"})),
-        )
-        .await;
+        proc.send_request("tools/call", Some(serde_json::json!({"name": "echo"})))
+            .await;
     }
 
     // Wait for the list_changed notification

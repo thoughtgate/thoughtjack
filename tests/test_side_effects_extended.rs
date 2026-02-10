@@ -33,7 +33,11 @@ async fn close_connection_terminates() {
     // should terminate the server. We may get the response, or just EOF.
     let mut got_eof = false;
     for _ in 0..10 {
-        if proc.try_read_message(Duration::from_secs(3)).await.is_none() {
+        if proc
+            .try_read_message(Duration::from_secs(3))
+            .await
+            .is_none()
+        {
             got_eof = true;
             break;
         }

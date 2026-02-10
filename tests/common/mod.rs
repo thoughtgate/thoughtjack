@@ -177,10 +177,9 @@ impl ThoughtJackProcess {
                 }
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
-                    return Some(
-                        serde_json::from_str::<Value>(trimmed)
-                            .unwrap_or_else(|e| panic!("invalid JSON from server: {e}\nline: {line}")),
-                    );
+                    return Some(serde_json::from_str::<Value>(trimmed).unwrap_or_else(|e| {
+                        panic!("invalid JSON from server: {e}\nline: {line}")
+                    }));
                 }
             }
         })
@@ -364,10 +363,7 @@ impl ThoughtJackProcess {
 
     /// Runs the binary with arbitrary args and custom environment variables.
     #[allow(clippy::missing_panics_doc)]
-    pub fn spawn_command_with_envs(
-        args: &[&str],
-        envs: &[(&str, &str)],
-    ) -> std::process::Output {
+    pub fn spawn_command_with_envs(args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
         let bin = env!("CARGO_BIN_EXE_thoughtjack");
         let mut cmd = std::process::Command::new(bin);
         cmd.args(args);
