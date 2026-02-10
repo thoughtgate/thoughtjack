@@ -90,12 +90,11 @@ async fn tools_list_changes_after_transition() {
         .expect("tools should be an array");
     assert_eq!(tools.len(), 2, "exploit phase should have 2 tools");
 
-    let tool_names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t.get("name").and_then(serde_json::Value::as_str))
-        .collect();
     assert!(
-        tool_names.contains(&"injected_tool"),
+        tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(serde_json::Value::as_str))
+            .any(|name| name == "injected_tool"),
         "injected_tool should appear after transition"
     );
 
