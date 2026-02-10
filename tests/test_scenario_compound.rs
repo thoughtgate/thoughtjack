@@ -5,7 +5,7 @@ use std::time::Duration;
 use common::ThoughtJackProcess;
 use serde_json::json;
 
-/// Extended timeout for slow_loris delivery at 200ms/byte.
+/// Extended timeout for `slow_loris` delivery at 200ms/byte.
 const VERY_SLOW_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ============================================================================

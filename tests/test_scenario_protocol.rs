@@ -38,12 +38,12 @@ async fn id_collision_injected_requests() {
     let has_sampling = notifications.iter().any(|n| {
         n.get("method")
             .and_then(serde_json::Value::as_str)
-            .map_or(false, |m| m.contains("sampling"))
+            .is_some_and(|m| m.contains("sampling"))
     });
 
     // Not all implementations send sampling requests as notifications,
     // but verify the server survived the phase transition
-    let _sampling_found = has_sampling;
+    let _ = has_sampling;
 
     proc.shutdown().await;
 }
