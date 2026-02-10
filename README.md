@@ -6,6 +6,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/thoughtgate/thoughtjack)](https://github.com/thoughtgate/thoughtjack/releases/latest)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/thoughtgate/thoughtjack/badge)](https://scorecard.dev/viewer/?uri=github.com/thoughtgate/thoughtjack)
 [![CodeQL](https://github.com/thoughtgate/thoughtjack/actions/workflows/codeql.yml/badge.svg)](https://github.com/thoughtgate/thoughtjack/security/code-scanning)
+[![codecov](https://codecov.io/gh/thoughtgate/thoughtjack/graph/badge.svg)](https://codecov.io/gh/thoughtgate/thoughtjack)
 [![Fuzzing](https://img.shields.io/badge/fuzzing-cargo--fuzz-brightgreen)](https://github.com/thoughtgate/thoughtjack/blob/main/docs/SECURITY.md#continuous-fuzzing)
 [![Sigstore Signed](https://img.shields.io/badge/sigstore-signed-blue)](https://github.com/thoughtgate/thoughtjack/blob/main/docs/SECURITY.md#release-artifact-signing)
 [![Rust 2024](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
