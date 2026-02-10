@@ -1,0 +1,13 @@
+# Fuzzing artifacts
+artifacts/
+
+# Fuzzing corpus (managed by libFuzzer, seeded from scenarios)
+corpus/*/*.yaml
+corpus/*/*.json
+
+# Fuzzing coverage
+coverage/
+
+# Cargo
+target/
+Cargo.lock
