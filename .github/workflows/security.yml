@@ -1,0 +1,257 @@
+name: Security Testing and Signing
+
+on:
+  # Post-release signing: trigger after release workflow completes
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
+  # Nightly fuzzing: scheduled run for continuous security testing
+  schedule:
+    # Run nightly at 2 AM UTC (4 hours total fuzzing time)
+    - cron: '0 2 * * *'
+  # Manual trigger for testing and on-demand fuzzing
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to sign (e.g., v0.4.0)'
+        required: false
+        type: string
+
+permissions:
+  # Minimal default permissions
+  contents: read
+
+jobs:
+  # =============================================================================
+  # Release Artifact Signing with Sigstore (Keyless)
+  # =============================================================================
+  #
+  # Runs after the Release workflow completes successfully. Signs all release
+  # artifacts using Sigstore/cosign with GitHub OIDC tokens (keyless signing).
+  # Uploads signature (.sig) and certificate (.pem) files to the release.
+  #
+  # This job does NOT modify the auto-generated release.yml from cargo-dist.
+  # It runs as a separate post-release step via workflow_run trigger.
+  sign-release:
+    name: Sign Release Artifacts
+    runs-on: ubuntu-latest
+    # Only run on successful release workflow OR manual dispatch with tag
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
+    permissions:
+      contents: write        # Upload signature files to release
+      id-token: write        # Required for Sigstore OIDC token
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # Derive tag deterministically from the triggering workflow_run event
+            TAG="${{ github.event.workflow_run.head_branch }}"
+            if [ -z "$TAG" ]; then
+              echo "Error: Unable to determine release tag from workflow_run event." >&2
+              exit 1
+            fi
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Download release artifacts
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          echo "Downloading artifacts for release $TAG"
+          gh release download "$TAG" --pattern 'thoughtjack-*' --dir ./artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Sign artifacts with Sigstore
+        run: |
+          cd ./artifacts
+          for artifact in thoughtjack-*; do
+            # Skip if already a signature file
+            if [[ "$artifact" == *.sig ]] || [[ "$artifact" == *.pem ]]; then
+              continue
+            fi
+
+            echo "Signing $artifact"
+            # Single signing operation producing bundle, signature, and certificate
+            cosign sign-blob \
+              --yes \
+              --bundle "${artifact}.bundle" \
+              --output-signature "${artifact}.sig" \
+              --output-certificate "${artifact}.pem" \
+              "$artifact"
+          done
+
+      - name: Upload signatures to release
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          cd ./artifacts
+
+          echo "Uploading signatures for release $TAG"
+          for sig_file in *.sig *.pem *.bundle; do
+            if [ -f "$sig_file" ]; then
+              echo "Uploading $sig_file"
+              gh release upload "$TAG" "$sig_file" --clobber
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Verify signatures
+        run: |
+          cd ./artifacts
+          for artifact in thoughtjack-*; do
+            # Skip signature files themselves
+            if [[ "$artifact" == *.sig ]] || [[ "$artifact" == *.pem ]] || [[ "$artifact" == *.bundle ]]; then
+              continue
+            fi
+
+            echo "Verifying signature for $artifact"
+            cosign verify-blob \
+              --certificate "${artifact}.pem" \
+              --signature "${artifact}.sig" \
+              --certificate-identity-regexp="^https://github.com/${{ github.repository }}" \
+              --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+              "$artifact"
+          done
+
+  # =============================================================================
+  # Continuous Fuzzing with cargo-fuzz (libFuzzer)
+  # =============================================================================
+  #
+  # Runs nightly for 4 hours total (1 hour per target) to find bugs.
+  # Does NOT run on PRs to keep CI fast. Can be triggered manually via
+  # workflow_dispatch for on-demand fuzzing.
+  #
+  # Fuzz targets:
+  # 1. Config loader (YAML parsing, directives, recursion)
+  # 2. JSON-RPC parser (malformed messages, binary framing)
+  # 3. Phase trigger (regex patterns, content matching)
+  # 4. Nested JSON generator (depth limits, stack overflow)
+  fuzz:
+    name: Fuzz Testing
+    runs-on: ubuntu-latest
+    # Only run on schedule or manual dispatch (not on workflow_run)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 300  # 5 hours total (4 hours fuzzing + 1 hour overhead)
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_config_loader
+          - fuzz_jsonrpc_parser
+          - fuzz_phase_trigger
+          - fuzz_nested_json_generator
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # nightly
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Cache fuzz corpus
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          # Stable key per target so corpus is reused and updated in-place
+          key: fuzz-corpus-${{ matrix.target }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}
+
+      - name: Run fuzzer (1 hour per target)
+        run: |
+          cd fuzz
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=3600 \
+            -print_final_stats=1 \
+            -timeout=30
+        continue-on-error: true  # Don't fail workflow on fuzzer crashes (expected)
+
+      - name: Check for crashes
+        id: crashes
+        run: |
+          if [ -d "fuzz/artifacts/${{ matrix.target }}" ] && [ -n "$(ls -A fuzz/artifacts/${{ matrix.target }})" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Fuzzer found crashes for ${{ matrix.target }}"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload crash artifacts
+        if: steps.crashes.outputs.found == 'true'
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 30
+
+      - name: Create issue on crash
+        if: steps.crashes.outputs.found == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            const target = '${{ matrix.target }}';
+            const artifactsDir = `fuzz/artifacts/${target}`;
+
+            // List crash files
+            const crashes = fs.readdirSync(artifactsDir);
+            const crashList = crashes.map(f => `- \`${f}\``).join('\n');
+
+            // Create issue
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🐛 Fuzzing crash found in ${target}`,
+              labels: ['bug', 'security', 'fuzzing'],
+              body: `## Fuzzing Crash Report
+
+            **Target**: \`${target}\`
+            **Workflow Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            ### Crashes Found
+
+            ${crashList}
+
+            ### Reproduction
+
+            Download the crash artifacts and reproduce locally:
+
+            \`\`\`bash
+            # Download artifacts from workflow run
+            gh run download ${{ github.run_id }} -n fuzz-crashes-${target}
+
+            # Reproduce the crash
+            cd fuzz
+            cargo +nightly fuzz run ${target} <path-to-crash-file>
+            \`\`\`
+
+            ### Next Steps
+
+            1. Analyze the crash with \`cargo fuzz fmt ${target} <crash-file>\`
+            2. Add regression test
+            3. Fix the underlying issue
+            4. Re-run fuzzer to verify fix
+            `
+            });

@@ -282,7 +282,7 @@ mod tests {
     use crate::config::schema::GeneratorLimits;
     use serde_json::json;
 
-    fn make_config(type_: GeneratorType, params: HashMap<String, Value>) -> GeneratorConfig {
+    const fn make_config(type_: GeneratorType, params: HashMap<String, Value>) -> GeneratorConfig {
         GeneratorConfig { type_, params }
     }
 

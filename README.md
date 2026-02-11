@@ -5,6 +5,10 @@
 [![crates.io](https://img.shields.io/crates/v/thoughtjack.svg)](https://crates.io/crates/thoughtjack)
 [![GitHub Release](https://img.shields.io/github/v/release/thoughtgate/thoughtjack)](https://github.com/thoughtgate/thoughtjack/releases/latest)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/thoughtgate/thoughtjack/badge)](https://scorecard.dev/viewer/?uri=github.com/thoughtgate/thoughtjack)
+[![CodeQL](https://github.com/thoughtgate/thoughtjack/actions/workflows/codeql.yml/badge.svg)](https://github.com/thoughtgate/thoughtjack/security/code-scanning)
+[![codecov](https://codecov.io/gh/thoughtgate/thoughtjack/graph/badge.svg)](https://codecov.io/gh/thoughtgate/thoughtjack)
+[![Fuzzing](https://img.shields.io/badge/fuzzing-cargo--fuzz-brightgreen)](https://github.com/thoughtgate/thoughtjack/blob/main/docs/SECURITY.md#continuous-fuzzing)
+[![Sigstore Signed](https://img.shields.io/badge/sigstore-signed-blue)](https://github.com/thoughtgate/thoughtjack/blob/main/docs/SECURITY.md#release-artifact-signing)
 [![Rust 2024](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![MSRV 1.85](https://img.shields.io/badge/msrv-1.85-blue.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
@@ -479,6 +483,21 @@ cargo fmt
 # Run with coverage
 cargo llvm-cov --html
 ```
+
+## Security
+
+ThoughtJack implements multiple security measures to ensure supply chain integrity and continuous security testing:
+
+- **Release Signing**: All release artifacts are signed with [Sigstore](https://www.sigstore.dev/) (keyless signing)
+- **Continuous Fuzzing**: 4 fuzz targets running nightly (config loader, JSON-RPC parser, phase triggers, generators)
+- **Static Analysis**: CodeQL semantic analysis on all PRs, Clippy (pedantic + nursery), cargo-deny
+- **OpenSSF Scorecard**: ~8.5/10 supply chain security score
+
+See [docs/SECURITY.md](docs/SECURITY.md) for:
+- How to verify release signatures
+- Running fuzzing locally
+- Reporting security vulnerabilities
+- Safe usage guidelines
 
 ## Documentation
 

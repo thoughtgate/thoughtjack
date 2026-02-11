@@ -31,12 +31,12 @@ pub fn generate_scenario_page(
 
     let mut sections = Vec::new();
 
-    // Header comment
-    sections.push("<!-- AUTO-GENERATED — DO NOT EDIT -->".to_string());
+    // Frontmatter must be first in MDX files
+    sections.push(generate_frontmatter(metadata));
     sections.push(String::new());
 
-    // Frontmatter
-    sections.push(generate_frontmatter(metadata));
+    // Header comment
+    sections.push("<!-- AUTO-GENERATED — DO NOT EDIT -->".to_string());
     sections.push(String::new());
 
     // Component imports (placeholders for React components)
@@ -246,9 +246,12 @@ phases:
         let config = test_config();
         let page = generate_scenario_page(&config, "# raw yaml").unwrap();
 
-        assert!(page.starts_with("<!-- AUTO-GENERATED"));
-        assert!(page.contains("---"));
-        assert!(page.contains("id: TJ-ATK-001"));
+        assert!(
+            page.starts_with("---"),
+            "page should start with frontmatter"
+        );
+        assert!(page.contains("<!-- AUTO-GENERATED"));
+        assert!(page.contains("id: tj-atk-001"));
         assert!(page.contains("## Overview"));
         assert!(page.contains("## Attack Flow"));
         assert!(page.contains("```mermaid"));

@@ -1,0 +1,24 @@
+# Config with duplicate tool names — should produce a warning per SPEC-001 F-015
+server:
+  name: "duplicate-tools-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "echo"
+      description: "First echo tool"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "first"
+  - tool:
+      name: "echo"
+      description: "Second echo tool (duplicate)"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "second"

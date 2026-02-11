@@ -233,7 +233,7 @@ mod tests {
         }
     }
 
-    fn make_rctx<'a>(
+    const fn make_rctx<'a>(
         limits: &'a GeneratorLimits,
         call_tracker: &'a CallTracker,
         http_client: &'a reqwest::Client,

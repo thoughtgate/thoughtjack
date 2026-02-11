@@ -1,0 +1,41 @@
+[package]
+name = "thoughtjack-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+thoughtjack = { path = ".." }
+serde_json = "1.0"
+
+# Prevent this workspace from publishing
+[package.metadata.dist]
+dist = false
+
+[[bin]]
+name = "fuzz_config_loader"
+path = "fuzz_targets/fuzz_config_loader.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_jsonrpc_parser"
+path = "fuzz_targets/fuzz_jsonrpc_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_phase_trigger"
+path = "fuzz_targets/fuzz_phase_trigger.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_nested_json_generator"
+path = "fuzz_targets/fuzz_nested_json_generator.rs"
+test = false
+doc = false

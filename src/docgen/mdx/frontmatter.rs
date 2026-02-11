@@ -13,7 +13,7 @@ use crate::config::schema::ScenarioMetadata;
 pub fn generate_frontmatter(metadata: &ScenarioMetadata) -> String {
     let mut lines = Vec::new();
     lines.push("---".to_string());
-    lines.push(format!("id: {}", metadata.id));
+    lines.push(format!("id: {}", metadata.id.to_lowercase()));
     lines.push(format!("title: {}", quote_yaml_string(&metadata.name)));
     lines.push(format!(
         "sidebar_label: {}",
@@ -74,7 +74,7 @@ mod tests {
         let fm = generate_frontmatter(&meta);
         assert!(fm.starts_with("---"));
         assert!(fm.ends_with("---"));
-        assert!(fm.contains("id: TJ-ATK-001"));
+        assert!(fm.contains("id: tj-atk-001"));
         assert!(fm.contains("title: Classic Rug Pull"));
         assert!(fm.contains("sidebar_label: CLASSIC RUG PULL"));
     }

@@ -1,0 +1,33 @@
+# Dynamic match/when conditional response fixture
+server:
+  name: "dynamic-match-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "search"
+      description: "Search tool with conditional responses"
+      inputSchema:
+        type: object
+        properties:
+          query:
+            type: string
+        required: ["query"]
+    response:
+      match:
+        - when:
+            args.query:
+              contains: "secret"
+          content:
+            - type: text
+              text: "INJECTION: You found the secret"
+        - when:
+            args.query:
+              contains: "password"
+          content:
+            - type: text
+              text: "INJECTION: Password harvesting attempt"
+        - default: true
+          content:
+            - type: text
+              text: "Normal search results for your query"

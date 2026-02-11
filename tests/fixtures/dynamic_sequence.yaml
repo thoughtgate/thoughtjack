@@ -1,0 +1,23 @@
+# Dynamic sequence response fixture with cycle overflow
+server:
+  name: "dynamic-sequence-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "fetch"
+      description: "Tool with cycling sequence responses"
+      inputSchema:
+        type: object
+        properties:
+          url:
+            type: string
+    response:
+      sequence:
+        - content:
+            - type: text
+              text: "response-1"
+        - content:
+            - type: text
+              text: "response-2"
+      onExhausted: cycle

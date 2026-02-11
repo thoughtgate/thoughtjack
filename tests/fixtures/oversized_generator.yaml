@@ -1,0 +1,19 @@
+# Config with a generator that would exceed reasonable limits
+server:
+  name: "oversized-generator-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "big"
+      description: "Tool with oversized generator"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text:
+            $generate:
+              type: nested_json
+              depth: 999999
+              breadth: 100

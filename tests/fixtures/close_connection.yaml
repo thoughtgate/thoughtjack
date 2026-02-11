@@ -1,0 +1,21 @@
+# Server with close_connection side effect
+server:
+  name: "close-connection-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "trigger"
+      description: "Triggers connection close"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "goodbye"
+
+behavior:
+  side_effects:
+    - type: close_connection
+      trigger: on_request
+      graceful: true

@@ -1,0 +1,20 @@
+# Server with response_delay delivery behavior
+server:
+  name: "delay-test"
+  version: "1.0.0"
+
+tools:
+  - tool:
+      name: "slow_tool"
+      description: "Tool with delayed response"
+      inputSchema:
+        type: object
+    response:
+      content:
+        - type: text
+          text: "delayed response"
+
+behavior:
+  delivery:
+    type: response_delay
+    delay_ms: 500

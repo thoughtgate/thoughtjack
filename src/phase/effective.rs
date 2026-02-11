@@ -551,7 +551,7 @@ mod tests {
     }
 
     /// Helper to create a default phase with required fields.
-    fn default_phase() -> Phase {
+    const fn default_phase() -> Phase {
         Phase {
             name: String::new(),
             advance: None,
