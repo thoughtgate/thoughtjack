@@ -58,8 +58,12 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
           else
-            # Extract tag from release workflow
-            TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
+            # Derive tag deterministically from the triggering workflow_run event
+            TAG="${{ github.event.workflow_run.head_branch }}"
+            if [ -z "$TAG" ]; then
+              echo "Error: Unable to determine release tag from workflow_run event." >&2
+              exit 1
+            fi
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
         env:
@@ -83,15 +87,10 @@ jobs:
             fi
 
             echo "Signing $artifact"
+            # Single signing operation producing bundle, signature, and certificate
             cosign sign-blob \
               --yes \
               --bundle "${artifact}.bundle" \
-              "$artifact"
-
-            # Extract signature and certificate from bundle for separate upload
-            # This provides both bundle format and separate files for compatibility
-            cosign sign-blob \
-              --yes \
               --output-signature "${artifact}.sig" \
               --output-certificate "${artifact}.pem" \
               "$artifact"
@@ -164,7 +163,9 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # nightly
+        with:
+          toolchain: nightly
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
@@ -173,10 +174,10 @@ jobs:
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: fuzz/corpus/${{ matrix.target }}
-          # Use separate cache key per target to prevent unbounded growth
-          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          # Stable key per target so corpus is reused and updated in-place
+          key: fuzz-corpus-${{ matrix.target }}
           restore-keys: |
-            fuzz-corpus-${{ matrix.target }}-
+            fuzz-corpus-${{ matrix.target }}
 
       - name: Run fuzzer (1 hour per target)
         run: |
