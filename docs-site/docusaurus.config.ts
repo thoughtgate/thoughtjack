@@ -12,6 +12,7 @@ const config: Config = {
   projectName: 'thoughtjack',
 
   onBrokenLinks: 'throw',
+  trailingSlash: false,
 
   i18n: {
     defaultLocale: 'en',
