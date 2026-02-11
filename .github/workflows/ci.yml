@@ -116,8 +116,10 @@ jobs:
           tool: cargo-llvm-cov
       - name: Generate coverage
         run: cargo llvm-cov -p thoughtjack --lcov --output-path lcov.info
-      - name: Upload to Codecov
+      - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: thoughtgate/thoughtjack
           files: lcov.info
           fail_ci_if_error: false
