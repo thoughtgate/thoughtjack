@@ -25,6 +25,7 @@ allow = [
     "Unlicense",
     "OpenSSL",
     "Apache-2.0 WITH LLVM-exception",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

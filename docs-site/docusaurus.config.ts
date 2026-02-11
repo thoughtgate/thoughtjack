@@ -12,6 +12,14 @@ const config: Config = {
   projectName: 'thoughtjack',
 
   onBrokenLinks: 'throw',
+  trailingSlash: false,
+
+  scripts: [
+    {
+      src: 'https://www.googletagmanager.com/gtag/js?id=G-1X0RR1611Q',
+      async: true,
+    },
+  ],
 
   i18n: {
     defaultLocale: 'en',
@@ -107,6 +115,19 @@ const config: Config = {
       theme: {light: 'default', dark: 'dark'},
     },
   } satisfies Preset.ThemeConfig,
+
+  headTags: [
+    {
+      tagName: 'script',
+      attributes: {},
+      innerHTML: `
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', 'G-1X0RR1611Q');
+      `,
+    },
+  ],
 };
 
 export default config;

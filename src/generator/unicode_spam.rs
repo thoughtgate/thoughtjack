@@ -9,7 +9,7 @@ use crate::error::GeneratorError;
 
 use super::{GeneratedPayload, PayloadGenerator, extract_u64};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde_json::Value;
 use std::collections::HashMap;
 
