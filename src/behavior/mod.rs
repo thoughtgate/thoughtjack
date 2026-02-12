@@ -718,6 +718,10 @@ mod tests {
             fn connection_context(&self) -> crate::transport::ConnectionContext {
                 crate::transport::ConnectionContext::stdio()
             }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
         }
 
         #[tokio::test]

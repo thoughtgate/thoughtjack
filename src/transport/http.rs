@@ -230,10 +230,8 @@ impl HttpTransport {
             connected_at: incoming.connected_at,
         };
 
-        let guard = ConnectionGuard::new(
-            Arc::clone(&self.shared.connections),
-            incoming.connection_id,
-        );
+        let guard =
+            ConnectionGuard::new(Arc::clone(&self.shared.connections), incoming.connection_id);
 
         let handle = ResponseHandle {
             response_tx: Some(incoming.response_tx),
@@ -244,7 +242,6 @@ impl HttpTransport {
 
         Some((incoming.message, handle))
     }
-
 }
 
 /// Per-request handle for sending an HTTP response.
@@ -268,9 +265,10 @@ impl ResponseHandle {
     ///
     /// Returns [`TransportError::ConnectionClosed`] if the client disconnected.
     pub async fn send_raw(&self, bytes: &[u8]) -> Result<()> {
-        let tx = self.response_tx.as_ref().ok_or_else(|| {
-            TransportError::ConnectionClosed("response already finalized".into())
-        })?;
+        let tx = self
+            .response_tx
+            .as_ref()
+            .ok_or_else(|| TransportError::ConnectionClosed("response already finalized".into()))?;
         tx.send(Ok(Bytes::copy_from_slice(bytes)))
             .await
             .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))
@@ -377,6 +375,10 @@ impl Transport for ResponseHandleAdapter {
 
     fn connection_context(&self) -> ConnectionContext {
         self.handle.context.clone()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -529,6 +531,10 @@ impl Transport for HttpTransport {
                 e.into_inner()
             })
             .clone()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

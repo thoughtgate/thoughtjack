@@ -4,6 +4,7 @@
 //! coordinator, and handler dispatch into a running MCP server.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use chrono::Utc;
@@ -27,12 +28,12 @@ use crate::handlers::RequestContext;
 use crate::observability::events::{Event, EventEmitter, StopReason};
 use crate::observability::metrics;
 use crate::phase::engine::PhaseEngine;
-use crate::phase::state::EventType;
-use crate::transport::Transport;
+use crate::phase::state::{EventType, PhaseTransition};
 use crate::transport::jsonrpc::{
     JSONRPC_VERSION, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     error_codes,
 };
+use crate::transport::{HttpTransport, ResponseHandleAdapter, Transport, TransportType};
 
 /// Options for constructing a [`Server`].
 ///
@@ -73,8 +74,8 @@ pub struct Server {
     config: Arc<ServerConfig>,
     transport: Arc<dyn Transport>,
     phase_engine: Arc<PhaseEngine>,
-    behavior_coordinator: BehaviorCoordinator,
-    event_emitter: EventEmitter,
+    behavior_coordinator: Arc<BehaviorCoordinator>,
+    event_emitter: Arc<EventEmitter>,
     generator_limits: GeneratorLimits,
     capture: Option<Arc<CaptureWriter>>,
     spoof_client: Option<String>,
@@ -105,14 +106,14 @@ impl Server {
             .cli_state_scope
             .unwrap_or_else(|| opts.config.server.state_scope.unwrap_or_default());
         let phase_engine = Arc::new(PhaseEngine::new(phases, baseline, state_scope));
-        let behavior_coordinator = BehaviorCoordinator::new(opts.cli_behavior);
+        let behavior_coordinator = Arc::new(BehaviorCoordinator::new(opts.cli_behavior));
 
         Self {
             config: opts.config,
             transport: opts.transport,
             phase_engine,
             behavior_coordinator,
-            event_emitter: opts.event_emitter,
+            event_emitter: Arc::new(opts.event_emitter),
             generator_limits: opts.generator_limits,
             capture: opts.capture.map(Arc::new),
             spoof_client: opts.spoof_client,
@@ -162,16 +163,25 @@ impl Server {
             SideEffectManager::new(Arc::clone(&self.transport), self.cancel.clone());
         self.start_continuous_effects(&mut side_effect_mgr);
 
-        let mut initialized = false;
+        let initialized = Arc::new(AtomicBool::new(false));
 
-        let result = self
-            .main_loop(
+        let result = if transport_type == TransportType::Http {
+            self.http_main_loop(
                 effective_name,
                 server_version,
-                &mut initialized,
+                &initialized,
                 &side_effect_mgr,
             )
-            .await;
+            .await
+        } else {
+            self.main_loop(
+                effective_name,
+                server_version,
+                &initialized,
+                &side_effect_mgr,
+            )
+            .await
+        };
 
         // Shutdown
         self.phase_engine.shutdown();
@@ -192,13 +202,13 @@ impl Server {
         result
     }
 
-    /// Core message loop.
+    /// Core message loop (stdio — serial processing).
     #[allow(clippy::too_many_lines)]
     async fn main_loop(
         &self,
         server_name: &str,
         server_version: &str,
-        initialized: &mut bool,
+        initialized: &Arc<AtomicBool>,
         side_effect_mgr: &SideEffectManager,
     ) -> Result<(), ThoughtJackError> {
         loop {
@@ -335,6 +345,303 @@ impl Server {
         Ok(())
     }
 
+    /// Core message loop for HTTP transport — spawns per-request tasks.
+    ///
+    /// Each incoming HTTP request is handled in a separate Tokio task,
+    /// eliminating head-of-line blocking from slow deliveries (e.g.
+    /// `response_delay`, `slow_loris`). Phase transitions are sent
+    /// back to the main loop via a channel and applied in order to
+    /// maintain the response-before-transition guarantee.
+    #[allow(clippy::too_many_lines)]
+    async fn http_main_loop(
+        &self,
+        server_name: &str,
+        server_version: &str,
+        initialized: &Arc<AtomicBool>,
+        _side_effect_mgr: &SideEffectManager,
+    ) -> Result<(), ThoughtJackError> {
+        // Downcast to HttpTransport for receive_request()
+        let http_transport = self
+            .transport
+            .as_any()
+            .downcast_ref::<HttpTransport>()
+            .expect("http_main_loop called with non-HTTP transport");
+
+        // Channel for spawned tasks to send back completed transitions
+        let (transition_tx, mut transition_rx) = tokio::sync::mpsc::channel::<PhaseTransition>(64);
+
+        // Clone Arcs for spawned tasks
+        let server_name = server_name.to_string();
+        let server_version = server_version.to_string();
+
+        loop {
+            tokio::select! {
+                () = self.cancel.cancelled() => {
+                    info!("server cancelled");
+                    break;
+                }
+
+                // Apply completed transitions from spawned tasks
+                Some(trans) = transition_rx.recv() => {
+                    self.apply_transition(&trans).await;
+                }
+
+                // Receive next HTTP request
+                result = http_transport.receive_request() => {
+                    let Some((message, handle)) = result else {
+                        debug!("transport EOF — shutting down");
+                        break;
+                    };
+
+                    // Only handle requests
+                    let request = match message {
+                        JsonRpcMessage::Request(req) => req,
+                        JsonRpcMessage::Response(_) => {
+                            debug!("ignoring incoming response");
+                            handle.finalize();
+                            continue;
+                        }
+                        JsonRpcMessage::Notification(notif) => {
+                            debug!(method = %notif.method, "ignoring incoming notification");
+                            handle.finalize();
+                            continue;
+                        }
+                    };
+
+                    // Capture incoming request
+                    if let Some(ref capture) = self.capture {
+                        if let Ok(data) = serde_json::to_value(&request) {
+                            if let Err(e) = capture.record(CaptureType::Request, &data, None) {
+                                warn!(error = %e, "failed to capture request");
+                            }
+                        }
+                    }
+
+                    // Resolve connection identity
+                    let connection_id = handle.connection_context().connection_id;
+                    self.phase_engine.ensure_connection(connection_id);
+
+                    // Emit request event
+                    self.event_emitter.emit(Event::RequestReceived {
+                        timestamp: Utc::now(),
+                        request_id: request.id.clone(),
+                        method: request.method.clone(),
+                    });
+                    metrics::record_request(&request.method);
+
+                    // Capture effective state BEFORE transition
+                    let effective_state = self.phase_engine.effective_state(connection_id);
+
+                    // Evaluate triggers (fast, atomic)
+                    let transition = self.evaluate_transitions(&request, connection_id).await;
+
+                    // Spawn a task for routing + delivery + finalize
+                    let adapter = Arc::new(ResponseHandleAdapter::new(handle));
+                    let phase_engine = Arc::clone(&self.phase_engine);
+                    let config = Arc::clone(&self.config);
+                    let behavior_coordinator = Arc::clone(&self.behavior_coordinator);
+                    let event_emitter = Arc::clone(&self.event_emitter);
+                    let capture = self.capture.clone();
+                    let generator_limits = self.generator_limits;
+                    let call_tracker = Arc::clone(&self.call_tracker);
+                    let http_client = self.http_client.clone();
+                    let allow_external_handlers = self.allow_external_handlers;
+                    let cancel = self.cancel.child_token();
+                    let initialized = Arc::clone(initialized);
+                    let transition_tx = transition_tx.clone();
+                    let server_name = server_name.clone();
+                    let server_version = server_version.clone();
+
+                    tokio::spawn(async move {
+                        let start = Instant::now();
+
+                        // Route to handler
+                        let phase_index = phase_engine.current_phase(connection_id);
+                        #[allow(clippy::cast_possible_wrap)]
+                        let phase_index_signed =
+                            if phase_engine.is_terminal(connection_id)
+                                && config.phases.is_none()
+                            {
+                                -1_i64
+                            } else {
+                                phase_index as i64
+                            };
+
+                        let request_ctx = RequestContext {
+                            limits: &generator_limits,
+                            call_tracker: &call_tracker,
+                            phase_name: phase_engine.current_phase_name(connection_id),
+                            phase_index: phase_index_signed,
+                            connection_id,
+                            allow_external_handlers,
+                            http_client: &http_client,
+                            state_scope: phase_engine.scope(),
+                        };
+
+                        let handler_result = handlers::handle_request(
+                            &request,
+                            &effective_state,
+                            &server_name,
+                            &server_version,
+                            &request_ctx,
+                        )
+                        .await;
+
+                        let response = match handler_result {
+                            Ok(Some(resp)) => Some(resp),
+                            Ok(None) => {
+                                let handling = config.unknown_methods.unwrap_or_default();
+                                match handling {
+                                    UnknownMethodHandling::Error => {
+                                        Some(JsonRpcResponse::error(
+                                            request.id.clone(),
+                                            error_codes::METHOD_NOT_FOUND,
+                                            format!("method not found: {}", request.method),
+                                        ))
+                                    }
+                                    UnknownMethodHandling::Ignore => {
+                                        Some(JsonRpcResponse::success(request.id.clone(), json!(null)))
+                                    }
+                                    UnknownMethodHandling::Drop => {
+                                        debug!(method = %request.method, "dropping unknown method");
+                                        None
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(method = %request.method, error = %e, "handler error");
+                                Some(JsonRpcResponse::error(
+                                    request.id.clone(),
+                                    error_codes::INTERNAL_ERROR,
+                                    "internal error".to_string(),
+                                ))
+                            }
+                        };
+
+                        // Deliver response
+                        if let Some(ref resp) = response {
+                            // Capture outgoing response
+                            if let Some(ref capture) = capture {
+                                if let Ok(data) = serde_json::to_value(resp) {
+                                    if let Err(e) = capture.record(CaptureType::Response, &data, None) {
+                                        warn!(error = %e, "failed to capture response");
+                                    }
+                                }
+                            }
+
+                            let resolved = behavior_coordinator.resolve(
+                                &request,
+                                &effective_state,
+                                TransportType::Http,
+                            );
+
+                            // Deliver via the per-request adapter
+                            let message = JsonRpcMessage::Response(resp.clone());
+                            let success = resp.error.is_none();
+
+                            match resolved
+                                .delivery
+                                .deliver(&message, adapter.as_ref(), cancel.clone())
+                                .await
+                            {
+                                Ok(result) => {
+                                    record_delivery_metrics(resolved.delivery.name(), &result);
+                                    let error_code = resp.error.as_ref().map(|e| e.code);
+                                    metrics::record_response(&request.method, success, error_code);
+                                    metrics::record_delivery_duration(result.duration);
+
+                                    event_emitter.emit(Event::ResponseSent {
+                                        timestamp: Utc::now(),
+                                        request_id: request.id.clone(),
+                                        success,
+                                        #[allow(clippy::cast_possible_truncation)]
+                                        duration_ms: start.elapsed().as_millis() as u64,
+                                    });
+                                }
+                                Err(e) => {
+                                    error!(
+                                        method = %request.method,
+                                        error = %e,
+                                        "delivery failed"
+                                    );
+                                }
+                            }
+
+                            // Finalize (drop the response sender)
+                            if let Err(e) = adapter.finalize_response().await {
+                                warn!(error = %e, "failed to finalize response");
+                            }
+
+                            // Fire per-request side effects
+                            let side_mgr = SideEffectManager::new(
+                                adapter as Arc<dyn Transport>,
+                                cancel.clone(),
+                            );
+                            fire_side_effects_standalone(
+                                &side_mgr,
+                                &event_emitter,
+                                &phase_engine,
+                                &resolved,
+                                SideEffectTrigger::OnRequest,
+                                &cancel,
+                            )
+                            .await;
+
+                            // OnConnect effects
+                            if !initialized.load(Ordering::Acquire)
+                                && request.method == "initialize"
+                                && resp.error.is_none()
+                            {
+                                initialized.store(true, Ordering::Release);
+                                fire_side_effects_standalone(
+                                    &side_mgr,
+                                    &event_emitter,
+                                    &phase_engine,
+                                    &resolved,
+                                    SideEffectTrigger::OnConnect,
+                                    &cancel,
+                                )
+                                .await;
+                            }
+
+                            // Subscription triggers
+                            if request.method == "resources/subscribe" {
+                                fire_side_effects_standalone(
+                                    &side_mgr,
+                                    &event_emitter,
+                                    &phase_engine,
+                                    &resolved,
+                                    SideEffectTrigger::OnSubscribe,
+                                    &cancel,
+                                )
+                                .await;
+                            } else if request.method == "resources/unsubscribe" {
+                                fire_side_effects_standalone(
+                                    &side_mgr,
+                                    &event_emitter,
+                                    &phase_engine,
+                                    &resolved,
+                                    SideEffectTrigger::OnUnsubscribe,
+                                    &cancel,
+                                )
+                                .await;
+                            }
+                        }
+
+                        // Send transition back to main loop
+                        if let Some(trans) = transition {
+                            let _ = transition_tx.send(trans).await;
+                        }
+
+                        metrics::record_request_duration(&request.method, start.elapsed());
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Counts events and evaluates triggers for a request.
     ///
     /// Increments both generic and specific event counters, then evaluates
@@ -396,7 +703,7 @@ impl Server {
         request: &JsonRpcRequest,
         effective_state: &crate::phase::EffectiveState,
         start: Instant,
-        initialized: &mut bool,
+        initialized: &AtomicBool,
         side_effect_mgr: &SideEffectManager,
     ) {
         // Capture outgoing response
@@ -426,8 +733,11 @@ impl Server {
             .await;
 
         // If this was a successful initialize, run OnConnect effects
-        if !*initialized && request.method == "initialize" && resp.error.is_none() {
-            *initialized = true;
+        if !initialized.load(Ordering::Acquire)
+            && request.method == "initialize"
+            && resp.error.is_none()
+        {
+            initialized.store(true, Ordering::Release);
             self.fire_side_effects(side_effect_mgr, &resolved, SideEffectTrigger::OnConnect)
                 .await;
         }
@@ -620,6 +930,36 @@ impl Server {
     }
 }
 
+/// Fires side effects in a spawned HTTP task context.
+///
+/// Standalone version of `Server::fire_side_effects` that takes explicit
+/// dependencies rather than borrowing `&self`, enabling use in spawned
+/// Tokio tasks that outlive the borrow.
+async fn fire_side_effects_standalone(
+    mgr: &SideEffectManager,
+    event_emitter: &EventEmitter,
+    phase_engine: &PhaseEngine,
+    resolved: &ResolvedBehavior,
+    trigger: SideEffectTrigger,
+    cancel: &CancellationToken,
+) {
+    let results = mgr.trigger(&resolved.side_effects, trigger).await;
+
+    for (name, result) in results {
+        event_emitter.emit(Event::SideEffectTriggered {
+            timestamp: Utc::now(),
+            effect_type: name.clone(),
+            phase: phase_engine.current_phase_name(0).to_string(),
+        });
+
+        if let SideEffectOutcome::CloseConnection { graceful } = result.outcome {
+            info!(graceful, "close_connection side effect triggered shutdown");
+            cancel.cancel();
+            return;
+        }
+    }
+}
+
 /// Builds a `(BaselineState, Vec<Phase>)` from a `ServerConfig`.
 ///
 /// If the config uses the phased form (baseline + phases), those are
@@ -732,6 +1072,10 @@ mod tests {
 
         fn connection_context(&self) -> crate::transport::ConnectionContext {
             crate::transport::ConnectionContext::stdio()
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 
