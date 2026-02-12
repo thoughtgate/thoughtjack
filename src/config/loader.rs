@@ -528,6 +528,7 @@ impl EnvSubstitution {
 
                         match std::env::var(&var_name) {
                             Ok(value) => {
+                                Self::validate_env_value(&var_name, &value)?;
                                 tracing::debug!(var = %var_name, "expanding environment variable");
                                 result.push_str(&value);
                             }
@@ -559,6 +560,26 @@ impl EnvSubstitution {
         }
 
         Ok(result)
+    }
+
+    /// Validates that an environment variable value is safe for YAML interpolation.
+    ///
+    /// Rejects values containing newline characters (`\n` or `\r`) because they
+    /// can inject new YAML keys/sections into the parsed document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::InvalidValue`] if the value contains newlines.
+    fn validate_env_value(var_name: &str, value: &str) -> Result<(), ConfigError> {
+        if value.contains('\n') || value.contains('\r') {
+            return Err(ConfigError::InvalidValue {
+                field: format!("${{{var_name}}}"),
+                value: "contains newline characters".to_string(),
+                expected: "single-line value (newlines in env vars can inject YAML structure)"
+                    .to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Parses a variable specification from `${...}`.
@@ -1300,6 +1321,37 @@ mod tests {
                 .message
                 .contains("THOUGHTJACK_TEST_WARN_XYZ123")
         );
+    }
+
+    #[test]
+    fn test_env_substitution_rejects_newline() {
+        let result = EnvSubstitution::validate_env_value("MY_VAR", "line1\nline2");
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue { field, .. }) => {
+                assert_eq!(field, "${MY_VAR}");
+            }
+            other => panic!("Expected InvalidValue error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_env_substitution_rejects_carriage_return() {
+        let result = EnvSubstitution::validate_env_value("MY_VAR", "line1\rline2");
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidValue { field, .. }) => {
+                assert_eq!(field, "${MY_VAR}");
+            }
+            other => panic!("Expected InvalidValue error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_env_substitution_allows_special_chars() {
+        // Values with colons, brackets, braces should pass through fine
+        EnvSubstitution::validate_env_value("MY_VAR", "host:8080 [array] {object}")
+            .expect("special characters should be allowed");
     }
 
     #[test]
