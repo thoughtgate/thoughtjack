@@ -1035,22 +1035,23 @@ impl AnyOfValue {
 /// Matcher for a single field value.
 ///
 /// Supports exact matching (any JSON value), pattern-based matching,
-/// or `any_of` set membership. Serde `untagged` tries variants in order:
-/// `AnyOf` first (requires `any_of` key), then `Pattern` (matches objects
-/// with `contains`/`prefix`/`suffix`/`regex` keys), then `Exact` as
-/// catch-all for strings, numbers, booleans, null, etc.
+/// or `any_of` set membership. Custom deserialization dispatches by
+/// inspecting object keys:
+/// - `any_of` key → `AnyOf`
+/// - `contains`/`prefix`/`suffix`/`regex` key → `Pattern`
+/// - everything else (strings, numbers, objects without special keys) → `Exact`
 ///
 /// Implements: TJ-SPEC-001 F-008, TJ-SPEC-003 F-005
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum FieldMatcher {
-    /// Set membership match (tried first — requires `any_of` key)
+    /// Set membership match (requires `any_of` key)
     AnyOf {
         /// Match if field equals any of the listed values
         any_of: Vec<AnyOfValue>,
     },
 
-    /// Pattern-based match (tried second — requires object shape)
+    /// Pattern-based match (requires `contains`/`prefix`/`suffix`/`regex` key)
     Pattern {
         /// Match if field contains this substring
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1069,8 +1070,66 @@ pub enum FieldMatcher {
         regex: Option<String>,
     },
 
-    /// Exact value match (catch-all for primitives and strings)
+    /// Exact value match (catch-all for primitives, strings, and objects)
     Exact(serde_json::Value),
+}
+
+/// Pattern-key names used to distinguish `Pattern` from `Exact` during
+/// deserialization.
+const PATTERN_KEYS: &[&str] = &["contains", "prefix", "suffix", "regex"];
+
+impl<'de> serde::Deserialize<'de> for FieldMatcher {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        match &value {
+            serde_json::Value::Object(map) => {
+                if map.contains_key("any_of") {
+                    // AnyOf variant
+                    let any_of: Vec<AnyOfValue> = map
+                        .get("any_of")
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(serde::de::Error::custom)?
+                        .unwrap_or_default();
+                    Ok(Self::AnyOf { any_of })
+                } else if PATTERN_KEYS.iter().any(|k| map.contains_key(*k)) {
+                    // Pattern variant — extract known keys
+                    let contains = map
+                        .get("contains")
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from);
+                    let prefix = map
+                        .get("prefix")
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from);
+                    let suffix = map
+                        .get("suffix")
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from);
+                    let regex = map
+                        .get("regex")
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from);
+                    Ok(Self::Pattern {
+                        contains,
+                        prefix,
+                        suffix,
+                        regex,
+                    })
+                } else {
+                    // No special keys → Exact match on the whole object
+                    Ok(Self::Exact(value))
+                }
+            }
+            // Non-object values are always Exact
+            _ => Ok(Self::Exact(value)),
+        }
+    }
 }
 
 // ============================================================================
@@ -2130,6 +2189,62 @@ method:
                 assert_eq!(any_of[0], AnyOfValue::String("read".to_string()));
             }
             other => panic!("Expected AnyOf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_field_matcher_exact_object() {
+        // Objects without pattern keys should deserialize as Exact, not Pattern
+        let json = r#"{"status": 200}"#;
+        let matcher: FieldMatcher = serde_json::from_str(json).unwrap();
+        match matcher {
+            FieldMatcher::Exact(v) => assert_eq!(v, serde_json::json!({"status": 200})),
+            other => panic!("Expected Exact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_field_matcher_empty_object_is_exact() {
+        let json = "{}";
+        let matcher: FieldMatcher = serde_json::from_str(json).unwrap();
+        match matcher {
+            FieldMatcher::Exact(v) => assert_eq!(v, serde_json::json!({})),
+            other => panic!("Expected Exact for empty object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_field_matcher_pattern_with_key() {
+        let json = r#"{"contains": "foo"}"#;
+        let matcher: FieldMatcher = serde_json::from_str(json).unwrap();
+        match matcher {
+            FieldMatcher::Pattern { contains, .. } => {
+                assert_eq!(contains, Some("foo".to_string()));
+            }
+            other => panic!("Expected Pattern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_field_matcher_any_of() {
+        let json = r#"{"any_of": ["a", "b"]}"#;
+        let matcher: FieldMatcher = serde_json::from_str(json).unwrap();
+        match matcher {
+            FieldMatcher::AnyOf { any_of } => {
+                assert_eq!(any_of.len(), 2);
+                assert_eq!(any_of[0], AnyOfValue::String("a".to_string()));
+            }
+            other => panic!("Expected AnyOf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_field_matcher_exact_string() {
+        let json = r#""hello""#;
+        let matcher: FieldMatcher = serde_json::from_str(json).unwrap();
+        match matcher {
+            FieldMatcher::Exact(v) => assert_eq!(v, serde_json::json!("hello")),
+            other => panic!("Expected Exact, got {other:?}"),
         }
     }
 

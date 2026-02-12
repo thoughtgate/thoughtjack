@@ -481,9 +481,10 @@ impl Validator {
                     regex,
                 } = matcher
                 {
-                    // Reject Pattern with all None fields — this almost always
-                    // indicates a serde untagged deserialization gotcha where an
-                    // exact-match object was swallowed as an empty Pattern.
+                    // Defensive check: reject Pattern with all None fields.
+                    // Custom FieldMatcher deserialization now routes objects
+                    // without pattern keys to Exact, so this should not fire
+                    // in normal use — kept as a safety net.
                     if contains.is_none() && prefix.is_none() && suffix.is_none() && regex.is_none()
                     {
                         self.add_error(
