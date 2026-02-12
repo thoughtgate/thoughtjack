@@ -8,7 +8,7 @@ pub mod http;
 pub mod jsonrpc;
 pub mod stdio;
 
-pub use http::HttpTransport;
+pub use http::{HttpTransport, ResponseHandle, ResponseHandleAdapter};
 pub use jsonrpc::{
     JSONRPC_VERSION, JsonRpcError, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse,
