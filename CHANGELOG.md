@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- Implement custom FieldMatcher deserializer to fix Exact variant shadowing (6abf144)
+- Reject env vars containing newlines to prevent YAML injection (cb0bcd7)
+
+### Documentation
+
+- Add demo GIF to README and remove standalone SECURITY.md (1330dfb)
+
+### Features
+
+- Spawn per-request tasks for HTTP to eliminate head-of-line blocking (8873b3b)
+
+### Refactoring
+
+- Add per-request ResponseHandle for concurrent HTTP (21a3025)
+
+### Bug Fixes
+
 - Skip release signing when triggered by PR runs (e33f0fc)
 - Use static permissions values in workflow files (92d1177)
 - Address Copilot security review feedback (e1509d2)
