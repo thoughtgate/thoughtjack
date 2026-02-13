@@ -196,6 +196,190 @@ impl HttpTransport {
     pub fn shutdown(&self) {
         self.shared.cancel.cancel();
     }
+
+    /// Receives the next incoming request along with a per-request
+    /// [`ResponseHandle`] that owns the response channel.
+    ///
+    /// Unlike [`Transport::receive_message`], this does **not** touch
+    /// the shared `current_response` / `current_context` mutexes, making
+    /// it safe to call from a concurrent context while other requests are
+    /// being processed in spawned tasks.
+    ///
+    /// Returns `None` on channel close (shutdown).
+    ///
+    /// Implements: TJ-SPEC-002 F-003
+    pub async fn receive_request(&self) -> Option<(JsonRpcMessage, ResponseHandle)> {
+        let mut rx = self.incoming_rx.lock().await;
+        let incoming = rx.recv().await?;
+        drop(rx);
+
+        // Track connection in the shared map
+        self.shared.connections.insert(
+            incoming.connection_id,
+            ConnectionState {
+                remote_addr: incoming.remote_addr,
+                connected_at: incoming.connected_at,
+                request_count: AtomicU64::new(1),
+            },
+        );
+
+        let context = ConnectionContext {
+            connection_id: incoming.connection_id,
+            remote_addr: Some(incoming.remote_addr),
+            is_exclusive: false,
+            connected_at: incoming.connected_at,
+        };
+
+        let guard =
+            ConnectionGuard::new(Arc::clone(&self.shared.connections), incoming.connection_id);
+
+        let handle = ResponseHandle {
+            response_tx: Some(incoming.response_tx),
+            sse_tx: self.shared.sse_tx.clone(),
+            context,
+            _guard: guard,
+        };
+
+        Some((incoming.message, handle))
+    }
+}
+
+/// Per-request handle for sending an HTTP response.
+///
+/// Owns the `response_tx` channel sender and the [`ConnectionGuard`].
+/// When dropped, the HTTP chunked response is finalized and the
+/// connection is removed from tracking.
+///
+/// Implements: TJ-SPEC-002 F-003
+pub struct ResponseHandle {
+    response_tx: Option<mpsc::Sender<std::result::Result<Bytes, io::Error>>>,
+    sse_tx: broadcast::Sender<String>,
+    context: ConnectionContext,
+    _guard: ConnectionGuard,
+}
+
+impl ResponseHandle {
+    /// Sends raw bytes into the HTTP response body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError::ConnectionClosed`] if the client disconnected.
+    pub async fn send_raw(&self, bytes: &[u8]) -> Result<()> {
+        let tx = self
+            .response_tx
+            .as_ref()
+            .ok_or_else(|| TransportError::ConnectionClosed("response already finalized".into()))?;
+        tx.send(Ok(Bytes::copy_from_slice(bytes)))
+            .await
+            .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))
+    }
+
+    /// Sends a JSON-RPC message.
+    ///
+    /// Responses go to the per-request body channel; notifications and
+    /// requests go to the SSE broadcast.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] on serialization or channel failure.
+    pub async fn send_message(&self, message: &JsonRpcMessage) -> Result<()> {
+        match message {
+            JsonRpcMessage::Response(_) => {
+                let serialized = serde_json::to_vec(message)?;
+                self.send_raw(&serialized).await
+            }
+            JsonRpcMessage::Notification(_) | JsonRpcMessage::Request(_) => {
+                let serialized = serde_json::to_string(message)?;
+                let _ = self.sse_tx.send(serialized);
+                Ok(())
+            }
+        }
+    }
+
+    /// Finalizes the HTTP response by dropping the body sender.
+    ///
+    /// The [`ConnectionGuard`] is also dropped (on `ResponseHandle` drop),
+    /// removing the connection from tracking.
+    pub fn finalize(mut self) {
+        self.response_tx.take();
+        // _guard is dropped with self
+    }
+
+    /// Returns the connection context for this request.
+    #[must_use]
+    pub const fn connection_context(&self) -> &ConnectionContext {
+        &self.context
+    }
+}
+
+/// Adapter that wraps a [`ResponseHandle`] as a [`Transport`].
+///
+/// This allows existing [`DeliveryBehavior`](crate::behavior::delivery::DeliveryBehavior)
+/// implementations to work unchanged — they accept `&dyn Transport`,
+/// and this adapter delegates `send_raw` / `send_message` to the
+/// underlying `ResponseHandle`.
+///
+/// Implements: TJ-SPEC-002 F-003
+pub struct ResponseHandleAdapter {
+    handle: ResponseHandle,
+}
+
+impl ResponseHandleAdapter {
+    /// Wraps a [`ResponseHandle`] in a [`Transport`] adapter.
+    #[must_use]
+    pub const fn new(handle: ResponseHandle) -> Self {
+        Self { handle }
+    }
+
+    /// Finalizes the HTTP response, consuming the adapter.
+    pub fn finalize(self) {
+        self.handle.finalize();
+    }
+
+    /// Returns the connection context for this request.
+    #[must_use]
+    pub const fn connection_context(&self) -> &ConnectionContext {
+        self.handle.connection_context()
+    }
+}
+
+#[async_trait::async_trait]
+impl Transport for ResponseHandleAdapter {
+    async fn send_message(&self, message: &JsonRpcMessage) -> Result<()> {
+        self.handle.send_message(message).await
+    }
+
+    async fn send_raw(&self, bytes: &[u8]) -> Result<()> {
+        self.handle.send_raw(bytes).await
+    }
+
+    async fn receive_message(&self) -> Result<Option<JsonRpcMessage>> {
+        // Per-request adapters do not receive messages
+        Err(TransportError::InternalError(
+            "ResponseHandleAdapter does not support receive_message".into(),
+        ))
+    }
+
+    fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
+        true
+    }
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::Http
+    }
+
+    async fn finalize_response(&self) -> Result<()> {
+        // Finalization happens when the adapter is consumed via finalize()
+        Ok(())
+    }
+
+    fn connection_context(&self) -> ConnectionContext {
+        self.handle.context.clone()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl std::fmt::Debug for HttpTransport {
@@ -347,6 +531,10 @@ impl Transport for HttpTransport {
                 e.into_inner()
             })
             .clone()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -966,5 +1154,82 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ------------------------------------------------------------------
+    // ResponseHandle + ResponseHandleAdapter
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn response_handle_send_and_finalize() {
+        let (response_tx, mut response_rx) = mpsc::channel(64);
+        let (sse_tx, _) = broadcast::channel(256);
+        let connections: Arc<DashMap<u64, ConnectionState>> = Arc::new(DashMap::new());
+        connections.insert(
+            42,
+            ConnectionState {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 9999)),
+                connected_at: Instant::now(),
+                request_count: AtomicU64::new(1),
+            },
+        );
+
+        let handle = ResponseHandle {
+            response_tx: Some(response_tx),
+            sse_tx,
+            context: ConnectionContext {
+                connection_id: 42,
+                remote_addr: Some(SocketAddr::from(([127, 0, 0, 1], 9999))),
+                is_exclusive: false,
+                connected_at: Instant::now(),
+            },
+            _guard: ConnectionGuard::new(Arc::clone(&connections), 42),
+        };
+
+        // send_raw should push bytes
+        handle.send_raw(b"hello").await.unwrap();
+        let received = response_rx.recv().await.unwrap().unwrap();
+        assert_eq!(&received[..], b"hello");
+
+        // finalize drops the sender
+        handle.finalize();
+        assert!(response_rx.recv().await.is_none());
+        // Guard should have cleaned up the connection
+        assert_eq!(connections.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn response_handle_adapter_implements_transport() {
+        let (response_tx, mut response_rx) = mpsc::channel(64);
+        let (sse_tx, _sse_rx) = broadcast::channel(256);
+        let connections: Arc<DashMap<u64, ConnectionState>> = Arc::new(DashMap::new());
+
+        let handle = ResponseHandle {
+            response_tx: Some(response_tx),
+            sse_tx,
+            context: ConnectionContext {
+                connection_id: 1,
+                remote_addr: None,
+                is_exclusive: false,
+                connected_at: Instant::now(),
+            },
+            _guard: ConnectionGuard::new(connections, 1),
+        };
+
+        let adapter = ResponseHandleAdapter::new(handle);
+
+        // Transport trait methods
+        assert_eq!(adapter.transport_type(), TransportType::Http);
+        assert!(adapter.supports_behavior(&DeliveryConfig::Normal));
+
+        // send_raw via Transport trait
+        adapter.send_raw(b"raw bytes").await.unwrap();
+        let received = response_rx.recv().await.unwrap().unwrap();
+        assert_eq!(&received[..], b"raw bytes");
+
+        // receive_message should error
+        assert!(adapter.receive_message().await.is_err());
+
+        adapter.finalize();
     }
 }

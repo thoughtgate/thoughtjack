@@ -8,7 +8,7 @@ pub mod http;
 pub mod jsonrpc;
 pub mod stdio;
 
-pub use http::HttpTransport;
+pub use http::{HttpTransport, ResponseHandle, ResponseHandleAdapter};
 pub use jsonrpc::{
     JSONRPC_VERSION, JsonRpcError, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse,
@@ -86,6 +86,12 @@ pub trait Transport: Send + Sync {
     ///
     /// Implements: TJ-SPEC-002 F-016
     fn connection_context(&self) -> ConnectionContext;
+
+    /// Returns `self` as `&dyn Any` for downcasting.
+    ///
+    /// Used by the server to downcast to concrete transport types
+    /// (e.g., `HttpTransport`) for transport-specific functionality.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Transport type identifier.

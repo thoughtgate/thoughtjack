@@ -276,6 +276,10 @@ impl Transport for StdioTransport {
     fn connection_context(&self) -> ConnectionContext {
         self.context.clone()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Truncates and strips control characters from untrusted input before logging.
