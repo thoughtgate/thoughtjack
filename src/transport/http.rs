@@ -29,7 +29,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use super::{ConnectionContext, JsonRpcMessage, Result, Transport, TransportType};
-use crate::config::schema::DeliveryConfig;
 use crate::error::TransportError;
 
 /// Configuration for the HTTP transport.
@@ -307,10 +306,6 @@ impl Transport for HttpTransport {
             .await
             .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
         Ok(())
-    }
-
-    fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
-        true
     }
 
     fn transport_type(&self) -> TransportType {
@@ -816,22 +811,6 @@ mod tests {
         };
         let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
         assert_eq!(transport.transport_type(), TransportType::Http);
-        transport.shutdown();
-    }
-
-    #[tokio::test]
-    async fn supports_all_behaviors() {
-        let cancel = CancellationToken::new();
-        let config = HttpConfig {
-            bind_addr: "127.0.0.1:0".to_string(),
-            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-        };
-        let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
-        assert!(transport.supports_behavior(&DeliveryConfig::Normal));
-        assert!(transport.supports_behavior(&DeliveryConfig::SlowLoris {
-            byte_delay_ms: Some(100),
-            chunk_size: Some(1),
-        }));
         transport.shutdown();
     }
 

@@ -16,10 +16,10 @@ static METRICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Known MCP method names used for label cardinality protection.
 ///
-/// Any method not in this list is bucketed as `"__unknown__"` to prevent
-/// memory exhaustion from attacker-controlled label values
-/// (EC-OBS-021, EC-OBS-022).
-const KNOWN_METHODS: [&str; 12] = [
+/// Any method not in this list (and not in A2A/AG-UI lists) is bucketed
+/// as `"__unknown__"` to prevent memory exhaustion from attacker-controlled
+/// label values (EC-OBS-021, EC-OBS-022).
+const KNOWN_MCP_METHODS: [&str; 14] = [
     "initialize",
     "ping",
     "tools/list",
@@ -30,19 +30,50 @@ const KNOWN_METHODS: [&str; 12] = [
     "resources/unsubscribe",
     "prompts/list",
     "prompts/get",
+    "elicitation/create",
+    "sampling/createMessage",
     "logging/setLevel",
     "completion/complete",
 ];
 
+/// Known A2A method names for label cardinality protection.
+///
+/// Implements: TJ-SPEC-008 §4.1
+const KNOWN_A2A_METHODS: [&str; 5] = [
+    "message/send",
+    "message/stream",
+    "tasks/get",
+    "tasks/cancel",
+    "agent_card/get",
+];
+
+/// Known AG-UI event names for label cardinality protection.
+///
+/// Implements: TJ-SPEC-008 §4.1
+const KNOWN_AGUI_EVENTS: [&str; 9] = [
+    "RUN_STARTED",
+    "RUN_FINISHED",
+    "RUN_ERROR",
+    "TEXT_MESSAGE_START",
+    "TEXT_MESSAGE_CONTENT",
+    "TEXT_MESSAGE_END",
+    "TOOL_CALL_START",
+    "TOOL_CALL_END",
+    "AGENT_ERROR",
+];
+
 /// Sanitizes a method name for use as a metrics label.
 ///
-/// Returns the original string when it matches a known MCP method,
+/// Returns the original string when it matches a known MCP, A2A, or AG-UI method,
 /// or `"__unknown__"` otherwise.
 ///
 /// Implements: TJ-SPEC-008 F-009, EC-OBS-021, EC-OBS-022
 #[must_use]
 pub fn sanitize_method_label(method: &str) -> &str {
-    if KNOWN_METHODS.contains(&method) {
+    if KNOWN_MCP_METHODS.contains(&method)
+        || KNOWN_A2A_METHODS.contains(&method)
+        || KNOWN_AGUI_EVENTS.contains(&method)
+    {
         method
     } else {
         "__unknown__"
@@ -82,7 +113,9 @@ pub fn init_metrics(port: Option<u16>) -> Result<(), ThoughtJackError> {
 }
 
 /// Registers metric descriptions with the global recorder.
+#[allow(clippy::too_many_lines)]
 fn describe_metrics() {
+    // Legacy (v0.2)
     describe_counter!(
         "thoughtjack_requests_total",
         "Total number of MCP requests received"
@@ -135,7 +168,59 @@ fn describe_metrics() {
         "Payload size in bytes by generator type"
     );
     describe_gauge!("thoughtjack_uptime_seconds", "Server uptime in seconds");
+
+    // v0.5 core
+    describe_counter!("tj_scenarios_total", "Scenarios executed by verdict result");
+    describe_histogram!(
+        "tj_scenario_duration_seconds",
+        "Total scenario execution time"
+    );
+    describe_counter!(
+        "tj_actors_total",
+        "Actors executed by mode and completion status"
+    );
+
+    // v0.5 engine
+    describe_counter!("tj_phase_transitions_total", "Phase transitions");
+    describe_counter!("tj_extractors_captured_total", "Extractor values captured");
+    describe_counter!("tj_synthesize_calls_total", "LLM generation calls");
+    describe_histogram!("tj_synthesize_duration_seconds", "LLM generation latency");
+
+    // v0.5 protocol
+    describe_counter!("tj_protocol_messages_total", "Protocol messages (in/out)");
+    describe_histogram!(
+        "tj_protocol_message_duration_seconds",
+        "Message handling latency"
+    );
+    describe_counter!("tj_transport_errors_total", "Transport-level failures");
+
+    // v0.5 verdict
+    describe_counter!("tj_verdicts_total", "Verdicts produced by result type");
+    describe_counter!(
+        "tj_indicators_evaluated_total",
+        "Indicator evaluations by method and result"
+    );
+    describe_histogram!(
+        "tj_indicator_evaluation_duration_seconds",
+        "Indicator evaluation latency"
+    );
+    describe_counter!(
+        "tj_semantic_llm_calls_total",
+        "LLM calls for semantic evaluation"
+    );
+    describe_histogram!(
+        "tj_semantic_llm_latency_seconds",
+        "Semantic LLM call latency"
+    );
+    describe_histogram!(
+        "tj_grace_period_messages_captured",
+        "Messages captured during grace period"
+    );
 }
+
+// ============================================================================
+// Legacy (v0.2) recording functions
+// ============================================================================
 
 /// Records an incoming MCP request.
 ///
@@ -268,18 +353,128 @@ pub fn set_uptime(duration: Duration) {
 
 /// Records the current count for an event type.
 ///
-/// Event names are derived from `EventType` internally (not from
-/// raw attacker-controlled input), so we sanitize by extracting
-/// the method prefix (before `:`) and validating it against known
-/// methods. Specific events like `"tools/call:calc"` use the full
-/// string as the label when the prefix is recognized.
-///
 /// Implements: TJ-SPEC-008 F-009
 #[allow(clippy::cast_precision_loss)]
 pub fn record_event_count(event: &str, count: u64) {
     let label = sanitize_event_label(event);
     gauge!("thoughtjack_event_counts", "event" => label.to_owned()).set(count as f64);
 }
+
+// ============================================================================
+// v0.5 recording functions
+// ============================================================================
+
+/// Records a completed scenario execution.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_scenario_completed(result: &str) {
+    counter!("tj_scenarios_total", "result" => result.to_owned()).increment(1);
+}
+
+/// Records a completed actor execution.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_actor_completed(mode: &str, status: &str) {
+    counter!("tj_actors_total", "mode" => mode.to_owned(), "status" => status.to_owned())
+        .increment(1);
+}
+
+/// Records a v0.5 phase transition.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_tj_phase_transition(actor: &str, from: &str, to: &str) {
+    counter!(
+        "tj_phase_transitions_total",
+        "actor" => sanitize_phase_label(actor),
+        "from" => sanitize_phase_label(from),
+        "to" => sanitize_phase_label(to)
+    )
+    .increment(1);
+}
+
+/// Records an extractor capture.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_extractor_captured(actor: &str) {
+    counter!("tj_extractors_captured_total", "actor" => sanitize_phase_label(actor)).increment(1);
+}
+
+/// Records a synthesize (LLM generation) call.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_synthesize_call(actor: &str, protocol: &str) {
+    counter!(
+        "tj_synthesize_calls_total",
+        "actor" => sanitize_phase_label(actor),
+        "protocol" => protocol.to_owned()
+    )
+    .increment(1);
+}
+
+/// Records a protocol message (in or out).
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_protocol_message(actor: &str, direction: &str, method: &str) {
+    let label = sanitize_method_label(method);
+    counter!(
+        "tj_protocol_messages_total",
+        "actor" => sanitize_phase_label(actor),
+        "direction" => direction.to_owned(),
+        "method" => label.to_owned()
+    )
+    .increment(1);
+}
+
+/// Records a transport error.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_transport_error(actor: &str, protocol: &str) {
+    counter!(
+        "tj_transport_errors_total",
+        "actor" => sanitize_phase_label(actor),
+        "protocol" => protocol.to_owned()
+    )
+    .increment(1);
+}
+
+/// Records a verdict result.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_verdict(result: &str) {
+    counter!("tj_verdicts_total", "result" => result.to_owned()).increment(1);
+}
+
+/// Records an indicator evaluation.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_indicator_evaluation(method: &str, result: &str) {
+    counter!(
+        "tj_indicators_evaluated_total",
+        "method" => method.to_owned(),
+        "result" => result.to_owned()
+    )
+    .increment(1);
+}
+
+/// Records an LLM call for semantic evaluation.
+///
+/// Implements: TJ-SPEC-008 F-009
+pub fn record_semantic_llm_call(latency: Duration) {
+    counter!("tj_semantic_llm_calls_total").increment(1);
+    histogram!("tj_semantic_llm_latency_seconds").record(latency.as_secs_f64());
+}
+
+/// Records messages captured during grace period.
+///
+/// Implements: TJ-SPEC-008 F-009
+#[allow(clippy::cast_precision_loss)]
+pub fn record_grace_period_messages(count: u64) {
+    histogram!("tj_grace_period_messages_captured").record(count as f64);
+}
+
+// ============================================================================
+// Label sanitization helpers
+// ============================================================================
 
 /// Maximum length for phase name labels.
 ///
@@ -313,12 +508,18 @@ fn sanitize_phase_label(name: &str) -> String {
 #[must_use]
 fn sanitize_event_label(event: &str) -> &str {
     // Check the full event name first (handles generic events)
-    if KNOWN_METHODS.contains(&event) {
+    if KNOWN_MCP_METHODS.contains(&event)
+        || KNOWN_A2A_METHODS.contains(&event)
+        || KNOWN_AGUI_EVENTS.contains(&event)
+    {
         return event;
     }
     // For specific events like "tools/call:calc", validate the prefix
     if let Some(prefix) = event.split(':').next() {
-        if KNOWN_METHODS.contains(&prefix) {
+        if KNOWN_MCP_METHODS.contains(&prefix)
+            || KNOWN_A2A_METHODS.contains(&prefix)
+            || KNOWN_AGUI_EVENTS.contains(&prefix)
+        {
             return event;
         }
     }
@@ -330,8 +531,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sanitize_known_method_returns_original() {
+    fn sanitize_known_mcp_method_returns_original() {
         assert_eq!(sanitize_method_label("tools/call"), "tools/call");
+    }
+
+    #[test]
+    fn sanitize_known_a2a_method_returns_original() {
+        assert_eq!(sanitize_method_label("message/send"), "message/send");
+        assert_eq!(sanitize_method_label("tasks/get"), "tasks/get");
+    }
+
+    #[test]
+    fn sanitize_known_agui_event_returns_original() {
+        assert_eq!(sanitize_method_label("RUN_STARTED"), "RUN_STARTED");
+        assert_eq!(
+            sanitize_method_label("TEXT_MESSAGE_CONTENT"),
+            "TEXT_MESSAGE_CONTENT"
+        );
     }
 
     #[test]
@@ -341,8 +557,8 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_all_known_methods() {
-        for method in &KNOWN_METHODS {
+    fn sanitize_all_known_mcp_methods() {
+        for method in &KNOWN_MCP_METHODS {
             assert_eq!(
                 sanitize_method_label(method),
                 *method,
@@ -352,8 +568,29 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_all_known_a2a_methods() {
+        for method in &KNOWN_A2A_METHODS {
+            assert_eq!(
+                sanitize_method_label(method),
+                *method,
+                "expected {method} to be recognized"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_all_known_agui_events() {
+        for event in &KNOWN_AGUI_EVENTS {
+            assert_eq!(
+                sanitize_method_label(event),
+                *event,
+                "expected {event} to be recognized"
+            );
+        }
+    }
+
+    #[test]
     fn very_long_method_returns_unknown() {
-        // EC-OBS-022: very long method name should be bucketed as __unknown__
         let long_method = "x".repeat(10_000);
         assert_eq!(sanitize_method_label(&long_method), "__unknown__");
     }
@@ -377,65 +614,80 @@ mod tests {
     }
 
     #[test]
+    fn v05_record_functions_do_not_panic_without_recorder() {
+        record_scenario_completed("exploited");
+        record_actor_completed("mcp_server", "completed");
+        record_tj_phase_transition("actor1", "trust", "exploit");
+        record_extractor_captured("actor1");
+        record_synthesize_call("actor1", "mcp");
+        record_protocol_message("actor1", "incoming", "tools/call");
+        record_transport_error("actor1", "mcp");
+        record_verdict("exploited");
+        record_indicator_evaluation("cel", "matched");
+        record_semantic_llm_call(Duration::from_millis(500));
+        record_grace_period_messages(5);
+    }
+
+    #[test]
     fn test_sanitize_empty_method() {
-        // EC-OBS-021: empty string is not a known method
         assert_eq!(sanitize_method_label(""), "__unknown__");
     }
 
     #[test]
     fn test_sanitize_method_with_slash() {
-        // "custom/method" is not a known MCP method — should be bucketed
         assert_eq!(sanitize_method_label("custom/method"), "__unknown__");
     }
 
     #[test]
     fn test_init_metrics_none_port() {
-        // init_metrics(None) installs a recorder without HTTP listener.
-        // Repeated calls return Ok(()) due to the AtomicBool guard.
         let result = init_metrics(None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_record_phase_transition_does_not_panic() {
-        // Should not panic even without a recorder installed
         record_phase_transition("a", "b");
     }
 
     #[test]
     fn test_set_current_phase_does_not_panic() {
-        // Should not panic even without a recorder installed
         set_current_phase("p1", None);
     }
 
     #[test]
     fn test_set_connections_active_does_not_panic() {
-        // Should not panic even without a recorder installed
         set_connections_active(5);
     }
 
     #[test]
     fn test_record_error_does_not_panic() {
-        // Should not panic even without a recorder installed
         record_error("test");
     }
 
     #[test]
     fn test_record_payload_size_does_not_panic() {
-        // Should not panic even without a recorder installed
         record_payload_size("nested_json", 1024);
     }
 
     #[test]
     fn test_record_event_count_does_not_panic() {
-        // Should not panic even without a recorder installed
         record_event_count("test", 1);
     }
 
     #[test]
     fn test_metrics_counter_overflow_saturates() {
-        // EC-OBS-009: counter increment with u64::MAX should saturate, not panic.
-        // The `metrics` crate counters saturate at max value rather than wrapping.
         counter!("thoughtjack_requests_total", "method" => "tools/call").increment(u64::MAX);
+    }
+
+    #[test]
+    fn test_elicitation_and_sampling_recognized() {
+        assert_eq!(
+            sanitize_method_label("elicitation/create"),
+            "elicitation/create"
+        );
+        assert_eq!(
+            sanitize_method_label("sampling/createMessage"),
+            "sampling/createMessage"
+        );
     }
 }

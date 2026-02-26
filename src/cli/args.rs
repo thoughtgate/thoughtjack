@@ -1,4 +1,4 @@
-//! CLI argument definitions (TJ-SPEC-007)
+//! CLI argument definitions (TJ-SPEC-007 v2)
 //!
 //! All Clap derive structs for `ThoughtJack` command-line parsing.
 
@@ -6,14 +6,14 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
-use crate::config::schema::StateScope;
+use crate::error::ThoughtJackError;
 use crate::scenarios::ScenarioCategory;
 
 // ============================================================================
 // Root CLI
 // ============================================================================
 
-/// Adversarial MCP server for security testing.
+/// Adversarial agent security testing tool.
 ///
 /// Implements: TJ-SPEC-007 F-001
 #[derive(Parser, Debug)]
@@ -55,102 +55,83 @@ pub struct Cli {
 /// Implements: TJ-SPEC-007 F-001
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Start or manage the adversarial MCP server.
-    Server(Box<ServerCommand>),
+    /// Execute an OATF scenario against a target agent.
+    Run(Box<RunArgs>),
 
-    /// List and inspect built-in attack scenarios.
+    /// List, show, or run built-in attack scenarios.
     Scenarios(ScenariosCommand),
 
-    /// Run as an MCP client agent (coming soon).
-    #[command(hide = true)]
-    Agent(AgentCommand),
-
-    /// Generate a Mermaid diagram from a scenario file.
-    Diagram(DiagramArgs),
-
-    /// Generate documentation site from scenarios.
-    Docs(DocsCommand),
-
-    /// Generate shell completion scripts.
-    Completions(CompletionsArgs),
+    /// Validate an OATF document without executing.
+    Validate(ValidateArgs),
 
     /// Display version and build information.
     Version(VersionArgs),
 }
 
 // ============================================================================
-// Server Command
+// Run Command
 // ============================================================================
 
-/// Server management commands.
-///
-/// When no subcommand is given, defaults to `run`.
-///
-/// Implements: TJ-SPEC-007 F-002, F-005
-#[derive(Args, Debug)]
-#[command(args_conflicts_with_subcommands = true)]
-pub struct ServerCommand {
-    /// Server subcommand.
-    #[command(subcommand)]
-    pub subcommand: Option<ServerSubcommand>,
-
-    /// Default run arguments (used when no subcommand is specified).
-    #[command(flatten)]
-    pub run_args: ServerRunArgs,
-}
-
-/// Server subcommands.
-///
-/// Implements: TJ-SPEC-007 F-002
-#[derive(Subcommand, Debug)]
-pub enum ServerSubcommand {
-    /// Start the adversarial MCP server.
-    Run(ServerRunArgs),
-
-    /// Validate configuration files without starting the server.
-    Validate(ServerValidateArgs),
-
-    /// List available attack patterns from the library.
-    List(ServerListArgs),
-}
-
-/// Arguments for `server run`.
+/// Arguments for `run` — execute an OATF scenario.
 ///
 /// Implements: TJ-SPEC-007 F-002
 #[derive(Args, Debug)]
-#[command(group = clap::ArgGroup::new("source").multiple(false))]
-pub struct ServerRunArgs {
-    /// Path to YAML configuration file.
-    #[arg(short, long, group = "source", env = "THOUGHTJACK_CONFIG")]
-    pub config: Option<PathBuf>,
+pub struct RunArgs {
+    /// Path to OATF scenario YAML document.
+    #[arg(short, long, env = "THOUGHTJACK_CONFIG")]
+    pub config: PathBuf,
 
-    /// Path to a single tool definition file (quick-start mode).
-    #[arg(short, long, group = "source")]
-    pub tool: Option<PathBuf>,
+    /// Start an MCP server on stdio (name for actor matching).
+    #[arg(long)]
+    pub mcp_server: Option<String>,
 
-    /// Built-in scenario name (see `scenarios list` for options).
-    #[arg(short = 's', long, group = "source")]
-    pub scenario: Option<String>,
+    /// Spawn MCP client by running a command (e.g., "npx -y @modelcontextprotocol/server-everything").
+    #[arg(long)]
+    pub mcp_client_command: Option<String>,
 
-    /// Bind HTTP transport on `[host:]port` instead of stdio.
-    #[arg(long, env = "THOUGHTJACK_HTTP_BIND")]
-    pub http: Option<String>,
+    /// Extra arguments for `--mcp-client-command`.
+    #[arg(long, requires = "mcp_client_command")]
+    pub mcp_client_args: Option<String>,
 
-    /// Spoof client identity string for MCP initialization.
-    #[arg(long, env = "THOUGHTJACK_SPOOF_CLIENT")]
-    pub spoof_client: Option<String>,
+    /// Connect MCP client to an HTTP endpoint instead of spawning.
+    #[arg(long, conflicts_with = "mcp_client_command")]
+    pub mcp_client_endpoint: Option<String>,
 
-    /// Override delivery behavior for all responses.
-    #[arg(long, env = "THOUGHTJACK_BEHAVIOR")]
-    pub behavior: Option<DeliveryMode>,
+    /// Connect AG-UI client to an endpoint.
+    #[arg(long)]
+    pub agui_client_endpoint: Option<String>,
 
-    /// Phase state scope (overrides config file when specified).
-    #[arg(long, env = "THOUGHTJACK_STATE_SCOPE")]
-    pub state_scope: Option<StateScope>,
+    /// Start an A2A server on the given `[host:]port`.
+    #[arg(long)]
+    pub a2a_server: Option<String>,
 
-    /// Path to the attack pattern library directory.
-    #[arg(long, default_value = "./library", env = "THOUGHTJACK_LIBRARY")]
-    pub library: PathBuf,
+    /// Connect A2A client to an endpoint.
+    #[arg(long)]
+    pub a2a_client_endpoint: Option<String>,
+
+    /// Grace period duration after final phase (e.g., "30s", "2m").
+    #[arg(long)]
+    pub grace_period: Option<humantime::Duration>,
+
+    /// Maximum session duration (e.g., "5m", "1h").
+    #[arg(long, default_value = "5m")]
+    pub max_session: humantime::Duration,
+
+    /// Verdict output file path ("-" for stdout).
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    /// Extra HTTP headers for client-mode transports (repeatable).
+    #[arg(long)]
+    pub header: Vec<String>,
+
+    /// Disable semantic (LLM-as-judge) indicator evaluation.
+    #[arg(long)]
+    pub no_semantic: bool,
+
+    /// Bypass synthesize output validation (allows malformed responses).
+    #[arg(long)]
+    pub raw_synthesize: bool,
 
     /// Enable Prometheus metrics endpoint on the specified port.
     #[arg(long, env = "THOUGHTJACK_METRICS_PORT")]
@@ -159,74 +140,17 @@ pub struct ServerRunArgs {
     /// Write structured events to a JSONL file instead of stderr.
     #[arg(long, env = "THOUGHTJACK_EVENTS_FILE")]
     pub events_file: Option<PathBuf>,
-
-    /// Directory to capture request/response traffic.
-    #[arg(long, env = "THOUGHTJACK_CAPTURE_DIR")]
-    pub capture_dir: Option<PathBuf>,
-
-    /// Redact sensitive data in captured traffic.
-    #[arg(long, requires = "capture_dir")]
-    pub capture_redact: bool,
-
-    /// Allow external handler scripts.
-    #[arg(long, env = "THOUGHTJACK_ALLOW_EXTERNAL_HANDLERS")]
-    pub allow_external_handlers: bool,
-
-    /// Maximum nesting depth for generators.
-    #[arg(long, env = "THOUGHTJACK_MAX_NEST_DEPTH")]
-    pub max_nest_depth: Option<usize>,
-
-    /// Maximum payload size in bytes for generators.
-    #[arg(long, env = "THOUGHTJACK_MAX_PAYLOAD_BYTES")]
-    pub max_payload_bytes: Option<usize>,
-
-    /// Maximum batch size for generators.
-    #[arg(long, env = "THOUGHTJACK_MAX_BATCH_SIZE")]
-    pub max_batch_size: Option<usize>,
 }
 
-/// Arguments for `server validate`.
+/// Placeholder for transport inference from OATF document + CLI flags.
 ///
-/// Implements: TJ-SPEC-007 F-003
-#[derive(Args, Debug)]
-pub struct ServerValidateArgs {
-    /// Configuration files to validate.
-    #[arg(required = true)]
-    pub files: Vec<PathBuf>,
-
-    /// Output format.
-    #[arg(short, long, default_value = "human")]
-    pub format: OutputFormat,
-
-    /// Enable strict validation (warnings become errors).
-    #[arg(long)]
-    pub strict: bool,
-
-    /// Path to the attack pattern library directory.
-    #[arg(long, default_value = "./library")]
-    pub library: PathBuf,
-}
-
-/// Arguments for `server list`.
+/// # Errors
 ///
-/// Implements: TJ-SPEC-007 F-004
-#[derive(Args, Debug)]
-pub struct ServerListArgs {
-    /// Category to list.
-    #[arg(default_value = "all")]
-    pub category: ListCategory,
-
-    /// Filter by tag.
-    #[arg(long)]
-    pub tag: Option<String>,
-
-    /// Output format.
-    #[arg(short, long, default_value = "human")]
-    pub format: OutputFormat,
-
-    /// Path to the attack pattern library directory.
-    #[arg(long, default_value = "./library")]
-    pub library: PathBuf,
+/// Returns an error if transport inference fails (not yet implemented).
+///
+/// Implements: TJ-SPEC-007 F-002
+pub fn resolve_transports(_args: &RunArgs) -> Result<(), ThoughtJackError> {
+    todo!("transport inference wired in engine prompt")
 }
 
 // ============================================================================
@@ -253,6 +177,9 @@ pub enum ScenariosSubcommand {
 
     /// Display the YAML configuration for a built-in scenario.
     Show(ScenariosShowArgs),
+
+    /// Run a built-in scenario by name.
+    Run(Box<ScenariosRunArgs>),
 }
 
 /// Arguments for `scenarios list`.
@@ -282,143 +209,41 @@ pub struct ScenariosShowArgs {
     pub name: String,
 }
 
-// ============================================================================
-// Agent Command
-// ============================================================================
-
-/// Agent mode arguments (placeholder).
+/// Arguments for `scenarios run`.
 ///
-/// Implements: TJ-SPEC-007 F-006
+/// Runs a built-in scenario with the same flags as `run`.
+///
+/// Implements: TJ-SPEC-010 F-008
 #[derive(Args, Debug)]
-pub struct AgentCommand {
-    /// Path to agent configuration file.
-    #[arg(short, long)]
-    pub config: Option<PathBuf>,
+pub struct ScenariosRunArgs {
+    /// Built-in scenario name.
+    pub name: String,
+
+    /// Run arguments (same as `thoughtjack run`).
+    #[command(flatten)]
+    pub run: RunArgs,
 }
 
 // ============================================================================
-// Diagram Command
+// Validate Command
 // ============================================================================
 
-/// Arguments for `diagram` command.
+/// Arguments for `validate` — validate an OATF document.
 ///
-/// Implements: TJ-SPEC-011 F-006
+/// Implements: TJ-SPEC-007 F-003
 #[derive(Args, Debug)]
-pub struct DiagramArgs {
-    /// Path to scenario YAML file.
-    pub scenario: PathBuf,
+pub struct ValidateArgs {
+    /// Path to OATF scenario YAML document.
+    pub path: PathBuf,
 
-    /// Diagram type override (default: auto-detect).
-    #[arg(long, default_value = "auto")]
-    pub diagram_type: DiagramTypeChoice,
-
-    /// Write output to file instead of stdout.
-    #[arg(short, long)]
-    pub output: Option<PathBuf>,
-}
-
-/// Diagram type selection.
-///
-/// Implements: TJ-SPEC-011 F-006
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
-pub enum DiagramTypeChoice {
-    /// Auto-detect based on scenario structure.
-    #[default]
-    Auto,
-    /// State diagram for phased scenarios.
-    State,
-    /// Sequence diagram for match-block scenarios.
-    Sequence,
-    /// Flowchart for behavioral scenarios.
-    Flowchart,
+    /// Normalize and print the resolved document.
+    #[arg(long)]
+    pub normalize: bool,
 }
 
 // ============================================================================
-// Docs Command
+// Version Command
 // ============================================================================
-
-/// Documentation generation commands.
-///
-/// Implements: TJ-SPEC-011 F-006
-#[derive(Args, Debug)]
-pub struct DocsCommand {
-    /// Docs subcommand.
-    #[command(subcommand)]
-    pub subcommand: DocsSubcommand,
-}
-
-/// Docs subcommands.
-///
-/// Implements: TJ-SPEC-011 F-006
-#[derive(Subcommand, Debug)]
-pub enum DocsSubcommand {
-    /// Generate documentation pages from scenarios.
-    Generate(DocsGenerateArgs),
-
-    /// Validate scenario metadata and registry.
-    Validate(DocsValidateArgs),
-}
-
-/// Arguments for `docs generate`.
-///
-/// Implements: TJ-SPEC-011 F-006
-#[derive(Args, Debug)]
-pub struct DocsGenerateArgs {
-    /// Scenarios directory.
-    #[arg(long, default_value = "./scenarios", env = "TJ_SCENARIOS_DIR")]
-    pub scenarios: PathBuf,
-
-    /// Output directory.
-    #[arg(long, default_value = "./docs-site", env = "TJ_DOCS_OUTPUT_DIR")]
-    pub output: PathBuf,
-
-    /// Registry file path.
-    #[arg(
-        long,
-        default_value = "./scenarios/registry.yaml",
-        env = "TJ_REGISTRY_PATH"
-    )]
-    pub registry: PathBuf,
-
-    /// Promote warnings to errors.
-    #[arg(long, env = "TJ_DOCS_STRICT")]
-    pub strict: bool,
-}
-
-/// Arguments for `docs validate`.
-///
-/// Implements: TJ-SPEC-011 F-006
-#[derive(Args, Debug)]
-pub struct DocsValidateArgs {
-    /// Scenarios directory.
-    #[arg(long, default_value = "./scenarios", env = "TJ_SCENARIOS_DIR")]
-    pub scenarios: PathBuf,
-
-    /// Registry file path.
-    #[arg(
-        long,
-        default_value = "./scenarios/registry.yaml",
-        env = "TJ_REGISTRY_PATH"
-    )]
-    pub registry: PathBuf,
-
-    /// Promote warnings to errors.
-    #[arg(long, env = "TJ_DOCS_STRICT")]
-    pub strict: bool,
-}
-
-// ============================================================================
-// Completions / Version
-// ============================================================================
-
-/// Arguments for shell completion generation.
-///
-/// Implements: TJ-SPEC-007 F-007
-#[derive(Args, Debug)]
-pub struct CompletionsArgs {
-    /// Target shell for completion script.
-    pub shell: Shell,
-}
 
 /// Arguments for version display.
 ///
@@ -460,23 +285,6 @@ pub enum LogFormatChoice {
     Json,
 }
 
-/// Delivery behavior override for CLI.
-///
-/// Implements: TJ-SPEC-007 F-002
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum DeliveryMode {
-    /// Standard immediate delivery.
-    Normal,
-    /// Slow loris drip-feed attack.
-    SlowLoris,
-    /// Never-ending line (no newline terminator).
-    UnboundedLine,
-    /// Deeply nested JSON response.
-    NestedJson,
-    /// Fixed delay before response.
-    ResponseDelay,
-}
-
 /// Output format for structured output.
 ///
 /// Implements: TJ-SPEC-007 F-003
@@ -489,44 +297,6 @@ pub enum OutputFormat {
     Json,
 }
 
-/// Library item category.
-///
-/// Implements: TJ-SPEC-007 F-004
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
-pub enum ListCategory {
-    /// Server configurations.
-    Servers,
-    /// Tool definitions.
-    Tools,
-    /// Resource definitions.
-    Resources,
-    /// Prompt definitions.
-    Prompts,
-    /// Delivery behaviors.
-    Behaviors,
-    /// All categories.
-    #[default]
-    All,
-}
-
-/// Shell type for completion generation.
-///
-/// Implements: TJ-SPEC-007 F-007
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Shell {
-    /// Bash shell.
-    Bash,
-    /// Zsh shell.
-    Zsh,
-    /// Fish shell.
-    Fish,
-    /// `PowerShell`.
-    #[value(name = "powershell")]
-    PowerShell,
-    /// Elvish shell.
-    Elvish,
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -536,29 +306,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_server_run_with_config() {
-        let cli = Cli::try_parse_from(["thoughtjack", "server", "run", "--config", "test.yaml"]);
+    fn test_run_with_config() {
+        let cli = Cli::try_parse_from(["thoughtjack", "run", "--config", "test.yaml"]);
         assert!(cli.is_ok(), "Failed to parse: {cli:?}");
-    }
-
-    #[test]
-    fn test_server_run_with_tool() {
-        let cli = Cli::try_parse_from(["thoughtjack", "server", "run", "--tool", "tool.yaml"]);
-        assert!(cli.is_ok());
-    }
-
-    #[test]
-    fn test_config_and_tool_mutually_exclusive() {
-        let cli = Cli::try_parse_from([
-            "thoughtjack",
-            "server",
-            "run",
-            "--config",
-            "c.yaml",
-            "--tool",
-            "t.yaml",
-        ]);
-        assert!(cli.is_err(), "Expected mutual exclusion error");
     }
 
     #[test]
@@ -578,52 +328,12 @@ mod tests {
     }
 
     #[test]
-    fn test_default_state_scope_is_none() {
-        let cli =
-            Cli::try_parse_from(["thoughtjack", "server", "run", "--config", "test.yaml"]).unwrap();
-
-        if let Commands::Server(cmd) = cli.command {
-            if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
-                assert!(
-                    args.state_scope.is_none(),
-                    "Expected None when --state-scope not specified"
-                );
-                return;
-            }
-        }
-        panic!("Expected ServerRunArgs");
-    }
-
-    #[test]
-    fn test_explicit_state_scope() {
-        let cli = Cli::try_parse_from([
-            "thoughtjack",
-            "server",
-            "run",
-            "--config",
-            "test.yaml",
-            "--state-scope",
-            "global",
-        ])
-        .unwrap();
-
-        if let Commands::Server(cmd) = cli.command {
-            if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
-                assert_eq!(args.state_scope, Some(StateScope::Global));
-                return;
-            }
-        }
-        panic!("Expected ServerRunArgs");
-    }
-
-    #[test]
     fn test_color_choices_parse() {
         for variant in ["auto", "always", "never"] {
             let cli = Cli::try_parse_from([
                 "thoughtjack",
                 "--color",
                 variant,
-                "server",
                 "run",
                 "--config",
                 "x.yaml",
@@ -633,117 +343,83 @@ mod tests {
     }
 
     #[test]
-    fn test_delivery_modes_parse() {
-        for mode in [
-            "normal",
-            "slow-loris",
-            "unbounded-line",
-            "nested-json",
-            "response-delay",
-        ] {
-            let cli = Cli::try_parse_from([
-                "thoughtjack",
-                "server",
-                "run",
-                "--config",
-                "x.yaml",
-                "--behavior",
-                mode,
-            ]);
-            assert!(cli.is_ok(), "Failed to parse behavior={mode}");
-        }
-    }
-
-    #[test]
-    fn test_server_validate_requires_files() {
-        let result = Cli::try_parse_from(["thoughtjack", "server", "validate"]);
-        assert!(result.is_err(), "Expected error for missing files");
-    }
-
-    #[test]
-    fn test_completions_shells_parse() {
-        for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
-            let cli = Cli::try_parse_from(["thoughtjack", "completions", shell]);
-            assert!(cli.is_ok(), "Failed to parse shell={shell}");
-        }
-    }
-
-    #[test]
     fn test_verbose_count() {
         let cli =
-            Cli::try_parse_from(["thoughtjack", "-vvv", "server", "run", "--config", "x.yaml"])
-                .unwrap();
+            Cli::try_parse_from(["thoughtjack", "-vvv", "run", "--config", "x.yaml"]).unwrap();
         assert_eq!(cli.verbose, 3);
     }
 
     #[test]
     fn test_quiet_flag() {
-        let cli = Cli::try_parse_from([
-            "thoughtjack",
-            "--quiet",
-            "server",
-            "run",
-            "--config",
-            "x.yaml",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["thoughtjack", "--quiet", "run", "--config", "x.yaml"]).unwrap();
         assert!(cli.quiet);
     }
 
+    /// EC-CLI-001: No arguments at all should fail (subcommand required).
     #[test]
-    fn test_server_default_subcommand() {
-        // `server --config x.yaml` should work without explicit `run`
-        let cli = Cli::try_parse_from(["thoughtjack", "server", "--config", "x.yaml"]).unwrap();
+    fn test_no_args_fails() {
+        let result = Cli::try_parse_from(["thoughtjack"]);
+        assert!(result.is_err(), "Expected error when no subcommand given");
+    }
 
-        if let Commands::Server(cmd) = cli.command {
-            assert!(
-                cmd.subcommand.is_none(),
-                "Expected no subcommand (defaults to run)"
-            );
-            assert_eq!(
-                cmd.run_args.config,
-                Some(PathBuf::from("x.yaml")),
-                "Expected --config to be captured in run_args"
-            );
-        } else {
-            panic!("Expected Server command");
+    /// EC-CLI-002: Unknown subcommand should fail.
+    #[test]
+    fn test_unknown_subcommand_fails() {
+        let result = Cli::try_parse_from(["thoughtjack", "foobar"]);
+        assert!(result.is_err(), "Expected error for unknown subcommand");
+    }
+
+    /// EC-CLI-005: --verbose and --quiet conflict.
+    #[test]
+    fn test_verbose_quiet_conflict() {
+        let result = Cli::try_parse_from([
+            "thoughtjack",
+            "--verbose",
+            "--quiet",
+            "run",
+            "--config",
+            "x.yaml",
+        ]);
+        assert!(result.is_err(), "Expected conflict error for -v + -q");
+    }
+
+    /// EC-CLI-006: Excessive verbosity still parses (count = 4).
+    #[test]
+    fn test_excessive_verbosity_clamps() {
+        let cli =
+            Cli::try_parse_from(["thoughtjack", "-vvvv", "run", "--config", "x.yaml"]).unwrap();
+        assert_eq!(cli.verbose, 4, "Expected verbosity count of 4");
+    }
+
+    /// EC-CLI-007: All valid --color values parse correctly.
+    #[test]
+    fn test_color_values() {
+        let expected = [
+            ("auto", ColorChoice::Auto),
+            ("always", ColorChoice::Always),
+            ("never", ColorChoice::Never),
+        ];
+        for (input, variant) in expected {
+            let cli =
+                Cli::try_parse_from(["thoughtjack", "--color", input, "run", "--config", "x.yaml"])
+                    .unwrap();
+            assert_eq!(cli.color, variant, "Unexpected color variant for {input}");
         }
     }
 
+    /// Invalid --color value should fail.
     #[test]
-    fn test_server_run_with_scenario() {
-        let cli = Cli::try_parse_from(["thoughtjack", "server", "run", "--scenario", "rug-pull"]);
-        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
-    }
-
-    // EC-SCN-002: --scenario and --config are mutually exclusive via arg group.
-    #[test]
-    fn test_scenario_and_config_mutually_exclusive() {
-        let cli = Cli::try_parse_from([
+    fn test_invalid_color_value() {
+        let result = Cli::try_parse_from([
             "thoughtjack",
-            "server",
+            "--color",
+            "rainbow",
             "run",
-            "--scenario",
-            "rug-pull",
             "--config",
-            "c.yaml",
+            "x.yaml",
         ]);
-        assert!(cli.is_err(), "Expected mutual exclusion error");
-    }
-
-    // EC-SCN-003: --scenario and --tool are mutually exclusive via arg group.
-    #[test]
-    fn test_scenario_and_tool_mutually_exclusive() {
-        let cli = Cli::try_parse_from([
-            "thoughtjack",
-            "server",
-            "run",
-            "--scenario",
-            "rug-pull",
-            "--tool",
-            "t.yaml",
-        ]);
-        assert!(cli.is_err(), "Expected mutual exclusion error");
+        assert!(result.is_err(), "Expected error for invalid color value");
     }
 
     #[test]
@@ -770,257 +446,6 @@ mod tests {
         assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 
-    #[test]
-    fn test_exit_code_mapping() {
-        use crate::error::{
-            BehaviorError, ConfigError, ExitCode, GeneratorError, PhaseError, ThoughtJackError,
-            TransportError,
-        };
-
-        let cases: Vec<(ThoughtJackError, i32)> = vec![
-            (
-                ConfigError::MissingFile {
-                    path: PathBuf::from("/x"),
-                }
-                .into(),
-                ExitCode::CONFIG_ERROR,
-            ),
-            (
-                TransportError::ConnectionFailed("x".into()).into(),
-                ExitCode::TRANSPORT_ERROR,
-            ),
-            (
-                PhaseError::NotFound("x".into()).into(),
-                ExitCode::PHASE_ERROR,
-            ),
-            (
-                GeneratorError::LimitExceeded("x".into()).into(),
-                ExitCode::GENERATOR_ERROR,
-            ),
-            (
-                BehaviorError::ExecutionFailed("x".into()).into(),
-                ExitCode::ERROR,
-            ),
-            (
-                std::io::Error::new(std::io::ErrorKind::NotFound, "x").into(),
-                ExitCode::IO_ERROR,
-            ),
-        ];
-
-        for (err, expected) in cases {
-            assert_eq!(err.exit_code(), expected, "Wrong exit code for {err}");
-        }
-    }
-
-    #[test]
-    fn test_diagram_command() {
-        let cli = Cli::try_parse_from(["thoughtjack", "diagram", "scenario.yaml"]);
-        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
-    }
-
-    #[test]
-    fn test_diagram_command_with_type() {
-        for dtype in ["auto", "state", "sequence", "flowchart"] {
-            let cli = Cli::try_parse_from([
-                "thoughtjack",
-                "diagram",
-                "scenario.yaml",
-                "--diagram-type",
-                dtype,
-            ]);
-            assert!(cli.is_ok(), "Failed to parse diagram-type={dtype}");
-        }
-    }
-
-    #[test]
-    fn test_docs_generate_command() {
-        let cli = Cli::try_parse_from(["thoughtjack", "docs", "generate"]);
-        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
-    }
-
-    #[test]
-    fn test_docs_validate_command() {
-        let cli = Cli::try_parse_from(["thoughtjack", "docs", "validate", "--strict"]);
-        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
-    }
-
-    // ========================================================================
-    // Edge-case tests
-    // ========================================================================
-
-    /// EC-CLI-001: No arguments at all should fail (subcommand required).
-    #[test]
-    fn test_no_args_fails() {
-        let result = Cli::try_parse_from(["thoughtjack"]);
-        assert!(result.is_err(), "Expected error when no subcommand given");
-    }
-
-    /// EC-CLI-002: Unknown subcommand should fail.
-    #[test]
-    fn test_unknown_subcommand_fails() {
-        let result = Cli::try_parse_from(["thoughtjack", "foobar"]);
-        assert!(result.is_err(), "Expected error for unknown subcommand");
-    }
-
-    /// EC-CLI-005: --verbose and --quiet conflict.
-    #[test]
-    fn test_verbose_quiet_conflict() {
-        let result = Cli::try_parse_from([
-            "thoughtjack",
-            "--verbose",
-            "--quiet",
-            "server",
-            "run",
-            "--config",
-            "x.yaml",
-        ]);
-        assert!(result.is_err(), "Expected conflict error for -v + -q");
-    }
-
-    /// EC-CLI-006: Excessive verbosity still parses (count = 4).
-    #[test]
-    fn test_excessive_verbosity_clamps() {
-        let cli = Cli::try_parse_from([
-            "thoughtjack",
-            "-vvvv",
-            "server",
-            "run",
-            "--config",
-            "x.yaml",
-        ])
-        .unwrap();
-        assert_eq!(cli.verbose, 4, "Expected verbosity count of 4");
-    }
-
-    /// EC-CLI-007: All valid --color values parse correctly.
-    #[test]
-    fn test_color_values() {
-        let expected = [
-            ("auto", ColorChoice::Auto),
-            ("always", ColorChoice::Always),
-            ("never", ColorChoice::Never),
-        ];
-        for (input, variant) in expected {
-            let cli = Cli::try_parse_from([
-                "thoughtjack",
-                "--color",
-                input,
-                "server",
-                "run",
-                "--config",
-                "x.yaml",
-            ])
-            .unwrap();
-            assert_eq!(cli.color, variant, "Unexpected color variant for {input}");
-        }
-    }
-
-    /// Invalid --color value should fail.
-    #[test]
-    fn test_invalid_color_value() {
-        let result = Cli::try_parse_from([
-            "thoughtjack",
-            "--color",
-            "rainbow",
-            "server",
-            "run",
-            "--config",
-            "x.yaml",
-        ]);
-        assert!(result.is_err(), "Expected error for invalid color value");
-    }
-
-    /// EC-CLI-008: --http with an address parses correctly.
-    #[test]
-    fn test_http_flag_parsing() {
-        let cli = Cli::try_parse_from([
-            "thoughtjack",
-            "server",
-            "run",
-            "--config",
-            "x.yaml",
-            "--http",
-            "0.0.0.0:8080",
-        ])
-        .unwrap();
-
-        if let Commands::Server(cmd) = cli.command {
-            if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
-                assert_eq!(
-                    args.http.as_deref(),
-                    Some("0.0.0.0:8080"),
-                    "Expected http bind address"
-                );
-                return;
-            }
-        }
-        panic!("Expected ServerRunArgs with --http");
-    }
-
-    /// EC-CLI-010: All valid --state-scope values parse correctly.
-    #[test]
-    fn test_profile_values() {
-        let expected = [
-            ("per-connection", StateScope::PerConnection),
-            ("global", StateScope::Global),
-        ];
-        for (input, variant) in expected {
-            let cli = Cli::try_parse_from([
-                "thoughtjack",
-                "server",
-                "run",
-                "--config",
-                "x.yaml",
-                "--state-scope",
-                input,
-            ])
-            .unwrap();
-
-            if let Commands::Server(cmd) = cli.command {
-                if let Some(ServerSubcommand::Run(args)) = cmd.subcommand {
-                    assert_eq!(
-                        args.state_scope,
-                        Some(variant),
-                        "Unexpected state-scope for {input}"
-                    );
-                    continue;
-                }
-            }
-            panic!("Expected ServerRunArgs for state-scope={input}");
-        }
-    }
-
-    /// EC-CLI-011: Unknown --state-scope value should fail.
-    #[test]
-    fn test_unknown_profile_fails() {
-        let result = Cli::try_parse_from([
-            "thoughtjack",
-            "server",
-            "run",
-            "--config",
-            "x.yaml",
-            "--state-scope",
-            "turbo",
-        ]);
-        assert!(
-            result.is_err(),
-            "Expected error for unknown state-scope value"
-        );
-    }
-
-    /// EC-CLI-012: Completions command with each supported shell type.
-    #[test]
-    fn test_completions_all_shells() {
-        let shells = ["bash", "zsh", "fish", "powershell", "elvish"];
-        for shell_name in shells {
-            let cli = Cli::try_parse_from(["thoughtjack", "completions", shell_name]).unwrap();
-            assert!(
-                matches!(cli.command, Commands::Completions(_)),
-                "Expected Completions command for shell={shell_name}"
-            );
-        }
-    }
-
     /// EC-CLI-013: `version` subcommand parses.
     #[test]
     fn test_version_command() {
@@ -1028,16 +453,6 @@ mod tests {
         assert!(
             matches!(cli.command, Commands::Version(_)),
             "Expected Version command"
-        );
-    }
-
-    /// `server validate` requires at least one path argument.
-    #[test]
-    fn test_server_validate_requires_path() {
-        let result = Cli::try_parse_from(["thoughtjack", "server", "validate"]);
-        assert!(
-            result.is_err(),
-            "Expected error when validate has no file paths"
         );
     }
 
@@ -1053,7 +468,6 @@ mod tests {
                 "thoughtjack",
                 "--log-format",
                 input,
-                "server",
                 "run",
                 "--config",
                 "x.yaml",
@@ -1063,67 +477,103 @@ mod tests {
         }
     }
 
-    /// EC-CLI-004: --config and --tool are mutually exclusive via arg group.
+    /// Validate command parses with path.
     #[test]
-    fn test_config_and_tool_mutual_exclusion() {
-        let result = Cli::try_parse_from([
+    fn test_validate_command() {
+        let cli = Cli::try_parse_from(["thoughtjack", "validate", "scenario.yaml"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    /// Validate command with --normalize flag.
+    #[test]
+    fn test_validate_normalize() {
+        let cli = Cli::try_parse_from(["thoughtjack", "validate", "scenario.yaml", "--normalize"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    /// Run with --max-session duration.
+    #[test]
+    fn test_run_max_session() {
+        let cli = Cli::try_parse_from([
             "thoughtjack",
-            "server",
             "run",
             "--config",
-            "test.yaml",
-            "--tool",
-            "calc",
+            "x.yaml",
+            "--max-session",
+            "10m",
+        ]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    /// Run with --grace-period duration.
+    #[test]
+    fn test_run_grace_period() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "run",
+            "--config",
+            "x.yaml",
+            "--grace-period",
+            "30s",
+        ]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    /// MCP client flags: --mcp-client-args requires --mcp-client-command.
+    #[test]
+    fn test_mcp_client_args_requires_command() {
+        let result = Cli::try_parse_from([
+            "thoughtjack",
+            "run",
+            "--config",
+            "x.yaml",
+            "--mcp-client-args",
+            "foo",
         ]);
         assert!(
             result.is_err(),
-            "Expected parse error when both --config and --tool are provided"
+            "Expected error: --mcp-client-args requires --mcp-client-command"
         );
     }
 
-    /// EC-CLI-009: Invalid --behavior value should fail.
+    /// MCP client flags: --mcp-client-command and --mcp-client-endpoint conflict.
     #[test]
-    fn test_invalid_behavior_mode() {
+    fn test_mcp_client_command_endpoint_conflict() {
         let result = Cli::try_parse_from([
             "thoughtjack",
-            "server",
             "run",
-            "--tool",
-            "calc",
-            "--behavior",
-            "invalid_mode",
+            "--config",
+            "x.yaml",
+            "--mcp-client-command",
+            "npx server",
+            "--mcp-client-endpoint",
+            "http://localhost:3000",
         ]);
         assert!(
             result.is_err(),
-            "Expected parse error for invalid behavior mode"
+            "Expected conflict: --mcp-client-command vs --mcp-client-endpoint"
         );
     }
 
     /// EC-CLI-018: --log-format json is parsed correctly.
     #[test]
-    fn test_json_output_with_error() {
+    fn test_json_log_format() {
         let cli = Cli::try_parse_from([
             "thoughtjack",
             "--log-format",
             "json",
-            "server",
             "run",
             "--config",
             "x.yaml",
         ])
         .unwrap();
-        assert_eq!(
-            cli.log_format,
-            LogFormatChoice::Json,
-            "Expected --log-format json to parse as LogFormatChoice::Json"
-        );
+        assert_eq!(cli.log_format, LogFormatChoice::Json);
 
-        // Also verify invalid log format is rejected
+        // Invalid log format is rejected
         let invalid = Cli::try_parse_from([
             "thoughtjack",
             "--log-format",
             "xml",
-            "server",
             "run",
             "--config",
             "x.yaml",
@@ -1134,25 +584,17 @@ mod tests {
         );
     }
 
-    /// `server` alone (without explicit `run`) should default to run behavior.
+    /// Scenarios run subcommand parses.
     #[test]
-    fn test_server_run_default_subcommand() {
-        let cli =
-            Cli::try_parse_from(["thoughtjack", "server", "--config", "default.yaml"]).unwrap();
-        if let Commands::Server(cmd) = cli.command {
-            // When no subcommand is given, subcommand is None and
-            // run_args captures the flags directly.
-            assert!(
-                cmd.subcommand.is_none(),
-                "Expected None subcommand (implicit run)"
-            );
-            assert_eq!(
-                cmd.run_args.config,
-                Some(PathBuf::from("default.yaml")),
-                "Expected --config in run_args"
-            );
-        } else {
-            panic!("Expected Server command");
-        }
+    fn test_scenarios_run_command() {
+        let cli = Cli::try_parse_from([
+            "thoughtjack",
+            "scenarios",
+            "run",
+            "rug-pull",
+            "--config",
+            "x.yaml",
+        ]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 }

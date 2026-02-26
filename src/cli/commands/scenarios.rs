@@ -1,10 +1,12 @@
 //! Scenarios command handlers (TJ-SPEC-010)
 //!
-//! Implements `scenarios list` and `scenarios show`.
+//! Implements `scenarios list`, `scenarios show`, and `scenarios run`.
 
 use std::fmt::Write as _;
 
-use crate::cli::args::{OutputFormat, ScenariosListArgs, ScenariosShowArgs};
+use tokio_util::sync::CancellationToken;
+
+use crate::cli::args::{OutputFormat, ScenariosListArgs, ScenariosRunArgs, ScenariosShowArgs};
 use crate::error::ThoughtJackError;
 use crate::scenarios::{self, ScenarioCategory};
 
@@ -66,7 +68,7 @@ pub async fn list(args: &ScenariosListArgs) -> Result<(), ThoughtJackError> {
                 println!();
             }
 
-            println!("Run a scenario: thoughtjack server run --scenario <name>");
+            println!("Run a scenario: thoughtjack scenarios run <name> --config <oatf.yaml>");
             println!("View YAML:      thoughtjack scenarios show <name>");
         }
     }
@@ -105,4 +107,22 @@ pub async fn show(args: &ScenariosShowArgs) -> Result<(), ThoughtJackError> {
 
     print!("{}", scenario.yaml);
     Ok(())
+}
+
+/// Run a built-in scenario by name.
+///
+/// Resolves the scenario YAML, then delegates to the `run` command handler.
+///
+/// # Errors
+///
+/// Returns a usage error if the scenario name is not found, or a runtime
+/// error if execution fails.
+///
+/// Implements: TJ-SPEC-010 F-008
+#[allow(clippy::unused_async)]
+pub async fn run_scenario(
+    _args: &ScenariosRunArgs,
+    _cancel: CancellationToken,
+) -> Result<(), ThoughtJackError> {
+    todo!("scenarios run wired in engine prompt")
 }

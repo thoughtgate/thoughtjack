@@ -8,8 +8,6 @@ use super::{
     ConnectionContext, DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_STDIO_BUFFER_SIZE, JsonRpcMessage, Result,
     Transport, TransportType,
 };
-use crate::config::schema::DeliveryConfig;
-
 use std::str::FromStr;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::Mutex;
@@ -259,11 +257,6 @@ impl Transport for StdioTransport {
         }
     }
 
-    fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
-        // stdio supports all delivery behaviors
-        true
-    }
-
     fn transport_type(&self) -> TransportType {
         TransportType::Stdio
     }
@@ -339,25 +332,6 @@ mod tests {
     fn test_stdio_transport_type() {
         let transport = StdioTransport::new();
         assert_eq!(transport.transport_type(), TransportType::Stdio);
-    }
-
-    #[test]
-    fn test_stdio_supports_all_behaviors() {
-        let transport = StdioTransport::new();
-        assert!(transport.supports_behavior(&DeliveryConfig::Normal));
-        assert!(transport.supports_behavior(&DeliveryConfig::SlowLoris {
-            byte_delay_ms: Some(100),
-            chunk_size: Some(1),
-        }));
-        assert!(transport.supports_behavior(&DeliveryConfig::UnboundedLine {
-            target_bytes: Some(1000),
-            padding_char: None,
-        }));
-        assert!(transport.supports_behavior(&DeliveryConfig::NestedJson {
-            depth: 100,
-            key: None,
-        }));
-        assert!(transport.supports_behavior(&DeliveryConfig::ResponseDelay { delay_ms: 1000 }));
     }
 
     #[test]

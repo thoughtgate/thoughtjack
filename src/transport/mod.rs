@@ -15,7 +15,6 @@ pub use jsonrpc::{
 };
 pub use stdio::StdioTransport;
 
-use crate::config::schema::DeliveryConfig;
 use crate::error::TransportError;
 
 use std::fmt;
@@ -61,12 +60,6 @@ pub trait Transport: Send + Sync {
     /// Returns `Ok(None)` on EOF (clean shutdown).
     /// Returns `Err` on I/O or parse errors.
     async fn receive_message(&self) -> Result<Option<JsonRpcMessage>>;
-
-    /// Checks whether this transport supports the given delivery behavior.
-    ///
-    /// Some behaviors are transport-specific (e.g., pipe deadlock only
-    /// applies to stdio). Unsupported behaviors should be logged and skipped.
-    fn supports_behavior(&self, behavior: &DeliveryConfig) -> bool;
 
     /// Returns the type of this transport for logging and metrics.
     fn transport_type(&self) -> TransportType;
