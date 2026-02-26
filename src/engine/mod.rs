@@ -22,6 +22,7 @@
 pub mod actions;
 pub mod driver;
 pub mod generation;
+pub mod mcp_server;
 pub mod phase;
 pub mod phase_loop;
 pub mod trace;
@@ -31,6 +32,7 @@ pub mod types;
 pub use actions::EntryActionSender;
 pub use driver::PhaseDriver;
 pub use generation::validate_synthesized_output;
+pub use mcp_server::{McpServerDriver, McpTransportEntryActionSender};
 pub use phase::PhaseEngine;
 pub use phase_loop::{ExtractorStore, PhaseLoop, PhaseLoopConfig};
 pub use trace::{SharedTrace, TraceEntry};
