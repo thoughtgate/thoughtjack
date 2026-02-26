@@ -1,0 +1,827 @@
+//! Indicator evaluation pipeline and trace filtering.
+//!
+//! Evaluates each indicator against relevant protocol trace entries,
+//! aggregates per-indicator results (first match wins), and delegates
+//! to the SDK's `compute_verdict()` for attack-level verdict.
+//!
+//! See TJ-SPEC-014 §3 for the evaluation pipeline.
+
+use std::collections::{HashMap, HashSet};
+
+use chrono::Utc;
+use oatf::enums::{AttackResult, IndicatorResult};
+
+use crate::engine::trace::TraceEntry;
+
+// ============================================================================
+// Trace Filtering
+// ============================================================================
+
+/// Extracts the base protocol from an actor mode string.
+///
+/// Maps `"mcp_server"` → `"mcp"`, `"mcp_client"` → `"mcp"`,
+/// `"a2a_server"` → `"a2a"`, `"ag_ui"` → `"ag_ui"`, etc.
+///
+/// Uses the same logic as `oatf::extract_protocol` (SDK §5.10),
+/// which is not re-exported from the oatf crate.
+///
+/// Implements: TJ-SPEC-014 F-005
+#[must_use]
+pub fn extract_protocol(mode: &str) -> &str {
+    mode.strip_suffix("_server")
+        .or_else(|| mode.strip_suffix("_client"))
+        .unwrap_or(mode)
+}
+
+/// An actor's name and protocol mode, used for trace filtering.
+#[derive(Debug, Clone)]
+pub struct ActorInfo {
+    /// Actor name (matches `TraceEntry.actor`).
+    pub name: String,
+    /// Actor mode (e.g., `"mcp_server"`, `"a2a_client"`).
+    pub mode: String,
+}
+
+/// Filters trace entries to those relevant for a given indicator's protocol.
+///
+/// Uses the indicator's `protocol` field (defaulting to `"mcp"`) to select
+/// actors whose mode maps to that protocol. Returns references to matching
+/// trace entries.
+///
+/// In single-actor execution, all entries pass (filtering is a no-op).
+///
+/// Implements: TJ-SPEC-014 F-005
+#[must_use]
+pub fn filter_trace_for_indicator<'a>(
+    trace: &'a [TraceEntry],
+    indicator: &oatf::Indicator,
+    actors: &[ActorInfo],
+) -> Vec<&'a TraceEntry> {
+    let target_protocol = indicator.protocol.as_deref().unwrap_or("mcp");
+
+    let matching_actors: HashSet<&str> = actors
+        .iter()
+        .filter(|a| extract_protocol(&a.mode) == target_protocol)
+        .map(|a| a.name.as_str())
+        .collect();
+
+    trace
+        .iter()
+        .filter(|entry| matching_actors.contains(entry.actor.as_str()))
+        .collect()
+}
+
+// ============================================================================
+// Per-Indicator Aggregation
+// ============================================================================
+
+/// Priority ordering for indicator results during aggregation.
+///
+/// First `matched` wins. Otherwise worst non-match propagated:
+/// `error` > `skipped` > `not_matched`.
+const fn result_priority(result: &IndicatorResult) -> u8 {
+    match result {
+        IndicatorResult::Matched => 3,
+        IndicatorResult::Error => 2,
+        IndicatorResult::Skipped => 1,
+        IndicatorResult::NotMatched => 0,
+    }
+}
+
+/// Merges two indicator verdicts, keeping the higher-priority result.
+///
+/// If one is `Matched`, that wins immediately. Otherwise the worse
+/// non-match is kept (`Error` > `Skipped` > `NotMatched`).
+fn merge_verdict(
+    current: oatf::IndicatorVerdict,
+    candidate: oatf::IndicatorVerdict,
+) -> oatf::IndicatorVerdict {
+    if result_priority(&candidate.result) > result_priority(&current.result) {
+        candidate
+    } else {
+        current
+    }
+}
+
+// ============================================================================
+// Evaluation Pipeline
+// ============================================================================
+
+/// Configuration for the evaluation pipeline.
+pub struct EvaluationConfig<'a> {
+    /// CEL evaluator (if available).
+    pub cel_evaluator: Option<&'a dyn oatf::evaluate::CelEvaluator>,
+    /// Semantic evaluator (if available).
+    pub semantic_evaluator: Option<&'a dyn oatf::evaluate::SemanticEvaluator>,
+    /// Whether semantic evaluation is disabled (`--no-semantic`).
+    pub no_semantic: bool,
+}
+
+impl std::fmt::Debug for EvaluationConfig<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EvaluationConfig")
+            .field("cel_evaluator", &self.cel_evaluator.is_some())
+            .field("semantic_evaluator", &self.semantic_evaluator.is_some())
+            .field("no_semantic", &self.no_semantic)
+            .finish()
+    }
+}
+
+/// Evaluates a single indicator against relevant trace entries.
+///
+/// Returns the best verdict across all messages (first match wins,
+/// otherwise worst non-match propagated).
+fn evaluate_single_indicator(
+    indicator: &oatf::Indicator,
+    entries: &[&TraceEntry],
+    config: &EvaluationConfig<'_>,
+    effective_semantic: Option<&dyn oatf::evaluate::SemanticEvaluator>,
+    source: &str,
+) -> oatf::IndicatorVerdict {
+    let ind_id = indicator.id.as_deref().unwrap_or("").to_string();
+
+    if entries.is_empty() {
+        return if indicator.semantic.is_some() && effective_semantic.is_none() {
+            oatf::IndicatorVerdict {
+                indicator_id: ind_id,
+                result: IndicatorResult::Skipped,
+                timestamp: Some(Utc::now().to_rfc3339()),
+                evidence: Some(
+                    "Semantic evaluation not available (no inference engine configured)"
+                        .to_string(),
+                ),
+                source: Some(source.to_string()),
+            }
+        } else {
+            oatf::IndicatorVerdict {
+                indicator_id: ind_id,
+                result: IndicatorResult::NotMatched,
+                timestamp: Some(Utc::now().to_rfc3339()),
+                evidence: None,
+                source: Some(source.to_string()),
+            }
+        };
+    }
+
+    let mut best: Option<oatf::IndicatorVerdict> = None;
+
+    for entry in entries {
+        let v = oatf::evaluate::evaluate_indicator(
+            indicator,
+            &entry.content,
+            config.cel_evaluator,
+            effective_semantic,
+        );
+        let v = oatf::IndicatorVerdict {
+            timestamp: Some(Utc::now().to_rfc3339()),
+            source: Some(source.to_string()),
+            ..v
+        };
+
+        tracing::debug!(
+            indicator_id = %ind_id,
+            result = ?v.result,
+            seq = entry.seq,
+            "indicator evaluated against message"
+        );
+
+        if v.result == IndicatorResult::Matched {
+            return v;
+        }
+
+        best = Some(match best {
+            None => v,
+            Some(cur) => merge_verdict(cur, v),
+        });
+    }
+
+    best.expect("entries is non-empty")
+}
+
+/// Evaluates all indicators against the protocol trace and computes
+/// the attack-level verdict.
+///
+/// Delegates to `oatf::evaluate::compute_verdict()` for the
+/// attack-level result.
+///
+/// Implements: TJ-SPEC-014 F-002, F-003, F-004
+pub fn evaluate_verdict(
+    attack: &oatf::Attack,
+    trace: &[TraceEntry],
+    actors: &[ActorInfo],
+    config: &EvaluationConfig<'_>,
+    source: &str,
+) -> oatf::AttackVerdict {
+    let indicators = match &attack.indicators {
+        Some(inds) if !inds.is_empty() => inds,
+        _ => {
+            tracing::info!("no indicators defined — skipping verdict evaluation");
+            return oatf::AttackVerdict {
+                attack_id: attack.id.clone(),
+                result: AttackResult::NotExploited,
+                indicator_verdicts: vec![],
+                evaluation_summary: oatf::EvaluationSummary {
+                    matched: 0,
+                    not_matched: 0,
+                    error: 0,
+                    skipped: 0,
+                },
+                timestamp: Some(Utc::now().to_rfc3339()),
+                source: Some(source.to_string()),
+            };
+        }
+    };
+
+    let effective_semantic: Option<&dyn oatf::evaluate::SemanticEvaluator> = if config.no_semantic {
+        None
+    } else {
+        config.semantic_evaluator
+    };
+
+    let mut indicator_verdicts: HashMap<String, oatf::IndicatorVerdict> =
+        HashMap::with_capacity(indicators.len());
+
+    for indicator in indicators {
+        let ind_id = indicator.id.as_deref().unwrap_or("").to_string();
+        let relevant_entries = filter_trace_for_indicator(trace, indicator, actors);
+
+        tracing::debug!(
+            indicator_id = %ind_id,
+            relevant_messages = relevant_entries.len(),
+            "evaluating indicator"
+        );
+
+        let v = evaluate_single_indicator(
+            indicator,
+            &relevant_entries,
+            config,
+            effective_semantic,
+            source,
+        );
+        indicator_verdicts.insert(ind_id, v);
+    }
+
+    let mut verdict = oatf::evaluate::compute_verdict(attack, &indicator_verdicts);
+    verdict.timestamp = Some(Utc::now().to_rfc3339());
+    verdict.source = Some(source.to_string());
+
+    tracing::info!(
+        result = ?verdict.result,
+        matched = verdict.evaluation_summary.matched,
+        not_matched = verdict.evaluation_summary.not_matched,
+        error = verdict.evaluation_summary.error,
+        skipped = verdict.evaluation_summary.skipped,
+        "verdict computed"
+    );
+
+    verdict
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::types::Direction;
+    use chrono::Utc;
+    use oatf::enums::CorrelationLogic;
+
+    fn make_trace_entry(actor: &str, method: &str, content: serde_json::Value) -> TraceEntry {
+        TraceEntry {
+            seq: 0,
+            timestamp: Utc::now(),
+            actor: actor.to_string(),
+            phase: "test".to_string(),
+            direction: Direction::Incoming,
+            method: method.to_string(),
+            content,
+        }
+    }
+
+    fn make_actor(name: &str, mode: &str) -> ActorInfo {
+        ActorInfo {
+            name: name.to_string(),
+            mode: mode.to_string(),
+        }
+    }
+
+    fn make_attack(indicators: Option<Vec<oatf::Indicator>>) -> oatf::Attack {
+        oatf::Attack {
+            id: Some("test-attack".to_string()),
+            name: Some("Test Attack".to_string()),
+            version: Some(1),
+            status: None,
+            created: None,
+            modified: None,
+            author: None,
+            description: None,
+            grace_period: None,
+            severity: None,
+            impact: None,
+            classification: None,
+            references: None,
+            execution: oatf::Execution {
+                mode: Some("mcp_server".to_string()),
+                state: None,
+                phases: None,
+                actors: None,
+                extensions: std::collections::HashMap::new(),
+            },
+            indicators,
+            correlation: None,
+            extensions: std::collections::HashMap::new(),
+        }
+    }
+
+    fn make_pattern_indicator(id: &str, contains: &str) -> oatf::Indicator {
+        oatf::Indicator {
+            id: Some(id.to_string()),
+            protocol: None,
+            surface: "tool_description".to_string(),
+            description: None,
+            pattern: Some(oatf::PatternMatch {
+                target: Some("description".to_string()),
+                condition: Some(oatf::Condition::Operators(oatf::MatchCondition {
+                    contains: Some(contains.to_string()),
+                    starts_with: None,
+                    ends_with: None,
+                    regex: None,
+                    any_of: None,
+                    gt: None,
+                    lt: None,
+                    gte: None,
+                    lte: None,
+                    exists: None,
+                })),
+                contains: None,
+                starts_with: None,
+                ends_with: None,
+                regex: None,
+                any_of: None,
+                gt: None,
+                lt: None,
+                gte: None,
+                lte: None,
+            }),
+            expression: None,
+            semantic: None,
+            confidence: None,
+            severity: None,
+            false_positives: None,
+            extensions: std::collections::HashMap::new(),
+        }
+    }
+
+    fn make_semantic_indicator(id: &str) -> oatf::Indicator {
+        oatf::Indicator {
+            id: Some(id.to_string()),
+            protocol: None,
+            surface: "tool_description".to_string(),
+            description: None,
+            pattern: None,
+            expression: None,
+            semantic: Some(oatf::SemanticMatch {
+                target: Some("description".to_string()),
+                intent: "data exfiltration".to_string(),
+                intent_class: None,
+                threshold: Some(0.7),
+                examples: None,
+            }),
+            confidence: None,
+            severity: None,
+            false_positives: None,
+            extensions: std::collections::HashMap::new(),
+        }
+    }
+
+    fn default_config() -> EvaluationConfig<'static> {
+        EvaluationConfig {
+            cel_evaluator: None,
+            semantic_evaluator: None,
+            no_semantic: false,
+        }
+    }
+
+    // ── extract_protocol tests ──────────────────────────────────────────
+
+    #[test]
+    fn extract_protocol_strips_server_suffix() {
+        assert_eq!(extract_protocol("mcp_server"), "mcp");
+        assert_eq!(extract_protocol("a2a_server"), "a2a");
+    }
+
+    #[test]
+    fn extract_protocol_strips_client_suffix() {
+        assert_eq!(extract_protocol("mcp_client"), "mcp");
+        assert_eq!(extract_protocol("a2a_client"), "a2a");
+    }
+
+    #[test]
+    fn extract_protocol_passthrough_other() {
+        assert_eq!(extract_protocol("ag_ui"), "ag_ui");
+        assert_eq!(extract_protocol("custom"), "custom");
+    }
+
+    // ── filter_trace_for_indicator tests ────────────────────────────────
+
+    #[test]
+    fn filter_single_actor_all_pass() {
+        let trace = vec![
+            make_trace_entry("actor1", "tools/call", serde_json::json!({})),
+            make_trace_entry("actor1", "tools/list", serde_json::json!({})),
+        ];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+        let indicator = make_pattern_indicator("ind-1", "test");
+
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn filter_multi_actor_by_protocol() {
+        let trace = vec![
+            make_trace_entry("mcp_actor", "tools/call", serde_json::json!({})),
+            make_trace_entry("mcp_actor", "tools/list", serde_json::json!({})),
+            make_trace_entry("a2a_actor", "message/send", serde_json::json!({})),
+        ];
+        let actors = vec![
+            make_actor("mcp_actor", "mcp_server"),
+            make_actor("a2a_actor", "a2a_server"),
+        ];
+
+        // MCP indicator should only see mcp_actor entries
+        let mcp_indicator = make_pattern_indicator("ind-mcp", "test");
+        let filtered = filter_trace_for_indicator(&trace, &mcp_indicator, &actors);
+        assert_eq!(filtered.len(), 2);
+
+        // A2A indicator
+        let mut a2a_indicator = make_pattern_indicator("ind-a2a", "test");
+        a2a_indicator.protocol = Some("a2a".to_string());
+        let filtered = filter_trace_for_indicator(&trace, &a2a_indicator, &actors);
+        assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn filter_empty_trace() {
+        let trace: Vec<TraceEntry> = vec![];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+        let indicator = make_pattern_indicator("ind-1", "test");
+
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
+        assert!(filtered.is_empty());
+    }
+
+    // ── EC-VERDICT-009: Multi-Actor Trace — Protocol Filtering ──────────
+
+    #[test]
+    fn ec_verdict_009_protocol_filtering() {
+        let mut trace = Vec::new();
+        for i in 0..50 {
+            trace.push(make_trace_entry(
+                "mcp_actor",
+                "tools/call",
+                serde_json::json!({"seq": i}),
+            ));
+        }
+        for i in 0..30 {
+            trace.push(make_trace_entry(
+                "agui_actor",
+                "RUN_FINISHED",
+                serde_json::json!({"seq": i}),
+            ));
+        }
+        let actors = vec![
+            make_actor("mcp_actor", "mcp_server"),
+            make_actor("agui_actor", "ag_ui"),
+        ];
+
+        let mcp_indicator = make_pattern_indicator("ind-1", "test");
+        let filtered = filter_trace_for_indicator(&trace, &mcp_indicator, &actors);
+        assert_eq!(filtered.len(), 50);
+    }
+
+    // ── EC-VERDICT-001: Zero Indicators ─────────────────────────────────
+
+    #[test]
+    fn ec_verdict_001_zero_indicators() {
+        let attack = make_attack(None);
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        assert_eq!(verdict.result, AttackResult::NotExploited);
+        assert!(verdict.indicator_verdicts.is_empty());
+    }
+
+    #[test]
+    fn ec_verdict_001_empty_indicators() {
+        let attack = make_attack(Some(vec![]));
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        assert_eq!(verdict.result, AttackResult::NotExploited);
+    }
+
+    // ── EC-VERDICT-002: All Indicators Skipped ──────────────────────────
+
+    #[test]
+    fn ec_verdict_002_all_skipped_protocol_mismatch() {
+        let mut indicator = make_pattern_indicator("ind-1", "test");
+        indicator.protocol = Some("a2a".to_string());
+
+        let attack = make_attack(Some(vec![indicator]));
+        let trace = vec![make_trace_entry(
+            "mcp_actor",
+            "tools/call",
+            serde_json::json!({"description": "test data"}),
+        )];
+        let actors = vec![make_actor("mcp_actor", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        // No relevant messages → not_matched (not skipped)
+        // With only not_matched, the SDK says not_exploited
+        assert_eq!(verdict.result, AttackResult::NotExploited);
+    }
+
+    // ── EC-VERDICT-003: Pattern Matches Multiple Trace Entries ──────────
+
+    #[test]
+    fn ec_verdict_003_first_match_wins() {
+        let indicator = make_pattern_indicator("ind-1", "malicious");
+        let attack = make_attack(Some(vec![indicator]));
+
+        let trace = vec![
+            make_trace_entry(
+                "actor1",
+                "tools/call",
+                serde_json::json!({"description": "safe content"}),
+            ),
+            make_trace_entry(
+                "actor1",
+                "tools/call",
+                serde_json::json!({"description": "malicious payload"}),
+            ),
+            make_trace_entry(
+                "actor1",
+                "tools/call",
+                serde_json::json!({"description": "also malicious data"}),
+            ),
+        ];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        assert_eq!(verdict.result, AttackResult::Exploited);
+        assert_eq!(verdict.evaluation_summary.matched, 1);
+    }
+
+    // ── EC-VERDICT-006: `any` Correlation With One Match ────────────────
+
+    #[test]
+    fn ec_verdict_006_any_correlation_one_match() {
+        let ind1 = make_pattern_indicator("ind-1", "malicious");
+        let ind2 = make_pattern_indicator("ind-2", "nonexistent");
+        let ind3 = make_pattern_indicator("ind-3", "alsononexistent");
+        let attack = make_attack(Some(vec![ind1, ind2, ind3]));
+
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({"description": "malicious payload"}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        assert_eq!(verdict.result, AttackResult::Exploited);
+        assert_eq!(verdict.evaluation_summary.matched, 1);
+        assert_eq!(verdict.evaluation_summary.not_matched, 2);
+    }
+
+    // ── EC-VERDICT-005: `all` Correlation With Mixed Results ────────────
+
+    #[test]
+    fn ec_verdict_005_all_correlation_mixed() {
+        let ind1 = make_pattern_indicator("ind-1", "malicious");
+        let ind2 = make_pattern_indicator("ind-2", "nonexistent");
+
+        let mut attack = make_attack(Some(vec![ind1, ind2]));
+        attack.correlation = Some(oatf::Correlation {
+            logic: Some(CorrelationLogic::All),
+        });
+
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({"description": "malicious payload"}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        // One matched + one not_matched under `all` → partial
+        assert_eq!(verdict.result, AttackResult::Partial);
+    }
+
+    // ── EC-VERDICT-008: Empty Trace ─────────────────────────────────────
+
+    #[test]
+    fn ec_verdict_008_empty_trace() {
+        let indicator = make_pattern_indicator("ind-1", "malicious");
+        let attack = make_attack(Some(vec![indicator]));
+        let trace: Vec<TraceEntry> = vec![];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        assert_eq!(verdict.result, AttackResult::NotExploited);
+        assert_eq!(verdict.evaluation_summary.not_matched, 1);
+    }
+
+    // ── EC-VERDICT-013: Semantic Without Inference Engine ────────────────
+
+    #[test]
+    fn ec_verdict_013_semantic_no_engine() {
+        let indicator = make_semantic_indicator("ind-sem-1");
+        let attack = make_attack(Some(vec![indicator]));
+
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({"description": "some text about API keys"}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        // Single semantic indicator, no evaluator → skipped
+        // All-skipped → SDK returns error
+        assert_eq!(verdict.result, AttackResult::Error);
+        assert_eq!(verdict.evaluation_summary.skipped, 1);
+    }
+
+    #[test]
+    fn semantic_skipped_when_no_semantic_flag() {
+        let indicator = make_semantic_indicator("ind-sem-1");
+        let attack = make_attack(Some(vec![indicator]));
+
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({"description": "some text"}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let config = EvaluationConfig {
+            cel_evaluator: None,
+            semantic_evaluator: None,
+            no_semantic: true,
+        };
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &config, "test/1.0");
+        assert_eq!(verdict.evaluation_summary.skipped, 1);
+    }
+
+    // ── Verdict metadata ────────────────────────────────────────────────
+
+    #[test]
+    fn verdict_has_timestamp_and_source() {
+        let attack = make_attack(None);
+        let verdict = evaluate_verdict(&attack, &[], &[], &default_config(), "thoughtjack/0.5.0");
+        assert!(verdict.timestamp.is_some());
+        assert_eq!(verdict.source.as_deref(), Some("thoughtjack/0.5.0"));
+    }
+
+    // ── EC-VERDICT-007: Grace Period Evidence (trace is append-only) ────
+
+    #[test]
+    fn ec_verdict_007_grace_period_captures_evidence() {
+        // Grace period entries are just additional trace entries (append-only trace).
+        // The verdict pipeline sees the full trace including grace period entries.
+        let indicator = make_pattern_indicator("ind-1", "exfiltrated");
+        let attack = make_attack(Some(vec![indicator]));
+
+        let trace = vec![
+            // Normal phase entry — no match
+            make_trace_entry(
+                "actor1",
+                "tools/call",
+                serde_json::json!({"description": "safe content"}),
+            ),
+            // Grace period entry — matches
+            make_trace_entry(
+                "actor1",
+                "tools/call",
+                serde_json::json!({"description": "exfiltrated data to external server"}),
+            ),
+        ];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        assert_eq!(verdict.result, AttackResult::Exploited);
+    }
+
+    // ── Mixed pattern + semantic indicators ─────────────────────────────
+
+    #[test]
+    fn mixed_pattern_matched_semantic_skipped() {
+        let ind_pattern = make_pattern_indicator("ind-1", "malicious");
+        let ind_semantic = make_semantic_indicator("ind-2");
+        let attack = make_attack(Some(vec![ind_pattern, ind_semantic]));
+
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({"description": "malicious payload"}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        // Under `any` correlation: one matched → exploited
+        assert_eq!(verdict.result, AttackResult::Exploited);
+        assert_eq!(verdict.evaluation_summary.matched, 1);
+        assert_eq!(verdict.evaluation_summary.skipped, 1);
+    }
+
+    // ── Merge verdict priority ──────────────────────────────────────────
+
+    #[test]
+    fn merge_verdict_matched_wins() {
+        let v1 = oatf::IndicatorVerdict {
+            indicator_id: "x".to_string(),
+            result: IndicatorResult::NotMatched,
+            timestamp: None,
+            evidence: None,
+            source: None,
+        };
+        let v2 = oatf::IndicatorVerdict {
+            indicator_id: "x".to_string(),
+            result: IndicatorResult::Matched,
+            timestamp: None,
+            evidence: Some("found it".to_string()),
+            source: None,
+        };
+        let merged = merge_verdict(v1, v2);
+        assert_eq!(merged.result, IndicatorResult::Matched);
+    }
+
+    #[test]
+    fn merge_verdict_error_over_not_matched() {
+        let v1 = oatf::IndicatorVerdict {
+            indicator_id: "x".to_string(),
+            result: IndicatorResult::NotMatched,
+            timestamp: None,
+            evidence: None,
+            source: None,
+        };
+        let v2 = oatf::IndicatorVerdict {
+            indicator_id: "x".to_string(),
+            result: IndicatorResult::Error,
+            timestamp: None,
+            evidence: Some("eval failed".to_string()),
+            source: None,
+        };
+        let merged = merge_verdict(v1, v2);
+        assert_eq!(merged.result, IndicatorResult::Error);
+    }
+
+    #[test]
+    fn merge_verdict_skipped_over_not_matched() {
+        let v1 = oatf::IndicatorVerdict {
+            indicator_id: "x".to_string(),
+            result: IndicatorResult::NotMatched,
+            timestamp: None,
+            evidence: None,
+            source: None,
+        };
+        let v2 = oatf::IndicatorVerdict {
+            indicator_id: "x".to_string(),
+            result: IndicatorResult::Skipped,
+            timestamp: None,
+            evidence: Some("no evaluator".to_string()),
+            source: None,
+        };
+        let merged = merge_verdict(v1, v2);
+        assert_eq!(merged.result, IndicatorResult::Skipped);
+    }
+
+    // ── Semantic indicator with empty trace → skipped ───────────────────
+
+    #[test]
+    fn semantic_empty_trace_skipped() {
+        let indicator = make_semantic_indicator("ind-sem");
+        let attack = make_attack(Some(vec![indicator]));
+        let trace: Vec<TraceEntry> = vec![];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        // Semantic with no evaluator + no messages → skipped
+        assert_eq!(verdict.evaluation_summary.skipped, 1);
+    }
+}

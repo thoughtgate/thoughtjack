@@ -18,3 +18,4 @@ pub mod loader;
 pub mod observability;
 pub mod scenarios;
 pub mod transport;
+pub mod verdict;
