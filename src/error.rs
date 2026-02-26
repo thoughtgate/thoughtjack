@@ -145,6 +145,63 @@ impl ExitCode {
 }
 
 // ============================================================================
+// Engine Errors
+// ============================================================================
+
+/// Errors from the v0.5 execution engine.
+///
+/// Covers phase state machine, driver execution, extractor capture,
+/// entry action execution, synthesize validation, and SDK interaction.
+///
+/// Implements: TJ-SPEC-013 F-001
+#[derive(Debug, Error)]
+pub enum EngineError {
+    /// Phase state machine error
+    #[error("phase error: {0}")]
+    Phase(String),
+
+    /// Protocol driver error
+    #[error("driver error: {0}")]
+    Driver(String),
+
+    /// Extractor capture error
+    #[error("extractor error: {0}")]
+    Extractor(String),
+
+    /// Entry action execution error
+    #[error("entry action error: {0}")]
+    EntryAction(String),
+
+    /// Synthesize output validation error
+    #[error("synthesize validation error: {0}")]
+    SynthesizeValidation(String),
+
+    /// OATF SDK error
+    #[error("OATF SDK error: {0}")]
+    Oatf(String),
+}
+
+// ============================================================================
+// Loader Errors
+// ============================================================================
+
+/// Errors from the OATF document loader.
+///
+/// Covers YAML pre-processing and SDK document loading.
+///
+/// Implements: TJ-SPEC-013 F-001
+#[derive(Debug, Error)]
+pub enum LoaderError {
+    /// OATF SDK loading error
+    #[error("OATF load error: {0}")]
+    OatfLoad(String),
+
+    /// YAML pre-processing error
+    #[error("preprocess error: {0}")]
+    Preprocess(String),
+}
+
+// ============================================================================
 // Top-Level Error
 // ============================================================================
 
@@ -179,6 +236,14 @@ pub enum ThoughtJackError {
     /// Usage error (invalid arguments, missing required options)
     #[error("{0}")]
     Usage(String),
+
+    /// Engine error
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+
+    /// Loader error
+    #[error(transparent)]
+    Loader(#[from] LoaderError),
 }
 
 impl ThoughtJackError {
@@ -192,9 +257,13 @@ impl ThoughtJackError {
     pub const fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) => ExitCode::USAGE_ERROR,
-            Self::Config(_) | Self::Transport(_) | Self::Io(_) | Self::Json(_) | Self::Yaml(_) => {
-                ExitCode::RUNTIME_ERROR
-            }
+            Self::Config(_)
+            | Self::Transport(_)
+            | Self::Io(_)
+            | Self::Json(_)
+            | Self::Yaml(_)
+            | Self::Engine(_)
+            | Self::Loader(_) => ExitCode::RUNTIME_ERROR,
         }
     }
 }
@@ -308,6 +377,18 @@ mod tests {
             severity: Severity::Warning,
         };
         assert_eq!(issue.to_string(), "warning: name is empty at server.name");
+    }
+
+    #[test]
+    fn test_engine_error_exit_code() {
+        let err: ThoughtJackError = EngineError::Phase("test".to_string()).into();
+        assert_eq!(err.exit_code(), ExitCode::RUNTIME_ERROR);
+    }
+
+    #[test]
+    fn test_loader_error_exit_code() {
+        let err: ThoughtJackError = LoaderError::OatfLoad("test".to_string()).into();
+        assert_eq!(err.exit_code(), ExitCode::RUNTIME_ERROR);
     }
 
     #[test]
