@@ -50,7 +50,7 @@ This spec covers:
 
 - AG-UI HTTP transport (HTTP POST + SSE response stream)
 - `ag_ui_client` mode execution (sending RunAgentInput, parsing SSE streams)
-- All 15 AG-UI event types per OATF §7.3.2
+- All 26 AG-UI event types (lifecycle, text, tool, state, reasoning, activity, custom)
 - Phase triggers against SSE events
 - Extractor capture from SSE events and RunAgentInput
 - RunAgentInput construction from OATF execution state
@@ -97,13 +97,14 @@ interface RunAgentInput {
   runId: string;          // Unique per-run identifier
   messages: Message[];    // Conversation history (the primary attack surface)
   tools?: Tool[];         // Tool definitions available to the agent
+  context?: Context[];    // Additional context objects
   state?: any;            // Arbitrary state object
   forwardedProps?: any;   // Passthrough properties
 }
 
 interface Message {
   id: string;
-  role: "user" | "assistant" | "system" | "tool";
+  role: "user" | "assistant" | "system" | "developer" | "tool";
   content?: string;
   toolCallId?: string;
   toolCalls?: ToolCall[];
@@ -228,21 +229,65 @@ struct AgUiEvent {
 
 AG-UI uses `SCREAMING_SNAKE_CASE` for SSE event types. OATF uses `snake_case`. The mapping is a constant translation:
 
+**Lifecycle Events:**
+
 | SSE Event Type | OATF Event Type | Key Data Fields |
 |---------------|----------------|-----------------|
 | `RUN_STARTED` | `run_started` | `threadId`, `runId` |
-| `RUN_FINISHED` | `run_finished` | `threadId`, `runId` |
+| `RUN_FINISHED` | `run_finished` | `threadId`, `runId`, `result?` |
 | `RUN_ERROR` | `run_error` | `message`, `code` |
 | `STEP_STARTED` | `step_started` | `stepName` |
 | `STEP_FINISHED` | `step_finished` | `stepName` |
+
+**Text Message Events:**
+
+| SSE Event Type | OATF Event Type | Key Data Fields |
+|---------------|----------------|-----------------|
 | `TEXT_MESSAGE_START` | `text_message_start` | `messageId`, `role` |
 | `TEXT_MESSAGE_CONTENT` | `text_message_content` | `messageId`, `delta` |
 | `TEXT_MESSAGE_END` | `text_message_end` | `messageId` |
-| `TOOL_CALL_START` | `tool_call_start` | `toolCallId`, `toolCallName`, `parentMessageId` |
-| `TOOL_CALL_END` | `tool_call_end` | `toolCallId`, `toolCallName` |
+
+**Tool Call Events:**
+
+| SSE Event Type | OATF Event Type | Key Data Fields |
+|---------------|----------------|-----------------|
+| `TOOL_CALL_START` | `tool_call_start` | `toolCallId`, `toolCallName`, `parentMessageId?` |
+| `TOOL_CALL_ARGS` | `tool_call_args` | `toolCallId`, `delta` |
+| `TOOL_CALL_END` | `tool_call_end` | `toolCallId` |
+| `TOOL_CALL_RESULT` | `tool_call_result` | `toolCallId`, `result?`, `resultType?` |
+
+**State Management Events:**
+
+| SSE Event Type | OATF Event Type | Key Data Fields |
+|---------------|----------------|-----------------|
 | `STATE_SNAPSHOT` | `state_snapshot` | `snapshot` (full state object) |
 | `STATE_DELTA` | `state_delta` | `delta` (JSON patch) |
 | `MESSAGES_SNAPSHOT` | `messages_snapshot` | `messages[]` |
+
+**Activity Events:**
+
+| SSE Event Type | OATF Event Type | Key Data Fields |
+|---------------|----------------|-----------------|
+| `ACTIVITY_SNAPSHOT` | `activity_snapshot` | `activity` (full activity object) |
+| `ACTIVITY_DELTA` | `activity_delta` | `delta` (activity update) |
+
+**Reasoning Events:**
+
+| SSE Event Type | OATF Event Type | Key Data Fields |
+|---------------|----------------|-----------------|
+| `REASONING_START` | `reasoning_start` | (lifecycle marker) |
+| `REASONING_MESSAGE_START` | `reasoning_message_start` | `messageId` |
+| `REASONING_MESSAGE_CONTENT` | `reasoning_message_content` | `messageId`, `delta` |
+| `REASONING_MESSAGE_END` | `reasoning_message_end` | `messageId` |
+| `REASONING_MESSAGE_CHUNK` | `reasoning_message_chunk` | `messageId`, `content` (non-streaming convenience) |
+| `REASONING_END` | `reasoning_end` | (lifecycle marker) |
+| `REASONING_ENCRYPTED_VALUE` | `reasoning_encrypted_value` | `data` (encrypted reasoning payload) |
+
+**Special Events:**
+
+| SSE Event Type | OATF Event Type | Key Data Fields |
+|---------------|----------------|-----------------|
+| `RAW` | `raw` | `value` (opaque passthrough) |
 | `CUSTOM` (subtype: interrupt) | `interrupt` | `message`, `data` |
 | `CUSTOM` | `custom` | `name`, `value` |
 
@@ -391,7 +436,8 @@ This enables "do this N times, then switch to the exploit payload" patterns with
 **Qualifier resolution** per OATF §7.3.2:
 
 - `tool_call_start:calculator` → matches when `event.data.toolCallName == "calculator"`
-- `tool_call_end:calculator` → matches when `event.data.toolCallName == "calculator"`
+- `tool_call_args:calculator` → matches when tool call ID maps to a `toolCallName` of `"calculator"` (resolved via `TOOL_CALL_START` correlation)
+- `tool_call_end:calculator` → matches when tool call ID maps to a `toolCallName` of `"calculator"` (resolved via `TOOL_CALL_START` correlation; note: `TOOL_CALL_END` only carries `toolCallId`, not `toolCallName`)
 - `custom:my_event` → matches when `event.data.name == "my_event"`
 
 ### 4.3 Extractor Capture
@@ -431,6 +477,7 @@ AG-UI streams text content as deltas (`TEXT_MESSAGE_CONTENT` events with `delta`
 ```rust
 struct MessageAccumulator {
     messages: HashMap<String, AccumulatedMessage>,
+    reasoning: HashMap<String, AccumulatedReasoning>,
 }
 
 struct AccumulatedMessage {
@@ -439,6 +486,18 @@ struct AccumulatedMessage {
     content: String,      // Accumulated from deltas
     tool_calls: Vec<AccumulatedToolCall>,
 }
+
+struct AccumulatedToolCall {
+    tool_call_id: String,
+    tool_call_name: String,
+    arguments: String,    // Accumulated from TOOL_CALL_ARGS deltas
+    result: Option<serde_json::Value>,
+}
+
+struct AccumulatedReasoning {
+    message_id: String,
+    content: String,      // Accumulated from reasoning deltas
+}
 ```
 
 The accumulator builds complete messages from the stream:
@@ -446,8 +505,14 @@ The accumulator builds complete messages from the stream:
 - `text_message_start` → create entry with `message_id` and `role`
 - `text_message_content` → append `delta` to accumulated content
 - `text_message_end` → mark message complete
-- `tool_call_start` → begin tracking tool call
+- `tool_call_start` → begin tracking tool call with `toolCallId` and `toolCallName`
+- `tool_call_args` → append `delta` to tool call's accumulated arguments
 - `tool_call_end` → mark tool call complete
+- `tool_call_result` → attach result to completed tool call
+- `reasoning_message_start` → begin tracking reasoning message
+- `reasoning_message_content` → append `delta` to reasoning content
+- `reasoning_message_end` → mark reasoning message complete
+- `reasoning_message_chunk` → complete reasoning message in one event (non-streaming convenience)
 
 The accumulated messages are available in the CEL context (§5.2) and the protocol trace. This ensures indicators can match against the full agent response, not individual deltas.
 
@@ -819,8 +884,9 @@ AG-UI messages are captured in the same protocol trace defined by TJ-SPEC-013 §
 {"seq":2,"ts":"...","dir":"incoming","method":"text_message_start","content":{"messageId":"m1","role":"assistant"},"phase":"inject_context","actor":"ag_ui_driver"}
 {"seq":3,"ts":"...","dir":"incoming","method":"text_message_content","content":{"messageId":"m1","delta":"I'll help"},"phase":"inject_context","actor":"ag_ui_driver"}
 {"seq":4,"ts":"...","dir":"incoming","method":"tool_call_start","content":{"toolCallId":"tc1","toolCallName":"calculator"},"phase":"inject_context","actor":"ag_ui_driver"}
-{"seq":5,"ts":"...","dir":"incoming","method":"tool_call_end","content":{"toolCallId":"tc1","toolCallName":"calculator"},"phase":"inject_context","actor":"ag_ui_driver"}
-{"seq":6,"ts":"...","dir":"incoming","method":"run_finished","content":{"threadId":"abc","runId":"xyz"},"phase":"inject_context","actor":"ag_ui_driver"}
+{"seq":5,"ts":"...","dir":"incoming","method":"tool_call_args","content":{"toolCallId":"tc1","delta":"{\"expression\":\"2+2\"}"},"phase":"inject_context","actor":"ag_ui_driver"}
+{"seq":6,"ts":"...","dir":"incoming","method":"tool_call_end","content":{"toolCallId":"tc1"},"phase":"inject_context","actor":"ag_ui_driver"}
+{"seq":7,"ts":"...","dir":"incoming","method":"run_finished","content":{"threadId":"abc","runId":"xyz"},"phase":"inject_context","actor":"ag_ui_driver"}
 ```
 
 In multi-actor mode (TJ-SPEC-015), trace entries include the `actor` field to identify which actor produced them. Indicator evaluation filters trace entries by protocol when evaluating indicators.
@@ -830,10 +896,10 @@ In multi-actor mode (TJ-SPEC-015), trace entries include the `actor` field to id
 When a run completes (`run_finished` or stream close), ThoughtJack appends a synthetic trace entry containing the accumulated full messages (§4.4):
 
 ```jsonl
-{"seq":7,"ts":"...","dir":"incoming","method":"_accumulated_response","content":{"messages":[{"id":"m1","role":"assistant","content":"I'll help you calculate that. Let me use the calculator tool.","tool_calls":[{"id":"tc1","name":"calculator","arguments":"{\"expression\":\"2+2\"}"}]}]},"phase":"inject_context","actor":"ag_ui_driver"}
+{"seq":8,"ts":"...","dir":"incoming","method":"_accumulated_response","content":{"messages":[{"id":"m1","role":"assistant","content":"I'll help you calculate that. Let me use the calculator tool.","tool_calls":[{"id":"tc1","name":"calculator","arguments":"{\"expression\":\"2+2\"}","result":null}]}],"reasoning":[]},"phase":"inject_context","actor":"ag_ui_driver"}
 ```
 
-This synthetic entry (prefixed with `_`) provides the complete agent response for indicator evaluation without requiring indicators to reconstruct from deltas. Indicators can target either individual SSE events or the accumulated response.
+This synthetic entry (prefixed with `_`) provides the complete agent response — including accumulated tool call arguments from `TOOL_CALL_ARGS` deltas, tool call results from `TOOL_CALL_RESULT` events, and reasoning traces — for indicator evaluation without requiring indicators to reconstruct from deltas. Indicators can target either individual SSE events or the accumulated response.
 
 ---
 
@@ -961,6 +1027,21 @@ thoughtjack run --config cross-protocol.yaml \
 **Scenario:** Agent sends SSE events with event types not in the AG-UI spec (e.g., `custom_debug_info`).
 **Expected:** Unknown event types captured in trace with their raw data. Emitted as `ProtocolEvent { method: "custom_debug_info", ... }`. PhaseLoop processes normally — trigger won't match unknown types unless explicitly configured.
 
+### EC-AGUI-013: Reasoning Events — Information Leakage
+
+**Scenario:** Agent streams `REASONING_MESSAGE_CONTENT` deltas containing sensitive reasoning traces (e.g., internal system prompt fragments, tool selection rationale).
+**Expected:** Reasoning deltas accumulated into complete reasoning messages. Accumulated reasoning available in trace for indicator evaluation. Indicators can match against reasoning content to detect information leakage in chain-of-thought outputs.
+
+### EC-AGUI-014: TOOL_CALL_ARGS — Streamed Arguments
+
+**Scenario:** Agent streams tool call arguments via `TOOL_CALL_ARGS` events: `{"toolCallId":"tc1","delta":"{\"expr"}` followed by `{"toolCallId":"tc1","delta":"ession\":\"2+2\"}"}`.
+**Expected:** MessageAccumulator concatenates deltas into complete arguments string `{"expression":"2+2"}`. Accumulated arguments available on the `AccumulatedToolCall` when `TOOL_CALL_END` fires. Trace includes both individual delta events and the accumulated tool call in the synthetic `_accumulated_response` entry.
+
+### EC-AGUI-015: TOOL_CALL_END — No toolCallName Field
+
+**Scenario:** Agent sends `TOOL_CALL_END` with only `toolCallId` (no `toolCallName` — per the actual AG-UI protocol).
+**Expected:** Tool call name resolved by correlating `toolCallId` back to the corresponding `TOOL_CALL_START` event. Qualifier-based triggers on `tool_call_end:calculator` work via this correlation, not by reading `toolCallName` from the end event directly.
+
 
 ## 12. Conformance Update
 
@@ -993,7 +1074,14 @@ The system SHALL parse Server-Sent Events from AG-UI agent responses.
 
 **Acceptance Criteria:**
 - Standard SSE format: `event:` and `data:` fields parsed
-- Event types mapped per OATF §7.3 AG-UI event table: `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`, `STEP_FINISHED`, `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`, `TOOL_CALL_START`, `TOOL_CALL_END`, `STATE_SNAPSHOT`, `STATE_DELTA`, `MESSAGES_SNAPSHOT`, `CUSTOM` (15 events; `CUSTOM` with subtype `interrupt` maps to OATF `interrupt` event)
+- All 26 AG-UI event types mapped to OATF snake_case equivalents:
+  - Lifecycle: `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`, `STEP_FINISHED`
+  - Text: `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`
+  - Tool: `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`, `TOOL_CALL_RESULT`
+  - State: `STATE_SNAPSHOT`, `STATE_DELTA`, `MESSAGES_SNAPSHOT`
+  - Activity: `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA`
+  - Reasoning: `REASONING_START`, `REASONING_MESSAGE_START`, `REASONING_MESSAGE_CONTENT`, `REASONING_MESSAGE_END`, `REASONING_MESSAGE_CHUNK`, `REASONING_END`, `REASONING_ENCRYPTED_VALUE`
+  - Special: `RAW`, `CUSTOM` (with subtype `interrupt` mapping to OATF `interrupt` event)
 - Unknown event types captured in trace with raw data (not rejected)
 - Multi-line `data:` fields reassembled
 
@@ -1015,7 +1103,7 @@ The system SHALL construct `RunAgentInput` from the OATF phase state.
 **Acceptance Criteria:**
 - `state.run_agent_input.messages` mapped to AG-UI `messages` field
 - `state.run_agent_input.tools` mapped to AG-UI `tools` field (tool definitions for agent)
-- `state.run_agent_input.context` mapped to AG-UI `context` field
+- `state.run_agent_input.context` mapped to AG-UI `context` field (array of context objects)
 - `state.run_agent_input.state` mapped to AG-UI `state` field (agent state snapshot)
 - `state.run_agent_input.forwardedProps` passed through to agent (camelCase per AG-UI wire format)
 - `threadId` auto-generated UUID if not provided; persists across phases
@@ -1030,21 +1118,31 @@ The system SHALL map AG-UI SSE events to OATF trigger event types per OATF §7.3
 - `run_started` → `RUN_STARTED` event
 - `run_finished` → `RUN_FINISHED` event
 - `tool_call_start` → `TOOL_CALL_START` event (qualifier: tool name)
+- `tool_call_args` → `TOOL_CALL_ARGS` event
+- `tool_call_end` → `TOOL_CALL_END` event
+- `tool_call_result` → `TOOL_CALL_RESULT` event
 - `text_message_content` → `TEXT_MESSAGE_CONTENT` event
 - `state_snapshot` and `state_delta` → corresponding events
 - `messages_snapshot` → `MESSAGES_SNAPSHOT` event
+- `activity_snapshot` and `activity_delta` → corresponding events
+- `reasoning_message_content` → `REASONING_MESSAGE_CONTENT` event (reasoning traces may leak sensitive information)
 - `interrupt` → `CUSTOM` event with subtype `interrupt`
 - `custom` → `CUSTOM` event (qualifier: event name)
-- All 15 AG-UI `ag_ui_client` event types from the OATF Event-Mode Validity Matrix (format.md §7.3) supported
+- `raw` → `RAW` event
+- All 26 AG-UI `ag_ui_client` event types from the OATF Event-Mode Validity Matrix (format.md §7.3) supported
 
-### F-006: Message Accumulation
+### F-006: Message and Content Accumulation
 
-The system SHALL accumulate streamed text content for indicator evaluation.
+The system SHALL accumulate streamed content for indicator evaluation.
 
 **Acceptance Criteria:**
 - `TEXT_MESSAGE_CONTENT` chunks accumulated into complete messages
 - `TEXT_MESSAGE_END` finalizes accumulated message
-- Complete messages available in trace for indicator evaluation
+- `TOOL_CALL_ARGS` deltas accumulated into complete tool call arguments
+- `TOOL_CALL_RESULT` attached to corresponding tool call
+- `REASONING_MESSAGE_CONTENT` deltas accumulated into complete reasoning messages
+- `REASONING_MESSAGE_CHUNK` produces a complete reasoning message in one event
+- Complete messages, tool calls, and reasoning available in trace for indicator evaluation
 - Partial messages discarded on connection error
 
 ### F-007: Phase State Inheritance
@@ -1080,27 +1178,29 @@ The system SHALL support AG-UI actors in multi-actor documents alongside MCP and
 - HTTP connection establishment SHALL complete within configured timeout (default: 30s)
 - SSE stream overhead SHALL be < 100 bytes per event beyond payload size
 
-### NFR-003: Memory for Accumulated Messages
+### NFR-003: Memory for Accumulated Content
 
 - Message accumulation SHALL use < 1MB per active text stream
-- Accumulated messages released after `TEXT_MESSAGE_END`
+- Tool call argument accumulation SHALL use < 1MB per active tool call
+- Reasoning accumulation SHALL use < 1MB per active reasoning stream
+- Accumulated content released after corresponding `*_END` event
 
 ---
 
 ## 15. Definition of Done
 
 - [ ] AG-UI HTTP client sends `RunAgentInput` and receives SSE stream
-- [ ] All AG-UI SSE event types parsed and mapped to OATF events
+- [ ] All 26 AG-UI SSE event types parsed and mapped to OATF events
 - [ ] Unknown SSE event types captured in trace (not rejected)
 - [ ] `PhaseDriver` implemented: `drive_phase()`, `on_phase_advanced()`
 - [ ] `RunAgentInput` constructed from OATF phase state
 - [ ] `synthesize` support for LLM-generated messages
-- [ ] Event-trigger mapping covers all `ag_ui_client` events from OATF §7.3
-- [ ] Message accumulation for streamed text content
+- [ ] Event-trigger mapping covers all 26 `ag_ui_client` events from OATF §7.3
+- [ ] Content accumulation for streamed text, tool call args, and reasoning
 - [ ] `compute_effective_state()` used for state inheritance
 - [ ] Cross-protocol extractor propagation works with MCP and A2A actors
 - [ ] Readiness gate integration: client waits for server actors
-- [ ] All 12 edge cases (EC-AGUI-001 through EC-AGUI-012) have tests
+- [ ] All 15 edge cases (EC-AGUI-001 through EC-AGUI-015) have tests
 - [ ] SSE parse latency < 1ms per event (NFR-001)
 - [ ] `cargo clippy -- -D warnings` passes
 - [ ] `cargo test` passes
