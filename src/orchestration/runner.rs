@@ -22,6 +22,7 @@ use crate::engine::types::{ActorResult, AwaitExtractor};
 use crate::error::EngineError;
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
 use crate::orchestration::store::ExtractorStore;
+use crate::protocol::agui;
 use crate::transport::http::HttpConfig;
 use crate::transport::{HttpTransport, StdioTransport};
 
@@ -155,6 +156,22 @@ pub async fn run_actor(
             )
             .await
         }
+        "ag_ui_client" => {
+            run_agui_client_actor(
+                actor_index,
+                &actor_name,
+                document,
+                config,
+                trace,
+                extractor_store,
+                await_config,
+                cancel,
+                ready_tx,
+                gate_rx,
+                events,
+            )
+            .await
+        }
         other => Err(EngineError::Driver(format!(
             "driver for mode '{other}' not yet implemented"
         ))),
@@ -252,6 +269,81 @@ async fn run_mcp_server_actor(
     Ok(result)
 }
 
+/// Runs an AG-UI client actor — creates transport, driver, and phase loop.
+///
+/// Client-mode actors wait for the readiness gate before sending requests,
+/// ensuring server actors are ready to accept connections.
+///
+/// Implements: TJ-SPEC-016 F-001
+#[allow(clippy::too_many_arguments)]
+async fn run_agui_client_actor(
+    actor_index: usize,
+    actor_name: &str,
+    document: oatf::Document,
+    config: &ActorConfig,
+    trace: SharedTrace,
+    extractor_store: ExtractorStore,
+    await_config: HashMap<usize, Vec<AwaitExtractor>>,
+    cancel: CancellationToken,
+    ready_tx: Option<oneshot::Sender<()>>,
+    gate_rx: Option<broadcast::Receiver<()>>,
+    events: &EventEmitter,
+) -> Result<ActorResult, EngineError> {
+    let endpoint = config.agui_client_endpoint.as_deref().ok_or_else(|| {
+        EngineError::Driver("ag_ui_client mode requires --agui-client-endpoint".to_string())
+    })?;
+
+    // Client actors signal readiness immediately (they don't bind a port)
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(());
+    }
+
+    // Wait for server actors to be ready
+    if let Some(mut rx) = gate_rx {
+        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
+        let _ = rx.recv().await;
+        tracing::debug!(actor = %actor_name, "readiness gate opened");
+    }
+
+    events.emit(ThoughtJackEvent::ActorReady {
+        actor_name: actor_name.to_string(),
+        bind_address: endpoint.to_string(),
+    });
+
+    // Create driver
+    let driver = agui::create_agui_driver(endpoint, config.headers.clone(), config.raw_synthesize);
+
+    // Create phase engine
+    let engine = PhaseEngine::new(document, actor_index);
+
+    let phase_count = engine.actor().phases.len();
+    events.emit(ThoughtJackEvent::ActorStarted {
+        actor_name: actor_name.to_string(),
+        phase_count,
+    });
+
+    // Create and run phase loop (no entry_action_sender — client mode)
+    let loop_config = PhaseLoopConfig {
+        trace,
+        extractor_store,
+        actor_name: actor_name.to_string(),
+        await_extractors_config: await_config,
+        cancel,
+        entry_action_sender: None,
+    };
+
+    let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
+    let result = phase_loop.run().await?;
+
+    events.emit(ThoughtJackEvent::ActorCompleted {
+        actor_name: actor_name.to_string(),
+        reason: result.termination.to_string(),
+        phases_completed: result.phases_completed,
+    });
+
+    Ok(result)
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -302,8 +394,8 @@ attack:
   name: test
   execution:
     actors:
-      - name: agui_actor
-        mode: ag_ui_client
+      - name: unknown_actor
+        mode: future_protocol_client
         phases:
           - name: setup
             state:
@@ -347,6 +439,61 @@ attack:
         assert!(
             err.to_string().contains("not yet implemented"),
             "Expected 'not yet implemented', got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agui_client_requires_endpoint() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: agui_actor
+        mode: ag_ui_client
+        phases:
+          - name: setup
+            state:
+              run_agent_input:
+                messages:
+                  - role: user
+                    content: "Hello"
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+        };
+
+        let result = run_actor(
+            0,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            None,
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("--agui-client-endpoint"),
+            "Expected endpoint error, got: {err}"
         );
     }
 }

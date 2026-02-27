@@ -17,6 +17,7 @@ pub mod error;
 pub mod loader;
 pub mod observability;
 pub mod orchestration;
+pub mod protocol;
 pub mod scenarios;
 pub mod transport;
 pub mod verdict;
