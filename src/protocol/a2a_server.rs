@@ -1,0 +1,1487 @@
+//! A2A server-mode `PhaseDriver` implementation.
+//!
+//! `A2aServerDriver` runs a custom axum HTTP server implementing the A2A
+//! protocol: Agent Card discovery (`GET /.well-known/agent.json`), JSON-RPC
+//! dispatch (`POST /`), and SSE streaming for `message/stream`. Each incoming
+//! request emits `ProtocolEvent`s for the `PhaseLoop` to process.
+//!
+//! This is a server-mode driver: it waits for client connections. Extractors
+//! are borrowed fresh per request via `watch::Receiver::borrow().clone()`.
+//!
+//! See TJ-SPEC-017 for the full A2A protocol support specification.
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Instant;
+
+use async_trait::async_trait;
+use axum::Router;
+use axum::extract::State;
+use axum::response::sse::{Event as SseEvent, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use oatf::ResponseEntry;
+use oatf::primitives::{interpolate_value, select_response};
+use serde_json::{Value, json};
+use tokio::net::TcpListener;
+use tokio::sync::{RwLock, mpsc, watch};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::engine::driver::PhaseDriver;
+use crate::engine::types::{Direction, DriveResult, ProtocolEvent};
+use crate::error::EngineError;
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// A2A error code: Task not found.
+const TASK_NOT_FOUND: i64 = -32000;
+
+/// A2A error code: Task not cancelable (already terminal).
+const TASK_NOT_CANCELABLE: i64 = -32001;
+
+/// A2A error code: Push notifications not supported.
+const PUSH_NOT_SUPPORTED: i64 = -32002;
+
+/// A2A error code: Unsupported operation.
+#[allow(dead_code)]
+const UNSUPPORTED_OPERATION: i64 = -32003;
+
+/// JSON-RPC error code: Parse error.
+const PARSE_ERROR: i64 = -32700;
+
+/// JSON-RPC error code: Invalid request.
+const INVALID_REQUEST: i64 = -32600;
+
+/// JSON-RPC error code: Method not found.
+const METHOD_NOT_FOUND: i64 = -32601;
+
+/// Terminal task states per A2A protocol.
+const TERMINAL_STATES: &[&str] = &["completed", "canceled", "failed", "rejected"];
+
+/// Default inter-event delay for SSE streaming (ms).
+const SSE_EVENT_DELAY_MS: u64 = 200;
+
+// ============================================================================
+// TaskStore
+// ============================================================================
+
+/// A stored A2A task.
+struct StoredTask {
+    /// Task ID (server-generated UUID).
+    id: String,
+    /// Context ID grouping related tasks.
+    context_id: String,
+    /// Current task status string.
+    status: String,
+    /// Accumulated conversation history.
+    history: Vec<Value>,
+    /// Accumulated artifacts.
+    artifacts: Vec<Value>,
+    /// When the task was created.
+    #[allow(dead_code)]
+    created_at: Instant,
+}
+
+/// Per-actor task store for A2A server mode.
+///
+/// Tracks tasks by ID and groups them by context ID.
+///
+/// Implements: TJ-SPEC-017 F-005
+struct TaskStore {
+    /// Tasks keyed by task ID.
+    tasks: HashMap<String, StoredTask>,
+    /// Context ID → task IDs.
+    contexts: HashMap<String, Vec<String>>,
+}
+
+impl TaskStore {
+    /// Creates an empty task store.
+    fn new() -> Self {
+        Self {
+            tasks: HashMap::new(),
+            contexts: HashMap::new(),
+        }
+    }
+
+    /// Creates a new task and returns its ID and context ID.
+    fn create_task(&mut self, context_id: Option<&str>) -> (String, String) {
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let ctx_id = context_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), String::from);
+
+        let task = StoredTask {
+            id: task_id.clone(),
+            context_id: ctx_id.clone(),
+            status: "submitted".to_string(),
+            history: Vec::new(),
+            artifacts: Vec::new(),
+            created_at: Instant::now(),
+        };
+
+        self.tasks.insert(task_id.clone(), task);
+        self.contexts
+            .entry(ctx_id.clone())
+            .or_default()
+            .push(task_id.clone());
+
+        (task_id, ctx_id)
+    }
+
+    /// Gets a task by ID.
+    fn get_task(&self, id: &str) -> Option<&StoredTask> {
+        self.tasks.get(id)
+    }
+
+    /// Gets a mutable reference to a task by ID.
+    fn get_task_mut(&mut self, id: &str) -> Option<&mut StoredTask> {
+        self.tasks.get_mut(id)
+    }
+
+    /// Cancels a task. Returns an error tuple `(code, message)` if not cancelable.
+    fn cancel_task(&mut self, id: &str) -> Result<(), (i64, String)> {
+        let task = self
+            .tasks
+            .get_mut(id)
+            .ok_or_else(|| (TASK_NOT_FOUND, format!("Task not found: {id}")))?;
+
+        if is_terminal(&task.status) {
+            return Err((
+                TASK_NOT_CANCELABLE,
+                format!("Task not cancelable: already in '{}' state", task.status),
+            ));
+        }
+
+        task.status = "canceled".to_string();
+        Ok(())
+    }
+}
+
+/// Returns `true` if the given task status is terminal.
+fn is_terminal(status: &str) -> bool {
+    TERMINAL_STATES.contains(&status)
+}
+
+// ============================================================================
+// A2aSharedState
+// ============================================================================
+
+/// Shared state between the axum handlers and the driver.
+///
+/// Updated by `drive_phase()` at the start of each phase; read by
+/// axum handlers on each request.
+///
+/// Implements: TJ-SPEC-017 F-001
+struct A2aSharedState {
+    /// Current Agent Card (from `state.agent_card`).
+    agent_card: RwLock<Value>,
+    /// Per-actor task store.
+    task_store: RwLock<TaskStore>,
+    /// Event channel for emitting `ProtocolEvent`s from handlers.
+    event_tx: RwLock<Option<mpsc::UnboundedSender<ProtocolEvent>>>,
+    /// Extractor watch channel for fresh values per request.
+    extractors: RwLock<Option<watch::Receiver<HashMap<String, String>>>>,
+    /// Current phase effective state.
+    state: RwLock<Value>,
+    /// Cancellation token for cooperative shutdown.
+    #[allow(dead_code)]
+    cancel: CancellationToken,
+    /// Bypass synthesize output validation.
+    raw_synthesize: bool,
+}
+
+// ============================================================================
+// Axum Handlers
+// ============================================================================
+
+/// `GET /.well-known/agent.json` — serve the Agent Card.
+///
+/// Implements: TJ-SPEC-017 F-002
+async fn handle_agent_card(State(shared): State<Arc<A2aSharedState>>) -> Response {
+    let card = shared.agent_card.read().await.clone();
+
+    // Emit events
+    if let Some(tx) = shared.event_tx.read().await.as_ref() {
+        let _ = tx.send(ProtocolEvent {
+            direction: Direction::Incoming,
+            method: "agent_card/get".to_string(),
+            content: json!({}),
+        });
+        let _ = tx.send(ProtocolEvent {
+            direction: Direction::Outgoing,
+            method: "agent_card/get".to_string(),
+            content: card.clone(),
+        });
+    }
+
+    axum::Json(card).into_response()
+}
+
+/// `POST /` — JSON-RPC dispatch.
+///
+/// Implements: TJ-SPEC-017 F-001
+async fn handle_jsonrpc(
+    State(shared): State<Arc<A2aSharedState>>,
+    body: axum::body::Bytes,
+) -> Response {
+    // Parse JSON body
+    let request: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return axum::Json(jsonrpc_error(
+                &Value::Null,
+                PARSE_ERROR,
+                &format!("Parse error: {e}"),
+            ))
+            .into_response();
+        }
+    };
+
+    // Validate JSON-RPC structure
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let method = match request.get("method").and_then(Value::as_str) {
+        Some(m) => m.to_string(),
+        None => {
+            return axum::Json(jsonrpc_error(
+                &id,
+                INVALID_REQUEST,
+                "Invalid request: missing 'method'",
+            ))
+            .into_response();
+        }
+    };
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+
+    // Emit incoming event
+    if let Some(tx) = shared.event_tx.read().await.as_ref() {
+        let _ = tx.send(ProtocolEvent {
+            direction: Direction::Incoming,
+            method: method.clone(),
+            content: params.clone(),
+        });
+    }
+
+    // Route by method
+    match method.as_str() {
+        "message/send" => handle_message_send(&shared, &id, &params).await,
+        "message/stream" => handle_message_stream(&shared, &id, &params).await,
+        "tasks/get" => handle_tasks_get(&shared, &id, &params).await,
+        "tasks/cancel" => handle_tasks_cancel(&shared, &id, &params).await,
+        "tasks/resubscribe" => handle_tasks_resubscribe(&shared, &id, &params).await,
+        "tasks/pushNotificationConfig/set"
+        | "tasks/pushNotificationConfig/get"
+        | "tasks/pushNotificationConfig/list"
+        | "tasks/pushNotificationConfig/delete" => {
+            handle_push_notification(&shared, &id, &method).await
+        }
+        "agent/authenticatedExtendedCard" => {
+            let card = shared.agent_card.read().await.clone();
+            let result = jsonrpc_success(&id, &card);
+            emit_outgoing(&shared, &method, &card).await;
+            axum::Json(result).into_response()
+        }
+        _ => {
+            let error = jsonrpc_error(
+                &id,
+                METHOD_NOT_FOUND,
+                &format!("Method not found: {method}"),
+            );
+            emit_outgoing(&shared, &method, &error).await;
+            axum::Json(error).into_response()
+        }
+    }
+}
+
+/// Handle `message/send` — synchronous task response.
+///
+/// Implements: TJ-SPEC-017 F-003
+async fn handle_message_send(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    params: &Value,
+) -> Response {
+    let (result, method) = dispatch_task_response(shared, request_id, params).await;
+    emit_outgoing(
+        shared,
+        &method,
+        result.get("result").unwrap_or(&Value::Null),
+    )
+    .await;
+    axum::Json(result).into_response()
+}
+
+/// Handle `message/stream` — SSE streaming task response.
+///
+/// Implements: TJ-SPEC-017 F-004
+async fn handle_message_stream(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    params: &Value,
+) -> Response {
+    let state = shared.state.read().await.clone();
+    let request_message = params.get("message").cloned().unwrap_or(Value::Null);
+
+    // Get fresh extractors
+    let current_extractors = get_extractors(shared).await;
+
+    // Select response entry
+    let (status, history_msgs, artifacts) = resolve_task_content(
+        &state,
+        &request_message,
+        &current_extractors,
+        shared.raw_synthesize,
+    );
+
+    // Create task in store
+    let context_id_hint = request_message.get("contextId").and_then(Value::as_str);
+    let (task_id, context_id) = shared.task_store.write().await.create_task(context_id_hint);
+
+    // Store task data
+    {
+        let mut store = shared.task_store.write().await;
+        if let Some(task) = store.get_task_mut(&task_id) {
+            task.status.clone_from(&status);
+            task.history.clone_from(&history_msgs);
+            task.artifacts.clone_from(&artifacts);
+        }
+    }
+
+    let req_id = request_id.clone();
+
+    // Build SSE event sequence
+    let mut events: Vec<SseEvent> = Vec::new();
+
+    // 1. Initial Task
+    let initial_task = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "kind": "task",
+            "id": task_id,
+            "contextId": context_id,
+            "status": { "state": "submitted" },
+            "history": history_msgs,
+        }
+    });
+    events.push(SseEvent::default().data(initial_task.to_string()));
+
+    // 2. Working status update
+    let working = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "kind": "status-update",
+            "taskId": task_id,
+            "contextId": context_id,
+            "status": { "state": "working" },
+            "final": false,
+        }
+    });
+    events.push(SseEvent::default().data(working.to_string()));
+
+    // 3. Artifact updates
+    for artifact in &artifacts {
+        let artifact_event = json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "kind": "artifact-update",
+                "taskId": task_id,
+                "contextId": context_id,
+                "artifact": artifact,
+            }
+        });
+        events.push(SseEvent::default().data(artifact_event.to_string()));
+    }
+
+    // 4. Final status update
+    let final_status = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "kind": "status-update",
+            "taskId": task_id,
+            "contextId": context_id,
+            "status": { "state": status },
+            "final": true,
+        }
+    });
+    events.push(SseEvent::default().data(final_status.to_string()));
+
+    // Emit SSE events for trace
+    if let Some(tx) = shared.event_tx.read().await.as_ref() {
+        let _ = tx.send(ProtocolEvent {
+            direction: Direction::Outgoing,
+            method: "message/stream".to_string(),
+            content: json!({
+                "taskId": task_id,
+                "contextId": context_id,
+                "status": status,
+                "artifacts_count": artifacts.len(),
+            }),
+        });
+    }
+
+    // Build stream with inter-event delays using unfold
+    let delay_ms = SSE_EVENT_DELAY_MS;
+    let sse_stream = futures_util::stream::unfold(
+        (events.into_iter(), delay_ms),
+        |(mut iter, delay)| async move {
+            let event = iter.next()?;
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+            Some((Ok::<_, std::convert::Infallible>(event), (iter, delay)))
+        },
+    );
+
+    Sse::new(sse_stream).into_response()
+}
+
+/// Handle `tasks/get` — return task status.
+///
+/// Implements: TJ-SPEC-017 F-005
+async fn handle_tasks_get(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    params: &Value,
+) -> Response {
+    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+
+    let result = {
+        let store = shared.task_store.read().await;
+        store.get_task(task_id).map_or_else(
+            || {
+                jsonrpc_error(
+                    request_id,
+                    TASK_NOT_FOUND,
+                    &format!("Task not found: {task_id}"),
+                )
+            },
+            |task| {
+                let task_result = json!({
+                    "kind": "task",
+                    "id": task.id,
+                    "contextId": task.context_id,
+                    "status": { "state": task.status },
+                    "history": task.history,
+                    "artifacts": task.artifacts,
+                });
+                jsonrpc_success(request_id, &task_result)
+            },
+        )
+    };
+
+    emit_outgoing(
+        shared,
+        "tasks/get",
+        result
+            .get("result")
+            .or_else(|| result.get("error"))
+            .unwrap_or(&Value::Null),
+    )
+    .await;
+    axum::Json(result).into_response()
+}
+
+/// Handle `tasks/cancel` — cancel a task.
+///
+/// Implements: TJ-SPEC-017 F-005
+async fn handle_tasks_cancel(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    params: &Value,
+) -> Response {
+    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+
+    let result = {
+        let mut store = shared.task_store.write().await;
+        match store.cancel_task(task_id) {
+            Ok(()) => {
+                let task = store.get_task(task_id).unwrap();
+                let task_result = json!({
+                    "kind": "task",
+                    "id": task.id,
+                    "contextId": task.context_id,
+                    "status": { "state": task.status },
+                });
+                drop(store);
+                jsonrpc_success(request_id, &task_result)
+            }
+            Err((code, msg)) => {
+                drop(store);
+                jsonrpc_error(request_id, code, &msg)
+            }
+        }
+    };
+
+    emit_outgoing(
+        shared,
+        "tasks/cancel",
+        result
+            .get("result")
+            .or_else(|| result.get("error"))
+            .unwrap_or(&Value::Null),
+    )
+    .await;
+    axum::Json(result).into_response()
+}
+
+/// Handle `tasks/resubscribe` — acknowledge but return current task state.
+///
+/// Implements: TJ-SPEC-017 F-005
+async fn handle_tasks_resubscribe(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    params: &Value,
+) -> Response {
+    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+
+    let result = {
+        let store = shared.task_store.read().await;
+        store.get_task(task_id).map_or_else(
+            || {
+                jsonrpc_error(
+                    request_id,
+                    TASK_NOT_FOUND,
+                    &format!("Task not found: {task_id}"),
+                )
+            },
+            |task| {
+                let task_result = json!({
+                    "kind": "task",
+                    "id": task.id,
+                    "contextId": task.context_id,
+                    "status": { "state": task.status },
+                    "history": task.history,
+                    "artifacts": task.artifacts,
+                });
+                jsonrpc_success(request_id, &task_result)
+            },
+        )
+    };
+
+    emit_outgoing(
+        shared,
+        "tasks/resubscribe",
+        result
+            .get("result")
+            .or_else(|| result.get("error"))
+            .unwrap_or(&Value::Null),
+    )
+    .await;
+    axum::Json(result).into_response()
+}
+
+/// Handle push notification config methods — acknowledged but no-op.
+///
+/// Implements: TJ-SPEC-017 EC-A2A-011
+async fn handle_push_notification(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    method: &str,
+) -> Response {
+    let result = jsonrpc_error(
+        request_id,
+        PUSH_NOT_SUPPORTED,
+        "Push notification not supported",
+    );
+
+    emit_outgoing(shared, method, result.get("error").unwrap_or(&Value::Null)).await;
+    axum::Json(result).into_response()
+}
+
+// ============================================================================
+// Response Dispatch Helpers
+// ============================================================================
+
+/// Dispatches a task response using `select_response()` and `interpolate_value()`.
+///
+/// Returns the complete JSON-RPC response and the method string for tracing.
+///
+/// Implements: TJ-SPEC-017 F-003
+async fn dispatch_task_response(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    params: &Value,
+) -> (Value, String) {
+    let state = shared.state.read().await.clone();
+    let request_message = params.get("message").cloned().unwrap_or(Value::Null);
+
+    // Get fresh extractors
+    let current_extractors = get_extractors(shared).await;
+
+    // Resolve response content
+    let (status, history_msgs, artifacts) = resolve_task_content(
+        &state,
+        &request_message,
+        &current_extractors,
+        shared.raw_synthesize,
+    );
+
+    // Create task in store
+    let context_id_hint = request_message.get("contextId").and_then(Value::as_str);
+    let (task_id, context_id) = shared.task_store.write().await.create_task(context_id_hint);
+
+    // Store task data
+    {
+        let mut store = shared.task_store.write().await;
+        if let Some(task) = store.get_task_mut(&task_id) {
+            task.status.clone_from(&status);
+            task.history.clone_from(&history_msgs);
+            task.artifacts.clone_from(&artifacts);
+        }
+    }
+
+    // Check response_type
+    let response_type = resolve_response_type(&state, &request_message, &current_extractors);
+
+    let result = if response_type == "message" {
+        // Direct Message response
+        let agent_msg = history_msgs
+            .iter()
+            .find(|m| m.get("role").and_then(Value::as_str) == Some("agent"))
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "kind": "message",
+                    "role": "agent",
+                    "parts": [{"kind": "text", "text": ""}],
+                    "messageId": uuid::Uuid::new_v4().to_string(),
+                    "contextId": context_id,
+                })
+            });
+
+        let mut msg = agent_msg;
+        if msg.get("contextId").is_none() {
+            msg["contextId"] = Value::String(context_id.clone());
+        }
+        if msg.get("kind").is_none() {
+            msg["kind"] = Value::String("message".to_string());
+        }
+
+        jsonrpc_success(request_id, &msg)
+    } else {
+        // Task response (default)
+        let task_result = json!({
+            "kind": "task",
+            "id": task_id,
+            "contextId": context_id,
+            "status": { "state": status },
+            "history": history_msgs,
+            "artifacts": artifacts,
+        });
+        jsonrpc_success(request_id, &task_result)
+    };
+
+    (result, "message/send".to_string())
+}
+
+/// Resolves task content from phase state using `select_response()`.
+///
+/// Returns `(status, history_messages, artifacts)`.
+fn resolve_task_content(
+    state: &Value,
+    request_message: &Value,
+    extractors: &HashMap<String, String>,
+    raw_synthesize: bool,
+) -> (String, Vec<Value>, Vec<Value>) {
+    let task_responses = state.get("task_responses");
+
+    let Some(responses_value) = task_responses else {
+        return ("completed".to_string(), Vec::new(), Vec::new());
+    };
+
+    let entries: Vec<ResponseEntry> = match serde_json::from_value(responses_value.clone()) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to deserialize task_responses entries");
+            return ("completed".to_string(), Vec::new(), Vec::new());
+        }
+    };
+
+    let Some(entry) = select_response(&entries, request_message) else {
+        return ("completed".to_string(), Vec::new(), Vec::new());
+    };
+
+    // Check for synthesize block
+    if entry.synthesize.is_some() && entry.extra.is_empty() {
+        tracing::info!("synthesize block encountered but GenerationProvider not available");
+        return ("failed".to_string(), Vec::new(), Vec::new());
+    }
+
+    // Build response from extra fields with interpolation
+    let extra_value = serde_json::to_value(&entry.extra).unwrap_or(Value::Null);
+    let (interpolated, diagnostics) =
+        interpolate_value(&extra_value, extractors, Some(request_message), None);
+
+    for diag in &diagnostics {
+        tracing::debug!(diagnostic = ?diag, "interpolation diagnostic");
+    }
+
+    // Validate if synthesize present
+    if entry.synthesize.is_some() && !raw_synthesize {
+        if let Err(err) =
+            crate::engine::generation::validate_synthesized_output("a2a", &interpolated, None)
+        {
+            tracing::warn!(error = %err, "synthesized output validation failed");
+            return ("failed".to_string(), Vec::new(), Vec::new());
+        }
+    }
+
+    // Extract status
+    let status = interpolated
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed")
+        .to_string();
+
+    // Build history messages
+    let mut history: Vec<Value> = Vec::new();
+
+    // Add the original user message to history
+    if !request_message.is_null() {
+        let mut user_msg = request_message.clone();
+        if user_msg.get("kind").is_none() {
+            user_msg["kind"] = Value::String("message".to_string());
+        }
+        history.push(user_msg);
+    }
+
+    // Add agent response messages from entry
+    if let Some(msgs) = interpolated.get("messages").and_then(Value::as_array) {
+        for msg in msgs {
+            let mut agent_msg = msg.clone();
+            agent_msg["kind"] = Value::String("message".to_string());
+            if agent_msg.get("messageId").is_none() {
+                agent_msg["messageId"] = Value::String(uuid::Uuid::new_v4().to_string());
+            }
+            history.push(agent_msg);
+        }
+    }
+
+    // Extract artifacts
+    let artifacts = interpolated
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut art| {
+            if art.get("artifactId").is_none() {
+                art["artifactId"] = Value::String(uuid::Uuid::new_v4().to_string());
+            }
+            art
+        })
+        .collect();
+
+    (status, history, artifacts)
+}
+
+/// Resolves the `response_type` from matching entry.
+fn resolve_response_type(
+    state: &Value,
+    request_message: &Value,
+    extractors: &HashMap<String, String>,
+) -> String {
+    let Some(responses_value) = state.get("task_responses") else {
+        return "task".to_string();
+    };
+
+    let entries: Vec<ResponseEntry> = match serde_json::from_value(responses_value.clone()) {
+        Ok(entries) => entries,
+        Err(_) => return "task".to_string(),
+    };
+
+    let Some(entry) = select_response(&entries, request_message) else {
+        return "task".to_string();
+    };
+
+    let extra_value = serde_json::to_value(&entry.extra).unwrap_or(Value::Null);
+    let (interpolated, _) =
+        interpolate_value(&extra_value, extractors, Some(request_message), None);
+
+    interpolated
+        .get("response_type")
+        .and_then(Value::as_str)
+        .unwrap_or("task")
+        .to_string()
+}
+
+/// Gets current extractors from the shared state.
+async fn get_extractors(shared: &Arc<A2aSharedState>) -> HashMap<String, String> {
+    shared
+        .extractors
+        .read()
+        .await
+        .as_ref()
+        .map(|rx| rx.borrow().clone())
+        .unwrap_or_default()
+}
+
+/// Emits an outgoing `ProtocolEvent`.
+async fn emit_outgoing(shared: &Arc<A2aSharedState>, method: &str, content: &Value) {
+    if let Some(tx) = shared.event_tx.read().await.as_ref() {
+        let _ = tx.send(ProtocolEvent {
+            direction: Direction::Outgoing,
+            method: method.to_string(),
+            content: content.clone(),
+        });
+    }
+}
+
+// ============================================================================
+// JSON-RPC Helpers
+// ============================================================================
+
+/// Builds a JSON-RPC 2.0 success response.
+fn jsonrpc_success(id: &Value, result: &Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    })
+}
+
+/// Builds a JSON-RPC 2.0 error response.
+fn jsonrpc_error(id: &Value, code: i64, message: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message,
+        }
+    })
+}
+
+// ============================================================================
+// Axum Router
+// ============================================================================
+
+/// Builds the axum router for the A2A server.
+///
+/// Implements: TJ-SPEC-017 F-001
+fn build_router(shared: Arc<A2aSharedState>) -> Router {
+    Router::new()
+        .route("/.well-known/agent.json", get(handle_agent_card))
+        .route("/", post(handle_jsonrpc))
+        .with_state(shared)
+}
+
+// ============================================================================
+// A2aServerDriver
+// ============================================================================
+
+/// A2A server-mode protocol driver.
+///
+/// Runs a custom axum HTTP server implementing the A2A protocol.
+/// Agent Card and task response dispatch are driven by the current
+/// phase's effective state. The server persists across phase transitions.
+///
+/// Implements: TJ-SPEC-017 F-001
+pub struct A2aServerDriver {
+    /// Bind address for the HTTP server.
+    bind_addr: String,
+    /// Bypass synthesize output validation.
+    #[allow(dead_code)]
+    raw_synthesize: bool,
+    /// Shared state between driver and axum handlers.
+    shared: Arc<A2aSharedState>,
+    /// Server task handle.
+    server_handle: Option<JoinHandle<()>>,
+    /// Actual bound address (resolved after bind).
+    bound_addr: Option<SocketAddr>,
+}
+
+#[async_trait]
+impl PhaseDriver for A2aServerDriver {
+    async fn drive_phase(
+        &mut self,
+        _phase_index: usize,
+        state: &Value,
+        extractors: watch::Receiver<HashMap<String, String>>,
+        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        cancel: CancellationToken,
+    ) -> Result<DriveResult, EngineError> {
+        // Update shared state with current phase
+        let agent_card = state.get("agent_card").cloned().unwrap_or(json!({}));
+        *self.shared.agent_card.write().await = agent_card;
+        *self.shared.state.write().await = state.clone();
+        *self.shared.event_tx.write().await = Some(event_tx);
+        *self.shared.extractors.write().await = Some(extractors);
+
+        // Start server on first call
+        if self.server_handle.is_none() {
+            let listener = TcpListener::bind(&self.bind_addr)
+                .await
+                .map_err(|e| EngineError::Driver(format!("A2A server bind failed: {e}")))?;
+
+            let addr = listener
+                .local_addr()
+                .map_err(|e| EngineError::Driver(format!("failed to get local addr: {e}")))?;
+            self.bound_addr = Some(addr);
+
+            tracing::info!(%addr, "A2A server listening");
+
+            let router = build_router(Arc::clone(&self.shared));
+            let server_cancel = cancel.clone();
+
+            self.server_handle = Some(tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(server_cancel.cancelled_owned())
+                .await
+                .ok();
+            }));
+        }
+
+        // Server-mode: wait for cancellation
+        cancel.cancelled().await;
+        Ok(DriveResult::Complete)
+    }
+
+    async fn on_phase_advanced(&mut self, _from: usize, _to: usize) -> Result<(), EngineError> {
+        // Agent card and state are updated at the start of the next drive_phase() call
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Public Constructor
+// ============================================================================
+
+/// Creates an `A2aServerDriver` for the given bind address and configuration.
+///
+/// Called by the orchestration runner when an actor's mode is `"a2a_server"`.
+///
+/// Implements: TJ-SPEC-017 F-001
+#[must_use]
+pub fn create_a2a_server_driver(bind_addr: &str, raw_synthesize: bool) -> A2aServerDriver {
+    let cancel = CancellationToken::new();
+
+    let shared = Arc::new(A2aSharedState {
+        agent_card: RwLock::new(json!({})),
+        task_store: RwLock::new(TaskStore::new()),
+        event_tx: RwLock::new(None),
+        extractors: RwLock::new(None),
+        state: RwLock::new(json!({})),
+        cancel,
+        raw_synthesize,
+    });
+
+    A2aServerDriver {
+        bind_addr: bind_addr.to_string(),
+        raw_synthesize,
+        shared,
+        server_handle: None,
+        bound_addr: None,
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- TaskStore Tests ----
+
+    #[test]
+    fn create_and_get_task() {
+        let mut store = TaskStore::new();
+        let (task_id, ctx_id) = store.create_task(None);
+
+        assert!(!task_id.is_empty());
+        assert!(!ctx_id.is_empty());
+
+        let task = store.get_task(&task_id).unwrap();
+        assert_eq!(task.id, task_id);
+        assert_eq!(task.context_id, ctx_id);
+        assert_eq!(task.status, "submitted");
+        assert!(task.history.is_empty());
+        assert!(task.artifacts.is_empty());
+    }
+
+    #[test]
+    fn create_task_with_context_id() {
+        let mut store = TaskStore::new();
+        let (task_id, ctx_id) = store.create_task(Some("my-ctx"));
+
+        assert_eq!(ctx_id, "my-ctx");
+        let task = store.get_task(&task_id).unwrap();
+        assert_eq!(task.context_id, "my-ctx");
+    }
+
+    #[test]
+    fn cancel_active_task() {
+        let mut store = TaskStore::new();
+        let (task_id, _) = store.create_task(None);
+
+        assert!(store.cancel_task(&task_id).is_ok());
+        let task = store.get_task(&task_id).unwrap();
+        assert_eq!(task.status, "canceled");
+    }
+
+    #[test]
+    fn cancel_completed_task_errors() {
+        let mut store = TaskStore::new();
+        let (task_id, _) = store.create_task(None);
+        store.get_task_mut(&task_id).unwrap().status = "completed".to_string();
+
+        let result = store.cancel_task(&task_id);
+        assert!(result.is_err());
+        let (code, _) = result.unwrap_err();
+        assert_eq!(code, TASK_NOT_CANCELABLE);
+    }
+
+    #[test]
+    fn cancel_nonexistent_task_errors() {
+        let mut store = TaskStore::new();
+        let result = store.cancel_task("nonexistent");
+        assert!(result.is_err());
+        let (code, _) = result.unwrap_err();
+        assert_eq!(code, TASK_NOT_FOUND);
+    }
+
+    #[test]
+    fn get_nonexistent_task() {
+        let store = TaskStore::new();
+        assert!(store.get_task("nonexistent").is_none());
+    }
+
+    #[test]
+    fn context_id_tracking() {
+        let mut store = TaskStore::new();
+        let (task1, ctx1) = store.create_task(Some("ctx-shared"));
+        let (task2, ctx2) = store.create_task(Some("ctx-shared"));
+
+        assert_eq!(ctx1, "ctx-shared");
+        assert_eq!(ctx2, "ctx-shared");
+
+        let tasks_in_ctx = store.contexts.get("ctx-shared").unwrap();
+        assert!(tasks_in_ctx.contains(&task1));
+        assert!(tasks_in_ctx.contains(&task2));
+        assert_eq!(tasks_in_ctx.len(), 2);
+    }
+
+    #[test]
+    fn terminal_state_detection() {
+        assert!(is_terminal("completed"));
+        assert!(is_terminal("canceled"));
+        assert!(is_terminal("failed"));
+        assert!(is_terminal("rejected"));
+        assert!(!is_terminal("submitted"));
+        assert!(!is_terminal("working"));
+        assert!(!is_terminal("input-required"));
+        assert!(!is_terminal("auth-required"));
+        assert!(!is_terminal("unknown"));
+    }
+
+    // ---- JSON-RPC Helper Tests ----
+
+    #[test]
+    fn jsonrpc_success_format() {
+        let result = jsonrpc_success(&json!("req-1"), &json!({"kind": "task"}));
+        assert_eq!(result["jsonrpc"], "2.0");
+        assert_eq!(result["id"], "req-1");
+        assert_eq!(result["result"]["kind"], "task");
+    }
+
+    #[test]
+    fn jsonrpc_error_format() {
+        let result = jsonrpc_error(&json!("req-1"), METHOD_NOT_FOUND, "Method not found");
+        assert_eq!(result["jsonrpc"], "2.0");
+        assert_eq!(result["id"], "req-1");
+        assert_eq!(result["error"]["code"], -32601);
+        assert_eq!(result["error"]["message"], "Method not found");
+    }
+
+    // ---- Response Dispatch Tests ----
+
+    #[test]
+    fn resolve_task_content_with_matching_response() {
+        let state = json!({
+            "task_responses": [
+                {
+                    "status": "completed",
+                    "messages": [
+                        {
+                            "role": "agent",
+                            "parts": [{"kind": "text", "text": "Done!"}]
+                        }
+                    ]
+                }
+            ]
+        });
+        let request_message = json!({
+            "role": "user",
+            "parts": [{"kind": "text", "text": "Do something"}]
+        });
+
+        let (status, history, artifacts) =
+            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+
+        assert_eq!(status, "completed");
+        // History should contain user message + agent response
+        assert!(history.len() >= 2);
+        assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn resolve_task_content_no_responses() {
+        let state = json!({});
+        let request_message = json!({"role": "user"});
+
+        let (status, history, artifacts) =
+            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+
+        assert_eq!(status, "completed");
+        assert!(history.is_empty());
+        assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn resolve_task_content_with_artifacts() {
+        let state = json!({
+            "task_responses": [
+                {
+                    "status": "completed",
+                    "messages": [
+                        {"role": "agent", "parts": [{"kind": "text", "text": "Here's the data"}]}
+                    ],
+                    "artifacts": [
+                        {"parts": [{"kind": "text", "text": "artifact content"}]}
+                    ]
+                }
+            ]
+        });
+        let request_message = json!({"role": "user", "parts": [{"kind": "text", "text": "test"}]});
+
+        let (status, _history, artifacts) =
+            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+
+        assert_eq!(status, "completed");
+        assert_eq!(artifacts.len(), 1);
+        // Each artifact should have an artifactId
+        assert!(artifacts[0].get("artifactId").is_some());
+    }
+
+    #[test]
+    fn resolve_response_type_defaults_to_task() {
+        let state = json!({
+            "task_responses": [
+                {"status": "completed", "messages": []}
+            ]
+        });
+        let rt = resolve_response_type(&state, &json!({}), &HashMap::new());
+        assert_eq!(rt, "task");
+    }
+
+    #[test]
+    fn resolve_response_type_message() {
+        let state = json!({
+            "task_responses": [
+                {
+                    "status": "completed",
+                    "response_type": "message",
+                    "messages": [{"role": "agent", "parts": []}]
+                }
+            ]
+        });
+        let rt = resolve_response_type(&state, &json!({}), &HashMap::new());
+        assert_eq!(rt, "message");
+    }
+
+    #[test]
+    fn response_dispatch_with_interpolation() {
+        let state = json!({
+            "task_responses": [
+                {
+                    "status": "completed",
+                    "messages": [
+                        {
+                            "role": "agent",
+                            "parts": [{"kind": "text", "text": "Hello {{name}}"}]
+                        }
+                    ]
+                }
+            ]
+        });
+        let mut extractors = HashMap::new();
+        extractors.insert("name".to_string(), "World".to_string());
+
+        let (_, history, _) =
+            resolve_task_content(&state, &json!({"role": "user"}), &extractors, false);
+
+        // Check that interpolation occurred in agent messages
+        let agent_msg = history
+            .iter()
+            .find(|m| m.get("role").and_then(Value::as_str) == Some("agent"));
+        assert!(agent_msg.is_some());
+        let text = agent_msg.unwrap()["parts"][0]["text"]
+            .as_str()
+            .unwrap_or("");
+        assert_eq!(text, "Hello World");
+    }
+
+    // ---- Router Tests (requires tower::ServiceExt) ----
+
+    #[tokio::test]
+    async fn agent_card_endpoint() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({
+                "name": "Test Agent",
+                "skills": [{"id": "test", "name": "Test Skill"}]
+            })),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            cancel: CancellationToken::new(),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri("/.well-known/agent.json")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let card: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(card["name"], "Test Agent");
+    }
+
+    #[tokio::test]
+    async fn unknown_method_returns_error() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            cancel: CancellationToken::new(),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "custom/extension",
+            "params": {}
+        });
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], METHOD_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn invalid_json_returns_parse_error() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            cancel: CancellationToken::new(),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("Content-Type", "application/json")
+            .body(Body::from("not valid json"))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], PARSE_ERROR);
+    }
+
+    #[tokio::test]
+    async fn missing_method_returns_invalid_request() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            cancel: CancellationToken::new(),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let body = json!({"jsonrpc": "2.0", "id": "1", "params": {}});
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn message_send_returns_task() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({
+                "task_responses": [
+                    {
+                        "status": "completed",
+                        "messages": [
+                            {"role": "agent", "parts": [{"kind": "text", "text": "Done"}]}
+                        ]
+                    }
+                ]
+            })),
+            cancel: CancellationToken::new(),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "Hello"}],
+                    "messageId": "msg-1",
+                    "kind": "message"
+                }
+            }
+        });
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["result"]["kind"], "task");
+        assert!(resp["result"]["id"].is_string());
+        assert!(resp["result"]["contextId"].is_string());
+        assert_eq!(resp["result"]["status"]["state"], "completed");
+    }
+
+    #[tokio::test]
+    async fn push_notification_returns_not_supported() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            cancel: CancellationToken::new(),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/pushNotificationConfig/set",
+            "params": {}
+        });
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], PUSH_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn create_driver() {
+        let driver = create_a2a_server_driver("127.0.0.1:9090", false);
+        assert_eq!(driver.bind_addr, "127.0.0.1:9090");
+        assert!(!driver.raw_synthesize);
+        assert!(driver.server_handle.is_none());
+        assert!(driver.bound_addr.is_none());
+    }
+}
