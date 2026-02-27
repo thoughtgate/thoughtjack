@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
-use crate::error::ThoughtJackError;
 use crate::scenarios::ScenarioCategory;
 
 // ============================================================================
@@ -140,17 +139,6 @@ pub struct RunArgs {
     /// Write structured events to a JSONL file instead of stderr.
     #[arg(long, env = "THOUGHTJACK_EVENTS_FILE")]
     pub events_file: Option<PathBuf>,
-}
-
-/// Placeholder for transport inference from OATF document + CLI flags.
-///
-/// # Errors
-///
-/// Returns an error if transport inference fails (not yet implemented).
-///
-/// Implements: TJ-SPEC-007 F-002
-pub fn resolve_transports(_args: &RunArgs) -> Result<(), ThoughtJackError> {
-    todo!("transport inference wired in engine prompt")
 }
 
 // ============================================================================

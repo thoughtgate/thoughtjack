@@ -244,6 +244,24 @@ pub enum ThoughtJackError {
     /// Loader error
     #[error(transparent)]
     Loader(#[from] LoaderError),
+
+    /// Orchestration error
+    #[error("orchestration error: {0}")]
+    Orchestration(String),
+
+    /// Verdict result with a non-zero exit code.
+    ///
+    /// Propagates verdict outcomes (exploited, partial, error) through the
+    /// `Result` chain so `main.rs` can set the correct process exit code.
+    ///
+    /// Implements: TJ-SPEC-014 F-009
+    #[error("{message}")]
+    Verdict {
+        /// Human-readable verdict result string.
+        message: String,
+        /// Process exit code to use.
+        code: i32,
+    },
 }
 
 impl ThoughtJackError {
@@ -257,13 +275,15 @@ impl ThoughtJackError {
     pub const fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) => ExitCode::USAGE_ERROR,
+            Self::Verdict { code, .. } => *code,
             Self::Config(_)
             | Self::Transport(_)
             | Self::Io(_)
             | Self::Json(_)
             | Self::Yaml(_)
             | Self::Engine(_)
-            | Self::Loader(_) => ExitCode::RUNTIME_ERROR,
+            | Self::Loader(_)
+            | Self::Orchestration(_) => ExitCode::RUNTIME_ERROR,
         }
     }
 }
@@ -389,6 +409,27 @@ mod tests {
     fn test_loader_error_exit_code() {
         let err: ThoughtJackError = LoaderError::OatfLoad("test".to_string()).into();
         assert_eq!(err.exit_code(), ExitCode::RUNTIME_ERROR);
+    }
+
+    #[test]
+    fn test_orchestration_error_exit_code() {
+        let err = ThoughtJackError::Orchestration("actor failed".to_string());
+        assert_eq!(err.exit_code(), ExitCode::RUNTIME_ERROR);
+    }
+
+    #[test]
+    fn test_verdict_error_exit_code() {
+        let err = ThoughtJackError::Verdict {
+            message: "exploited".to_string(),
+            code: ExitCode::EXPLOITED,
+        };
+        assert_eq!(err.exit_code(), ExitCode::EXPLOITED);
+
+        let err = ThoughtJackError::Verdict {
+            message: "partial".to_string(),
+            code: ExitCode::PARTIAL,
+        };
+        assert_eq!(err.exit_code(), ExitCode::PARTIAL);
     }
 
     #[test]

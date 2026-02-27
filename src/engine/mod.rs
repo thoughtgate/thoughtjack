@@ -29,12 +29,13 @@ pub mod trace;
 pub mod types;
 
 // Re-export primary types for convenience.
+pub use crate::orchestration::store::ExtractorStore;
 pub use actions::EntryActionSender;
 pub use driver::PhaseDriver;
 pub use generation::validate_synthesized_output;
 pub use mcp_server::{McpServerDriver, McpTransportEntryActionSender};
 pub use phase::PhaseEngine;
-pub use phase_loop::{ExtractorStore, PhaseLoop, PhaseLoopConfig};
+pub use phase_loop::{PhaseLoop, PhaseLoopConfig};
 pub use trace::{SharedTrace, TraceEntry};
 pub use types::{
     ActorResult, AwaitExtractor, Direction, DriveResult, PhaseAction, ProtocolEvent,
