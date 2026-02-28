@@ -563,6 +563,23 @@ attack:
 
     #[tokio::test]
     async fn phase_loop_cancellation_returns_cancelled() {
+        // Driver that waits for cancellation
+        struct WaitDriver;
+        #[async_trait::async_trait]
+        impl PhaseDriver for WaitDriver {
+            async fn drive_phase(
+                &mut self,
+                _phase_index: usize,
+                _state: &serde_json::Value,
+                _extractors: watch::Receiver<HashMap<String, String>>,
+                _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+                cancel: CancellationToken,
+            ) -> Result<super::super::types::DriveResult, EngineError> {
+                cancel.cancelled().await;
+                Ok(super::super::types::DriveResult::Complete)
+            }
+        }
+
         let doc = load_test_document(
             r#"
 oatf: "0.1"
@@ -594,23 +611,6 @@ attack:
             cancel: cancel.clone(),
             entry_action_sender: None,
         };
-
-        // Driver that waits for cancellation
-        struct WaitDriver;
-        #[async_trait::async_trait]
-        impl PhaseDriver for WaitDriver {
-            async fn drive_phase(
-                &mut self,
-                _phase_index: usize,
-                _state: &serde_json::Value,
-                _extractors: watch::Receiver<HashMap<String, String>>,
-                _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
-                cancel: CancellationToken,
-            ) -> Result<super::super::types::DriveResult, EngineError> {
-                cancel.cancelled().await;
-                Ok(super::super::types::DriveResult::Complete)
-            }
-        }
 
         let engine = PhaseEngine::new(doc, 0);
         let mut phase_loop = PhaseLoop::new(WaitDriver, engine, config);

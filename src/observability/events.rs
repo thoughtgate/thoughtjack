@@ -458,11 +458,11 @@ impl EventEmitter {
             event,
         };
 
-        if let Ok(mut w) = self.writer.lock() {
-            if let Ok(line) = serde_json::to_string(&envelope) {
-                let _ = writeln!(w, "{line}");
-                let _ = w.flush();
-            }
+        if let Ok(mut w) = self.writer.lock()
+            && let Ok(line) = serde_json::to_string(&envelope)
+        {
+            let _ = writeln!(w, "{line}");
+            let _ = w.flush();
         }
     }
 
@@ -574,6 +574,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn all_event_categories_serialize_to_valid_json() {
         let variants: Vec<ThoughtJackEvent> = vec![
             // Engine

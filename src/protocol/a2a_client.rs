@@ -407,10 +407,10 @@ fn build_task_message(
     }
 
     // Include contextId from previous phases if available
-    if let Some(ctx) = context_id {
-        if interpolated.get("contextId").is_none() {
-            interpolated["contextId"] = Value::String(ctx.to_string());
-        }
+    if let Some(ctx) = context_id
+        && interpolated.get("contextId").is_none()
+    {
+        interpolated["contextId"] = Value::String(ctx.to_string());
     }
 
     let method = if streaming {
@@ -462,14 +462,13 @@ fn detect_event_type(result: &Value) -> &str {
 ///
 /// Implements: TJ-SPEC-017 F-008
 fn resolve_status_qualifier(event_type: &str, result: &Value) -> String {
-    if event_type == "task/status" {
-        if let Some(state) = result
+    if event_type == "task/status"
+        && let Some(state) = result
             .get("status")
             .and_then(|s| s.get("state"))
             .and_then(Value::as_str)
-        {
-            return format!("task/status:{state}");
-        }
+    {
+        return format!("task/status:{state}");
     }
     event_type.to_string()
 }
@@ -622,10 +621,10 @@ impl A2aClientDriver {
                             let qualified = resolve_status_qualifier(event_type, &sse_result);
 
                             // Capture contextId from first response
-                            if self.transport.context_id.is_none() {
-                                if let Some(ctx) = sse_result.get("contextId").and_then(Value::as_str) {
-                                    self.transport.context_id = Some(ctx.to_string());
-                                }
+                            if self.transport.context_id.is_none()
+                                && let Some(ctx) = sse_result.get("contextId").and_then(Value::as_str)
+                            {
+                                self.transport.context_id = Some(ctx.to_string());
                             }
 
                             let _ = event_tx.send(ProtocolEvent {

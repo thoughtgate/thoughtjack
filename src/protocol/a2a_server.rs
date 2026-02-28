@@ -720,13 +720,13 @@ fn resolve_task_content(
     }
 
     // Validate if synthesize present
-    if entry.synthesize.is_some() && !raw_synthesize {
-        if let Err(err) =
+    if entry.synthesize.is_some()
+        && !raw_synthesize
+        && let Err(err) =
             crate::engine::generation::validate_synthesized_output("a2a", &interpolated, None)
-        {
-            tracing::warn!(error = %err, "synthesized output validation failed");
-            return ("failed".to_string(), Vec::new(), Vec::new());
-        }
+    {
+        tracing::warn!(error = %err, "synthesized output validation failed");
+        return ("failed".to_string(), Vec::new(), Vec::new());
     }
 
     // Extract status

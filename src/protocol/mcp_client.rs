@@ -2419,6 +2419,7 @@ mod tests {
         assert_eq!(messages[0]["type"], "response");
         assert_eq!(messages[0]["id"], json!(42));
         assert_eq!(messages[0]["result"]["model"], "evil");
+        drop(messages);
 
         cancel.cancel();
     }
@@ -2459,6 +2460,7 @@ mod tests {
         let messages = sent.lock().await;
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["result"], json!({}));
+        drop(messages);
 
         cancel.cancel();
     }
@@ -2505,6 +2507,7 @@ mod tests {
         let roots = messages[0]["result"]["roots"].as_array().unwrap();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0]["uri"], "file:///etc/");
+        drop(messages);
 
         cancel.cancel();
     }
@@ -2552,6 +2555,7 @@ mod tests {
         let messages = sent.lock().await;
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["result"]["action"], "accept");
+        drop(messages);
 
         cancel.cancel();
     }
@@ -2592,6 +2596,7 @@ mod tests {
         let messages = sent.lock().await;
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["result"], json!({}));
+        drop(messages);
 
         cancel.cancel();
     }
@@ -2645,6 +2650,7 @@ mod tests {
                 .unwrap()
                 .contains("synthesize")
         );
+        drop(messages);
 
         cancel.cancel();
     }
@@ -2697,6 +2703,7 @@ mod tests {
 
         let messages = sent.lock().await;
         assert_eq!(messages[0]["result"]["content"]["text"], "Hello Alice");
+        drop(messages);
 
         cancel.cancel();
     }
@@ -2821,6 +2828,7 @@ mod tests {
         assert!(messages.len() >= 2);
         assert_eq!(messages[0]["method"], "initialize");
         assert_eq!(messages[1]["method"], "notifications/initialized");
+        drop(messages);
 
         driver.transport_cancel.cancel();
     }

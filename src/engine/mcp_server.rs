@@ -724,17 +724,17 @@ fn dispatch_response(
     apply_generation(&mut interpolated);
 
     // Validate synthesized output if applicable
-    if entry.synthesize.is_some() && !raw_synthesize {
-        if let Err(err) =
+    if entry.synthesize.is_some()
+        && !raw_synthesize
+        && let Err(err) =
             super::generation::validate_synthesized_output("mcp", &interpolated, output_schema)
-        {
-            tracing::warn!(error = %err, "synthesized output validation failed");
-            return JsonRpcResponse::error(
-                request_id.clone(),
-                error_codes::INTERNAL_ERROR,
-                format!("synthesize validation: {err}"),
-            );
-        }
+    {
+        tracing::warn!(error = %err, "synthesized output validation failed");
+        return JsonRpcResponse::error(
+            request_id.clone(),
+            error_codes::INTERNAL_ERROR,
+            format!("synthesize validation: {err}"),
+        );
     }
 
     JsonRpcResponse::success(request_id.clone(), interpolated)
@@ -853,12 +853,12 @@ fn inflate_response(
     // Pad text fields in content items
     if let Some(items) = inflated.get_mut("content").and_then(Value::as_array_mut) {
         for item in items {
-            if let Some(text) = item.get("text").and_then(Value::as_str) {
-                if text.len() < max_line_length {
-                    let padded = format!("{}{}", text, "X".repeat(max_line_length - text.len()));
-                    item.as_object_mut()
-                        .map(|obj| obj.insert("text".to_string(), Value::String(padded)));
-                }
+            if let Some(text) = item.get("text").and_then(Value::as_str)
+                && text.len() < max_line_length
+            {
+                let padded = format!("{}{}", text, "X".repeat(max_line_length - text.len()));
+                item.as_object_mut()
+                    .map(|obj| obj.insert("text".to_string(), Value::String(padded)));
             }
         }
     }
@@ -1242,7 +1242,7 @@ mod tests {
     }
 
     impl MockTransport {
-        fn new(messages: Vec<JsonRpcMessage>) -> (Arc<dyn Transport>, OutgoingBuffer) {
+        fn setup(messages: Vec<JsonRpcMessage>) -> (Arc<dyn Transport>, OutgoingBuffer) {
             let outgoing: OutgoingBuffer = Arc::new(Mutex::new(Vec::new()));
             let transport: Arc<dyn Transport> = Arc::new(Self {
                 incoming: Mutex::new(VecDeque::from(messages)),
@@ -1262,10 +1262,10 @@ mod tests {
         async fn send_raw(&self, bytes: &[u8]) -> crate::transport::Result<()> {
             // Accumulate raw bytes — for testing we just store as-is
             let s = String::from_utf8_lossy(bytes);
-            if !s.trim().is_empty() {
-                if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(s.trim()) {
-                    self.outgoing.lock().await.push(msg);
-                }
+            if !s.trim().is_empty()
+                && let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(s.trim())
+            {
+                self.outgoing.lock().await.push(msg);
             }
             Ok(())
         }
@@ -1595,7 +1595,7 @@ mod tests {
 
     #[tokio::test]
     async fn drive_phase_completes_on_eof() {
-        let (transport, _outgoing) = MockTransport::new(vec![]);
+        let (transport, _outgoing) = MockTransport::setup(vec![]);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = test_state();
@@ -1612,7 +1612,7 @@ mod tests {
 
     #[tokio::test]
     async fn drive_phase_completes_on_cancel() {
-        let (transport, _outgoing) = MockTransport::new(vec![]);
+        let (transport, _outgoing) = MockTransport::setup(vec![]);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = test_state();
@@ -1633,7 +1633,7 @@ mod tests {
     #[tokio::test]
     async fn drive_phase_emits_events() {
         let request = make_request("tools/list", None);
-        let (transport, _outgoing) = MockTransport::new(vec![request]);
+        let (transport, _outgoing) = MockTransport::setup(vec![request]);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = test_state();
@@ -1662,7 +1662,7 @@ mod tests {
     #[tokio::test]
     async fn extractors_refreshed_per_request() {
         let requests = vec![make_request("tools/list", None), make_request("ping", None)];
-        let (transport, outgoing) = MockTransport::new(requests);
+        let (transport, outgoing) = MockTransport::setup(requests);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = test_state();
@@ -1684,12 +1684,13 @@ mod tests {
         // driver, it borrows fresh values each time.
         let sent = outgoing.lock().await;
         assert_eq!(sent.len(), 2); // Two responses sent
+        drop(sent);
     }
 
     #[tokio::test]
     async fn delayed_delivery_waits() {
         let request = make_request("ping", None);
-        let (transport, _outgoing) = MockTransport::new(vec![request]);
+        let (transport, _outgoing) = MockTransport::setup(vec![request]);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = json!({
@@ -1718,7 +1719,7 @@ mod tests {
     #[tokio::test]
     async fn notification_flood_sends_before_response() {
         let request = make_request("ping", None);
-        let (transport, outgoing) = MockTransport::new(vec![request]);
+        let (transport, outgoing) = MockTransport::setup(vec![request]);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = json!({
@@ -1749,11 +1750,12 @@ mod tests {
         assert!(!sent.is_empty());
         // Last message should be the response
         assert!(matches!(sent.last().unwrap(), JsonRpcMessage::Response(_)));
+        drop(sent);
     }
 
     #[tokio::test]
     async fn entry_action_sender_sends_notification() {
-        let (transport, outgoing) = MockTransport::new(vec![]);
+        let (transport, outgoing) = MockTransport::setup(vec![]);
         let sender = McpTransportEntryActionSender {
             transport,
             next_request_id: AtomicU64::new(1_000_000),
@@ -1776,7 +1778,7 @@ mod tests {
 
     #[tokio::test]
     async fn entry_action_sender_sends_elicitation() {
-        let (transport, outgoing) = MockTransport::new(vec![]);
+        let (transport, outgoing) = MockTransport::setup(vec![]);
         let sender = McpTransportEntryActionSender {
             transport,
             next_request_id: AtomicU64::new(1_000_000),
@@ -1876,7 +1878,7 @@ mod tests {
             "notifications/initialized",
             None,
         ))];
-        let (transport, _outgoing) = MockTransport::new(messages);
+        let (transport, _outgoing) = MockTransport::setup(messages);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = test_state();
@@ -1898,7 +1900,7 @@ mod tests {
     #[tokio::test]
     async fn connection_reset_side_effect_returns_error() {
         let request = make_request("ping", None);
-        let (transport, _outgoing) = MockTransport::new(vec![request]);
+        let (transport, _outgoing) = MockTransport::setup(vec![request]);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = json!({
@@ -2113,7 +2115,7 @@ mod tests {
             json!("elicit-decline"),
             json!({"action": "decline"}),
         ));
-        let (transport, outgoing) = MockTransport::new(vec![tools_call, decline_response]);
+        let (transport, outgoing) = MockTransport::setup(vec![tools_call, decline_response]);
         let mut driver = McpServerDriver::new(transport, false);
 
         // State with an always-matching elicitation
@@ -2145,6 +2147,7 @@ mod tests {
         let has_tool_response = sent.iter().any(|msg| {
             matches!(msg, JsonRpcMessage::Response(r) if r.result.as_ref().is_some_and(|v| v["content"][0]["text"] == "42"))
         });
+        drop(sent);
         assert!(
             has_tool_response,
             "tool response should be sent after elicitation decline"
@@ -2237,7 +2240,7 @@ mod tests {
     #[tokio::test]
     async fn unbounded_delivery_inflates_response() {
         let request = make_request("ping", None);
-        let (transport, outgoing) = MockTransport::new(vec![request]);
+        let (transport, outgoing) = MockTransport::setup(vec![request]);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = json!({
@@ -2285,7 +2288,7 @@ mod tests {
             json!("elicit-resp"),
             json!({"action": "accept"}),
         ));
-        let (transport, outgoing) = MockTransport::new(vec![tools_call, elicit_response]);
+        let (transport, outgoing) = MockTransport::setup(vec![tools_call, elicit_response]);
         let mut driver = McpServerDriver::new(transport, false);
 
         // State with two elicitations: first requires name=other, second matches all
@@ -2325,6 +2328,7 @@ mod tests {
             matches!(msg, JsonRpcMessage::Request(r) if r.method == "elicitation/create"
                 && r.params.as_ref().unwrap()["message"] == "Should fire (no predicate)")
         });
+        drop(sent);
         assert!(
             elicitation_sent,
             "second (matching) elicitation should fire"
@@ -2336,7 +2340,7 @@ mod tests {
     #[tokio::test]
     async fn id_collision_side_effect_with_count() {
         let request = make_request("ping", None);
-        let (transport, outgoing) = MockTransport::new(vec![request]);
+        let (transport, outgoing) = MockTransport::setup(vec![request]);
         let mut driver = McpServerDriver::new(transport, false);
 
         let state = json!({

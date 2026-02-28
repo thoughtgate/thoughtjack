@@ -403,10 +403,10 @@ impl MessageAccumulator {
                 );
             }
             "text_message_content" => {
-                if let Some(msg) = self.messages.get_mut(message_id) {
-                    if let Some(delta) = event.data.get("delta").and_then(Value::as_str) {
-                        msg.content.push_str(delta);
-                    }
+                if let Some(msg) = self.messages.get_mut(message_id)
+                    && let Some(delta) = event.data.get("delta").and_then(Value::as_str)
+                {
+                    msg.content.push_str(delta);
                 }
             }
             "text_message_end" => {
@@ -441,10 +441,10 @@ impl MessageAccumulator {
                     .map(String::from);
 
                 // Link to parent message
-                if let Some(ref parent_id) = parent_message_id {
-                    if let Some(msg) = self.messages.get_mut(parent_id.as_str()) {
-                        msg.tool_calls.push(tool_call_id.to_string());
-                    }
+                if let Some(ref parent_id) = parent_message_id
+                    && let Some(msg) = self.messages.get_mut(parent_id.as_str())
+                {
+                    msg.tool_calls.push(tool_call_id.to_string());
                 }
 
                 self.tool_calls.insert(
@@ -460,10 +460,10 @@ impl MessageAccumulator {
                 );
             }
             "tool_call_args" => {
-                if let Some(tc) = self.tool_calls.get_mut(tool_call_id) {
-                    if let Some(delta) = event.data.get("delta").and_then(Value::as_str) {
-                        tc.arguments.push_str(delta);
-                    }
+                if let Some(tc) = self.tool_calls.get_mut(tool_call_id)
+                    && let Some(delta) = event.data.get("delta").and_then(Value::as_str)
+                {
+                    tc.arguments.push_str(delta);
                 }
             }
             "tool_call_end" => {
@@ -500,10 +500,10 @@ impl MessageAccumulator {
                 );
             }
             "reasoning_message_content" => {
-                if let Some(r) = self.reasoning.get_mut(message_id) {
-                    if let Some(delta) = event.data.get("delta").and_then(Value::as_str) {
-                        r.content.push_str(delta);
-                    }
+                if let Some(r) = self.reasoning.get_mut(message_id)
+                    && let Some(delta) = event.data.get("delta").and_then(Value::as_str)
+                {
+                    r.content.push_str(delta);
                 }
             }
             "reasoning_message_end" => {

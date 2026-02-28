@@ -515,13 +515,12 @@ fn sanitize_event_label(event: &str) -> &str {
         return event;
     }
     // For specific events like "tools/call:calc", validate the prefix
-    if let Some(prefix) = event.split(':').next() {
-        if KNOWN_MCP_METHODS.contains(&prefix)
+    if let Some(prefix) = event.split(':').next()
+        && (KNOWN_MCP_METHODS.contains(&prefix)
             || KNOWN_A2A_METHODS.contains(&prefix)
-            || KNOWN_AGUI_EVENTS.contains(&prefix)
-        {
-            return event;
-        }
+            || KNOWN_AGUI_EVENTS.contains(&prefix))
+    {
+        return event;
     }
     "__unknown__"
 }

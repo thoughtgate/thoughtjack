@@ -74,18 +74,18 @@ fn preprocess_yaml(yaml: &str) -> Result<PreprocessResult, LoaderError> {
         }
 
         // Process phases in multi-actor form
-        if let Some(actors) = execution.get_mut("actors") {
-            if let Some(actors_seq) = actors.as_sequence_mut() {
-                for actor in actors_seq {
-                    let actor_name = actor
-                        .get("name")
-                        .and_then(serde_yaml::Value::as_str)
-                        .unwrap_or("default")
-                        .to_string();
+        if let Some(actors) = execution.get_mut("actors")
+            && let Some(actors_seq) = actors.as_sequence_mut()
+        {
+            for actor in actors_seq {
+                let actor_name = actor
+                    .get("name")
+                    .and_then(serde_yaml::Value::as_str)
+                    .unwrap_or("default")
+                    .to_string();
 
-                    if let Some(phases) = actor.get_mut("phases") {
-                        extract_from_phases(phases, &actor_name, is_single_actor, &mut await_map);
-                    }
+                if let Some(phases) = actor.get_mut("phases") {
+                    extract_from_phases(phases, &actor_name, is_single_actor, &mut await_map);
                 }
             }
         }

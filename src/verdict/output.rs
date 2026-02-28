@@ -266,10 +266,11 @@ pub fn write_json_verdict(output: &VerdictOutput, path: &str) -> std::io::Result
         handle.flush()?;
     } else {
         let path = Path::new(path);
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, format!("{json}\n"))?;
     }
