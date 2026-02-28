@@ -29,9 +29,10 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::EngineError;
+use crate::transport::HttpTransport;
 use crate::transport::jsonrpc::error_codes;
 use crate::transport::{
-    JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Transport,
+    JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Transport, TransportType,
 };
 
 use super::actions::EntryActionSender;
@@ -104,6 +105,7 @@ impl McpServerDriver {
             }
             "resources/list" => handle_resources_list(request, state),
             "resources/read" => handle_resources_read(request, state, extractors),
+            "resources/templates/list" => handle_resources_templates_list(request, state),
             "prompts/list" => handle_prompts_list(request, state),
             "prompts/get" => {
                 self.handle_prompts_get(request, state, extractors, event_tx)
@@ -149,7 +151,11 @@ impl McpServerDriver {
             );
         };
 
-        // Elicitation interleaving (before response)
+        // Interleaving: logging → progress → sampling → elicitation → response
+        self.maybe_send_logging(state, tool_name, event_tx).await;
+        self.maybe_send_progress(state, params, tool_name, event_tx)
+            .await;
+        self.maybe_send_sampling(state, tool_name, event_tx).await;
         self.maybe_send_elicitation(state, params, event_tx).await;
 
         dispatch_response(
@@ -195,6 +201,226 @@ impl McpServerDriver {
             None,
             self.raw_synthesize,
         )
+    }
+
+    /// Send a server-initiated JSON-RPC request and wait for the response.
+    ///
+    /// On HTTP, uses `HttpTransport::send_server_request()` to avoid the
+    /// channel-swap bug. On stdio, falls back to `send_message()` +
+    /// `receive_message()`.
+    async fn send_server_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+        if self.transport.transport_type() == TransportType::Http
+            && let Some(http) = self.transport.as_any().downcast_ref::<HttpTransport>()
+        {
+            match http.send_server_request(request).await {
+                Ok(resp) => return Some(resp),
+                Err(err) => {
+                    tracing::warn!(error = %err, "HTTP server request failed");
+                    return None;
+                }
+            }
+        }
+
+        // Stdio fallback: send + receive
+        if let Err(err) = self
+            .transport
+            .send_message(&JsonRpcMessage::Request(request.clone()))
+            .await
+        {
+            tracing::warn!(error = %err, "failed to send server request");
+            return None;
+        }
+
+        match self.transport.receive_message().await {
+            Ok(Some(JsonRpcMessage::Response(resp))) => Some(resp),
+            Ok(Some(msg)) => {
+                tracing::debug!(?msg, "unexpected message during server request wait");
+                None
+            }
+            Ok(None) => {
+                tracing::debug!("transport EOF during server request wait");
+                None
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "transport error during server request wait");
+                None
+            }
+        }
+    }
+
+    /// Send logging notifications if the state has matching logging entries.
+    ///
+    /// Reads `state["logging"]` array, sends `notifications/message` for each.
+    /// Optional `tool` field restricts to specific tool names.
+    async fn maybe_send_logging(
+        &self,
+        state: &Value,
+        tool_name: &str,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) {
+        let Some(entries) = state.get("logging").and_then(Value::as_array) else {
+            return;
+        };
+
+        for entry in entries {
+            // Check tool filter
+            if let Some(tool_filter) = entry.get("tool").and_then(Value::as_str)
+                && tool_filter != tool_name
+            {
+                continue;
+            }
+
+            let level = entry.get("level").and_then(Value::as_str).unwrap_or("info");
+            let data = entry
+                .get("data")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+
+            let notif = JsonRpcNotification::new(
+                "notifications/message",
+                Some(json!({
+                    "level": level,
+                    "data": data,
+                })),
+            );
+
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "notifications/message".to_string(),
+                content: json!({ "level": level, "data": data }),
+            });
+
+            if let Err(err) = self
+                .transport
+                .send_message(&JsonRpcMessage::Notification(notif))
+                .await
+            {
+                tracing::warn!(error = %err, "failed to send logging notification");
+            }
+        }
+    }
+
+    /// Send progress notifications if the request includes a progress token.
+    ///
+    /// Reads `state["progress"]` array. Only fires if the request has
+    /// `_meta.progressToken` in params.
+    async fn maybe_send_progress(
+        &self,
+        state: &Value,
+        request_params: &Value,
+        tool_name: &str,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) {
+        let Some(entries) = state.get("progress").and_then(Value::as_array) else {
+            return;
+        };
+
+        let Some(progress_token) = request_params
+            .get("_meta")
+            .and_then(|m| m.get("progressToken"))
+        else {
+            return;
+        };
+
+        for entry in entries {
+            // Check tool filter
+            if let Some(tool_filter) = entry.get("tool").and_then(Value::as_str)
+                && tool_filter != tool_name
+            {
+                continue;
+            }
+
+            let progress = entry.get("progress").and_then(Value::as_u64).unwrap_or(0);
+            let total = entry.get("total").and_then(Value::as_u64);
+
+            let mut notif_params = json!({
+                "progressToken": progress_token.clone(),
+                "progress": progress,
+            });
+            if let Some(total_val) = total {
+                notif_params
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("total".to_string(), json!(total_val));
+            }
+
+            let notif =
+                JsonRpcNotification::new("notifications/progress", Some(notif_params.clone()));
+
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "notifications/progress".to_string(),
+                content: notif_params,
+            });
+
+            if let Err(err) = self
+                .transport
+                .send_message(&JsonRpcMessage::Notification(notif))
+                .await
+            {
+                tracing::warn!(error = %err, "failed to send progress notification");
+            }
+        }
+    }
+
+    /// Send a sampling request if the state has matching sampling entries.
+    ///
+    /// Reads `state["sampling_requests"]` array, sends `sampling/createMessage`
+    /// request. Uses first-match-wins with optional `tool` filter.
+    async fn maybe_send_sampling(
+        &self,
+        state: &Value,
+        tool_name: &str,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) {
+        let Some(entries) = state.get("sampling_requests").and_then(Value::as_array) else {
+            return;
+        };
+
+        // First-match-wins with tool filter
+        let matched = entries.iter().find(|e| {
+            e.get("tool")
+                .and_then(Value::as_str)
+                .is_none_or(|tool_filter| tool_filter == tool_name)
+        });
+
+        let Some(entry) = matched else { return };
+
+        let messages = entry.get("messages").cloned().unwrap_or_else(|| json!([]));
+        let max_tokens = entry
+            .get("maxTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(100);
+
+        let sampling_request = JsonRpcRequest {
+            jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
+            method: "sampling/createMessage".to_string(),
+            params: Some(json!({
+                "messages": messages,
+                "maxTokens": max_tokens,
+            })),
+            id: json!(format!(
+                "sampling-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            )),
+        };
+
+        let _ = event_tx.send(ProtocolEvent {
+            direction: Direction::Outgoing,
+            method: "sampling/createMessage".to_string(),
+            content: serde_json::to_value(&sampling_request).unwrap_or(Value::Null),
+        });
+
+        if let Some(resp) = self.send_server_request(&sampling_request).await {
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "sampling/createMessage".to_string(),
+                content: serde_json::to_value(&resp).unwrap_or(Value::Null),
+            });
+        }
     }
 
     /// Send an elicitation request if the state has a matching elicitation.
@@ -257,34 +483,13 @@ impl McpServerDriver {
             content: serde_json::to_value(&elicitation_request).unwrap_or(Value::Null),
         });
 
-        // Send to agent
-        if let Err(err) = self
-            .transport
-            .send_message(&JsonRpcMessage::Request(elicitation_request))
-            .await
-        {
-            tracing::warn!(error = %err, "failed to send elicitation request");
-            return;
-        }
-
-        // Wait for response
-        match self.transport.receive_message().await {
-            Ok(Some(JsonRpcMessage::Response(resp))) => {
-                let _ = event_tx.send(ProtocolEvent {
-                    direction: Direction::Incoming,
-                    method: "elicitation/create".to_string(),
-                    content: serde_json::to_value(&resp).unwrap_or(Value::Null),
-                });
-            }
-            Ok(Some(msg)) => {
-                tracing::debug!(?msg, "unexpected message during elicitation wait");
-            }
-            Ok(None) => {
-                tracing::debug!("transport EOF during elicitation wait");
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "transport error during elicitation wait");
-            }
+        // Send request and wait for response
+        if let Some(resp) = self.send_server_request(&elicitation_request).await {
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "elicitation/create".to_string(),
+                content: serde_json::to_value(&resp).unwrap_or(Value::Null),
+            });
         }
     }
 }
@@ -424,10 +629,13 @@ fn default_capabilities(state: &Value) -> Value {
     {
         caps.insert("tools".to_string(), json!({"listChanged": true}));
     }
-    if state
+    let has_resources = state
         .get("resources")
-        .is_some_and(|r| r.as_array().is_some_and(|a| !a.is_empty()))
-    {
+        .is_some_and(|r| r.as_array().is_some_and(|a| !a.is_empty()));
+    let has_templates = state
+        .get("resource_templates")
+        .is_some_and(|r| r.as_array().is_some_and(|a| !a.is_empty()));
+    if has_resources || has_templates {
         caps.insert(
             "resources".to_string(),
             json!({"subscribe": true, "listChanged": true}),
@@ -438,6 +646,12 @@ fn default_capabilities(state: &Value) -> Value {
         .is_some_and(|p| p.as_array().is_some_and(|a| !a.is_empty()))
     {
         caps.insert("prompts".to_string(), json!({"listChanged": true}));
+    }
+    if state
+        .get("logging")
+        .is_some_and(|l| l.as_array().is_some_and(|a| !a.is_empty()))
+    {
+        caps.insert("logging".to_string(), json!({}));
     }
 
     Value::Object(caps)
@@ -493,7 +707,11 @@ fn handle_resources_read(
         .and_then(Value::as_str)
         .unwrap_or_default();
 
-    let Some(resource) = find_by_field(state, "resources", "uri", uri) else {
+    // Try exact match on resources first
+    let resource = find_by_field(state, "resources", "uri", uri)
+        .or_else(|| find_matching_template(state, uri));
+
+    let Some(resource) = resource else {
         return JsonRpcResponse::error(
             request.id.clone(),
             error_codes::INVALID_PARAMS,
@@ -502,6 +720,27 @@ fn handle_resources_read(
     };
 
     dispatch_response(&request.id, &resource, extractors, params, None, false)
+}
+
+/// Handle `resources/templates/list` — return resource template definitions.
+///
+/// Implements: TJ-SPEC-013 F-001
+fn handle_resources_templates_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+    let templates = state
+        .get("resource_templates")
+        .and_then(Value::as_array)
+        .map(|templates| {
+            templates
+                .iter()
+                .map(|t| strip_internal_fields(t, &["responses", "content"]))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    JsonRpcResponse::success(
+        request.id.clone(),
+        json!({ "resourceTemplates": templates }),
+    )
 }
 
 /// Handle `prompts/list` — return prompt definitions, stripping internal fields.
@@ -1073,6 +1312,82 @@ fn find_by_field(state: &Value, collection: &str, field: &str, value: &str) -> O
         .iter()
         .find(|item| item.get(field).and_then(Value::as_str) == Some(value))
         .cloned()
+}
+
+/// Find a resource template whose `uriTemplate` matches the given URI.
+///
+/// Uses RFC 6570 Level 1 matching: literal segments must match exactly,
+/// `{var}` segments consume non-empty substrings between literals.
+fn find_matching_template(state: &Value, uri: &str) -> Option<Value> {
+    state
+        .get("resource_templates")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|t| {
+            t.get("uriTemplate")
+                .and_then(Value::as_str)
+                .is_some_and(|tmpl| matches_uri_template(tmpl, uri))
+        })
+        .cloned()
+}
+
+/// Check if a URI matches an RFC 6570 Level 1 template.
+///
+/// Splits the template on `{...}` markers and checks that literal segments
+/// appear in order with non-empty variable segments between them.
+fn matches_uri_template(template: &str, uri: &str) -> bool {
+    let mut literals = Vec::new();
+    let mut rest = template;
+
+    // Split template into literal segments around {var} markers
+    while let Some(start) = rest.find('{') {
+        literals.push(&rest[..start]);
+        let Some(end) = rest[start..].find('}') else {
+            return false; // Malformed template
+        };
+        rest = &rest[start + end + 1..];
+    }
+    literals.push(rest); // Trailing literal (may be empty)
+
+    // Match literals against the URI in order
+    let mut pos = 0;
+    for (i, literal) in literals.iter().enumerate() {
+        if literal.is_empty() {
+            if i > 0 && i < literals.len() - 1 {
+                // Variable segment between two empty literals — skip at least 1 char
+                if pos >= uri.len() {
+                    return false;
+                }
+                // No constraint — just need non-empty match for the variable
+            }
+            continue;
+        }
+        let Some(found) = uri[pos..].find(literal) else {
+            return false;
+        };
+        // For the first literal, it must start at position 0
+        if i == 0 && found != 0 {
+            return false;
+        }
+        // Variable segments (between literals) must be non-empty
+        if i > 0 && found == 0 {
+            return false;
+        }
+        pos += found + literal.len();
+    }
+
+    // If the last literal is non-empty, we've already matched to the end of it.
+    // If there's a trailing variable (last literal is empty), it must consume the rest.
+    let last_literal = literals.last().unwrap_or(&"");
+    if last_literal.is_empty() {
+        // Trailing variable — must have at least 1 char remaining
+        // (unless there's no variable at all, i.e., template is all literal)
+        if literals.len() > 1 {
+            return pos < uri.len();
+        }
+    }
+
+    pos == uri.len()
 }
 
 /// Strip internal fields from a state object for wire format.
@@ -2384,5 +2699,147 @@ mod tests {
                 _ => panic!("expected collision response"),
             }
         }
+    }
+
+    // ---- URI template matching tests ----
+
+    #[test]
+    fn uri_template_exact_match() {
+        assert!(matches_uri_template(
+            "test://resource/{id}",
+            "test://resource/123"
+        ));
+    }
+
+    #[test]
+    fn uri_template_rejects_empty_variable() {
+        assert!(!matches_uri_template(
+            "test://resource/{id}",
+            "test://resource/"
+        ));
+    }
+
+    #[test]
+    fn uri_template_rejects_wrong_prefix() {
+        assert!(!matches_uri_template(
+            "test://resource/{id}",
+            "other://resource/123"
+        ));
+    }
+
+    #[test]
+    fn uri_template_multiple_variables() {
+        assert!(matches_uri_template(
+            "test://{org}/resource/{id}",
+            "test://acme/resource/42"
+        ));
+    }
+
+    #[test]
+    fn uri_template_no_variables_exact() {
+        assert!(matches_uri_template(
+            "test://static/path",
+            "test://static/path"
+        ));
+    }
+
+    #[test]
+    fn uri_template_no_variables_mismatch() {
+        assert!(!matches_uri_template(
+            "test://static/path",
+            "test://static/other"
+        ));
+    }
+
+    #[test]
+    fn uri_template_trailing_literal() {
+        assert!(matches_uri_template(
+            "test://resource/{id}/details",
+            "test://resource/foo/details"
+        ));
+    }
+
+    // ---- Resource templates/list tests ----
+
+    #[test]
+    fn resources_templates_list_returns_templates() {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "resources/templates/list".to_string(),
+            params: None,
+            id: json!(1),
+        };
+        let state = json!({
+            "resource_templates": [
+                {
+                    "uriTemplate": "test://resource/{id}",
+                    "name": "test-tmpl",
+                    "description": "A template",
+                    "mimeType": "text/plain",
+                    "responses": [{"contents": [{"uri": "test://resource/{id}", "text": "ok"}]}]
+                }
+            ]
+        });
+
+        let resp = handle_resources_templates_list(&request, &state);
+        let result = resp.result.unwrap();
+        let templates = result["resourceTemplates"].as_array().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0]["name"], "test-tmpl");
+        // Responses should be stripped
+        assert!(templates[0].get("responses").is_none());
+    }
+
+    #[test]
+    fn resources_read_falls_back_to_template() {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "resources/read".to_string(),
+            params: Some(json!({"uri": "test://resource/42"})),
+            id: json!(1),
+        };
+        let state = json!({
+            "resources": [],
+            "resource_templates": [
+                {
+                    "uriTemplate": "test://resource/{id}",
+                    "name": "test-tmpl",
+                    "mimeType": "text/plain",
+                    "responses": [
+                        {"contents": [{"uri": "test://resource/{id}", "mimeType": "text/plain", "text": "Template content."}]}
+                    ]
+                }
+            ]
+        });
+
+        let extractors = HashMap::new();
+        let resp = handle_resources_read(&request, &state, &extractors);
+        assert!(resp.error.is_none(), "expected success but got error");
+        let result = resp.result.unwrap();
+        assert!(result["contents"].as_array().is_some());
+    }
+
+    // ---- Logging capability test ----
+
+    #[test]
+    fn default_capabilities_includes_logging() {
+        let state = json!({
+            "tools": [{"name": "t", "description": "d", "inputSchema": {}}],
+            "logging": [{"level": "info", "data": "test"}]
+        });
+
+        let caps = default_capabilities(&state);
+        assert!(caps.get("tools").is_some());
+        assert!(caps.get("logging").is_some());
+    }
+
+    #[test]
+    fn default_capabilities_includes_resource_templates() {
+        let state = json!({
+            "resource_templates": [{"uriTemplate": "test://{id}", "name": "t"}]
+        });
+
+        let caps = default_capabilities(&state);
+        assert!(caps.get("resources").is_some());
     }
 }

@@ -8,8 +8,11 @@ attack:
     state:
       capabilities:
         tools: {}
-        resources: {}
+        resources:
+          subscribe: true
+          listChanged: true
         prompts: {}
+        logging: {}
 
       tools:
         - name: "echo"
@@ -224,3 +227,48 @@ attack:
                   content:
                     type: text
                     text: "Please analyze the image above."
+
+      # --- Conformance: resource templates ---
+
+      resource_templates:
+        - uriTemplate: "test://resource/{id}"
+          name: "test-resource-template"
+          description: "Template resource for conformance testing"
+          mimeType: "text/plain"
+          responses:
+            - contents:
+                - uri: "test://resource/{id}"
+                  mimeType: "text/plain"
+                  text: "Template resource content."
+
+      # --- Conformance: logging ---
+
+      logging:
+        - level: "info"
+          data: "Tool execution in progress"
+
+      # --- Conformance: progress ---
+
+      progress:
+        - total: 10
+          progress: 5
+
+      # --- Conformance: sampling ---
+
+      sampling_requests:
+        - messages:
+            - role: "user"
+              content:
+                type: "text"
+                text: "Please analyze this request"
+          maxTokens: 100
+
+      # --- Conformance: elicitation ---
+
+      elicitations:
+        - message: "Please confirm your action"
+          requestedSchema:
+            type: object
+            properties:
+              confirmation:
+                type: string

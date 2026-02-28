@@ -28,7 +28,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::{ConnectionContext, JsonRpcMessage, Result, Transport, TransportType};
+use super::{
+    ConnectionContext, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Result, Transport,
+    TransportType,
+};
 use crate::error::TransportError;
 
 /// Configuration for the HTTP transport.
@@ -119,6 +122,10 @@ pub struct HttpTransport {
     /// RAII guard that cleans up connection tracking on drop.
     // std::sync::Mutex: same rationale as current_context — brief, synchronous access only.
     current_guard: std::sync::Mutex<Option<ConnectionGuard>>,
+    /// Pending server-initiated request/response channels keyed by JSON-RPC request ID.
+    pending_server_requests: tokio::sync::Mutex<
+        std::collections::HashMap<String, tokio::sync::oneshot::Sender<JsonRpcMessage>>,
+    >,
     _server_handle: JoinHandle<()>,
 }
 
@@ -181,6 +188,7 @@ impl HttpTransport {
                 connected_at: Instant::now(),
             }),
             current_guard: std::sync::Mutex::new(None),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             _server_handle: server_handle,
         };
 
@@ -240,6 +248,57 @@ impl HttpTransport {
         };
 
         Some((incoming.message, handle))
+    }
+
+    /// Sends a server-initiated JSON-RPC request and waits for the response.
+    ///
+    /// Unlike `send_message()` + `receive_message()`, this uses a dedicated
+    /// oneshot channel so the response is routed back without disturbing
+    /// `current_response`. This prevents the channel-swap bug where
+    /// `receive_message()` replaces the active response channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] on send failure, timeout, or if the
+    /// response channel is dropped.
+    ///
+    /// Implements: TJ-SPEC-002 F-003
+    pub async fn send_server_request(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+        let request_id =
+            serde_json::to_string(&request.id).unwrap_or_else(|_| request.id.to_string());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Register the pending request
+        {
+            let mut pending = self.pending_server_requests.lock().await;
+            pending.insert(request_id.clone(), tx);
+        }
+
+        // Send via SSE broadcast
+        let serialized = serde_json::to_string(&JsonRpcMessage::Request(request.clone()))?;
+        let _ = self.shared.sse_tx.send(serialized);
+
+        // Wait for response with 30s timeout
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok(JsonRpcMessage::Response(resp))) => Ok(resp),
+            Ok(Ok(_)) => Err(TransportError::InternalError(
+                "unexpected non-response message for server request".into(),
+            )),
+            Ok(Err(_)) => Err(TransportError::ConnectionClosed(
+                "server request response channel dropped".into(),
+            )),
+            Err(_) => {
+                // Clean up on timeout
+                self.pending_server_requests
+                    .lock()
+                    .await
+                    .remove(&request_id);
+                Err(TransportError::InternalError(
+                    "server request timed out after 30s".into(),
+                ))
+            }
+        }
     }
 }
 
@@ -388,59 +447,78 @@ impl std::fmt::Debug for HttpTransport {
 #[async_trait::async_trait]
 impl Transport for HttpTransport {
     async fn receive_message(&self) -> Result<Option<JsonRpcMessage>> {
-        let mut rx = self.incoming_rx.lock().await;
-        let incoming = rx.recv().await;
-        drop(rx);
+        loop {
+            let mut rx = self.incoming_rx.lock().await;
+            let incoming = rx.recv().await;
+            drop(rx);
 
-        let Some(req) = incoming else {
-            return Ok(None);
-        };
-
-        // Store the response sender for subsequent send_message/send_raw calls
-        {
-            let mut guard = self.current_response.lock().await;
-            *guard = Some(req.response_tx);
-        }
-
-        // Track connection here (not in the handler) to avoid a race where the
-        // handler inserts a connection and the ConnectionGuard from a previous
-        // request removes the wrong entry.
-        self.shared.connections.insert(
-            req.connection_id,
-            ConnectionState {
-                remote_addr: req.remote_addr,
-                connected_at: req.connected_at,
-                request_count: AtomicU64::new(1),
-            },
-        );
-
-        // Update connection context using the timestamp captured in the handler
-        {
-            let mut ctx = self
-                .current_context
-                .lock()
-                .map_err(|_| TransportError::InternalError("context mutex poisoned".into()))?;
-            *ctx = ConnectionContext {
-                connection_id: req.connection_id,
-                remote_addr: Some(req.remote_addr),
-                is_exclusive: false,
-                connected_at: req.connected_at,
+            let Some(req) = incoming else {
+                return Ok(None);
             };
-        }
 
-        // Create RAII guard for connection cleanup (replaces any previous guard)
-        {
-            let mut guard = self
-                .current_guard
-                .lock()
-                .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))?;
-            *guard = Some(ConnectionGuard::new(
-                Arc::clone(&self.shared.connections),
+            // Check if this is a response to a pending server-initiated request.
+            // If so, route it to the oneshot channel and loop for the next message.
+            if let JsonRpcMessage::Response(ref resp) = req.message {
+                let key = serde_json::to_string(&resp.id).unwrap_or_else(|_| resp.id.to_string());
+                let sender = {
+                    let mut pending = self.pending_server_requests.lock().await;
+                    pending.remove(&key)
+                };
+                if let Some(tx) = sender {
+                    // Route response to the waiting send_server_request() call.
+                    // Drop the POST's response_tx — we don't need to reply.
+                    let _ = tx.send(req.message);
+                    drop(req.response_tx);
+                    continue;
+                }
+            }
+
+            // Store the response sender for subsequent send_message/send_raw calls
+            {
+                let mut guard = self.current_response.lock().await;
+                *guard = Some(req.response_tx);
+            }
+
+            // Track connection here (not in the handler) to avoid a race where the
+            // handler inserts a connection and the ConnectionGuard from a previous
+            // request removes the wrong entry.
+            self.shared.connections.insert(
                 req.connection_id,
-            ));
-        }
+                ConnectionState {
+                    remote_addr: req.remote_addr,
+                    connected_at: req.connected_at,
+                    request_count: AtomicU64::new(1),
+                },
+            );
 
-        Ok(Some(req.message))
+            // Update connection context using the timestamp captured in the handler
+            {
+                let mut ctx = self
+                    .current_context
+                    .lock()
+                    .map_err(|_| TransportError::InternalError("context mutex poisoned".into()))?;
+                *ctx = ConnectionContext {
+                    connection_id: req.connection_id,
+                    remote_addr: Some(req.remote_addr),
+                    is_exclusive: false,
+                    connected_at: req.connected_at,
+                };
+            }
+
+            // Create RAII guard for connection cleanup (replaces any previous guard)
+            {
+                let mut guard = self
+                    .current_guard
+                    .lock()
+                    .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))?;
+                *guard = Some(ConnectionGuard::new(
+                    Arc::clone(&self.shared.connections),
+                    req.connection_id,
+                ));
+            }
+
+            return Ok(Some(req.message));
+        }
     }
 
     async fn send_message(&self, message: &JsonRpcMessage) -> Result<()> {
@@ -691,12 +769,16 @@ async fn handle_sse(
     let rx = shared.sse_tx.subscribe();
     let cancel = shared.cancel.clone();
 
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
+    // MCP Streamable HTTP: initial endpoint event tells the client where to POST
+    let endpoint_event: std::result::Result<SseEvent, std::convert::Infallible> =
+        Ok(SseEvent::default().event("endpoint").data("/message"));
+
+    let broadcast_stream = tokio_stream::wrappers::BroadcastStream::new(rx)
         .take_while(move |_| !cancel.is_cancelled())
         .filter_map(|result: std::result::Result<String, _>| match result {
             Ok(data) => {
                 let event: std::result::Result<SseEvent, std::convert::Infallible> =
-                    Ok(SseEvent::default().data(data));
+                    Ok(SseEvent::default().event("message").data(data));
                 Some(event)
             }
             Err(e) => {
@@ -704,6 +786,9 @@ async fn handle_sse(
                 None
             }
         });
+
+    // Chain: endpoint event first, then broadcast stream
+    let stream = tokio_stream::once(endpoint_event).chain(broadcast_stream);
 
     // Wrap in a stream that decrements the counter on drop
     let shared_for_drop = Arc::clone(&shared);
