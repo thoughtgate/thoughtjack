@@ -1706,7 +1706,8 @@ Credentials are configured via environment variables, avoiding exposure in proce
 | `THOUGHTJACK_A2A_CLIENT_AUTHORIZATION` | `a2a_client` actors | `Authorization` header value |
 | `THOUGHTJACK_AGUI_AUTHORIZATION` | `ag_ui_client` actors | `Authorization` header value |
 | `THOUGHTJACK_{MODE}_HEADER_{NAME}` | Specified mode | Arbitrary header (underscores → hyphens) |
-| `THOUGHTJACK_SEMANTIC_*` | Semantic evaluator / synthesize | Deferred to a future spec (Semantic Evaluation Engine). See TJ-SPEC-014 §4.6. |
+| `THOUGHTJACK_SYNTHESIZE_*` | Synthesize / semantic evaluator | LLM provider configuration. See TJ-SPEC-019 (Synthesize Engine) §F-008. |
+| `THOUGHTJACK_SEMANTIC_MODEL` | Semantic evaluator only | Optional model override for evaluation. See TJ-SPEC-014 §4.6. |
 
 Mode-specific env vars take precedence over `--header` for the same header name. The `--header` flag provides cross-cutting headers for all HTTP client transports.
 
@@ -1852,8 +1853,8 @@ These specs are entirely replaced. Mark `Status: Superseded by TJ-SPEC-013`.
 
 ### EC-OATF-012: `synthesize` Response — Generation Provider Not Configured
 
-**Scenario:** Response entry has `synthesize.prompt` but `THOUGHTJACK_SEMANTIC_API_KEY` is not set.
-**Expected:** Error on first synthesize attempt: `"GenerationProvider not configured — cannot synthesize response. Set THOUGHTJACK_SEMANTIC_API_KEY environment variable."`. Previous phases without synthesize work fine. The attack fails at the synthesis point, not at startup.
+**Scenario:** Response entry has `synthesize.prompt` but `THOUGHTJACK_SYNTHESIZE_API_KEY` is not set.
+**Expected:** Error on first synthesize attempt: `"GenerationProvider not configured — cannot synthesize response. Set THOUGHTJACK_SYNTHESIZE_API_KEY environment variable."`. Previous phases without synthesize work fine. The attack fails at the synthesis point, not at startup.
 
 ### EC-OATF-013: Elicitation During Tool Call — Agent Rejects Elicitation
 
