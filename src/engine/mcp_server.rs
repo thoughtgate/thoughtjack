@@ -111,6 +111,7 @@ impl McpServerDriver {
             }
             "resources/subscribe" | "resources/unsubscribe" => handle_subscribe(request),
             "completion/complete" => handle_completion(request),
+            "logging/setLevel" => handle_logging_set_level(request),
             "ping" => handle_ping(request),
             // Receive-only handlers (§4.6)
             "sampling/createMessage" => handle_sampling(request),
@@ -525,6 +526,13 @@ fn handle_prompts_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcRespon
 ///
 /// Implements: TJ-SPEC-013 F-001
 fn handle_ping(request: &JsonRpcRequest) -> JsonRpcResponse {
+    JsonRpcResponse::success(request.id.clone(), json!({}))
+}
+
+/// Handle `logging/setLevel` — accept the log level, return empty object.
+///
+/// Implements: TJ-SPEC-013 F-001
+fn handle_logging_set_level(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(request.id.clone(), json!({}))
 }
 

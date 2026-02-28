@@ -62,6 +62,61 @@ attack:
                 - type: text
                   text: "This tool intentionally returns an error for testing"
 
+        # --- Conformance: content type tests ---
+
+        - name: "test_image_content"
+          description: "Returns image content for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: image
+                  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg=="
+                  mimeType: "image/png"
+
+        - name: "test_audio_content"
+          description: "Returns audio content for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: audio
+                  data: "UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAA"
+                  mimeType: "audio/wav"
+
+        - name: "test_embedded_resource"
+          description: "Returns embedded resource content for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: resource
+                  resource:
+                    uri: "test://embedded-resource"
+                    mimeType: "text/plain"
+                    text: "This is an embedded resource content."
+
+        - name: "test_multiple_content_types"
+          description: "Returns multiple content types for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Multiple content types test:"
+                - type: image
+                  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg=="
+                  mimeType: "image/png"
+                - type: resource
+                  resource:
+                    uri: "test://mixed-content-resource"
+                    mimeType: "application/json"
+                    text: "{\"test\":\"data\",\"value\":123}"
+
       resources:
         - uri: "file:///docs/readme"
           name: "README"
@@ -70,6 +125,7 @@ attack:
           responses:
             - contents:
                 - uri: "file:///docs/readme"
+                  mimeType: "text/plain"
                   text: "ThoughtJack conformance test resource."
 
         - uri: "test://static-text"
@@ -79,7 +135,20 @@ attack:
           responses:
             - contents:
                 - uri: "test://static-text"
+                  mimeType: "text/plain"
                   text: "This is the content of the static text resource."
+
+        # --- Conformance: binary resource ---
+
+        - uri: "test://static-binary"
+          name: "static-binary"
+          description: "Binary resource for conformance testing"
+          mimeType: "image/png"
+          responses:
+            - contents:
+                - uri: "test://static-binary"
+                  mimeType: "image/png"
+                  blob: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg=="
 
       prompts:
         - name: "greet"
@@ -103,3 +172,55 @@ attack:
                   content:
                     type: text
                     text: "This is a simple prompt for testing."
+
+        # --- Conformance: advanced prompt types ---
+
+        - name: "test_prompt_with_arguments"
+          description: "Prompt with argument substitution for conformance testing"
+          arguments:
+            - name: "arg1"
+              description: "First argument"
+              required: true
+            - name: "arg2"
+              description: "Second argument"
+              required: true
+          responses:
+            - messages:
+                - role: user
+                  content:
+                    type: text
+                    text: "Prompt with arguments: arg1='{{request.arguments.arg1}}', arg2='{{request.arguments.arg2}}'"
+
+        - name: "test_prompt_with_embedded_resource"
+          description: "Prompt with embedded resource content for conformance testing"
+          arguments:
+            - name: "resourceUri"
+              description: "URI of the resource to embed"
+              required: true
+          responses:
+            - messages:
+                - role: user
+                  content:
+                    type: resource
+                    resource:
+                      uri: "test://example-resource"
+                      mimeType: "text/plain"
+                      text: "Embedded resource content for testing."
+                - role: user
+                  content:
+                    type: text
+                    text: "Please process the embedded resource above."
+
+        - name: "test_prompt_with_image"
+          description: "Prompt with image content for conformance testing"
+          responses:
+            - messages:
+                - role: user
+                  content:
+                    type: image
+                    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg=="
+                    mimeType: "image/png"
+                - role: user
+                  content:
+                    type: text
+                    text: "Please analyze the image above."
