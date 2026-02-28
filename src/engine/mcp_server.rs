@@ -201,6 +201,7 @@ impl McpServerDriver {
     /// Uses first-match-wins semantics per §4.3: iterates elicitations in
     /// order, evaluates each `when` predicate against the request context,
     /// and fires only the first match.
+    #[allow(clippy::cognitive_complexity)]
     async fn maybe_send_elicitation(
         &self,
         state: &Value,
@@ -669,6 +670,7 @@ fn handle_tasks_cancel(request: &JsonRpcRequest, state: &Value) -> JsonRpcRespon
 ///
 /// Finds matching `ResponseEntry` from the item's `responses` array,
 /// interpolates values, and validates synthesized output if applicable.
+#[allow(clippy::cognitive_complexity)]
 fn dispatch_response(
     request_id: &Value,
     item: &Value,

@@ -318,7 +318,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
 
     /// Prepare a phase: await cross-actor extractors, publish initial
     /// extractor values, and execute `on_enter` actions.
-    #[allow(clippy::needless_pass_by_ref_mut)] // &mut self needed for Send (D not Sync)
+    #[allow(clippy::needless_pass_by_ref_mut, clippy::cognitive_complexity)]
     async fn prepare_phase(&mut self, phase_index: usize) {
         if let Some(await_specs) = self.await_extractors_config.get(&phase_index) {
             for spec in await_specs {

@@ -595,6 +595,7 @@ impl A2aClientDriver {
     }
 
     /// Handles streaming `message/stream` SSE response.
+    #[allow(clippy::cognitive_complexity)]
     async fn drive_streaming(
         &mut self,
         message: Value,

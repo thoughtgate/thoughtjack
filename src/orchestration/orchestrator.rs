@@ -272,6 +272,7 @@ fn spawn_actor_tasks(
 /// - When all clients complete → start grace period → cancel servers
 /// - Zero-client fallback: all servers done → start grace period
 /// - Max-session timeout → cancel all
+#[allow(clippy::cognitive_complexity)]
 async fn wait_for_completion(
     mut join_set: JoinSet<ActorTaskResult>,
     trace: &SharedTrace,

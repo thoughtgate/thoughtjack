@@ -623,7 +623,7 @@ impl MessageMultiplexer {
 /// channel, and sends responses back via the shared writer.
 ///
 /// Implements: TJ-SPEC-018 F-003
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
 async fn server_request_handler(
     mut server_request_rx: mpsc::Receiver<ServerRequestMessage>,
     writer: Arc<tokio::sync::Mutex<Box<dyn McpClientTransportWriter>>>,

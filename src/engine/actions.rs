@@ -73,7 +73,7 @@ pub trait EntryActionSender: Send + Sync {
 /// `interpolate_template()` and `interpolate_value()`.
 ///
 /// Implements: TJ-SPEC-013 F-001
-#[allow(clippy::implicit_hasher)]
+#[allow(clippy::implicit_hasher, clippy::cognitive_complexity)]
 pub async fn execute_entry_actions(
     actions: &[oatf::Action],
     extractors: &HashMap<String, String>,

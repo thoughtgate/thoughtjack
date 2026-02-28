@@ -680,6 +680,7 @@ async fn dispatch_task_response(
 /// Resolves task content from phase state using `select_response()`.
 ///
 /// Returns `(status, history_messages, artifacts)`.
+#[allow(clippy::cognitive_complexity)]
 fn resolve_task_content(
     state: &Value,
     request_message: &Value,

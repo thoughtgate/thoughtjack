@@ -947,6 +947,7 @@ mod tests {
     // ---- SSE Event Type Mapping Tests ----
 
     #[test]
+    #[allow(clippy::cognitive_complexity)]
     fn map_all_26_event_types() {
         // Lifecycle
         assert_eq!(map_event_type("RUN_STARTED"), "run_started");
