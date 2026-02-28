@@ -14,7 +14,7 @@ Attack scenarios are authored as OATF (Open Agentic Testing Framework) documents
 
 ## Tech Stack
 
-- **Language**: Rust 2024 edition (MSRV 1.85)
+- **Language**: Rust 2024 edition (MSRV 1.88)
 - **Async runtime**: Tokio
 - **CLI**: Clap (derive mode)
 - **Serialization**: Serde (JSON + YAML)
