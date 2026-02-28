@@ -156,7 +156,8 @@ impl McpServerDriver {
         self.maybe_send_progress(state, params, tool_name, event_tx)
             .await;
         self.maybe_send_sampling(state, tool_name, event_tx).await;
-        self.maybe_send_elicitation(state, params, event_tx).await;
+        self.maybe_send_elicitation(state, params, tool_name, event_tx)
+            .await;
 
         dispatch_response(
             &request.id,
@@ -191,7 +192,8 @@ impl McpServerDriver {
         };
 
         // Elicitation interleaving (before response)
-        self.maybe_send_elicitation(state, params, event_tx).await;
+        self.maybe_send_elicitation(state, params, "", event_tx)
+            .await;
 
         dispatch_response(
             &request.id,
@@ -433,14 +435,21 @@ impl McpServerDriver {
         &self,
         state: &Value,
         request_context: &Value,
+        tool_name: &str,
         event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
     ) {
         let Some(elicitations) = state.get("elicitations").and_then(Value::as_array) else {
             return;
         };
 
-        // First-match-wins (§4.3)
+        // First-match-wins (§4.3) with optional tool filter
         let matched = elicitations.iter().find(|e| {
+            // Check tool filter first
+            if let Some(tool_filter) = e.get("tool").and_then(Value::as_str)
+                && tool_filter != tool_name
+            {
+                return false;
+            }
             let Some(when_value) = e.get("when") else {
                 return true; // No predicate → always matches
             };

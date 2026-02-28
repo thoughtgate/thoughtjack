@@ -120,6 +120,76 @@ attack:
                     mimeType: "application/json"
                     text: "{\"test\":\"data\",\"value\":123}"
 
+        # --- Conformance: interleaving tools ---
+
+        - name: "test_tool_with_logging"
+          description: "Tool that sends logging notifications during execution"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Logging tool execution completed successfully."
+
+        - name: "test_tool_with_progress"
+          description: "Tool that sends progress notifications during execution"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Progress tool execution completed successfully."
+
+        - name: "test_sampling"
+          description: "Tool that requests LLM sampling during execution"
+          inputSchema:
+            type: object
+            properties:
+              prompt:
+                type: string
+                description: "Prompt to send for sampling"
+            required: ["prompt"]
+          responses:
+            - content:
+                - type: text
+                  text: "LLM response: sampling completed"
+
+        - name: "test_elicitation"
+          description: "Tool that requests user input via elicitation"
+          inputSchema:
+            type: object
+            properties:
+              message:
+                type: string
+                description: "Message to display"
+            required: ["message"]
+          responses:
+            - content:
+                - type: text
+                  text: "User response: action accepted"
+
+        - name: "test_elicitation_sep1034_defaults"
+          description: "Tool that tests elicitation with default values per SEP-1034"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Elicitation with defaults completed."
+
+        - name: "test_elicitation_sep1330_enums"
+          description: "Tool that tests elicitation with enum schemas per SEP-1330"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Elicitation with enums completed."
+
       resources:
         - uri: "file:///docs/readme"
           name: "README"
@@ -231,44 +301,125 @@ attack:
       # --- Conformance: resource templates ---
 
       resource_templates:
-        - uriTemplate: "test://resource/{id}"
-          name: "test-resource-template"
-          description: "Template resource for conformance testing"
-          mimeType: "text/plain"
+        - uriTemplate: "test://template/{id}/data"
+          name: "test-template"
+          description: "Template resource with ID parameter"
+          mimeType: "application/json"
           responses:
             - contents:
-                - uri: "test://resource/{id}"
-                  mimeType: "text/plain"
-                  text: "Template resource content."
+                - uri: "{{request.uri}}"
+                  mimeType: "application/json"
+                  text: "{\"id\":\"123\",\"data\":\"Template resource content for 123\"}"
 
-      # --- Conformance: logging ---
+      # --- Conformance: logging (tool-filtered) ---
 
       logging:
         - level: "info"
-          data: "Tool execution in progress"
+          data: "Tool execution started"
+          tool: "test_tool_with_logging"
+        - level: "info"
+          data: "Tool processing data"
+          tool: "test_tool_with_logging"
+        - level: "info"
+          data: "Tool execution completed"
+          tool: "test_tool_with_logging"
 
-      # --- Conformance: progress ---
+      # --- Conformance: progress (tool-filtered) ---
 
       progress:
-        - total: 10
-          progress: 5
+        - progress: 0
+          total: 100
+          tool: "test_tool_with_progress"
+        - progress: 50
+          total: 100
+          tool: "test_tool_with_progress"
+        - progress: 100
+          total: 100
+          tool: "test_tool_with_progress"
 
-      # --- Conformance: sampling ---
+      # --- Conformance: sampling (tool-filtered) ---
 
       sampling_requests:
-        - messages:
+        - tool: "test_sampling"
+          messages:
             - role: "user"
               content:
                 type: "text"
                 text: "Please analyze this request"
           maxTokens: 100
 
-      # --- Conformance: elicitation ---
+      # --- Conformance: elicitation (tool-filtered) ---
 
       elicitations:
-        - message: "Please confirm your action"
+        - tool: "test_elicitation"
+          message: "Please provide your information"
           requestedSchema:
             type: object
             properties:
-              confirmation:
+              username:
                 type: string
+                description: "User's response"
+              email:
+                type: string
+                description: "User's email address"
+            required:
+              - username
+              - email
+
+        - tool: "test_elicitation_sep1034_defaults"
+          message: "Please provide information with defaults"
+          requestedSchema:
+            type: object
+            properties:
+              name:
+                type: string
+                default: "John Doe"
+              age:
+                type: integer
+                default: 30
+              score:
+                type: number
+                default: 95.5
+              status:
+                type: string
+                enum: ["active", "inactive", "pending"]
+                default: "active"
+              verified:
+                type: boolean
+                default: true
+
+        - tool: "test_elicitation_sep1330_enums"
+          message: "Please select options"
+          requestedSchema:
+            type: object
+            properties:
+              untitled_single:
+                type: string
+                enum: ["option1", "option2", "option3"]
+              titled_single:
+                type: string
+                oneOf:
+                  - const: "opt1"
+                    title: "Option 1"
+                  - const: "opt2"
+                    title: "Option 2"
+                  - const: "opt3"
+                    title: "Option 3"
+              legacy_titled:
+                type: string
+                enum: ["a", "b", "c"]
+                enumNames: ["Alpha", "Beta", "Gamma"]
+              untitled_multi:
+                type: array
+                items:
+                  type: string
+                  enum: ["x", "y", "z"]
+              titled_multi:
+                type: array
+                items:
+                  type: string
+                  anyOf:
+                    - const: "m1"
+                      title: "Multi 1"
+                    - const: "m2"
+                      title: "Multi 2"

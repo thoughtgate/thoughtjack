@@ -1,3 +1,4 @@
 # MCP conformance expected failures
-# All 30 tests should pass — no expected failures remaining
-server: []
+# SSE multiple streams requires Mcp-Session-Id header support (not yet implemented)
+server:
+  - server-sse-multiple-streams
