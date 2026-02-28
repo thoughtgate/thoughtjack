@@ -1290,6 +1290,10 @@ mod tests {
                 connected_at: Instant::now(),
             }
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     // ---- Helper to make a request ----
