@@ -825,4 +825,126 @@ mod tests {
         // Semantic with no evaluator + no messages → skipped
         assert_eq!(verdict.evaluation_summary.skipped, 1);
     }
+
+    // ── EC-VERDICT-004: CEL Evaluator Error ──────────────────────────────
+
+    fn make_expression_indicator(id: &str, cel_expression: &str) -> oatf::Indicator {
+        oatf::Indicator {
+            id: Some(id.to_string()),
+            protocol: None,
+            surface: "tool_description".to_string(),
+            description: None,
+            pattern: None,
+            expression: Some(oatf::ExpressionMatch {
+                cel: cel_expression.to_string(),
+                variables: None,
+            }),
+            semantic: None,
+            confidence: None,
+            severity: None,
+            false_positives: None,
+            extensions: std::collections::HashMap::new(),
+        }
+    }
+
+    /// A CEL evaluator that always returns an error.
+    struct ErrorCelEvaluator;
+
+    impl oatf::evaluate::CelEvaluator for ErrorCelEvaluator {
+        fn evaluate(
+            &self,
+            _expression: &str,
+            _context: &serde_json::Value,
+        ) -> Result<serde_json::Value, oatf::error::EvaluationError> {
+            Err(oatf::error::EvaluationError {
+                kind: oatf::error::EvaluationErrorKind::CelError,
+                message: "simulated CEL evaluation failure".to_string(),
+                indicator_id: None,
+            })
+        }
+    }
+
+    /// EC-VERDICT-004: CEL expression that causes evaluation error →
+    /// indicator result is `error`, not panic.
+    #[test]
+    fn ec_verdict_004_cel_evaluator_error() {
+        let indicator =
+            make_expression_indicator("ind-cel", "message.description.contains('test')");
+        let attack = make_attack(Some(vec![indicator]));
+
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({"description": "some content"}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let error_evaluator = ErrorCelEvaluator;
+        let config = EvaluationConfig {
+            cel_evaluator: Some(&error_evaluator),
+            semantic_evaluator: None,
+            no_semantic: false,
+        };
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &config, "test/1.0");
+        // CEL error → indicator result should be "error"
+        assert_eq!(
+            verdict.evaluation_summary.error, 1,
+            "CEL evaluation failure should produce error, not panic"
+        );
+        // Attack-level result should reflect the error
+        assert_eq!(verdict.result, oatf::enums::AttackResult::Error);
+    }
+
+    // ── EC-VERDICT-020: `all` Correlation With Partial Matches ───────────
+
+    /// EC-VERDICT-020: `correlation: "all"` with partial matches →
+    /// evidence lists both matching and non-matching indicators.
+    #[test]
+    fn ec_verdict_020_all_correlation_enhancement() {
+        let ind1 = make_pattern_indicator("ind-1", "malicious");
+        let ind2 = make_pattern_indicator("ind-2", "exfiltrated");
+        let ind3 = make_pattern_indicator("ind-3", "nonexistent_pattern");
+
+        let mut attack = make_attack(Some(vec![ind1, ind2, ind3]));
+        attack.correlation = Some(oatf::Correlation {
+            logic: Some(CorrelationLogic::All),
+        });
+
+        let trace = vec![make_trace_entry(
+            "actor1",
+            "tools/call",
+            serde_json::json!({"description": "malicious exfiltrated payload"}),
+        )];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        // Two matched, one not_matched under `all` → partial
+        assert_eq!(verdict.result, oatf::enums::AttackResult::Partial);
+        assert_eq!(verdict.evaluation_summary.matched, 2);
+        assert_eq!(verdict.evaluation_summary.not_matched, 1);
+
+        // Verify all indicators have verdicts
+        assert_eq!(verdict.indicator_verdicts.len(), 3);
+        // Verify the evidence: both matching and non-matching entries are present
+        let matched_count = verdict
+            .indicator_verdicts
+            .iter()
+            .filter(|v| v.result == oatf::enums::IndicatorResult::Matched)
+            .count();
+        let not_matched_count = verdict
+            .indicator_verdicts
+            .iter()
+            .filter(|v| v.result == oatf::enums::IndicatorResult::NotMatched)
+            .count();
+        assert_eq!(matched_count, 2);
+        assert_eq!(not_matched_count, 1);
+        assert!(
+            verdict
+                .indicator_verdicts
+                .iter()
+                .any(|v| v.indicator_id == "ind-3"
+                    && v.result == oatf::enums::IndicatorResult::NotMatched)
+        );
+    }
 }
