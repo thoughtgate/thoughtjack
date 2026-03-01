@@ -369,4 +369,232 @@ attack:
         let actor = engine.actor();
         assert_eq!(actor.name, "default");
     }
+
+    // ---- New tests ----
+
+    #[test]
+    fn effective_state_merges_across_phases() {
+        // In OATF, state and phases are mutually exclusive at the execution level,
+        // but each phase can have its own state. effective_state() uses
+        // compute_effective_state which walks phases 0..=current.
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: base_tool
+              description: "from phase one"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_two
+        state:
+          tools:
+            - name: override_tool
+              description: "from phase two"
+              inputSchema:
+                type: object
+"#,
+        );
+
+        // At phase 0, state should be from phase_one
+        let engine = PhaseEngine::new(doc, 0);
+        let state = engine.effective_state();
+        assert!(state.is_object());
+        let tools = state.get("tools").expect("state should have tools");
+        let tool_name = tools[0]
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        assert_eq!(tool_name, "base_tool");
+    }
+
+    #[test]
+    fn qualified_event_matches_trigger() {
+        // Qualifier separator is ':' (not brackets) — e.g., "tools/call:calculator"
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calculator
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: "tools/call:calculator"
+          count: 1
+      - name: phase_two
+"#,
+        );
+
+        let mut engine = PhaseEngine::new(doc, 0);
+
+        // Non-matching qualifier should stay
+        let non_match = oatf::ProtocolEvent {
+            event_type: "tools/call".to_string(),
+            qualifier: Some("other_tool".to_string()),
+            content: serde_json::json!({"name": "other_tool"}),
+        };
+        assert_eq!(engine.process_event(&non_match), PhaseAction::Stay);
+
+        // Matching qualifier should advance
+        let matching = oatf::ProtocolEvent {
+            event_type: "tools/call".to_string(),
+            qualifier: Some("calculator".to_string()),
+            content: serde_json::json!({"name": "calculator"}),
+        };
+        assert_eq!(engine.process_event(&matching), PhaseAction::Advance);
+    }
+
+    #[test]
+    fn count_threshold_exact() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: test_tool
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 3
+      - name: phase_two
+"#,
+        );
+
+        let mut engine = PhaseEngine::new(doc, 0);
+        let event = oatf::ProtocolEvent {
+            event_type: "tools/call".to_string(),
+            qualifier: None,
+            content: serde_json::json!({}),
+        };
+
+        // Events 1 and 2 should stay
+        assert_eq!(engine.process_event(&event), PhaseAction::Stay);
+        assert_eq!(engine.process_event(&event), PhaseAction::Stay);
+        // Event 3 should advance
+        assert_eq!(engine.process_event(&event), PhaseAction::Advance);
+    }
+
+    #[test]
+    fn advance_beyond_last_phase_wraps_safely() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: test_tool
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_two
+"#,
+        );
+
+        let mut engine = PhaseEngine::new(doc, 0);
+        // Advance to phase_two (terminal)
+        let new_idx = engine.advance_phase();
+        assert_eq!(new_idx, 1);
+        assert!(engine.is_terminal());
+
+        // Terminal phase — process_event should Stay (no trigger)
+        let event = oatf::ProtocolEvent {
+            event_type: "tools/call".to_string(),
+            qualifier: None,
+            content: serde_json::json!({}),
+        };
+        assert_eq!(engine.process_event(&event), PhaseAction::Stay);
+    }
+
+    #[test]
+    fn effective_state_chain_three_phases() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_zero
+        state:
+          tools:
+            - name: tool_0
+              description: "phase zero tool"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_one
+        state:
+          tools:
+            - name: tool_1
+              description: "phase one tool"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_two
+        state:
+          tools:
+            - name: tool_2
+              description: "phase two tool"
+              inputSchema:
+                type: object
+"#,
+        );
+
+        let mut engine = PhaseEngine::new(doc, 0);
+
+        // Phase 0 state
+        let state0 = engine.effective_state();
+        let tools0 = state0.get("tools").unwrap();
+        assert_eq!(tools0[0]["name"], "tool_0");
+
+        // Advance to phase 1
+        engine.advance_phase();
+        let state1 = engine.effective_state();
+        let tools1 = state1.get("tools").unwrap();
+        assert_eq!(tools1[0]["name"], "tool_1");
+
+        // Advance to phase 2
+        engine.advance_phase();
+        let state2 = engine.effective_state();
+        let tools2 = state2.get("tools").unwrap();
+        assert_eq!(tools2[0]["name"], "tool_2");
+    }
 }
