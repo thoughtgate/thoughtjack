@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use oatf::MatchPredicate;
@@ -26,6 +27,7 @@ use oatf::primitives::{
 };
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::EngineError;
@@ -85,6 +87,76 @@ impl McpServerDriver {
         McpTransportEntryActionSender {
             transport: Arc::clone(&self.transport),
             next_request_id: AtomicU64::new(1_000_000),
+        }
+    }
+
+    /// Observe interleaved messages while a spawned delivery task runs.
+    ///
+    /// Re-emits incoming notifications and requests as protocol events so
+    /// that the `PhaseLoop` can evaluate triggers and capture extractors
+    /// even while a `slow_stream` delivery is dripping bytes.
+    ///
+    /// Returns `Some(DriveResult::Complete)` when the driver should exit
+    /// early (cancellation or EOF), or `None` when delivery finished
+    /// normally and the caller should continue.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngineError::Driver` on transport or delivery task failure.
+    async fn observe_during_delivery(
+        &self,
+        mut handle: JoinHandle<Result<(), EngineError>>,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<DriveResult>, EngineError> {
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    handle.abort();
+                    return Ok(Some(DriveResult::Complete));
+                }
+                result = &mut handle => {
+                    return match result {
+                        Ok(Ok(())) => Ok(None),
+                        Ok(Err(e)) => Err(e),
+                        Err(e) => Err(EngineError::Driver(
+                            format!("delivery task panicked: {e}")
+                        )),
+                    };
+                }
+                msg = self.transport.receive_message() => {
+                    match msg {
+                        Ok(Some(JsonRpcMessage::Notification(notif))) => {
+                            let _ = event_tx.send(ProtocolEvent {
+                                direction: Direction::Incoming,
+                                method: notif.method.clone(),
+                                content: notif.params.unwrap_or(Value::Null),
+                            });
+                        }
+                        Ok(Some(JsonRpcMessage::Request(req))) => {
+                            let _ = event_tx.send(ProtocolEvent {
+                                direction: Direction::Incoming,
+                                method: req.method.clone(),
+                                content: req.params.clone().unwrap_or(Value::Null),
+                            });
+                        }
+                        Ok(Some(JsonRpcMessage::Response(resp))) => {
+                            tracing::debug!(id = ?resp.id, "unexpected response from agent during delivery");
+                        }
+                        Ok(None) => {
+                            handle.abort();
+                            return Ok(Some(DriveResult::Complete));
+                        }
+                        Err(err) => {
+                            handle.abort();
+                            return Err(EngineError::Driver(
+                                format!("transport error during delivery: {err}")
+                            ));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -588,7 +660,17 @@ impl PhaseDriver for McpServerDriver {
 
                             // Apply delivery
                             let response_msg = JsonRpcMessage::Response(response.clone());
-                            apply_delivery(&self.transport, state, &response_msg).await?;
+                            let pending = apply_delivery(&self.transport, state, &response_msg).await?;
+
+                            // If delivery was spawned (slow_stream), observe
+                            // interleaved messages while waiting for it to finish.
+                            if let Some(handle) = pending
+                                && let Some(result) = self.observe_during_delivery(
+                                    handle, &event_tx, &cancel,
+                                ).await?
+                            {
+                                return Ok(result);
+                            }
 
                             // Emit outgoing event
                             let outgoing_content = response.result.clone().unwrap_or_else(||
@@ -1038,6 +1120,11 @@ fn dispatch_response(
 /// delivery mode: `normal`, `delayed`, `slow_stream`, or `unbounded`.
 /// Parameters are read from `state["behavior"]["parameters"]` per §5.1.
 ///
+/// For `slow_stream`, the byte-drip loop is spawned into a background
+/// task and the handle is returned so the caller can continue receiving
+/// messages while delivery is in progress.  All other modes send
+/// synchronously and return `None`.
+///
 /// # Errors
 ///
 /// Returns `EngineError::Driver` on transport failure.
@@ -1045,7 +1132,7 @@ async fn apply_delivery(
     transport: &Arc<dyn Transport>,
     state: &Value,
     response_msg: &JsonRpcMessage,
-) -> Result<(), EngineError> {
+) -> Result<Option<JoinHandle<Result<(), EngineError>>>, EngineError> {
     let delivery = state
         .get("behavior")
         .and_then(|b| b.get("delivery"))
@@ -1060,11 +1147,12 @@ async fn apply_delivery(
                 .and_then(|p| p.get("delay_ms"))
                 .and_then(Value::as_u64)
                 .unwrap_or(1000);
-            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             transport
                 .send_message(response_msg)
                 .await
                 .map_err(|e| EngineError::Driver(format!("send error: {e}")))?;
+            Ok(None)
         }
         "slow_stream" => {
             let bytes = serde_json::to_vec(response_msg)
@@ -1073,18 +1161,22 @@ async fn apply_delivery(
                 .and_then(|p| p.get("byte_delay_ms"))
                 .and_then(Value::as_u64)
                 .unwrap_or(50);
-            for byte in &bytes {
+            let transport = Arc::clone(transport);
+            Ok(Some(tokio::spawn(async move {
+                for byte in &bytes {
+                    transport
+                        .send_raw(&[*byte])
+                        .await
+                        .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
+                    tokio::time::sleep(Duration::from_millis(byte_delay_ms)).await;
+                }
+                // Send newline terminator for NDJSON framing
                 transport
-                    .send_raw(&[*byte])
+                    .send_raw(b"\n")
                     .await
                     .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
-                tokio::time::sleep(tokio::time::Duration::from_millis(byte_delay_ms)).await;
-            }
-            // Send newline terminator for NDJSON framing
-            transport
-                .send_raw(b"\n")
-                .await
-                .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
+                Ok(())
+            })))
         }
         "unbounded" => {
             let max_line_length = u64_to_usize(
@@ -1104,6 +1196,7 @@ async fn apply_delivery(
                 .send_message(&inflated)
                 .await
                 .map_err(|e| EngineError::Driver(format!("send error: {e}")))?;
+            Ok(None)
         }
         _ => {
             if delivery != "normal" {
@@ -1113,10 +1206,9 @@ async fn apply_delivery(
                 .send_message(response_msg)
                 .await
                 .map_err(|e| EngineError::Driver(format!("send error: {e}")))?;
+            Ok(None)
         }
     }
-
-    Ok(())
 }
 
 /// Inflate a response message to create an oversized payload.
