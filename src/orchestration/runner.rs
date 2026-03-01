@@ -904,6 +904,169 @@ attack:
     }
 
     #[tokio::test]
+    async fn mcp_server_stdio_runs_to_completion() {
+        // mcp_server actor with terminal phase, no bind address (stdio mode).
+        // Cancel after short delay → Result::Ok with Cancelled termination.
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+        };
+
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        // Cancel after short delay to avoid blocking on stdin
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_clone.cancel();
+        });
+
+        let result = run_actor(
+            0,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            cancel,
+            None,
+            None,
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_ok(), "Expected Ok, got: {result:?}");
+        let actor_result = result.unwrap();
+        assert_eq!(actor_result.actor_name, "default");
+    }
+
+    #[test]
+    fn build_actor_config_parses_multiple_headers() {
+        let args = RunArgs {
+            config: std::path::PathBuf::from("test.yaml"),
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(300)),
+            output: None,
+            header: vec![
+                "Authorization: Bearer token123".to_string(),
+                "X-Custom: value with : colons".to_string(),
+                "Accept : application/json".to_string(),
+            ],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        };
+
+        let config = build_actor_config(&args);
+        assert_eq!(config.headers.len(), 3);
+        // Standard header
+        assert_eq!(config.headers[0].0, "Authorization");
+        assert_eq!(config.headers[0].1, "Bearer token123");
+        // Value with extra colons — splitn(2, ':') keeps them in value
+        assert_eq!(config.headers[1].0, "X-Custom");
+        assert_eq!(config.headers[1].1, "value with : colons");
+        // Extra spaces — trimmed
+        assert_eq!(config.headers[2].0, "Accept");
+        assert_eq!(config.headers[2].1, "application/json");
+    }
+
+    #[test]
+    fn build_actor_config_header_without_colon_skipped() {
+        let args = RunArgs {
+            config: std::path::PathBuf::from("test.yaml"),
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(300)),
+            output: None,
+            header: vec![
+                "NoColonHere".to_string(),
+                "Valid: header".to_string(),
+            ],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        };
+
+        let config = build_actor_config(&args);
+        // "NoColonHere" has no colon, should be silently skipped
+        assert_eq!(config.headers.len(), 1);
+        assert_eq!(config.headers[0].0, "Valid");
+        assert_eq!(config.headers[0].1, "header");
+    }
+
+    #[test]
+    fn build_actor_config_defaults() {
+        let args = RunArgs {
+            config: std::path::PathBuf::from("test.yaml"),
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(300)),
+            output: None,
+            header: vec![],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        };
+
+        let config = build_actor_config(&args);
+        assert!(config.mcp_server_bind.is_none());
+        assert!(config.agui_client_endpoint.is_none());
+        assert!(config.a2a_server_bind.is_none());
+        assert!(config.a2a_client_endpoint.is_none());
+        assert!(config.mcp_client_command.is_none());
+        assert!(config.mcp_client_args.is_none());
+        assert!(config.mcp_client_endpoint.is_none());
+        assert!(!config.raw_synthesize);
+        assert!(config.headers.is_empty());
+        assert!(config.grace_period.is_none());
+    }
+
+    #[tokio::test]
     async fn mcp_client_requires_command_or_endpoint() {
         let yaml = r#"
 oatf: "0.1"
