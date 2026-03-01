@@ -346,4 +346,50 @@ mod tests {
         assert!(ctx.remote_addr.is_none());
         assert!(ctx.is_exclusive);
     }
+
+    // ---- New tests ----
+
+    #[test]
+    fn sanitize_for_log_truncates_long_input() {
+        let long_input = "a".repeat(500);
+        let sanitized = sanitize_for_log(&long_input, 200);
+        assert_eq!(sanitized.len(), 200);
+        assert!(sanitized.chars().all(|c| c == 'a'));
+    }
+
+    #[test]
+    fn sanitize_for_log_replaces_control_chars() {
+        let input = "hello\x00world\x0Bfoo\tbar";
+        let sanitized = sanitize_for_log(input, 200);
+        // \x00 and \x0B are control chars (replaced), \t is preserved
+        assert!(sanitized.contains('\u{FFFD}'));
+        assert!(sanitized.contains('\t'));
+        assert!(sanitized.contains("hello"));
+    }
+
+    #[test]
+    fn sanitize_for_log_empty_input() {
+        let sanitized = sanitize_for_log("", 200);
+        assert!(sanitized.is_empty());
+    }
+
+    #[test]
+    fn with_config_applies_custom_values() {
+        let config = StdioConfig {
+            max_message_size: 1024,
+            buffer_size: 512,
+        };
+        let transport = StdioTransport::with_config(config);
+        assert_eq!(transport.config.max_message_size, 1024);
+        assert_eq!(transport.config.buffer_size, 512);
+    }
+
+    #[test]
+    fn connection_context_returns_stdio_context() {
+        let transport = StdioTransport::new();
+        let ctx = transport.connection_context();
+        assert_eq!(ctx.connection_id, 0);
+        assert!(ctx.remote_addr.is_none());
+        assert!(ctx.is_exclusive);
+    }
 }
