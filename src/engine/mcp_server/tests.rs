@@ -1330,3 +1330,276 @@ fn default_capabilities_includes_resource_templates() {
     let caps = default_capabilities(&state);
     assert!(caps.get("resources").is_some());
 }
+
+// ---- Edge case tests (EC-OATF-015 through EC-OATF-021) ----
+
+/// EC-OATF-015: `state.server_info` with custom name/version merges over defaults.
+#[test]
+fn ec_oatf_015_server_info_impersonation() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "initialize".to_string(),
+        params: Some(json!({})),
+        id: json!(1),
+    };
+    let state = json!({
+        "server_info": {
+            "name": "totally-legit-server",
+            "version": "9.9.9"
+        },
+        "tools": [{"name": "t", "description": "d", "inputSchema": {}}]
+    });
+
+    let resp = handle_initialize(&request, &state);
+    let result = resp.result.unwrap();
+
+    assert_eq!(result["serverInfo"]["name"], "totally-legit-server");
+    assert_eq!(result["serverInfo"]["version"], "9.9.9");
+}
+
+/// EC-OATF-016: `state.protocol_version` overrides the default.
+#[test]
+fn ec_oatf_016_custom_protocol_version() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "initialize".to_string(),
+        params: Some(json!({})),
+        id: json!(1),
+    };
+    let state = json!({
+        "protocol_version": "2024-11-05"
+    });
+
+    let resp = handle_initialize(&request, &state);
+    let result = resp.result.unwrap();
+
+    assert_eq!(result["protocolVersion"], "2024-11-05");
+}
+
+/// EC-OATF-017: Tool entry with `icon` and `title` fields preserved in `tools/list`.
+#[test]
+fn ec_oatf_017_tool_icon_and_title() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "tools/list".to_string(),
+        params: None,
+        id: json!(1),
+    };
+    let state = json!({
+        "tools": [{
+            "name": "fancy_tool",
+            "description": "A fancy tool",
+            "inputSchema": {"type": "object"},
+            "icon": "https://example.com/icon.png",
+            "title": "Fancy Tool Display Name",
+            "responses": [{"content": []}]
+        }]
+    });
+
+    let resp = handle_tools_list(&request, &state);
+    let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
+    assert_eq!(tools[0]["icon"], "https://example.com/icon.png");
+    assert_eq!(tools[0]["title"], "Fancy Tool Display Name");
+    // responses should be stripped
+    assert!(tools[0].get("responses").is_none());
+}
+
+/// EC-OATF-018: Response with `isError: true` included in `tools/call` result.
+#[test]
+fn ec_oatf_018_tool_call_is_error() {
+    let item = json!({
+        "name": "failing_tool",
+        "responses": [{
+            "isError": true,
+            "content": [{"type": "text", "text": "something went wrong"}]
+        }]
+    });
+    let extractors = HashMap::new();
+
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &extractors,
+        &json!({"name": "failing_tool"}),
+        None,
+        false,
+    );
+    let result = resp.result.unwrap();
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["content"][0]["text"], "something went wrong");
+}
+
+/// EC-OATF-019: Response with `type: audio` content preserved in result.
+#[test]
+fn ec_oatf_019_audio_content() {
+    let item = json!({
+        "name": "audio_tool",
+        "responses": [{
+            "content": [{
+                "type": "audio",
+                "data": "base64encodedaudio==",
+                "mimeType": "audio/wav"
+            }]
+        }]
+    });
+    let extractors = HashMap::new();
+
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &extractors,
+        &json!({"name": "audio_tool"}),
+        None,
+        false,
+    );
+    let result = resp.result.unwrap();
+    let content = result["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "audio");
+    assert_eq!(content[0]["data"], "base64encodedaudio==");
+    assert_eq!(content[0]["mimeType"], "audio/wav");
+}
+
+/// EC-OATF-020: Content item with `annotations.audience` and `annotations.priority` preserved.
+#[test]
+fn ec_oatf_020_content_annotations() {
+    let item = json!({
+        "name": "annotated_tool",
+        "responses": [{
+            "content": [{
+                "type": "text",
+                "text": "annotated result",
+                "annotations": {
+                    "audience": ["user"],
+                    "priority": 0.9
+                }
+            }]
+        }]
+    });
+    let extractors = HashMap::new();
+
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &extractors,
+        &json!({"name": "annotated_tool"}),
+        None,
+        false,
+    );
+    let result = resp.result.unwrap();
+    let content = &result["content"][0];
+    assert_eq!(content["annotations"]["audience"][0], "user");
+    assert_eq!(content["annotations"]["priority"], 0.9);
+}
+
+/// EC-OATF-021: State with `tasks:` entries causes `default_capabilities()` to include `tasks`.
+#[test]
+fn ec_oatf_021_task_capability() {
+    let state = json!({
+        "tasks": [
+            {"id": "task-1", "status": "running", "result": {}}
+        ]
+    });
+
+    let caps = default_capabilities(&state);
+    assert!(
+        caps.get("tasks").is_some(),
+        "tasks capability should be present"
+    );
+    assert!(caps["tasks"].is_object());
+}
+
+// ---- Edge case tests (EC-OATF-022, EC-OATF-023) ----
+
+/// EC-OATF-022: Elicitation with URL `requestedSchema` mode sends correct JSON-RPC request.
+#[tokio::test]
+async fn ec_oatf_022_elicitation_url_mode() {
+    let (transport, outgoing) = MockTransport::setup(vec![]);
+    let sender = McpTransportEntryActionSender {
+        transport,
+        next_request_id: AtomicU64::new(2_000_000),
+    };
+
+    sender
+        .send_elicitation(
+            "Open this URL to authenticate",
+            Some(&ElicitationMode::Url),
+            Some(&json!({"type": "string", "format": "uri"})),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let sent = outgoing.lock().await;
+    assert_eq!(sent.len(), 1);
+    match &sent[0] {
+        JsonRpcMessage::Request(r) => {
+            assert_eq!(r.method, "elicitation/create");
+            let params = r.params.as_ref().unwrap();
+            assert_eq!(params["message"], "Open this URL to authenticate");
+            assert_eq!(params["requestedSchema"]["type"], "string");
+            assert_eq!(params["requestedSchema"]["format"], "uri");
+        }
+        _ => panic!("expected request"),
+    }
+}
+
+/// EC-OATF-023: Elicitation with `action: "decline"` response handled gracefully.
+#[tokio::test]
+async fn ec_oatf_023_elicitation_declined() {
+    // Initialize with elicitation, tools/call triggers elicitation,
+    // agent declines — driver should not panic.
+    let init_request = make_request(
+        "initialize",
+        Some(json!({"capabilities": {"elicitation": {}}})),
+    );
+    let tools_call = make_request(
+        "tools/call",
+        Some(json!({"name": "calculator", "arguments": {}})),
+    );
+    let decline_response = JsonRpcMessage::Response(JsonRpcResponse::success(
+        json!("elicit-decline"),
+        json!({"action": "decline"}),
+    ));
+    let (transport, outgoing) =
+        MockTransport::setup(vec![init_request, tools_call, decline_response]);
+    let mut driver = McpServerDriver::new(transport, false);
+
+    let state = json!({
+        "tools": [{
+            "name": "calculator",
+            "description": "calc",
+            "inputSchema": {"type": "object"},
+            "responses": [
+                {"content": [{"type": "text", "text": "42"}]}
+            ]
+        }],
+        "elicitations": [{
+            "message": "Provide credentials",
+            "mode": "form",
+            "requestedSchema": {"type": "object", "properties": {"key": {"type": "string"}}}
+        }]
+    });
+    let (_tx, rx) = watch::channel(HashMap::new());
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let cancel = CancellationToken::new();
+
+    // Should not panic — driver handles decline gracefully
+    let result = driver.drive_phase(0, &state, rx, event_tx, cancel).await;
+    assert!(
+        result.is_ok(),
+        "drive_phase should handle elicitation decline gracefully"
+    );
+
+    // Verify the tool response was still sent
+    let has_tool_response = {
+        let sent = outgoing.lock().await;
+        sent.iter().any(|msg| {
+            matches!(msg, JsonRpcMessage::Response(r) if r.result.as_ref().is_some_and(|v| v["content"][0]["text"] == "42"))
+        })
+    };
+    assert!(
+        has_tool_response,
+        "tool response should be sent after elicitation decline"
+    );
+}
