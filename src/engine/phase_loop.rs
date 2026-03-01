@@ -1105,10 +1105,7 @@ attack:
 
         let merged = build_interpolation_extractors(&engine, &store);
         assert_eq!(merged.get("local_key"), Some(&"local_val".to_string()));
-        assert_eq!(
-            merged.get("other_actor.token"),
-            Some(&"abc123".to_string())
-        );
+        assert_eq!(merged.get("other_actor.token"), Some(&"abc123".to_string()));
     }
 
     #[tokio::test]

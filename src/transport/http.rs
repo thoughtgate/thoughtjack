@@ -1518,7 +1518,9 @@ mod tests {
         // The handler sends to a channel that nobody reads, so it may timeout
         // or return an error status.
         assert!(
-            resp.status().is_client_error() || resp.status().is_server_error() || resp.status().is_success(),
+            resp.status().is_client_error()
+                || resp.status().is_server_error()
+                || resp.status().is_success(),
             "Expected a valid HTTP status, got: {}",
             resp.status()
         );

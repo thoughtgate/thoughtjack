@@ -1015,10 +1015,7 @@ attack:
             grace_period: None,
             max_session: humantime::Duration::from(Duration::from_secs(300)),
             output: None,
-            header: vec![
-                "NoColonHere".to_string(),
-                "Valid: header".to_string(),
-            ],
+            header: vec!["NoColonHere".to_string(), "Valid: header".to_string()],
             no_semantic: false,
             raw_synthesize: false,
             metrics_port: None,
