@@ -605,8 +605,15 @@ mod tests {
 
     #[test]
     fn ec_verdict_012_permission_denied() {
+        // Write a dummy file, then try to write a verdict *inside* it.
+        // create_dir_all fails when a path component is a regular file,
+        // regardless of privilege level (works even as root).
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        let impossible = blocker.join("subdir").join("verdict.json");
         let output = make_verdict_output("exploited");
-        let result = write_json_verdict(&output, "/nonexistent_root_path/verdict.json");
+        let result = write_json_verdict(&output, impossible.to_str().unwrap());
         assert!(result.is_err());
     }
 
