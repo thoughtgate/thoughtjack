@@ -5,16 +5,16 @@ use serde_json::Value;
 use super::helpers::u64_to_usize;
 
 /// Maximum nesting depth for generated JSON to prevent stack overflow.
-pub(super) const MAX_GENERATION_DEPTH: usize = 1000;
+pub const MAX_GENERATION_DEPTH: usize = 1000;
 
 /// Maximum payload size for generated content (50 MB).
-pub(super) const MAX_GENERATION_SIZE: usize = 50 * 1024 * 1024;
+pub const MAX_GENERATION_SIZE: usize = 50 * 1024 * 1024;
 
 /// Apply payload generation to content items that have a `generate` block.
 ///
 /// For each content item with a `generate` key, replaces the `text` field
 /// with the generated payload and removes the `generate` key.
-pub(super) fn apply_generation(content: &mut Value) {
+pub fn apply_generation(content: &mut Value) {
     if let Some(items) = content.get_mut("content").and_then(Value::as_array_mut) {
         for item in items {
             if let Some(generator) = item.get("generate").cloned() {
@@ -41,7 +41,7 @@ pub(super) fn apply_generation(content: &mut Value) {
 }
 
 /// Generate deeply nested JSON: `{"a":{"a":...}}` to the specified depth.
-pub(super) fn generate_nested_json(params: Option<&Value>, _seed: Option<u64>) -> String {
+pub fn generate_nested_json(params: Option<&Value>, _seed: Option<u64>) -> String {
     let depth = u64_to_usize(
         params
             .and_then(|p| p.get("depth"))
@@ -64,7 +64,7 @@ pub(super) fn generate_nested_json(params: Option<&Value>, _seed: Option<u64>) -
 /// Generate deterministic pseudo-random bytes, hex-encoded.
 ///
 /// Uses a simple LCG (no `rand` dependency) seeded by the provided seed.
-pub(super) fn generate_random_bytes(params: Option<&Value>, seed: Option<u64>) -> String {
+pub fn generate_random_bytes(params: Option<&Value>, seed: Option<u64>) -> String {
     let size = u64_to_usize(
         params
             .and_then(|p| p.get("size"))
@@ -89,7 +89,7 @@ pub(super) fn generate_random_bytes(params: Option<&Value>, seed: Option<u64>) -
 }
 
 /// Generate an unbounded single-line string of repeated characters.
-pub(super) fn generate_unbounded_line(params: Option<&Value>, _seed: Option<u64>) -> String {
+pub fn generate_unbounded_line(params: Option<&Value>, _seed: Option<u64>) -> String {
     let length = u64_to_usize(
         params
             .and_then(|p| p.get("length"))
@@ -111,7 +111,7 @@ pub(super) fn generate_unbounded_line(params: Option<&Value>, _seed: Option<u64>
 ///
 /// Categories: RTL overrides, zero-width characters, combining marks,
 /// emoji sequences, and other edge-case Unicode.
-pub(super) fn generate_unicode_stress(params: Option<&Value>, _seed: Option<u64>) -> String {
+pub fn generate_unicode_stress(params: Option<&Value>, _seed: Option<u64>) -> String {
     let category = params
         .and_then(|p| p.get("category"))
         .and_then(Value::as_str)

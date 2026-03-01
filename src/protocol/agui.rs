@@ -937,6 +937,27 @@ pub fn create_agui_driver(
 }
 
 // ============================================================================
+// Fuzz API
+// ============================================================================
+
+/// Fuzz-only entry point for the AG-UI SSE parser.
+///
+/// Feeds arbitrary bytes into an `SseParser` and returns all parsed events.
+/// Each event is either `Ok(AgUiEvent)` (a fully parsed AG-UI event with
+/// mapped type and JSON data) or `Err(String)` for parse failures.
+///
+/// Implements: TJ-SPEC-016 F-001
+#[cfg(fuzzing)]
+pub fn fuzz_agui_sse_feed(bytes: &[u8]) -> Vec<Result<(String, serde_json::Value), String>> {
+    let mut parser = SseParser::new();
+    parser
+        .feed(bytes)
+        .into_iter()
+        .map(|r| r.map(|e| (e.event_type, e.data)))
+        .collect()
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

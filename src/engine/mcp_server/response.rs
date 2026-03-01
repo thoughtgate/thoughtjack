@@ -14,7 +14,7 @@ use super::generation::apply_generation;
 /// Finds matching `ResponseEntry` from the item's `responses` array,
 /// interpolates values, and validates synthesized output if applicable.
 #[allow(clippy::cognitive_complexity)]
-pub(super) fn dispatch_response(
+pub fn dispatch_response(
     request_id: &Value,
     item: &Value,
     extractors: &HashMap<String, String>,

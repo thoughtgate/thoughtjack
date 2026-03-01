@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 /// Find an item by `name` field in a state array.
-pub(super) fn find_by_name(state: &Value, collection: &str, name: &str) -> Option<Value> {
+pub fn find_by_name(state: &Value, collection: &str, name: &str) -> Option<Value> {
     state
         .get(collection)
         .and_then(Value::as_array)?
@@ -11,7 +11,7 @@ pub(super) fn find_by_name(state: &Value, collection: &str, name: &str) -> Optio
 }
 
 /// Find an item by an arbitrary field in a state array.
-pub(super) fn find_by_field(
+pub fn find_by_field(
     state: &Value,
     collection: &str,
     field: &str,
@@ -29,7 +29,7 @@ pub(super) fn find_by_field(
 ///
 /// Uses RFC 6570 Level 1 matching: literal segments must match exactly,
 /// `{var}` segments consume non-empty substrings between literals.
-pub(super) fn find_matching_template(state: &Value, uri: &str) -> Option<Value> {
+pub fn find_matching_template(state: &Value, uri: &str) -> Option<Value> {
     state
         .get("resource_templates")
         .and_then(Value::as_array)?
@@ -46,7 +46,7 @@ pub(super) fn find_matching_template(state: &Value, uri: &str) -> Option<Value> 
 ///
 /// Splits the template on `{...}` markers and checks that literal segments
 /// appear in order with non-empty variable segments between them.
-pub(super) fn matches_uri_template(template: &str, uri: &str) -> bool {
+pub fn matches_uri_template(template: &str, uri: &str) -> bool {
     let mut literals = Vec::new();
     let mut rest = template;
 
@@ -102,7 +102,7 @@ pub(super) fn matches_uri_template(template: &str, uri: &str) -> bool {
 }
 
 /// Strip internal fields from a state object for wire format.
-pub(super) fn strip_internal_fields(value: &Value, fields: &[&str]) -> Value {
+pub fn strip_internal_fields(value: &Value, fields: &[&str]) -> Value {
     let Some(obj) = value.as_object() else {
         return value.clone();
     };
@@ -114,6 +114,6 @@ pub(super) fn strip_internal_fields(value: &Value, fields: &[&str]) -> Value {
 }
 
 /// Saturating conversion from `u64` to `usize` for parameter parsing.
-pub(super) fn u64_to_usize(v: u64) -> usize {
+pub fn u64_to_usize(v: u64) -> usize {
     usize::try_from(v).unwrap_or(usize::MAX)
 }

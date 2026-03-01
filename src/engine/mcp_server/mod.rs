@@ -14,9 +14,25 @@
 
 mod behavior;
 mod driver;
+
+#[cfg(fuzzing)]
+pub mod generation;
+#[cfg(not(fuzzing))]
 mod generation;
+
+#[cfg(fuzzing)]
+pub mod handlers;
+#[cfg(not(fuzzing))]
 mod handlers;
+
+#[cfg(fuzzing)]
+pub mod helpers;
+#[cfg(not(fuzzing))]
 mod helpers;
+
+#[cfg(fuzzing)]
+pub mod response;
+#[cfg(not(fuzzing))]
 mod response;
 
 #[cfg(test)]

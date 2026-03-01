@@ -20,7 +20,7 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 /// server impersonation attacks (EC-OATF-015).
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_initialize(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+pub fn handle_initialize(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let capabilities = state
         .get("capabilities")
         .cloned()
@@ -65,7 +65,7 @@ pub(super) fn handle_initialize(request: &JsonRpcRequest, state: &Value) -> Json
 ///
 /// Detects non-empty collections in state and emits the corresponding
 /// MCP 2025-11-25 capability structures, including nested `tasks.requests`.
-pub(super) fn default_capabilities(state: &Value) -> Value {
+pub fn default_capabilities(state: &Value) -> Value {
     let mut caps = serde_json::Map::new();
 
     if state
@@ -127,7 +127,7 @@ pub(super) fn default_capabilities(state: &Value) -> Value {
 /// Handle `tools/list` — return tool definitions, stripping internal fields.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_tools_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+pub fn handle_tools_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let tools = state
         .get("tools")
         .and_then(Value::as_array)
@@ -145,7 +145,7 @@ pub(super) fn handle_tools_list(request: &JsonRpcRequest, state: &Value) -> Json
 /// Handle `resources/list` — return resource definitions, stripping internal fields.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_resources_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+pub fn handle_resources_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let resources = state
         .get("resources")
         .and_then(Value::as_array)
@@ -163,7 +163,7 @@ pub(super) fn handle_resources_list(request: &JsonRpcRequest, state: &Value) -> 
 /// Handle `resources/read` — dispatch response from resource state.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_resources_read(
+pub fn handle_resources_read(
     request: &JsonRpcRequest,
     state: &Value,
     extractors: &HashMap<String, String>,
@@ -200,7 +200,7 @@ pub(super) fn handle_resources_read(
 /// Handle `resources/templates/list` — return resource template definitions.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_resources_templates_list(
+pub fn handle_resources_templates_list(
     request: &JsonRpcRequest,
     state: &Value,
 ) -> JsonRpcResponse {
@@ -224,7 +224,7 @@ pub(super) fn handle_resources_templates_list(
 /// Handle `prompts/list` — return prompt definitions, stripping internal fields.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_prompts_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+pub fn handle_prompts_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let prompts = state
         .get("prompts")
         .and_then(Value::as_array)
@@ -242,28 +242,28 @@ pub(super) fn handle_prompts_list(request: &JsonRpcRequest, state: &Value) -> Js
 /// Handle `ping` — return empty object.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_ping(request: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_ping(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(request.id.clone(), json!({}))
 }
 
 /// Handle `logging/setLevel` — accept the log level, return empty object.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_logging_set_level(request: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_logging_set_level(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(request.id.clone(), json!({}))
 }
 
 /// Handle `resources/subscribe` and `resources/unsubscribe` — no-op accept.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_subscribe(request: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_subscribe(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(request.id.clone(), json!({}))
 }
 
 /// Handle `completion/complete` — return empty completions.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_completion(request: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_completion(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(
         request.id.clone(),
         json!({
@@ -278,7 +278,7 @@ pub(super) fn handle_completion(request: &JsonRpcRequest) -> JsonRpcResponse {
 /// Handle unknown methods — return null result per §11.1.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_unknown(request: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_unknown(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(request.id.clone(), Value::Null)
 }
 
@@ -288,7 +288,7 @@ pub(super) fn handle_unknown(request: &JsonRpcRequest) -> JsonRpcResponse {
 /// so the event can be used for trigger/extractor evaluation.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_sampling(request: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_sampling(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(request.id.clone(), json!({}))
 }
 
@@ -297,21 +297,21 @@ pub(super) fn handle_sampling(request: &JsonRpcRequest) -> JsonRpcResponse {
 /// The server does not request roots; returns an empty roots list.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_roots_list(request: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_roots_list(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(request.id.clone(), json!({ "roots": [] }))
 }
 
 /// Handle `elicitation/create` response — acknowledge agent's elicitation response.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_elicitation_response(request: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_elicitation_response(request: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(request.id.clone(), json!({}))
 }
 
 /// Handle `tasks/get` — look up a task by ID in `state["tasks"]`.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_tasks_get(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+pub fn handle_tasks_get(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
     let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
 
@@ -332,7 +332,7 @@ pub(super) fn handle_tasks_get(request: &JsonRpcRequest, state: &Value) -> JsonR
 /// Handle `tasks/result` — return a task's result content by ID.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_tasks_result(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+pub fn handle_tasks_result(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
     let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
 
@@ -351,7 +351,7 @@ pub(super) fn handle_tasks_result(request: &JsonRpcRequest, state: &Value) -> Js
 /// Handle `tasks/list` — return all tasks from state, stripping internal fields.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_tasks_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+pub fn handle_tasks_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let tasks = state
         .get("tasks")
         .and_then(Value::as_array)
@@ -369,7 +369,7 @@ pub(super) fn handle_tasks_list(request: &JsonRpcRequest, state: &Value) -> Json
 /// Handle `tasks/cancel` — return cancelled status for the given task.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub(super) fn handle_tasks_cancel(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
+pub fn handle_tasks_cancel(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
     let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
 

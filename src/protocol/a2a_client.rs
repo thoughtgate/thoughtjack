@@ -697,6 +697,24 @@ pub fn create_a2a_client_driver(
 }
 
 // ============================================================================
+// Fuzz API
+// ============================================================================
+
+/// Fuzz-only entry point for the A2A SSE parser.
+///
+/// Feeds arbitrary bytes into an `A2aSseParser` and returns all parsed events.
+/// Each event is either `Ok(Value)` (the parsed `result` field from the
+/// JSON-RPC response envelope) or `Err(String)` for parse failures.
+///
+/// Implements: TJ-SPEC-017 F-006
+#[cfg(fuzzing)]
+#[must_use]
+pub fn fuzz_a2a_sse_feed(bytes: &[u8]) -> Vec<Result<serde_json::Value, String>> {
+    let mut parser = A2aSseParser::new();
+    parser.feed(bytes)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
