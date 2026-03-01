@@ -455,6 +455,52 @@ mod tests {
         }
     }
 
+    /// A mock driver that emits an event with an empty-string field,
+    /// then captures the published extractors.
+    struct EmptyFieldDriver {
+        captured: Arc<Mutex<HashMap<String, String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PhaseDriver for EmptyFieldDriver {
+        async fn drive_phase(
+            &mut self,
+            _phase_index: usize,
+            _state: &serde_json::Value,
+            extractors: watch::Receiver<HashMap<String, String>>,
+            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _cancel: CancellationToken,
+        ) -> Result<super::super::types::DriveResult, EngineError> {
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "tools/call".to_string(),
+                content: serde_json::json!({"name": "calculator", "empty_field": ""}),
+            });
+            // Small yield to allow event processing
+            tokio::task::yield_now().await;
+            let snapshot = extractors.borrow().clone();
+            *self.captured.lock().unwrap() = snapshot;
+            Ok(super::super::types::DriveResult::Complete)
+        }
+    }
+
+    /// A mock driver that panics inside `drive_phase()`.
+    struct PanicDriver;
+
+    #[async_trait::async_trait]
+    impl PhaseDriver for PanicDriver {
+        async fn drive_phase(
+            &mut self,
+            _phase_index: usize,
+            _state: &serde_json::Value,
+            _extractors: watch::Receiver<HashMap<String, String>>,
+            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _cancel: CancellationToken,
+        ) -> Result<super::super::types::DriveResult, EngineError> {
+            panic!("driver crashed unexpectedly");
+        }
+    }
+
     /// A mock driver that always returns an error.
     struct ErrorDriver;
 
@@ -1164,6 +1210,151 @@ attack:
         let recorded = calls.lock().unwrap().clone();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0], (0, 1));
+    }
+
+    // ---- Edge case tests (EC-OATF-007, EC-OATF-008, EC-OATF-014) ----
+
+    /// EC-OATF-007: Phase with no `state:` key — effective state inherits
+    /// from the previous phase, driver runs fine.
+    #[tokio::test]
+    async fn ec_oatf_007_no_state_phase() {
+        // Second phase has no state — should inherit from phase_one
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calculator
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: no_state_phase
+"#,
+        );
+
+        let mut phase_events = HashMap::new();
+        phase_events.insert(
+            0,
+            vec![ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "tools/call".to_string(),
+                content: serde_json::json!({"name": "calculator"}),
+            }],
+        );
+
+        let driver = PerPhaseDriver { phase_events };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let mut phase_loop = PhaseLoop::new(driver, engine, test_config(trace));
+
+        let result = phase_loop.run().await.unwrap();
+        assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+        // Phase 1 has no trigger (terminal) — completes at phase index 1
+        assert_eq!(result.phases_completed, 1);
+    }
+
+    /// EC-OATF-008: Extractor captures empty string `""` — published on watch
+    /// channel, not silently dropped.
+    #[tokio::test]
+    async fn ec_oatf_008_empty_string_extractor() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calculator
+              description: "test"
+              inputSchema:
+                type: object
+        extractors:
+          - name: empty_val
+            source: request
+            type: json_path
+            selector: "$.empty_field"
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_two
+"#,
+        );
+
+        let captured = Arc::new(Mutex::new(HashMap::new()));
+        let captured_clone = Arc::clone(&captured);
+
+        let driver = EmptyFieldDriver {
+            captured: captured_clone,
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace);
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        phase_loop.run().await.unwrap();
+
+        // Verify the empty string was captured (not dropped)
+        assert_eq!(
+            phase_loop.phase_engine.extractor_values.get("empty_val"),
+            Some(&String::new()),
+            "empty string extractor should be captured, not dropped"
+        );
+    }
+
+    /// EC-OATF-014: Driver that panics inside `drive_phase()` — `run()` returns
+    /// Err, does not propagate panic to caller.
+    #[tokio::test]
+    async fn ec_oatf_014_driver_panic() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+        );
+
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace);
+
+        // Spawn the phase loop in a task so the panic is caught by JoinHandle
+        let result = tokio::spawn(async move {
+            let mut phase_loop = PhaseLoop::new(PanicDriver, engine, config);
+            phase_loop.run().await
+        })
+        .await;
+
+        // The JoinHandle should capture the panic (JoinError::is_panic())
+        assert!(
+            result.is_err(),
+            "spawn should return Err for a panicked task"
+        );
+        let join_err = result.unwrap_err();
+        assert!(
+            join_err.is_panic(),
+            "error should be a panic, not cancellation"
+        );
     }
 
     #[tokio::test]
