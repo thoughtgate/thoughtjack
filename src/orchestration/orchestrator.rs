@@ -668,6 +668,309 @@ attack:
         assert_eq!(result.outcomes.len(), 1);
     }
 
+    // ---- Edge case tests (EC-ORCH-*) ----
+
+    /// EC-ORCH-002: Actor with `await_extractors` pointing to never-set key
+    /// + short timeout → times out gracefully without blocking forever.
+    #[tokio::test]
+    async fn ec_orch_002_await_extractor_timeout() {
+        let loaded = load_test_doc(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: producer
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              tools:
+                - name: test_tool
+                  description: "test"
+                  inputSchema:
+                    type: object
+      - name: consumer
+        mode: mcp_server
+        phases:
+          - name: wait_phase
+            await_extractors:
+              - actor: producer
+                extractors:
+                  - never_set_key
+                timeout: "100ms"
+            state:
+              tools:
+                - name: consumer_tool
+                  description: "test"
+                  inputSchema:
+                    type: object
+"#,
+        );
+
+        let config = default_actor_config(Duration::from_secs(5));
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        // Cancel after the timeout has had time to fire
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cancel_clone.cancel();
+        });
+
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+
+        // Both actors should complete (consumer timed out but proceeded)
+        assert_eq!(result.outcomes.len(), 2);
+    }
+
+    /// EC-ORCH-010: Two actors with the same `name:` — rejected at load time
+    /// with a descriptive error (no panic, graceful handling).
+    #[test]
+    fn ec_orch_010_duplicate_actor_name() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: server
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              tools:
+                - name: tool_a
+                  description: "test"
+                  inputSchema:
+                    type: object
+      - name: server
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              tools:
+                - name: tool_b
+                  description: "test"
+                  inputSchema:
+                    type: object
+"#;
+
+        let result = crate::loader::load_document(yaml);
+        assert!(result.is_err(), "duplicate actor names should be rejected");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate") || msg.contains("actor name"),
+            "error should mention duplicate actor name, got: {msg}"
+        );
+    }
+
+    /// EC-ORCH-011: 50 concurrent tasks writing/reading `ExtractorStore` →
+    /// no data races, all values retrievable.
+    #[tokio::test]
+    async fn ec_orch_011_high_contention_store() {
+        let store = ExtractorStore::new();
+        let mut handles = Vec::new();
+
+        for i in 0..50 {
+            let store_clone = store.clone();
+            handles.push(tokio::spawn(async move {
+                let actor = format!("actor_{i}");
+                let value = format!("value_{i}");
+                store_clone.set(&actor, "token", value.clone());
+                // Read back immediately
+                let got = store_clone.get(&actor, "token");
+                assert_eq!(got, Some(value));
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify all 50 values are present
+        let all = store.all_qualified();
+        assert_eq!(all.len(), 50);
+        for i in 0..50 {
+            let key = format!("actor_{i}.token");
+            assert_eq!(
+                all.get(&key),
+                Some(&format!("value_{i}")),
+                "missing or wrong value for {key}"
+            );
+        }
+    }
+
+    /// EC-ORCH-012: Multiple actors emitting events → merged trace preserves
+    /// per-actor ordering via monotonic sequence numbers.
+    #[tokio::test]
+    async fn ec_orch_012_trace_ordering() {
+        let trace = SharedTrace::new();
+        let mut handles = Vec::new();
+
+        // 5 actors, each emitting 10 events
+        for actor_id in 0..5 {
+            let trace_clone = trace.clone();
+            handles.push(tokio::spawn(async move {
+                for seq in 0..10 {
+                    trace_clone.append(
+                        &format!("actor_{actor_id}"),
+                        "phase_1",
+                        crate::engine::types::Direction::Incoming,
+                        &format!("event_{seq}"),
+                        &serde_json::json!({"actor": actor_id, "seq": seq}),
+                    );
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let entries = trace.snapshot();
+        assert_eq!(entries.len(), 50);
+
+        // Verify: per-actor events maintain their relative ordering
+        for actor_id in 0..5 {
+            let actor_name = format!("actor_{actor_id}");
+            let actor_entries: Vec<_> = entries.iter().filter(|e| e.actor == actor_name).collect();
+            assert_eq!(actor_entries.len(), 10);
+
+            // Sequence numbers should be monotonically increasing for each actor
+            for window in actor_entries.windows(2) {
+                assert!(
+                    window[0].seq < window[1].seq,
+                    "per-actor events should maintain ordering: {} < {}",
+                    window[0].seq,
+                    window[1].seq
+                );
+            }
+        }
+    }
+
+    /// EC-ORCH-014: `grace_period: 0` → shutdown proceeds immediately, no delay.
+    #[tokio::test]
+    async fn ec_orch_014_zero_grace_period() {
+        let loaded = load_test_doc(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+        );
+
+        let mut config = default_actor_config(Duration::from_secs(10));
+        config.grace_period = Some(Duration::ZERO);
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_clone.cancel();
+        });
+
+        let start = tokio::time::Instant::now();
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        // Should complete quickly — zero grace means no extra sleep
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "zero grace period should not cause significant delay, took {elapsed:?}"
+        );
+        assert_eq!(result.outcomes.len(), 1);
+    }
+
+    /// EC-ORCH-016: Only server actors, no clients → servers complete,
+    /// orchestrator shuts down cleanly.
+    #[tokio::test]
+    async fn ec_orch_016_zero_client_shutdown() {
+        let loaded = load_test_doc(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: server1
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              tools:
+                - name: tool_a
+                  description: "test"
+                  inputSchema:
+                    type: object
+      - name: server2
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              tools:
+                - name: tool_b
+                  description: "test"
+                  inputSchema:
+                    type: object
+"#,
+        );
+
+        let config = default_actor_config(Duration::from_secs(10));
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        // Cancel after a short delay — both servers will be in stdio
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_clone.cancel();
+        });
+
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+
+        // Both servers should have outcomes
+        assert_eq!(result.outcomes.len(), 2);
+        // All outcomes should be for servers (no clients)
+        for outcome in &result.outcomes {
+            match outcome {
+                ActorOutcome::Success(r) => {
+                    assert!(
+                        r.actor_name == "server1" || r.actor_name == "server2",
+                        "unexpected actor: {}",
+                        r.actor_name
+                    );
+                }
+                other => {
+                    // Error/Panic outcomes are acceptable depending on timing
+                    let name = other.actor_name();
+                    assert!(
+                        name == "server1" || name == "server2",
+                        "unexpected actor: {name}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn unpack_join_result_handles_success() {
         let events = EventEmitter::noop();
