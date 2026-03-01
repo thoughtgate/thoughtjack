@@ -340,10 +340,8 @@ impl<D: PhaseDriver> PhaseLoop<D> {
 
                 let deadline = tokio::time::Instant::now() + spec.timeout;
 
+                let mut version_rx = self.extractor_store.subscribe();
                 for extractor_name in &spec.extractors {
-                    let mut backoff = std::time::Duration::from_millis(10);
-                    let max_backoff = std::time::Duration::from_millis(200);
-
                     loop {
                         if let Some(value) = self.extractor_store.get(&spec.actor, extractor_name) {
                             let qualified = format!("{}.{}", spec.actor, extractor_name);
@@ -356,17 +354,19 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                             break;
                         }
 
-                        if tokio::time::Instant::now() + backoff > deadline {
-                            tracing::warn!(
-                                actor = %spec.actor,
-                                extractor = %extractor_name,
-                                "await_extractors: timed out, proceeding without value"
-                            );
-                            break;
+                        tokio::select! {
+                            result = version_rx.changed() => {
+                                if result.is_err() { break; }
+                            }
+                            () = tokio::time::sleep_until(deadline) => {
+                                tracing::warn!(
+                                    actor = %spec.actor,
+                                    extractor = %extractor_name,
+                                    "await_extractors: timed out, proceeding without value"
+                                );
+                                break;
+                            }
                         }
-
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(max_backoff);
                     }
                 }
             }
