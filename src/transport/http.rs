@@ -76,6 +76,9 @@ struct HttpSharedState {
     max_message_size: usize,
     sse_connections: AtomicUsize,
     cancel: CancellationToken,
+    // TODO: make session ID configurable — auto (UUID, current default),
+    // custom (user-provided string), or none (no Mcp-Session-Id header).
+    session_id: String,
     /// Pending server-initiated request/response channels keyed by JSON-RPC request ID.
     ///
     /// When the server sends a request to the client (e.g., `sampling/createMessage`
@@ -164,6 +167,7 @@ impl HttpTransport {
             max_message_size: config.max_message_size,
             sse_connections: AtomicUsize::new(0),
             cancel: cancel.clone(),
+            session_id: uuid::Uuid::new_v4().to_string(),
             pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
 
@@ -711,6 +715,8 @@ async fn handle_post_message(
     // - Response: client responding to server-initiated request → route to oneshot, 202
     // - Notification: client notification (e.g. initialized) → push for driver, 202
     // - Request: normal client request → SSE streaming response
+    let is_initialize =
+        matches!(&message, JsonRpcMessage::Request(req) if req.method == "initialize");
     match &message {
         JsonRpcMessage::Response(resp) => {
             // Client is responding to a server-initiated request (sampling/elicitation).
@@ -777,13 +783,14 @@ async fn handle_post_message(
     let stream = ReceiverStream::new(response_rx);
     let body = Body::from_stream(stream);
 
-    Response::builder()
-        .header("content-type", "text/event-stream")
-        .body(body)
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "failed to build HTTP response");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        })
+    let mut builder = Response::builder().header("content-type", "text/event-stream");
+    if is_initialize {
+        builder = builder.header("mcp-session-id", &shared.session_id);
+    }
+    builder.body(body).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to build HTTP response");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// `GET /sse` handler.
@@ -928,6 +935,7 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
             pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -1017,6 +1025,7 @@ mod tests {
             max_message_size: 10, // tiny limit
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
             pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
         let app = test_router(shared);
@@ -1046,6 +1055,7 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
             pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
         let app = test_router(shared);
@@ -1194,6 +1204,7 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
             pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
         let app = test_router(shared);
@@ -1229,6 +1240,7 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
             pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
         let app = test_router(shared);
