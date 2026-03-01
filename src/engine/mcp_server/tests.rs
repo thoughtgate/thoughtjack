@@ -170,7 +170,7 @@ fn initialize_returns_capabilities() {
     let resp = handle_initialize(&request, &state);
     let result = resp.result.unwrap();
 
-    assert_eq!(result["protocolVersion"], "2025-03-26");
+    assert_eq!(result["protocolVersion"], "2025-11-25");
     assert_eq!(result["serverInfo"]["name"], "thoughtjack");
     assert!(result["capabilities"]["tools"].is_object());
     assert!(result["capabilities"]["prompts"].is_object());
@@ -289,7 +289,7 @@ fn resources_read_returns_content() {
     let state = test_state();
     let extractors = HashMap::new();
 
-    let resp = handle_resources_read(&request, &state, &extractors);
+    let resp = handle_resources_read(&request, &state, &extractors, false);
     let result = resp.result.unwrap();
     assert!(result["contents"].is_array());
 }
@@ -591,6 +591,7 @@ async fn entry_action_sender_sends_elicitation() {
             "Enter your API key",
             Some(&ElicitationMode::Form),
             Some(&json!({"type": "object"})),
+            None,
             None,
         )
         .await
@@ -908,7 +909,11 @@ fn synthesize_no_provider() {
 /// predicate is skipped and the response is still sent.
 #[tokio::test]
 async fn elicitation_agent_declines() {
-    // Set up: agent sends tools/call, then a decline response to the elicitation
+    // Set up: initialize with elicitation capability, then tools/call + decline
+    let init_request = make_request(
+        "initialize",
+        Some(json!({"capabilities": {"elicitation": {}}})),
+    );
     let tools_call = make_request(
         "tools/call",
         Some(json!({"name": "calculator", "arguments": {}})),
@@ -917,7 +922,8 @@ async fn elicitation_agent_declines() {
         json!("elicit-decline"),
         json!({"action": "decline"}),
     ));
-    let (transport, outgoing) = MockTransport::setup(vec![tools_call, decline_response]);
+    let (transport, outgoing) =
+        MockTransport::setup(vec![init_request, tools_call, decline_response]);
     let mut driver = McpServerDriver::new(transport, false);
 
     // State with an always-matching elicitation
@@ -1081,7 +1087,11 @@ async fn unbounded_delivery_inflates_response() {
 
 #[tokio::test]
 async fn elicitation_first_match_wins() {
-    // Set up: agent sends tools/call, then a response to the elicitation
+    // Set up: initialize with elicitation capability, then tools/call + response
+    let init_request = make_request(
+        "initialize",
+        Some(json!({"capabilities": {"elicitation": {}}})),
+    );
     let tools_call = make_request(
         "tools/call",
         Some(json!({"name": "calculator", "arguments": {}})),
@@ -1090,7 +1100,8 @@ async fn elicitation_first_match_wins() {
         json!("elicit-resp"),
         json!({"action": "accept"}),
     ));
-    let (transport, outgoing) = MockTransport::setup(vec![tools_call, elicit_response]);
+    let (transport, outgoing) =
+        MockTransport::setup(vec![init_request, tools_call, elicit_response]);
     let mut driver = McpServerDriver::new(transport, false);
 
     // State with two elicitations: first requires name=other, second matches all
@@ -1290,7 +1301,7 @@ fn resources_read_falls_back_to_template() {
     });
 
     let extractors = HashMap::new();
-    let resp = handle_resources_read(&request, &state, &extractors);
+    let resp = handle_resources_read(&request, &state, &extractors, false);
     assert!(resp.error.is_none(), "expected success but got error");
     let result = resp.result.unwrap();
     assert!(result["contents"].as_array().is_some());

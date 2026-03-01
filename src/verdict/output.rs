@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use oatf::enums::{AttackResult, IndicatorResult};
+use oatf::enums::{AttackResult, CorrelationLogic, IndicatorResult};
 use serde::Serialize;
 
 use crate::engine::types::TerminationReason;
@@ -65,12 +65,24 @@ pub struct VerdictBlock {
     pub indicator_verdicts: Vec<IndicatorVerdictOutput>,
     /// Summary counts.
     pub evaluation_summary: EvaluationSummaryOutput,
+    /// Correlation logic used for verdict aggregation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<CorrelationOutput>,
     /// ISO 8601 timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
     /// Tool identifier.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+}
+
+/// Correlation logic used for verdict aggregation.
+///
+/// Implements: TJ-SPEC-014 F-007
+#[derive(Debug, Serialize)]
+pub struct CorrelationOutput {
+    /// Correlation logic: `"any"` or `"all"`.
+    pub logic: String,
 }
 
 /// Per-indicator verdict for JSON output.
@@ -171,7 +183,9 @@ pub fn indicator_result_to_string(result: &IndicatorResult) -> String {
 #[must_use]
 pub fn termination_to_status(reason: &TerminationReason) -> String {
     match reason {
-        TerminationReason::TerminalPhaseReached => "completed".to_string(),
+        TerminationReason::TerminalPhaseReached | TerminationReason::TransportClosed => {
+            "completed".to_string()
+        }
         TerminationReason::Cancelled => "cancelled".to_string(),
         TerminationReason::MaxSessionExpired => "timeout".to_string(),
     }
@@ -213,6 +227,16 @@ pub fn build_verdict_output(
         })
         .collect();
 
+    let correlation = attack.correlation.as_ref().map(|c| {
+        let logic = match c.logic {
+            Some(CorrelationLogic::All) => "all",
+            Some(CorrelationLogic::Any) | None => "any",
+        };
+        CorrelationOutput {
+            logic: logic.to_string(),
+        }
+    });
+
     let verdict_block = VerdictBlock {
         result: attack_result_to_string(&verdict.result),
         indicator_verdicts,
@@ -222,6 +246,7 @@ pub fn build_verdict_output(
             error: verdict.evaluation_summary.error,
             skipped: verdict.evaluation_summary.skipped,
         },
+        correlation,
         timestamp: verdict.timestamp.clone(),
         source: verdict.source.clone(),
     };
@@ -300,6 +325,18 @@ pub fn print_human_summary(output: &VerdictOutput) {
         let _ = writeln!(w, "  {attack_id}: {attack_name}");
     }
 
+    // Severity line (when present)
+    if let Some(ref severity) = output.attack.severity
+        && let Some(level) = severity.get("level").and_then(serde_json::Value::as_str)
+    {
+        let level_upper = level.to_uppercase();
+        let confidence_part = severity
+            .get("confidence")
+            .and_then(serde_json::Value::as_u64)
+            .map_or_else(String::new, |c| format!(" (confidence: {c})"));
+        let _ = writeln!(w, "  Severity: {level_upper}{confidence_part}");
+    }
+
     // Result line
     let result_str = &output.verdict.result;
     let symbol = match result_str.as_str() {
@@ -339,6 +376,20 @@ pub fn print_human_summary(output: &VerdictOutput) {
         "  Summary: {} matched, {} not matched, {} errors, {} skipped",
         s.matched, s.not_matched, s.error, s.skipped
     );
+
+    // Correlation logic
+    if let Some(ref corr) = output.verdict.correlation {
+        let detail = match corr.logic.as_str() {
+            "any" => "1 match sufficient",
+            "all" => "all must match",
+            _ => "",
+        };
+        if detail.is_empty() {
+            let _ = writeln!(w, "  Correlation: {}", corr.logic);
+        } else {
+            let _ = writeln!(w, "  Correlation: {} ({detail})", corr.logic);
+        }
+    }
 
     // Execution
     let duration_secs = output.execution_summary.duration_ms / 1000;
@@ -428,6 +479,9 @@ mod tests {
                     error: 0,
                     skipped: 1,
                 },
+                correlation: Some(CorrelationOutput {
+                    logic: "any".to_string(),
+                }),
                 timestamp: Some("2026-02-26T00:00:00Z".to_string()),
                 source: Some("thoughtjack/0.5.0".to_string()),
             },
@@ -518,6 +572,10 @@ mod tests {
             termination_to_status(&TerminationReason::MaxSessionExpired),
             "timeout"
         );
+        assert_eq!(
+            termination_to_status(&TerminationReason::TransportClosed),
+            "completed"
+        );
     }
 
     // ── JSON output ─────────────────────────────────────────────────────
@@ -586,6 +644,7 @@ mod tests {
                     error: 0,
                     skipped: 0,
                 },
+                correlation: None,
                 timestamp: None,
                 source: None,
             },
@@ -645,6 +704,7 @@ mod tests {
                     error: 0,
                     skipped: 0,
                 },
+                correlation: None,
                 timestamp: None,
                 source: None,
             },
@@ -725,5 +785,138 @@ mod tests {
         assert_eq!(output.execution_summary.trace_messages, 10);
         assert_eq!(output.execution_summary.duration_ms, 1500);
         assert!(output.execution_summary.grace_period_applied.is_some());
+        // No correlation on attack → None in output
+        assert!(output.verdict.correlation.is_none());
+    }
+
+    #[test]
+    fn build_verdict_output_includes_correlation() {
+        use oatf::enums::CorrelationLogic;
+
+        let attack = oatf::Attack {
+            id: Some("ATK-002".to_string()),
+            name: Some("Correlated".to_string()),
+            version: Some(1),
+            status: None,
+            created: None,
+            modified: None,
+            author: None,
+            description: None,
+            grace_period: None,
+            severity: None,
+            impact: None,
+            classification: None,
+            references: None,
+            execution: oatf::Execution {
+                mode: None,
+                state: None,
+                phases: None,
+                actors: None,
+                extensions: std::collections::HashMap::new(),
+            },
+            indicators: None,
+            correlation: Some(oatf::Correlation {
+                logic: Some(CorrelationLogic::All),
+            }),
+            extensions: std::collections::HashMap::new(),
+        };
+
+        let verdict = oatf::AttackVerdict {
+            attack_id: Some("ATK-002".to_string()),
+            result: AttackResult::Exploited,
+            indicator_verdicts: vec![],
+            evaluation_summary: oatf::EvaluationSummary {
+                matched: 2,
+                not_matched: 0,
+                error: 0,
+                skipped: 0,
+            },
+            timestamp: None,
+            source: None,
+        };
+
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 100);
+        let corr = output.verdict.correlation.as_ref().unwrap();
+        assert_eq!(corr.logic, "all");
+    }
+
+    #[test]
+    fn correlation_defaults_to_any() {
+        let attack = oatf::Attack {
+            id: None,
+            name: None,
+            version: None,
+            status: None,
+            created: None,
+            modified: None,
+            author: None,
+            description: None,
+            grace_period: None,
+            severity: None,
+            impact: None,
+            classification: None,
+            references: None,
+            execution: oatf::Execution {
+                mode: None,
+                state: None,
+                phases: None,
+                actors: None,
+                extensions: std::collections::HashMap::new(),
+            },
+            indicators: None,
+            correlation: Some(oatf::Correlation { logic: None }),
+            extensions: std::collections::HashMap::new(),
+        };
+
+        let verdict = oatf::AttackVerdict {
+            attack_id: None,
+            result: AttackResult::NotExploited,
+            indicator_verdicts: vec![],
+            evaluation_summary: oatf::EvaluationSummary {
+                matched: 0,
+                not_matched: 0,
+                error: 0,
+                skipped: 0,
+            },
+            timestamp: None,
+            source: None,
+        };
+
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0);
+        let corr = output.verdict.correlation.as_ref().unwrap();
+        assert_eq!(corr.logic, "any");
+    }
+
+    #[test]
+    fn json_output_includes_correlation() {
+        let output = make_verdict_output("exploited");
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["verdict"]["correlation"]["logic"], "any");
+    }
+
+    #[test]
+    fn json_output_omits_correlation_when_none() {
+        let mut output = make_verdict_output("exploited");
+        output.verdict.correlation = None;
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["verdict"]["correlation"].is_null());
+    }
+
+    #[test]
+    fn human_summary_includes_severity() {
+        let mut output = make_verdict_output("exploited");
+        output.attack.severity = Some(serde_json::json!({"level": "high", "confidence": 85}));
+        // Should not panic; severity line is printed
+        print_human_summary(&output);
+    }
+
+    #[test]
+    fn human_summary_includes_correlation() {
+        let output = make_verdict_output("exploited");
+        // make_verdict_output includes correlation: Some(any)
+        // Should not panic; correlation line is printed
+        print_human_summary(&output);
     }
 }

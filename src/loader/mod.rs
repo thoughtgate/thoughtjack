@@ -6,7 +6,7 @@
 //!
 //! See TJ-SPEC-013 §7 for the loading pipeline.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::engine::types::AwaitExtractor;
@@ -241,10 +241,84 @@ pub fn load_document(yaml: &str) -> Result<LoadedDocument, LoaderError> {
         }
     }
 
+    // Check for circular await_extractors dependencies (EC-ORCH-003)
+    detect_await_cycles(&await_by_index)?;
+
     Ok(LoadedDocument {
         document,
         await_extractors: await_by_index,
     })
+}
+
+/// Detects circular dependencies in `await_extractors` configuration.
+///
+/// Builds a directed graph of actor → awaited actor edges and checks for
+/// cycles using depth-first search. A cycle means two actors would block
+/// waiting for each other, both timing out.
+///
+/// Implements: TJ-SPEC-015 EC-ORCH-003
+fn detect_await_cycles(
+    await_map: &HashMap<(String, usize), Vec<AwaitExtractor>>,
+) -> Result<(), LoaderError> {
+    // Build adjacency list: actor → set of actors it depends on
+    let mut edges: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for ((actor_name, _), specs) in await_map {
+        for spec in specs {
+            edges
+                .entry(actor_name.as_str())
+                .or_default()
+                .insert(spec.actor.as_str());
+        }
+    }
+
+    // DFS cycle detection
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut in_stack: HashSet<&str> = HashSet::new();
+
+    for &actor in edges.keys() {
+        if !visited.contains(actor) {
+            let mut path = Vec::new();
+            if has_cycle(actor, &edges, &mut visited, &mut in_stack, &mut path) {
+                path.push(path[0]); // close the cycle for display
+                return Err(LoaderError::CyclicDependency(path.join(" → ")));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursive DFS for cycle detection.
+fn has_cycle<'a>(
+    node: &'a str,
+    edges: &HashMap<&'a str, HashSet<&'a str>>,
+    visited: &mut HashSet<&'a str>,
+    in_stack: &mut HashSet<&'a str>,
+    path: &mut Vec<&'a str>,
+) -> bool {
+    visited.insert(node);
+    in_stack.insert(node);
+    path.push(node);
+
+    if let Some(deps) = edges.get(node) {
+        for &dep in deps {
+            if !visited.contains(dep) {
+                if has_cycle(dep, edges, visited, in_stack, path) {
+                    return true;
+                }
+            } else if in_stack.contains(dep) {
+                // Found cycle — trim path to start from the cycle entry
+                if let Some(pos) = path.iter().position(|&p| p == dep) {
+                    *path = path[pos..].to_vec();
+                }
+                return true;
+            }
+        }
+    }
+
+    in_stack.remove(node);
+    path.pop();
+    false
 }
 
 // ============================================================================
@@ -400,5 +474,69 @@ attack:
     fn preprocess_invalid_yaml_returns_error() {
         let yaml = "{{invalid yaml";
         assert!(preprocess_yaml(yaml).is_err());
+    }
+
+    #[test]
+    fn detect_await_cycles_no_deps() {
+        let map = HashMap::new();
+        assert!(detect_await_cycles(&map).is_ok());
+    }
+
+    #[test]
+    fn detect_await_cycles_linear_ok() {
+        // A → B (no cycle)
+        let mut map = HashMap::new();
+        map.insert(
+            ("actor_a".to_string(), 1),
+            vec![AwaitExtractor {
+                actor: "actor_b".to_string(),
+                extractors: vec!["token".to_string()],
+                timeout: Duration::from_secs(5),
+            }],
+        );
+        assert!(detect_await_cycles(&map).is_ok());
+    }
+
+    #[test]
+    fn detect_await_cycles_circular_detected() {
+        // A → B and B → A (cycle)
+        let mut map = HashMap::new();
+        map.insert(
+            ("actor_a".to_string(), 1),
+            vec![AwaitExtractor {
+                actor: "actor_b".to_string(),
+                extractors: vec!["token".to_string()],
+                timeout: Duration::from_secs(5),
+            }],
+        );
+        map.insert(
+            ("actor_b".to_string(), 0),
+            vec![AwaitExtractor {
+                actor: "actor_a".to_string(),
+                extractors: vec!["secret".to_string()],
+                timeout: Duration::from_secs(5),
+            }],
+        );
+        let err = detect_await_cycles(&map).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("actor_a") && msg.contains("actor_b"),
+            "Expected cycle mentioning both actors, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn detect_await_cycles_self_cycle() {
+        // A → A (self-cycle)
+        let mut map = HashMap::new();
+        map.insert(
+            ("actor_a".to_string(), 0),
+            vec![AwaitExtractor {
+                actor: "actor_a".to_string(),
+                extractors: vec!["token".to_string()],
+                timeout: Duration::from_secs(5),
+            }],
+        );
+        assert!(detect_await_cycles(&map).is_err());
     }
 }

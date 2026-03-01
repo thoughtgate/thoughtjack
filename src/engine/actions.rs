@@ -46,6 +46,10 @@ pub trait EntryActionSender: Send + Sync {
 
     /// Send an elicitation request to the agent.
     ///
+    /// For url-mode elicitations, `elicitation_id` correlates with
+    /// `notifications/elicitation/complete`. If `None` for url-mode,
+    /// the caller should auto-generate a UUID before calling.
+    ///
     /// # Errors
     ///
     /// Returns `EngineError::EntryAction` if the transport fails.
@@ -55,6 +59,7 @@ pub trait EntryActionSender: Send + Sync {
         mode: Option<&ElicitationMode>,
         requested_schema: Option<&serde_json::Value>,
         url: Option<&str>,
+        elicitation_id: Option<&str>,
     ) -> Result<(), EngineError>;
 }
 
@@ -110,11 +115,22 @@ pub async fn execute_entry_actions(
                 mode,
                 requested_schema,
                 url,
-                extensions: _,
+                extensions,
                 non_ext_key_count: _,
             } => {
                 let (interpolated_message, _) =
                     interpolate_template(message, extractors, None, None);
+                // Extract elicitationId from extensions, or auto-generate
+                // a UUID for url-mode if absent (§8.3).
+                let is_url_mode = mode
+                    .as_ref()
+                    .is_some_and(|m| matches!(m, ElicitationMode::Url));
+                let auto_id = extensions
+                    .get("elicitationId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string)
+                    .or_else(|| is_url_mode.then(|| uuid::Uuid::new_v4().to_string()));
+                let elicitation_id = auto_id.as_deref();
                 if let Some(sender) = sender {
                     if let Err(err) = sender
                         .send_elicitation(
@@ -122,6 +138,7 @@ pub async fn execute_entry_actions(
                             mode.as_ref(),
                             requested_schema.as_ref(),
                             url.as_deref(),
+                            elicitation_id,
                         )
                         .await
                     {

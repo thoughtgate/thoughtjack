@@ -34,6 +34,6 @@ pub mod output;
 pub use evaluation::{ActorInfo, EvaluationConfig, evaluate_verdict, extract_protocol};
 pub use grace::{GracePeriodState, resolve_grace_period};
 pub use output::{
-    ActorStatus, ExecutionSummary, VerdictOutput, build_verdict_output, print_human_summary,
-    verdict_exit_code, write_json_verdict,
+    ActorStatus, CorrelationOutput, ExecutionSummary, VerdictOutput, build_verdict_output,
+    print_human_summary, verdict_exit_code, write_json_verdict,
 };

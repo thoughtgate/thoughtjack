@@ -116,6 +116,10 @@ pub struct RunArgs {
     #[arg(long, default_value = "5m")]
     pub max_session: humantime::Duration,
 
+    /// Timeout for server readiness gate (e.g., "30s", "2m").
+    #[arg(long, default_value = "30s")]
+    pub readiness_timeout: humantime::Duration,
+
     /// Verdict output file path ("-" for stdout).
     #[arg(short, long)]
     pub output: Option<String>,

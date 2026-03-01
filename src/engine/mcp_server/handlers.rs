@@ -8,7 +8,16 @@ use crate::transport::{JsonRpcRequest, JsonRpcResponse};
 use super::helpers::{find_by_field, find_matching_template, strip_internal_fields};
 use super::response::dispatch_response;
 
-/// Handle `initialize` — return server capabilities.
+/// Default MCP protocol version (MCP 2025-11-25).
+const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// Handle `initialize` — return server capabilities, `serverInfo`, and `instructions`.
+///
+/// Protocol version precedence (§4.1, EC-OATF-016):
+///   `state.protocol_version` > default `"2025-11-25"`
+///
+/// `serverInfo` merges `state.server_info` fields over defaults to enable
+/// server impersonation attacks (EC-OATF-015).
 ///
 /// Implements: TJ-SPEC-013 F-001
 pub(super) fn handle_initialize(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
@@ -17,20 +26,45 @@ pub(super) fn handle_initialize(request: &JsonRpcRequest, state: &Value) -> Json
         .cloned()
         .unwrap_or_else(|| default_capabilities(state));
 
-    JsonRpcResponse::success(
-        request.id.clone(),
-        json!({
-            "protocolVersion": "2025-03-26",
-            "capabilities": capabilities,
-            "serverInfo": {
-                "name": "thoughtjack",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-        }),
-    )
+    // Protocol version: state > default "2025-11-25"
+    let protocol_version = state
+        .get("protocol_version")
+        .and_then(Value::as_str)
+        .unwrap_or(DEFAULT_PROTOCOL_VERSION);
+
+    // Build serverInfo from defaults + state.server_info overrides
+    let mut server_info = json!({
+        "name": "thoughtjack",
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+    if let Some(si) = state.get("server_info").and_then(Value::as_object) {
+        let obj = server_info.as_object_mut().unwrap();
+        for (key, value) in si {
+            obj.insert(key.clone(), value.clone());
+        }
+    }
+
+    let mut result = json!({
+        "protocolVersion": protocol_version,
+        "capabilities": capabilities,
+        "serverInfo": server_info,
+    });
+
+    // Optional instructions (prompt injection attack vector)
+    if let Some(instructions) = state.get("instructions") {
+        result
+            .as_object_mut()
+            .unwrap()
+            .insert("instructions".to_string(), instructions.clone());
+    }
+
+    JsonRpcResponse::success(request.id.clone(), result)
 }
 
-/// Derive capabilities from the state's declared tools/resources/prompts.
+/// Derive capabilities from the state's declared tools/resources/prompts/tasks/completions.
+///
+/// Detects non-empty collections in state and emits the corresponding
+/// MCP 2025-11-25 capability structures, including nested `tasks.requests`.
 pub(super) fn default_capabilities(state: &Value) -> Value {
     let mut caps = serde_json::Map::new();
 
@@ -63,6 +97,28 @@ pub(super) fn default_capabilities(state: &Value) -> Value {
         .is_some_and(|l| l.as_array().is_some_and(|a| !a.is_empty()))
     {
         caps.insert("logging".to_string(), json!({}));
+    }
+    // Tasks: nested capability structure (MCP 2025-11-25, SEP-1686)
+    if state
+        .get("tasks")
+        .is_some_and(|t| t.as_array().is_some_and(|a| !a.is_empty()))
+    {
+        caps.insert(
+            "tasks".to_string(),
+            json!({
+                "list": {},
+                "cancel": {},
+                "requests": {
+                    "tools": {
+                        "call": {}
+                    }
+                }
+            }),
+        );
+    }
+    // Completions capability
+    if state.get("completions").is_some() {
+        caps.insert("completions".to_string(), json!({}));
     }
 
     Value::Object(caps)
@@ -111,6 +167,7 @@ pub(super) fn handle_resources_read(
     request: &JsonRpcRequest,
     state: &Value,
     extractors: &HashMap<String, String>,
+    raw_synthesize: bool,
 ) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
     let uri = params
@@ -130,7 +187,14 @@ pub(super) fn handle_resources_read(
         );
     };
 
-    dispatch_response(&request.id, &resource, extractors, params, None, false)
+    dispatch_response(
+        &request.id,
+        &resource,
+        extractors,
+        params,
+        None,
+        raw_synthesize,
+    )
 }
 
 /// Handle `resources/templates/list` — return resource template definitions.

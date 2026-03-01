@@ -296,10 +296,19 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                             }
                         }
                         () = self.cancel.cancelled() => {
+                            // Cannot call self.build_result() here because
+                            // self.driver is mutably borrowed by drive_fut.
+                            let actor = self.phase_engine.actor();
+                            let current = self.phase_engine.current_phase;
                             return Ok(ActorResult {
                                 actor_name: self.actor_name.clone(),
                                 termination: TerminationReason::Cancelled,
-                                phases_completed: self.phase_engine.current_phase,
+                                phases_completed: current,
+                                total_phases: actor.phases.len(),
+                                final_phase: actor
+                                    .phases
+                                    .get(current)
+                                    .and_then(|p| p.name.clone()),
                             });
                         }
                     }
@@ -311,7 +320,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
             if self.phase_engine.is_terminal() {
-                return Ok(self.terminal_result());
+                return Ok(self.build_result(TerminationReason::TerminalPhaseReached));
             }
         }
     }
@@ -378,12 +387,16 @@ impl<D: PhaseDriver> PhaseLoop<D> {
         }
     }
 
-    /// Build the terminal completion result for this actor.
-    fn terminal_result(&self) -> ActorResult {
+    /// Build a completion result for this actor with the given termination reason.
+    fn build_result(&self, termination: TerminationReason) -> ActorResult {
+        let current = self.phase_engine.current_phase;
+        let actor = self.phase_engine.actor();
         ActorResult {
             actor_name: self.actor_name.clone(),
-            termination: TerminationReason::TerminalPhaseReached,
-            phases_completed: self.phase_engine.current_phase,
+            termination,
+            phases_completed: current,
+            total_phases: actor.phases.len(),
+            final_phase: actor.phases.get(current).and_then(|p| p.name.clone()),
         }
     }
 }

@@ -51,6 +51,9 @@ use crate::engine::types::{Direction, DriveResult, ProtocolEvent};
 pub struct McpServerDriver {
     transport: Arc<dyn Transport>,
     raw_synthesize: bool,
+    /// Client capabilities captured from the `initialize` request.
+    /// Used to gate elicitation and sampling requests per MCP spec.
+    client_capabilities: Option<Value>,
 }
 
 impl McpServerDriver {
@@ -67,6 +70,7 @@ impl McpServerDriver {
         Self {
             transport,
             raw_synthesize,
+            client_capabilities: None,
         }
     }
 
@@ -152,22 +156,34 @@ impl McpServerDriver {
     }
 
     /// Dispatch a request to the appropriate handler.
+    ///
+    /// For `initialize`, captures client capabilities from the request
+    /// params so that subsequent elicitation and sampling requests can
+    /// be gated on client support (§4.3).
     async fn dispatch_request(
-        &self,
+        &mut self,
         request: &JsonRpcRequest,
         state: &Value,
         extractors: &HashMap<String, String>,
         event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
     ) -> JsonRpcResponse {
         match request.method.as_str() {
-            "initialize" => handle_initialize(request, state),
+            "initialize" => {
+                // Capture client capabilities for capability gating (§4.3)
+                if let Some(params) = &request.params {
+                    self.client_capabilities = params.get("capabilities").cloned();
+                }
+                handle_initialize(request, state)
+            }
             "tools/list" => handle_tools_list(request, state),
             "tools/call" => {
                 self.handle_tools_call(request, state, extractors, event_tx)
                     .await
             }
             "resources/list" => handle_resources_list(request, state),
-            "resources/read" => handle_resources_read(request, state, extractors),
+            "resources/read" => {
+                handle_resources_read(request, state, extractors, self.raw_synthesize)
+            }
             "resources/templates/list" => handle_resources_templates_list(request, state),
             "prompts/list" => handle_prompts_list(request, state),
             "prompts/get" => {
@@ -455,7 +471,22 @@ impl McpServerDriver {
         }
     }
 
+    /// Check whether the client declared support for a capability.
+    ///
+    /// Checks `client_capabilities.<name>` — returns `true` if the field
+    /// exists (even if empty object), `false` if absent or no capabilities
+    /// were captured (i.e., `initialize` hasn't been called yet).
+    fn client_supports(&self, capability: &str) -> bool {
+        self.client_capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.get(capability).is_some())
+    }
+
     /// Send a sampling request if the state has matching sampling entries.
+    ///
+    /// Gated on `client_capabilities.sampling` per MCP 2025-11-25 — the
+    /// server MUST NOT send sampling requests to clients that do not
+    /// declare sampling support.
     ///
     /// Reads `state["sampling_requests"]` array, sends `sampling/createMessage`
     /// request. Uses first-match-wins with optional `tool` filter.
@@ -465,6 +496,15 @@ impl McpServerDriver {
         tool_name: &str,
         event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
     ) {
+        if !self.client_supports("sampling") {
+            if state.get("sampling_requests").is_some() {
+                tracing::warn!(
+                    "sampling_requests defined but client does not declare sampling capability"
+                );
+            }
+            return;
+        }
+
         let Some(entries) = state.get("sampling_requests").and_then(Value::as_array) else {
             return;
         };
@@ -517,9 +557,17 @@ impl McpServerDriver {
 
     /// Send an elicitation request if the state has a matching elicitation.
     ///
+    /// Gated on `client_capabilities.elicitation` per MCP 2025-11-25 §4.3 —
+    /// the server MUST NOT send elicitation requests to clients that do not
+    /// declare elicitation support.
+    ///
     /// Uses first-match-wins semantics per §4.3: iterates elicitations in
     /// order, evaluates each `when` predicate against the request context,
     /// and fires only the first match.
+    ///
+    /// Includes `mode`, `url`, and `elicitationId` on the wire per MCP spec.
+    /// Auto-generates a UUID for url-mode if `elicitationId` is absent in
+    /// the OATF document.
     #[allow(clippy::cognitive_complexity)]
     async fn maybe_send_elicitation(
         &self,
@@ -528,6 +576,15 @@ impl McpServerDriver {
         tool_name: &str,
         event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
     ) {
+        if !self.client_supports("elicitation") {
+            if state.get("elicitations").is_some() {
+                tracing::warn!(
+                    "elicitations defined but client does not declare elicitation capability"
+                );
+            }
+            return;
+        }
+
         let Some(elicitations) = state.get("elicitations").and_then(Value::as_array) else {
             return;
         };
@@ -559,13 +616,38 @@ impl McpServerDriver {
             .and_then(Value::as_str)
             .unwrap_or("Please provide input");
 
+        let mode = elicitation
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("form");
+
+        // Build request params with mode, requestedSchema, and url/elicitationId
+        let mut params = serde_json::Map::new();
+        params.insert("message".to_string(), json!(message));
+        params.insert(
+            "requestedSchema".to_string(),
+            elicitation
+                .get("requestedSchema")
+                .cloned()
+                .unwrap_or(json!({})),
+        );
+
+        if mode == "url" {
+            // URL-mode: include url and elicitationId
+            if let Some(url) = elicitation.get("url").and_then(Value::as_str) {
+                params.insert("url".to_string(), json!(url));
+            }
+            let elicitation_id = elicitation
+                .get("elicitationId")
+                .and_then(Value::as_str)
+                .map_or_else(|| uuid::Uuid::new_v4().to_string(), ToString::to_string);
+            params.insert("elicitationId".to_string(), json!(elicitation_id));
+        }
+
         let elicitation_request = JsonRpcRequest {
             jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
             method: "elicitation/create".to_string(),
-            params: Some(json!({
-                "message": message,
-                "requestedSchema": elicitation.get("requestedSchema").cloned().unwrap_or(json!({})),
-            })),
+            params: Some(Value::Object(params)),
             id: json!(format!(
                 "elicit-{}",
                 std::time::SystemTime::now()
@@ -742,6 +824,9 @@ impl EntryActionSender for McpTransportEntryActionSender {
 
     /// Send an elicitation request to the agent.
     ///
+    /// Includes `elicitationId` on the wire for url-mode elicitations,
+    /// enabling correlation with `notifications/elicitation/complete`.
+    ///
     /// # Errors
     ///
     /// Returns `EngineError::EntryAction` if the transport fails.
@@ -751,6 +836,7 @@ impl EntryActionSender for McpTransportEntryActionSender {
         mode: Option<&ElicitationMode>,
         requested_schema: Option<&Value>,
         url: Option<&str>,
+        elicitation_id: Option<&str>,
     ) -> Result<(), EngineError> {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (interpolated_message, _) = interpolate_template(message, &HashMap::new(), None, None);
@@ -768,6 +854,9 @@ impl EntryActionSender for McpTransportEntryActionSender {
         }
         if let Some(url) = url {
             params.insert("url".to_string(), json!(url));
+        }
+        if let Some(eid) = elicitation_id {
+            params.insert("elicitationId".to_string(), json!(eid));
         }
 
         let request = JsonRpcRequest {

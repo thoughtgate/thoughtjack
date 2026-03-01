@@ -199,6 +199,10 @@ pub enum LoaderError {
     /// YAML pre-processing error
     #[error("preprocess error: {0}")]
     Preprocess(String),
+
+    /// Circular `await_extractors` dependency (EC-ORCH-003)
+    #[error("circular await_extractors dependency: {0}")]
+    CyclicDependency(String),
 }
 
 // ============================================================================

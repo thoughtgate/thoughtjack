@@ -22,8 +22,8 @@ use crate::orchestration::gate::ReadinessGate;
 use crate::orchestration::runner::{ActorConfig, run_actor};
 use crate::orchestration::store::ExtractorStore;
 
-/// Default timeout for waiting for server readiness.
-const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+/// Default timeout for waiting for server readiness (fallback if not configured).
+const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ============================================================================
 // Types
@@ -171,7 +171,12 @@ pub async fn orchestrate(
     // 5. Wait for server readiness
     if let Some(gate) = gate {
         let start = std::time::Instant::now();
-        match gate.wait_all_ready(READINESS_TIMEOUT).await {
+        let readiness_timeout = if config.readiness_timeout.is_zero() {
+            DEFAULT_READINESS_TIMEOUT
+        } else {
+            config.readiness_timeout
+        };
+        match gate.wait_all_ready(readiness_timeout).await {
             Ok(()) => {
                 events.emit(ThoughtJackEvent::ReadinessGateOpen {
                     server_count,
@@ -303,10 +308,10 @@ async fn wait_for_completion(
                 // Check shutdown conditions
                 if total_clients > 0 && clients_done >= total_clients {
                     tracing::info!("all client actors completed, starting grace period");
-                    apply_grace_and_cancel(config, cancel).await;
+                    apply_grace_and_cancel(config, cancel, events).await;
                 } else if total_clients == 0 && join_set.is_empty() {
                     tracing::info!("all server actors completed (zero-client mode)");
-                    apply_grace_and_cancel(config, cancel).await;
+                    apply_grace_and_cancel(config, cancel, events).await;
                 }
             }
             () = tokio::time::sleep_until(max_session_deadline) => {
@@ -399,11 +404,21 @@ fn emit_completion_summary(outcomes: &[ActorOutcome], events: &EventEmitter) {
 }
 
 /// Applies the configured grace period then cancels all remaining actors.
-async fn apply_grace_and_cancel(config: &ActorConfig, cancel: &CancellationToken) {
+async fn apply_grace_and_cancel(
+    config: &ActorConfig,
+    cancel: &CancellationToken,
+    events: &EventEmitter,
+) {
     let grace = config.grace_period.unwrap_or(Duration::ZERO);
+    #[allow(clippy::cast_possible_truncation)]
+    let duration_seconds = grace.as_secs();
+    events.emit(ThoughtJackEvent::GracePeriodStarted { duration_seconds });
     if !grace.is_zero() {
         tokio::time::sleep(grace).await;
     }
+    events.emit(ThoughtJackEvent::GracePeriodExpired {
+        messages_captured: 0,
+    });
     cancel.cancel();
 }
 
@@ -436,6 +451,8 @@ mod tests {
             actor_name: "srv".to_string(),
             termination: crate::engine::types::TerminationReason::TerminalPhaseReached,
             phases_completed: 2,
+            total_phases: 3,
+            final_phase: Some("terminal".to_string()),
         });
         assert_eq!(success.actor_name(), "srv");
 
@@ -466,6 +483,7 @@ mod tests {
             raw_synthesize: false,
             grace_period: None,
             max_session,
+            readiness_timeout: Duration::from_secs(30),
         }
     }
 
@@ -660,6 +678,8 @@ attack:
                 actor_name: "test_actor".to_string(),
                 termination: crate::engine::types::TerminationReason::TerminalPhaseReached,
                 phases_completed: 2,
+                total_phases: 3,
+                final_phase: Some("terminal".to_string()),
             }),
         };
 

@@ -57,6 +57,8 @@ pub struct ActorConfig {
     pub grace_period: Option<Duration>,
     /// Maximum session duration.
     pub max_session: Duration,
+    /// Timeout for server readiness gate.
+    pub readiness_timeout: Duration,
 }
 
 /// Builds an `ActorConfig` from CLI `RunArgs`.
@@ -87,6 +89,7 @@ pub fn build_actor_config(args: &RunArgs) -> ActorConfig {
         raw_synthesize: args.raw_synthesize,
         grace_period: args.grace_period.map(Into::into),
         max_session: args.max_session.into(),
+        readiness_timeout: args.readiness_timeout.into(),
     }
 }
 
@@ -651,6 +654,7 @@ mod tests {
             a2a_client_endpoint: None,
             grace_period: None,
             max_session: humantime::Duration::from(Duration::from_secs(300)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(30)),
             output: None,
             header: vec!["Authorization: Bearer token123".to_string()],
             no_semantic: false,
@@ -704,6 +708,7 @@ attack:
             raw_synthesize: false,
             grace_period: None,
             max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
         };
 
         let result = run_actor(
@@ -759,6 +764,7 @@ attack:
             raw_synthesize: false,
             grace_period: None,
             max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
         };
 
         let result = run_actor(
@@ -815,6 +821,7 @@ attack:
             raw_synthesize: false,
             grace_period: None,
             max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
         };
 
         let cancel = CancellationToken::new();
@@ -879,6 +886,7 @@ attack:
             raw_synthesize: false,
             grace_period: None,
             max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
         };
 
         let result = run_actor(
@@ -933,6 +941,7 @@ attack:
             raw_synthesize: false,
             grace_period: None,
             max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
         };
 
         let cancel = CancellationToken::new();
@@ -976,6 +985,7 @@ attack:
             a2a_client_endpoint: None,
             grace_period: None,
             max_session: humantime::Duration::from(Duration::from_secs(300)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(30)),
             output: None,
             header: vec![
                 "Authorization: Bearer token123".to_string(),
@@ -1014,6 +1024,7 @@ attack:
             a2a_client_endpoint: None,
             grace_period: None,
             max_session: humantime::Duration::from(Duration::from_secs(300)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(30)),
             output: None,
             header: vec!["NoColonHere".to_string(), "Valid: header".to_string()],
             no_semantic: false,
@@ -1042,6 +1053,7 @@ attack:
             a2a_client_endpoint: None,
             grace_period: None,
             max_session: humantime::Duration::from(Duration::from_secs(300)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(30)),
             output: None,
             header: vec![],
             no_semantic: false,
@@ -1092,6 +1104,7 @@ attack:
             raw_synthesize: false,
             grace_period: None,
             max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
         };
 
         let result = run_actor(

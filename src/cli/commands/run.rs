@@ -190,47 +190,50 @@ async fn run_single_actor(
     Ok((vec![ActorOutcome::Success(result)], trace))
 }
 
-/// Converts actor outcomes and actor definitions into `ActorStatus` entries.
+/// Converts actor outcomes into `ActorStatus` entries.
 ///
-/// Matches outcomes to actor definitions by name rather than index, since
-/// multi-actor orchestration may return outcomes in completion order rather
-/// than declaration order.
+/// For successful actors, uses fields directly from `ActorResult`.
+/// For failed/panicked actors, falls back to the actor definitions
+/// for `total_phases`.
 fn build_actor_statuses(outcomes: &[ActorOutcome], actors: &[oatf::Actor]) -> Vec<ActorStatus> {
     outcomes
         .iter()
-        .map(|outcome| {
-            let name = outcome.actor_name();
-            let actor_def = actors.iter().find(|a| a.name == name);
-            let total_phases = actor_def.map_or(0, |a| a.phases.len());
-            let last_phase_name = actor_def
-                .and_then(|a| a.phases.last())
-                .and_then(|p| p.name.clone());
-
-            match outcome {
-                ActorOutcome::Success(result) => ActorStatus {
-                    name: result.actor_name.clone(),
-                    status: termination_to_status(&result.termination),
-                    phases_completed: result.phases_completed,
-                    total_phases,
-                    terminal_phase: last_phase_name,
-                    error: None,
-                },
-                ActorOutcome::Error { actor_name, error } => ActorStatus {
+        .map(|outcome| match outcome {
+            ActorOutcome::Success(result) => ActorStatus {
+                name: result.actor_name.clone(),
+                status: termination_to_status(&result.termination),
+                phases_completed: result.phases_completed,
+                total_phases: result.total_phases,
+                terminal_phase: result.final_phase.clone(),
+                error: None,
+            },
+            ActorOutcome::Error { actor_name, error } => {
+                let total_phases = actors
+                    .iter()
+                    .find(|a| &a.name == actor_name)
+                    .map_or(0, |a| a.phases.len());
+                ActorStatus {
                     name: actor_name.clone(),
                     status: "error".to_string(),
                     phases_completed: 0,
                     total_phases,
                     terminal_phase: None,
                     error: Some(error.clone()),
-                },
-                ActorOutcome::Panic { actor_name } => ActorStatus {
+                }
+            }
+            ActorOutcome::Panic { actor_name } => {
+                let total_phases = actors
+                    .iter()
+                    .find(|a| &a.name == actor_name)
+                    .map_or(0, |a| a.phases.len());
+                ActorStatus {
                     name: actor_name.clone(),
                     status: "error".to_string(),
                     phases_completed: 0,
                     total_phases,
                     terminal_phase: None,
                     error: Some("task panicked".to_string()),
-                },
+                }
             }
         })
         .collect()

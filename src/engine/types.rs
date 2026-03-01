@@ -105,6 +105,8 @@ pub enum TerminationReason {
     Cancelled,
     /// The maximum session duration expired.
     MaxSessionExpired,
+    /// The transport connection was closed mid-execution.
+    TransportClosed,
 }
 
 impl fmt::Display for TerminationReason {
@@ -113,6 +115,7 @@ impl fmt::Display for TerminationReason {
             Self::TerminalPhaseReached => write!(f, "terminal phase reached"),
             Self::Cancelled => write!(f, "cancelled"),
             Self::MaxSessionExpired => write!(f, "max session expired"),
+            Self::TransportClosed => write!(f, "transport closed"),
         }
     }
 }
@@ -125,7 +128,7 @@ impl fmt::Display for TerminationReason {
 ///
 /// Returned by `PhaseLoop::run()` when the actor finishes.
 ///
-/// Implements: TJ-SPEC-013 F-001
+/// Implements: TJ-SPEC-013 F-001, TJ-SPEC-015 F-004
 #[derive(Debug, Clone)]
 pub struct ActorResult {
     /// Name of the actor that completed.
@@ -134,6 +137,10 @@ pub struct ActorResult {
     pub termination: TerminationReason,
     /// Number of phases completed (advanced through) before termination.
     pub phases_completed: usize,
+    /// Total number of phases defined for this actor.
+    pub total_phases: usize,
+    /// Name of the final phase reached, if any.
+    pub final_phase: Option<String>,
 }
 
 // ============================================================================
@@ -196,6 +203,10 @@ mod tests {
             TerminationReason::MaxSessionExpired.to_string(),
             "max session expired"
         );
+        assert_eq!(
+            TerminationReason::TransportClosed.to_string(),
+            "transport closed"
+        );
     }
 
     #[test]
@@ -215,9 +226,13 @@ mod tests {
             actor_name: "mcp_poison".to_string(),
             termination: TerminationReason::TerminalPhaseReached,
             phases_completed: 2,
+            total_phases: 3,
+            final_phase: Some("exploit".to_string()),
         };
         assert_eq!(result.actor_name, "mcp_poison");
         assert_eq!(result.phases_completed, 2);
+        assert_eq!(result.total_phases, 3);
+        assert_eq!(result.final_phase.as_deref(), Some("exploit"));
     }
 
     #[test]
@@ -245,5 +260,8 @@ mod tests {
     fn termination_reason_serialization() {
         let json = serde_json::to_string(&TerminationReason::Cancelled).unwrap();
         assert_eq!(json, "\"cancelled\"");
+
+        let json = serde_json::to_string(&TerminationReason::TransportClosed).unwrap();
+        assert_eq!(json, "\"transport_closed\"");
     }
 }
