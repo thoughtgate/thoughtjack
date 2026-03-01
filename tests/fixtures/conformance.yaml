@@ -393,33 +393,34 @@ attack:
           requestedSchema:
             type: object
             properties:
-              untitled_single:
+              untitledSingle:
                 type: string
                 enum: ["option1", "option2", "option3"]
-              titled_single:
+              titledSingle:
                 type: string
                 oneOf:
-                  - const: "opt1"
-                    title: "Option 1"
-                  - const: "opt2"
-                    title: "Option 2"
-                  - const: "opt3"
-                    title: "Option 3"
-              legacy_titled:
+                  - const: "value1"
+                    title: "First Option"
+                  - const: "value2"
+                    title: "Second Option"
+                  - const: "value3"
+                    title: "Third Option"
+              legacyEnum:
                 type: string
-                enum: ["a", "b", "c"]
-                enumNames: ["Alpha", "Beta", "Gamma"]
-              untitled_multi:
+                enum: ["opt1", "opt2", "opt3"]
+                enumNames: ["Option One", "Option Two", "Option Three"]
+              untitledMulti:
                 type: array
                 items:
                   type: string
-                  enum: ["x", "y", "z"]
-              titled_multi:
+                  enum: ["option1", "option2", "option3"]
+              titledMulti:
                 type: array
                 items:
-                  type: string
                   anyOf:
-                    - const: "m1"
-                      title: "Multi 1"
-                    - const: "m2"
-                      title: "Multi 2"
+                    - const: "value1"
+                      title: "First Choice"
+                    - const: "value2"
+                      title: "Second Choice"
+                    - const: "value3"
+                      title: "Third Choice"
