@@ -1,8 +1,10 @@
 //! Shared integration-test helpers for `ThoughtJack`.
 //!
-//! Provides utility functions for future v0.5 integration tests.
+//! Provides utility functions for v0.5 integration tests.
 
 #![allow(dead_code)]
+
+pub mod mock_server;
 
 use std::path::PathBuf;
 
