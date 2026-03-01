@@ -209,8 +209,15 @@ impl McpServerDriver {
     ///
     /// On HTTP, uses `HttpTransport::send_server_request()` to avoid the
     /// channel-swap bug. On stdio, falls back to `send_message()` +
-    /// `receive_message()`.
-    async fn send_server_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+    /// `receive_message()`, looping past any interleaved notifications or
+    /// requests that the client may send before its response (e.g.
+    /// `notifications/progress`, `notifications/cancelled`). Interleaved
+    /// messages are re-emitted on `event_tx` so they are not lost.
+    async fn send_server_request(
+        &self,
+        request: &JsonRpcRequest,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) -> Option<JsonRpcResponse> {
         if self.transport.transport_type() == TransportType::Http
             && let Some(http) = self.transport.as_any().downcast_ref::<HttpTransport>()
         {
@@ -223,7 +230,7 @@ impl McpServerDriver {
             }
         }
 
-        // Stdio fallback: send + receive
+        // Stdio fallback: send + receive, skipping interleaved messages
         if let Err(err) = self
             .transport
             .send_message(&JsonRpcMessage::Request(request.clone()))
@@ -233,19 +240,39 @@ impl McpServerDriver {
             return None;
         }
 
-        match self.transport.receive_message().await {
-            Ok(Some(JsonRpcMessage::Response(resp))) => Some(resp),
-            Ok(Some(msg)) => {
-                tracing::debug!(?msg, "unexpected message during server request wait");
-                None
-            }
-            Ok(None) => {
-                tracing::debug!("transport EOF during server request wait");
-                None
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "transport error during server request wait");
-                None
+        loop {
+            match self.transport.receive_message().await {
+                Ok(Some(JsonRpcMessage::Response(resp))) => return Some(resp),
+                Ok(Some(JsonRpcMessage::Notification(notif))) => {
+                    tracing::debug!(
+                        method = %notif.method,
+                        "interleaved notification during server request wait, re-emitting"
+                    );
+                    let _ = event_tx.send(ProtocolEvent {
+                        direction: Direction::Incoming,
+                        method: notif.method.clone(),
+                        content: notif.params.unwrap_or(Value::Null),
+                    });
+                }
+                Ok(Some(JsonRpcMessage::Request(req))) => {
+                    tracing::debug!(
+                        method = %req.method,
+                        "interleaved request during server request wait, re-emitting"
+                    );
+                    let _ = event_tx.send(ProtocolEvent {
+                        direction: Direction::Incoming,
+                        method: req.method.clone(),
+                        content: req.params.unwrap_or(Value::Null),
+                    });
+                }
+                Ok(None) => {
+                    tracing::debug!("transport EOF during server request wait");
+                    return None;
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "transport error during server request wait");
+                    return None;
+                }
             }
         }
     }
@@ -416,7 +443,7 @@ impl McpServerDriver {
             content: serde_json::to_value(&sampling_request).unwrap_or(Value::Null),
         });
 
-        if let Some(resp) = self.send_server_request(&sampling_request).await {
+        if let Some(resp) = self.send_server_request(&sampling_request, event_tx).await {
             let _ = event_tx.send(ProtocolEvent {
                 direction: Direction::Incoming,
                 method: "sampling/createMessage".to_string(),
@@ -493,7 +520,10 @@ impl McpServerDriver {
         });
 
         // Send request and wait for response
-        if let Some(resp) = self.send_server_request(&elicitation_request).await {
+        if let Some(resp) = self
+            .send_server_request(&elicitation_request, event_tx)
+            .await
+        {
             let _ = event_tx.send(ProtocolEvent {
                 direction: Direction::Incoming,
                 method: "elicitation/create".to_string(),
