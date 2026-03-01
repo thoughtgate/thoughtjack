@@ -1,0 +1,785 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use async_trait::async_trait;
+use oatf::MatchPredicate;
+use oatf::enums::ElicitationMode;
+use oatf::primitives::{evaluate_predicate, interpolate_template};
+use serde_json::{Value, json};
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::error::EngineError;
+use crate::transport::HttpTransport;
+use crate::transport::{
+    JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Transport, TransportType,
+};
+
+use super::behavior::{apply_delivery, apply_side_effects};
+use super::handlers::{
+    handle_completion, handle_elicitation_response, handle_initialize, handle_logging_set_level,
+    handle_ping, handle_prompts_list, handle_resources_list, handle_resources_read,
+    handle_resources_templates_list, handle_roots_list, handle_sampling, handle_subscribe,
+    handle_tasks_cancel, handle_tasks_get, handle_tasks_list, handle_tasks_result,
+    handle_tools_list, handle_unknown,
+};
+use super::helpers::find_by_name;
+use super::response::dispatch_response;
+
+use crate::engine::actions::EntryActionSender;
+use crate::engine::driver::PhaseDriver;
+use crate::engine::types::{Direction, DriveResult, ProtocolEvent};
+
+// ============================================================================
+// McpServerDriver
+// ============================================================================
+
+/// MCP server-mode protocol driver.
+///
+/// Listens for JSON-RPC requests on the provided transport, dispatches
+/// responses from the current phase's effective state, applies behavioral
+/// modifiers, and emits protocol events for the `PhaseLoop`.
+///
+/// # Transport sharing
+///
+/// The transport is shared via `Arc<dyn Transport>` to allow both the
+/// driver and the `McpTransportEntryActionSender` to access it.
+///
+/// Implements: TJ-SPEC-013 F-001
+pub struct McpServerDriver {
+    transport: Arc<dyn Transport>,
+    raw_synthesize: bool,
+}
+
+impl McpServerDriver {
+    /// Creates a new MCP server driver.
+    ///
+    /// # Arguments
+    ///
+    /// * `transport` — Shared transport for JSON-RPC I/O.
+    /// * `raw_synthesize` — If `true`, bypass synthesize output validation.
+    ///
+    /// Implements: TJ-SPEC-013 F-001
+    #[must_use]
+    pub fn new(transport: Arc<dyn Transport>, raw_synthesize: bool) -> Self {
+        Self {
+            transport,
+            raw_synthesize,
+        }
+    }
+
+    /// Creates an `McpTransportEntryActionSender` sharing this driver's transport.
+    ///
+    /// Implements: TJ-SPEC-013 F-001
+    #[must_use]
+    pub fn entry_action_sender(&self) -> McpTransportEntryActionSender {
+        McpTransportEntryActionSender {
+            transport: Arc::clone(&self.transport),
+            next_request_id: AtomicU64::new(1_000_000),
+        }
+    }
+
+    /// Observe interleaved messages while a spawned delivery task runs.
+    ///
+    /// Re-emits incoming notifications and requests as protocol events so
+    /// that the `PhaseLoop` can evaluate triggers and capture extractors
+    /// even while a `slow_stream` delivery is dripping bytes.
+    ///
+    /// Returns `Some(DriveResult::Complete)` when the driver should exit
+    /// early (cancellation or EOF), or `None` when delivery finished
+    /// normally and the caller should continue.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngineError::Driver` on transport or delivery task failure.
+    async fn observe_during_delivery(
+        &self,
+        mut handle: JoinHandle<Result<(), EngineError>>,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<DriveResult>, EngineError> {
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    handle.abort();
+                    return Ok(Some(DriveResult::Complete));
+                }
+                result = &mut handle => {
+                    return match result {
+                        Ok(Ok(())) => Ok(None),
+                        Ok(Err(e)) => Err(e),
+                        Err(e) => Err(EngineError::Driver(
+                            format!("delivery task panicked: {e}")
+                        )),
+                    };
+                }
+                msg = self.transport.receive_message() => {
+                    match msg {
+                        Ok(Some(JsonRpcMessage::Notification(notif))) => {
+                            let _ = event_tx.send(ProtocolEvent {
+                                direction: Direction::Incoming,
+                                method: notif.method.clone(),
+                                content: notif.params.unwrap_or(Value::Null),
+                            });
+                        }
+                        Ok(Some(JsonRpcMessage::Request(req))) => {
+                            let _ = event_tx.send(ProtocolEvent {
+                                direction: Direction::Incoming,
+                                method: req.method.clone(),
+                                content: req.params.clone().unwrap_or(Value::Null),
+                            });
+                        }
+                        Ok(Some(JsonRpcMessage::Response(resp))) => {
+                            tracing::debug!(id = ?resp.id, "unexpected response from agent during delivery");
+                        }
+                        Ok(None) => {
+                            handle.abort();
+                            return Ok(Some(DriveResult::Complete));
+                        }
+                        Err(err) => {
+                            handle.abort();
+                            return Err(EngineError::Driver(
+                                format!("transport error during delivery: {err}")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dispatch a request to the appropriate handler.
+    async fn dispatch_request(
+        &self,
+        request: &JsonRpcRequest,
+        state: &Value,
+        extractors: &HashMap<String, String>,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) -> JsonRpcResponse {
+        match request.method.as_str() {
+            "initialize" => handle_initialize(request, state),
+            "tools/list" => handle_tools_list(request, state),
+            "tools/call" => {
+                self.handle_tools_call(request, state, extractors, event_tx)
+                    .await
+            }
+            "resources/list" => handle_resources_list(request, state),
+            "resources/read" => handle_resources_read(request, state, extractors),
+            "resources/templates/list" => handle_resources_templates_list(request, state),
+            "prompts/list" => handle_prompts_list(request, state),
+            "prompts/get" => {
+                self.handle_prompts_get(request, state, extractors, event_tx)
+                    .await
+            }
+            "resources/subscribe" | "resources/unsubscribe" => handle_subscribe(request),
+            "completion/complete" => handle_completion(request),
+            "logging/setLevel" => handle_logging_set_level(request),
+            "ping" => handle_ping(request),
+            // Receive-only handlers (§4.6)
+            "sampling/createMessage" => handle_sampling(request),
+            "roots/list" => handle_roots_list(request),
+            // Elicitation response — agent responded to our elicitation
+            "elicitation/create" => handle_elicitation_response(request),
+            // Task lifecycle (§4.4)
+            "tasks/get" => handle_tasks_get(request, state),
+            "tasks/result" => handle_tasks_result(request, state),
+            "tasks/list" => handle_tasks_list(request, state),
+            "tasks/cancel" => handle_tasks_cancel(request, state),
+            _ => handle_unknown(request),
+        }
+    }
+
+    /// Handle `tools/call` with response dispatch and optional elicitation.
+    async fn handle_tools_call(
+        &self,
+        request: &JsonRpcRequest,
+        state: &Value,
+        extractors: &HashMap<String, String>,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) -> JsonRpcResponse {
+        let params = request.params.as_ref().unwrap_or(&Value::Null);
+        let tool_name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        let Some(tool) = find_by_name(state, "tools", tool_name) else {
+            return JsonRpcResponse::error(
+                request.id.clone(),
+                crate::transport::jsonrpc::error_codes::INVALID_PARAMS,
+                format!("tool not found: {tool_name}"),
+            );
+        };
+
+        // Interleaving: logging → progress → sampling → elicitation → response
+        self.maybe_send_logging(state, tool_name, event_tx).await;
+        self.maybe_send_progress(state, params, tool_name, event_tx)
+            .await;
+        self.maybe_send_sampling(state, tool_name, event_tx).await;
+        self.maybe_send_elicitation(state, params, tool_name, event_tx)
+            .await;
+
+        dispatch_response(
+            &request.id,
+            &tool,
+            extractors,
+            params,
+            tool.get("outputSchema"),
+            self.raw_synthesize,
+        )
+    }
+
+    /// Handle `prompts/get` with response dispatch and optional elicitation.
+    async fn handle_prompts_get(
+        &self,
+        request: &JsonRpcRequest,
+        state: &Value,
+        extractors: &HashMap<String, String>,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) -> JsonRpcResponse {
+        let params = request.params.as_ref().unwrap_or(&Value::Null);
+        let prompt_name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        let Some(prompt) = find_by_name(state, "prompts", prompt_name) else {
+            return JsonRpcResponse::error(
+                request.id.clone(),
+                crate::transport::jsonrpc::error_codes::INVALID_PARAMS,
+                format!("prompt not found: {prompt_name}"),
+            );
+        };
+
+        // Elicitation interleaving (before response)
+        self.maybe_send_elicitation(state, params, "", event_tx)
+            .await;
+
+        dispatch_response(
+            &request.id,
+            &prompt,
+            extractors,
+            params,
+            None,
+            self.raw_synthesize,
+        )
+    }
+
+    /// Send a server-initiated JSON-RPC request and wait for the response.
+    ///
+    /// On HTTP, uses `HttpTransport::send_server_request()` to avoid the
+    /// channel-swap bug. On stdio, falls back to `send_message()` +
+    /// `receive_message()`, looping past any interleaved notifications or
+    /// requests that the client may send before its response (e.g.
+    /// `notifications/progress`, `notifications/cancelled`). Interleaved
+    /// messages are re-emitted on `event_tx` so they are not lost.
+    async fn send_server_request(
+        &self,
+        request: &JsonRpcRequest,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) -> Option<JsonRpcResponse> {
+        if self.transport.transport_type() == TransportType::Http
+            && let Some(http) = self.transport.as_any().downcast_ref::<HttpTransport>()
+        {
+            match http.send_server_request(request).await {
+                Ok(resp) => return Some(resp),
+                Err(err) => {
+                    tracing::warn!(error = %err, "HTTP server request failed");
+                    return None;
+                }
+            }
+        }
+
+        // Stdio fallback: send + receive, skipping interleaved messages
+        if let Err(err) = self
+            .transport
+            .send_message(&JsonRpcMessage::Request(request.clone()))
+            .await
+        {
+            tracing::warn!(error = %err, "failed to send server request");
+            return None;
+        }
+
+        loop {
+            match self.transport.receive_message().await {
+                Ok(Some(JsonRpcMessage::Response(resp))) => return Some(resp),
+                Ok(Some(JsonRpcMessage::Notification(notif))) => {
+                    tracing::debug!(
+                        method = %notif.method,
+                        "interleaved notification during server request wait, re-emitting"
+                    );
+                    let _ = event_tx.send(ProtocolEvent {
+                        direction: Direction::Incoming,
+                        method: notif.method.clone(),
+                        content: notif.params.unwrap_or(Value::Null),
+                    });
+                }
+                Ok(Some(JsonRpcMessage::Request(req))) => {
+                    tracing::debug!(
+                        method = %req.method,
+                        "interleaved request during server request wait, re-emitting"
+                    );
+                    let _ = event_tx.send(ProtocolEvent {
+                        direction: Direction::Incoming,
+                        method: req.method.clone(),
+                        content: req.params.unwrap_or(Value::Null),
+                    });
+                }
+                Ok(None) => {
+                    tracing::debug!("transport EOF during server request wait");
+                    return None;
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "transport error during server request wait");
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// Send logging notifications if the state has matching logging entries.
+    ///
+    /// Reads `state["logging"]` array, sends `notifications/message` for each.
+    /// Optional `tool` field restricts to specific tool names.
+    async fn maybe_send_logging(
+        &self,
+        state: &Value,
+        tool_name: &str,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) {
+        let Some(entries) = state.get("logging").and_then(Value::as_array) else {
+            return;
+        };
+
+        for entry in entries {
+            // Check tool filter
+            if let Some(tool_filter) = entry.get("tool").and_then(Value::as_str)
+                && tool_filter != tool_name
+            {
+                continue;
+            }
+
+            let level = entry.get("level").and_then(Value::as_str).unwrap_or("info");
+            let data = entry
+                .get("data")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+
+            let notif = JsonRpcNotification::new(
+                "notifications/message",
+                Some(json!({
+                    "level": level,
+                    "data": data,
+                })),
+            );
+
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "notifications/message".to_string(),
+                content: json!({ "level": level, "data": data }),
+            });
+
+            if let Err(err) = self
+                .transport
+                .send_message(&JsonRpcMessage::Notification(notif))
+                .await
+            {
+                tracing::warn!(error = %err, "failed to send logging notification");
+            }
+        }
+    }
+
+    /// Send progress notifications if the request includes a progress token.
+    ///
+    /// Reads `state["progress"]` array. Only fires if the request has
+    /// `_meta.progressToken` in params.
+    async fn maybe_send_progress(
+        &self,
+        state: &Value,
+        request_params: &Value,
+        tool_name: &str,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) {
+        let Some(entries) = state.get("progress").and_then(Value::as_array) else {
+            return;
+        };
+
+        let Some(progress_token) = request_params
+            .get("_meta")
+            .and_then(|m| m.get("progressToken"))
+        else {
+            return;
+        };
+
+        for entry in entries {
+            // Check tool filter
+            if let Some(tool_filter) = entry.get("tool").and_then(Value::as_str)
+                && tool_filter != tool_name
+            {
+                continue;
+            }
+
+            let progress = entry.get("progress").and_then(Value::as_u64).unwrap_or(0);
+            let total = entry.get("total").and_then(Value::as_u64);
+
+            let mut notif_params = json!({
+                "progressToken": progress_token.clone(),
+                "progress": progress,
+            });
+            if let Some(total_val) = total {
+                notif_params
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("total".to_string(), json!(total_val));
+            }
+
+            let notif =
+                JsonRpcNotification::new("notifications/progress", Some(notif_params.clone()));
+
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "notifications/progress".to_string(),
+                content: notif_params,
+            });
+
+            if let Err(err) = self
+                .transport
+                .send_message(&JsonRpcMessage::Notification(notif))
+                .await
+            {
+                tracing::warn!(error = %err, "failed to send progress notification");
+            }
+        }
+    }
+
+    /// Send a sampling request if the state has matching sampling entries.
+    ///
+    /// Reads `state["sampling_requests"]` array, sends `sampling/createMessage`
+    /// request. Uses first-match-wins with optional `tool` filter.
+    async fn maybe_send_sampling(
+        &self,
+        state: &Value,
+        tool_name: &str,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) {
+        let Some(entries) = state.get("sampling_requests").and_then(Value::as_array) else {
+            return;
+        };
+
+        // First-match-wins with tool filter
+        let matched = entries.iter().find(|e| {
+            e.get("tool")
+                .and_then(Value::as_str)
+                .is_none_or(|tool_filter| tool_filter == tool_name)
+        });
+
+        let Some(entry) = matched else { return };
+
+        let messages = entry.get("messages").cloned().unwrap_or_else(|| json!([]));
+        let max_tokens = entry
+            .get("maxTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(100);
+
+        let sampling_request = JsonRpcRequest {
+            jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
+            method: "sampling/createMessage".to_string(),
+            params: Some(json!({
+                "messages": messages,
+                "maxTokens": max_tokens,
+            })),
+            id: json!(format!(
+                "sampling-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            )),
+        };
+
+        let _ = event_tx.send(ProtocolEvent {
+            direction: Direction::Outgoing,
+            method: "sampling/createMessage".to_string(),
+            content: serde_json::to_value(&sampling_request).unwrap_or(Value::Null),
+        });
+
+        if let Some(resp) = self.send_server_request(&sampling_request, event_tx).await {
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "sampling/createMessage".to_string(),
+                content: serde_json::to_value(&resp).unwrap_or(Value::Null),
+            });
+        }
+    }
+
+    /// Send an elicitation request if the state has a matching elicitation.
+    ///
+    /// Uses first-match-wins semantics per §4.3: iterates elicitations in
+    /// order, evaluates each `when` predicate against the request context,
+    /// and fires only the first match.
+    #[allow(clippy::cognitive_complexity)]
+    async fn maybe_send_elicitation(
+        &self,
+        state: &Value,
+        request_context: &Value,
+        tool_name: &str,
+        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+    ) {
+        let Some(elicitations) = state.get("elicitations").and_then(Value::as_array) else {
+            return;
+        };
+
+        // First-match-wins (§4.3) with optional tool filter
+        let matched = elicitations.iter().find(|e| {
+            // Check tool filter first
+            if let Some(tool_filter) = e.get("tool").and_then(Value::as_str)
+                && tool_filter != tool_name
+            {
+                return false;
+            }
+            let Some(when_value) = e.get("when") else {
+                return true; // No predicate → always matches
+            };
+            match serde_json::from_value::<MatchPredicate>(when_value.clone()) {
+                Ok(predicate) => evaluate_predicate(&predicate, request_context),
+                Err(err) => {
+                    tracing::warn!(error = %err, "failed to parse elicitation predicate");
+                    false
+                }
+            }
+        });
+
+        let Some(elicitation) = matched else { return };
+
+        let message = elicitation
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Please provide input");
+
+        let elicitation_request = JsonRpcRequest {
+            jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
+            method: "elicitation/create".to_string(),
+            params: Some(json!({
+                "message": message,
+                "requestedSchema": elicitation.get("requestedSchema").cloned().unwrap_or(json!({})),
+            })),
+            id: json!(format!(
+                "elicit-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            )),
+        };
+
+        // Emit outgoing elicitation event
+        let _ = event_tx.send(ProtocolEvent {
+            direction: Direction::Outgoing,
+            method: "elicitation/create".to_string(),
+            content: serde_json::to_value(&elicitation_request).unwrap_or(Value::Null),
+        });
+
+        // Send request and wait for response
+        if let Some(resp) = self
+            .send_server_request(&elicitation_request, event_tx)
+            .await
+        {
+            let _ = event_tx.send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "elicitation/create".to_string(),
+                content: serde_json::to_value(&resp).unwrap_or(Value::Null),
+            });
+        }
+    }
+}
+
+// ============================================================================
+// PhaseDriver impl
+// ============================================================================
+
+#[async_trait]
+impl PhaseDriver for McpServerDriver {
+    /// Run the MCP server event loop for a single phase.
+    ///
+    /// Receives JSON-RPC requests, dispatches responses based on the
+    /// effective state, applies behavioral modifiers, and emits protocol
+    /// events for the `PhaseLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngineError::Driver` on unrecoverable transport failures.
+    async fn drive_phase(
+        &mut self,
+        _phase_index: usize,
+        state: &Value,
+        extractors: watch::Receiver<HashMap<String, String>>,
+        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        cancel: CancellationToken,
+    ) -> Result<DriveResult, EngineError> {
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    return Ok(DriveResult::Complete);
+                }
+                msg = self.transport.receive_message() => {
+                    match msg {
+                        Ok(Some(JsonRpcMessage::Request(request))) => {
+                            // Emit incoming event
+                            let incoming_content = request.params.clone().unwrap_or(Value::Null);
+                            let _ = event_tx.send(ProtocolEvent {
+                                direction: Direction::Incoming,
+                                method: request.method.clone(),
+                                content: incoming_content,
+                            });
+
+                            // Get fresh extractors
+                            let current_extractors = extractors.borrow().clone();
+
+                            // Dispatch request
+                            let response = self.dispatch_request(
+                                &request, state, &current_extractors, &event_tx,
+                            ).await;
+
+                            // Apply side effects
+                            apply_side_effects(
+                                &self.transport, state, &request.id,
+                            ).await?;
+
+                            // Apply delivery
+                            let response_msg = JsonRpcMessage::Response(response.clone());
+                            let pending = apply_delivery(&self.transport, state, &response_msg).await?;
+
+                            // If delivery was spawned (slow_stream), observe
+                            // interleaved messages while waiting for it to finish.
+                            if let Some(handle) = pending
+                                && let Some(result) = self.observe_during_delivery(
+                                    handle, &event_tx, &cancel,
+                                ).await?
+                            {
+                                return Ok(result);
+                            }
+
+                            // Emit outgoing event
+                            let outgoing_content = response.result.clone().unwrap_or_else(||
+                                response.error.as_ref()
+                                    .map_or(Value::Null, |e| serde_json::to_value(e).unwrap_or(Value::Null))
+                            );
+                            let _ = event_tx.send(ProtocolEvent {
+                                direction: Direction::Outgoing,
+                                method: request.method.clone(),
+                                content: outgoing_content,
+                            });
+
+                            // Finalize
+                            self.transport.finalize_response().await
+                                .map_err(|e| EngineError::Driver(format!("finalize error: {e}")))?;
+                        }
+                        Ok(Some(JsonRpcMessage::Notification(notif))) => {
+                            // Notifications have no response — just emit event
+                            let _ = event_tx.send(ProtocolEvent {
+                                direction: Direction::Incoming,
+                                method: notif.method.clone(),
+                                content: notif.params.unwrap_or(Value::Null),
+                            });
+                        }
+                        Ok(Some(JsonRpcMessage::Response(resp))) => {
+                            // Unexpected response — log and continue
+                            tracing::debug!(id = ?resp.id, "unexpected response from agent");
+                        }
+                        Ok(None) => {
+                            // EOF — clean shutdown
+                            return Ok(DriveResult::Complete);
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "transport receive error");
+                            return Err(EngineError::Driver(format!("transport error: {err}")));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// McpTransportEntryActionSender
+// ============================================================================
+
+/// Entry action sender that delivers notifications and elicitations
+/// over the MCP transport.
+///
+/// Created by `McpServerDriver::entry_action_sender()` and shares the
+/// same `Arc<dyn Transport>`.
+///
+/// Implements: TJ-SPEC-013 F-001
+pub struct McpTransportEntryActionSender {
+    pub(super) transport: Arc<dyn Transport>,
+    pub(super) next_request_id: AtomicU64,
+}
+
+#[async_trait]
+impl EntryActionSender for McpTransportEntryActionSender {
+    /// Send a JSON-RPC notification to the agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngineError::EntryAction` if the transport fails.
+    async fn send_notification(
+        &self,
+        method: &str,
+        params: Option<&Value>,
+    ) -> Result<(), EngineError> {
+        let notif = JsonRpcNotification::new(method, params.cloned());
+        self.transport
+            .send_message(&JsonRpcMessage::Notification(notif))
+            .await
+            .map_err(|e| EngineError::EntryAction(format!("notification send failed: {e}")))
+    }
+
+    /// Send an elicitation request to the agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngineError::EntryAction` if the transport fails.
+    async fn send_elicitation(
+        &self,
+        message: &str,
+        mode: Option<&ElicitationMode>,
+        requested_schema: Option<&Value>,
+        url: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let (interpolated_message, _) = interpolate_template(message, &HashMap::new(), None, None);
+
+        let mut params = serde_json::Map::new();
+        params.insert("message".to_string(), json!(interpolated_message));
+        if let Some(mode) = mode {
+            params.insert(
+                "mode".to_string(),
+                serde_json::to_value(mode).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(schema) = requested_schema {
+            params.insert("requestedSchema".to_string(), schema.clone());
+        }
+        if let Some(url) = url {
+            params.insert("url".to_string(), json!(url));
+        }
+
+        let request = JsonRpcRequest {
+            jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
+            method: "elicitation/create".to_string(),
+            params: Some(Value::Object(params)),
+            id: json!(id),
+        };
+
+        self.transport
+            .send_message(&JsonRpcMessage::Request(request))
+            .await
+            .map_err(|e| EngineError::EntryAction(format!("elicitation send failed: {e}")))
+    }
+}
