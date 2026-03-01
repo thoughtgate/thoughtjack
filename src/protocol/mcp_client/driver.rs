@@ -95,7 +95,7 @@ impl McpClientDriver {
         let id_key = id.to_string();
 
         // Register pending request for correlation
-        self.pending.lock().expect("pending lock poisoned").insert(
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             id_key,
             PendingRequest {
                 method: method.to_string(),
@@ -200,7 +200,7 @@ impl McpClientDriver {
         let id_key = id.to_string();
 
         // Register pending request
-        self.pending.lock().expect("pending lock poisoned").insert(
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             id_key,
             PendingRequest {
                 method: "initialize".to_string(),

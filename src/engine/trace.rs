@@ -71,9 +71,7 @@ impl SharedTrace {
 
     /// Appends a new trace entry with the next sequence number.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal mutex is poisoned.
+    /// Recovers gracefully from mutex poisoning to maintain resilience.
     pub fn append(
         &self,
         actor: &str,
@@ -85,7 +83,7 @@ impl SharedTrace {
         let mut entries = self
             .entries
             .lock()
-            .expect("trace mutex should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Generate seq inside the lock so entries are always in seq order.
         let seq = self.seq_counter.fetch_add(1, Ordering::Relaxed);
@@ -104,30 +102,22 @@ impl SharedTrace {
     ///
     /// The returned `Vec` is independent of the trace — subsequent
     /// appends do not affect it.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn snapshot(&self) -> Vec<TraceEntry> {
         let entries = self
             .entries
             .lock()
-            .expect("trace mutex should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.clone()
     }
 
     /// Returns the number of entries in the trace.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn len(&self) -> usize {
         let entries = self
             .entries
             .lock()
-            .expect("trace mutex should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.len()
     }
 
