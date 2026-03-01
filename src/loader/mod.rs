@@ -226,6 +226,20 @@ pub fn load_document(yaml: &str) -> Result<LoadedDocument, LoaderError> {
 
     let document = load_result.document;
 
+    // Validate actors exist after SDK normalization (centralizes invariant
+    // so downstream code can use document_actors() infallibly).
+    if document
+        .attack
+        .execution
+        .actors
+        .as_ref()
+        .is_none_or(Vec::is_empty)
+    {
+        return Err(LoaderError::OatfLoad(
+            "document has no actors after normalization".to_string(),
+        ));
+    }
+
     // Convert (actor_name, phase_name) → (actor_name, phase_index) mapping
     let mut await_by_index: HashMap<(String, usize), Vec<AwaitExtractor>> = HashMap::new();
 
@@ -248,6 +262,32 @@ pub fn load_document(yaml: &str) -> Result<LoadedDocument, LoaderError> {
         document,
         await_extractors: await_by_index,
     })
+}
+
+/// Returns the actors slice from a normalized OATF document.
+///
+/// This is the single place that asserts the post-normalization invariant
+/// that `document.attack.execution.actors` is `Some`. All code that needs
+/// the actors list should call this helper rather than inlining the
+/// `expect()` at each call site.
+///
+/// For documents loaded via [`load_document()`], the invariant is validated
+/// at load time and this function will never panic. For documents
+/// constructed by other means (e.g., tests), it panics with a clear message.
+///
+/// # Panics
+///
+/// Panics if the document has no actors.
+///
+/// Implements: TJ-SPEC-013 F-001
+#[must_use]
+pub fn document_actors(document: &oatf::Document) -> &[oatf::Actor] {
+    document
+        .attack
+        .execution
+        .actors
+        .as_deref()
+        .expect("document should have actors after normalization (validated at load time)")
 }
 
 /// Detects circular dependencies in `await_extractors` configuration.

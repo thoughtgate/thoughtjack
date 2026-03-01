@@ -20,6 +20,7 @@ use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
 use crate::engine::trace::SharedTrace;
 use crate::engine::types::{ActorResult, AwaitExtractor};
 use crate::error::EngineError;
+use crate::loader::document_actors;
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
 use crate::orchestration::store::ExtractorStore;
 use crate::protocol::{a2a_client, a2a_server, agui, mcp_client};
@@ -127,12 +128,7 @@ pub async fn run_actor(
     gate_rx: Option<broadcast::Receiver<()>>,
     events: &EventEmitter,
 ) -> Result<ActorResult, EngineError> {
-    let actors = document
-        .attack
-        .execution
-        .actors
-        .as_ref()
-        .expect("document should have actors after normalization");
+    let actors = document_actors(&document);
     let actor = &actors[actor_index];
     let actor_name = actor.name.clone();
     let mode = &actor.mode;

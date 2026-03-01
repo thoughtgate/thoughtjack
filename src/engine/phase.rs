@@ -13,6 +13,8 @@ use std::time::Instant;
 use oatf::primitives::{compute_effective_state, evaluate_trigger, extract_protocol};
 use oatf::{Document, Phase, TriggerState};
 
+use crate::loader::document_actors;
+
 use super::types::PhaseAction;
 
 // ============================================================================
@@ -50,12 +52,7 @@ impl PhaseEngine {
     /// or if the actor has no phases.
     #[must_use]
     pub fn new(document: Document, actor_index: usize) -> Self {
-        let actors = document
-            .attack
-            .execution
-            .actors
-            .as_ref()
-            .expect("document should have actors after normalization");
+        let actors = document_actors(&document);
         assert!(
             actor_index < actors.len(),
             "actor_index {actor_index} out of bounds (have {} actors)",
@@ -93,15 +90,9 @@ impl PhaseEngine {
     ///
     /// Implements: TJ-SPEC-013 F-001
     pub fn process_event(&mut self, event: &oatf::ProtocolEvent) -> PhaseAction {
-        // Access document fields directly (not via method) to allow
+        // Use document_actors() instead of self.actors_slice() to allow
         // disjoint borrow of self.trigger_state alongside self.document.
-        let actors = self
-            .document
-            .attack
-            .execution
-            .actors
-            .as_deref()
-            .expect("document should have actors after normalization");
+        let actors = document_actors(&self.document);
         let phase = &actors[self.actor_index].phases[self.current_phase];
 
         let Some(trigger) = &phase.trigger else {
@@ -196,12 +187,7 @@ impl PhaseEngine {
     /// This method borrows only `self.document`, allowing callers
     /// to hold other disjoint borrows on `self` fields.
     fn actors_slice(&self) -> &[oatf::Actor] {
-        self.document
-            .attack
-            .execution
-            .actors
-            .as_deref()
-            .expect("document should have actors after normalization")
+        document_actors(&self.document)
     }
 }
 

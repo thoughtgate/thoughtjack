@@ -14,7 +14,7 @@ use crate::cli::args::RunArgs;
 use crate::engine::trace::SharedTrace;
 use crate::engine::types::AwaitExtractor;
 use crate::error::ThoughtJackError;
-use crate::loader::{self, LoadedDocument};
+use crate::loader::{self, LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
 use crate::orchestration::orchestrator::{ActorOutcome, orchestrate};
 use crate::orchestration::runner::{ActorConfig, build_actor_config, run_actor};
@@ -147,13 +147,7 @@ async fn run_single_actor(
     events: &EventEmitter,
     cancel: CancellationToken,
 ) -> Result<(Vec<ActorOutcome>, SharedTrace), ThoughtJackError> {
-    let actors = loaded
-        .document
-        .attack
-        .execution
-        .actors
-        .as_ref()
-        .expect("document should have actors after normalization");
+    let actors = document_actors(&loaded.document);
 
     let actor_name = &actors[0].name;
 

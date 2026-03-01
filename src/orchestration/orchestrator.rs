@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::engine::trace::SharedTrace;
 use crate::engine::types::{ActorResult, AwaitExtractor};
 use crate::error::EngineError;
-use crate::loader::LoadedDocument;
+use crate::loader::{LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
 use crate::orchestration::gate::ReadinessGate;
 use crate::orchestration::runner::{ActorConfig, run_actor};
@@ -112,13 +112,7 @@ pub async fn orchestrate(
     events: &Arc<EventEmitter>,
     cancel: CancellationToken,
 ) -> Result<OrchestratorResult, EngineError> {
-    let actors = loaded
-        .document
-        .attack
-        .execution
-        .actors
-        .as_ref()
-        .expect("document should have actors after normalization");
+    let actors = document_actors(&loaded.document);
 
     // 1. Partition into servers and clients
     let mut server_count = 0;
@@ -211,13 +205,7 @@ fn spawn_actor_tasks(
     gate: Option<&ReadinessGate>,
     ready_tx_map: &mut HashMap<String, tokio::sync::oneshot::Sender<()>>,
 ) -> JoinSet<ActorTaskResult> {
-    let actors = loaded
-        .document
-        .attack
-        .execution
-        .actors
-        .as_ref()
-        .expect("document should have actors after normalization");
+    let actors = document_actors(&loaded.document);
 
     let mut join_set: JoinSet<ActorTaskResult> = JoinSet::new();
 
