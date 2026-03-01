@@ -396,7 +396,7 @@ These handlers have no ThoughtJack predecessor:
 | `resources/subscribe` | Track subscription, optionally trigger side effect | `state.resources[]` | Sends `notifications/resources/updated` per subscription |
 | `resources/unsubscribe` | Remove subscription tracking | None | |
 | `resources/templates/list` | Return resource template definitions | `state.resource_templates[]` | Poisoned URI templates guide agents to attacker-controlled resources |
-| `completion/complete` | Return empty completion list (or static completions if defined) | None | Low-priority; adversarial completions are an uncommon attack vector |
+| `completion/complete` | Return empty completion list | None | Low-priority; adversarial completions are an uncommon attack vector |
 | `logging/setLevel` | Accept client's log level preference | None | Observing the client's requested level reveals agent configuration |
 | `sampling/createMessage` | Process agent's response to a server-initiated sampling request | None | See §4.6 |
 | `elicitation/create` | Process agent's response to a server-initiated elicitation | `state.elicitations[]` | See §4.3 |
@@ -727,6 +727,10 @@ OATF defines `send_notification` and `send_elicitation` as entry actions (§7.1.
 - **`roots/list`**: If the agent sends a `roots/list` response (in reply to a client-initiated request), ThoughtJack recognizes the event for trigger evaluation. ThoughtJack does not initiate `roots/list` requests.
 
 Both events are valid trigger targets in `mcp_server` mode (per OATF §7.1.2 Event-Mode Validity Matrix). They fire when observed and participate in phase advancement normally. The limitation is that ThoughtJack cannot *cause* them to fire — it must wait for the agent to send them.
+
+**Sampling capability gating:** When ThoughtJack sends server-initiated `sampling/createMessage` requests during tool call interleaving (via `state.sampling_requests`), it MUST check whether the connecting agent declared `sampling` support in its `ClientCapabilities` (from the `initialize` request). If the client does not declare sampling support, ThoughtJack MUST NOT send sampling requests and SHOULD log a warning when `sampling_requests` are defined but cannot be exercised. This mirrors the elicitation capability gating requirement (§4.3).
+
+**Elicitation in prompts/get:** Tool-filtered elicitations (those with a `tool` field) only apply to `tools/call` requests. During `prompts/get` handling, elicitation matching uses an empty tool name, so only unfiltered elicitations (no `tool` field) can fire.
 
 **Sampling with tools (MCP 2025-11-25, SEP-1577):**
 

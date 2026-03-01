@@ -47,7 +47,7 @@ The orchestrator owns the *lifecycle*. Protocol-specific runners own the *behavi
 
 The orchestrator does not know or care what MCP tools look like, what an AG-UI RunAgentInput contains, or how A2A task responses are structured. It knows that actors have modes, phases, triggers, and extractors. It starts them, ensures ordering, gives them a shared extractor store and trace buffer, and shuts them down when the attack completes.
 
-Each protocol-specific runner (TJ-SPEC-013's MCP handler, TJ-SPEC-016's AG-UI runner, TJ-SPEC-017's A2A runner) implements a common `ActorRunner` trait. The orchestrator interacts exclusively through this trait.
+Each protocol mode is handled by a branch in the `run_actor()` function, which creates the appropriate transport and `PhaseDriver`. The orchestrator calls `run_actor()` for each actor.
 
 ---
 
@@ -60,37 +60,33 @@ Each protocol-specific runner (TJ-SPEC-013's MCP handler, TJ-SPEC-016's AG-UI ru
 │                              Orchestrator                                   │
 │                                                                             │
 │  ┌──────────────┐                                                          │
-│  │  CLI / main  │──▶ parse document ──▶ classify actors ──▶ build runners   │
+│  │  CLI / main  │──▶ load document ──▶ classify actors ──▶ spawn tasks     │
 │  └──────────────┘                                                          │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────┐               │
-│  │                   Shared State                           │               │
+│  │                   Shared Resources                       │               │
 │  │                                                         │               │
 │  │  ┌─────────────────┐  ┌──────────────────────────────┐ │               │
 │  │  │  ExtractorStore  │  │  SharedTrace (merged)          │ │               │
-│  │  │  (Arc<RwLock>)   │  │  (Arc<Mutex>)                │ │               │
+│  │  │  (Arc<DashMap>)  │  │  (Arc<Mutex>)                │ │               │
 │  │  └─────────────────┘  └──────────────────────────────┘ │               │
 │  └─────────────────────────────────────────────────────────┘               │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                        Actor Runners                                │   │
+│  │                    Actor Tasks (JoinSet)                             │   │
 │  │                                                                     │   │
 │  │  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐              │   │
 │  │  │ MCP Server  │   │ AG-UI Client│   │ A2A Server  │   ...        │   │
-│  │  │ Runner      │   │ Runner      │   │ Runner      │              │   │
+│  │  │ run_actor() │   │ run_actor() │   │ run_actor() │              │   │
 │  │  │             │   │             │   │             │              │   │
 │  │  │ TJ-SPEC-013 │   │ TJ-SPEC-016 │   │ TJ-SPEC-017 │              │   │
-│  │  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘              │   │
-│  │         │                 │                 │                      │   │
-│  │         │ ActorRunner     │ ActorRunner      │ ActorRunner          │   │
-│  │         │ trait           │ trait            │ trait                │   │
-│  │         └─────────────────┴─────────────────┘                      │   │
+│  │  └─────────────┘   └─────────────┘   └─────────────┘              │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │  ┌─────────────────────┐                                                   │
-│  │  Readiness Gate      │  Barrier: server actors signal ready              │
-│  │  (tokio::Barrier +   │  → gate opens → client actors start              │
-│  │   oneshot channels)  │                                                   │
+│  │  Readiness Gate      │  Server actors signal ready via oneshot            │
+│  │  (oneshot + broad-   │  → gate opens → client actors start              │
+│  │   cast channels)     │                                                   │
 │  └─────────────────────┘                                                   │
 │                                                                             │
 │  ┌─────────────────────┐                                                   │
@@ -100,108 +96,101 @@ Each protocol-specific runner (TJ-SPEC-013's MCP handler, TJ-SPEC-016's AG-UI ru
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 The `ActorRunner` Trait
+### 2.2 The `run_actor()` Function
 
-Every protocol-specific runner implements this trait:
+Rather than a trait-based approach, the actor runner is implemented as a single free function that pattern-matches on the actor's mode:
 
 ```rust
-#[async_trait]
-trait ActorRunner: Send + Sync {
-    /// The actor's name (from OATF document)
-    fn name(&self) -> &str;
-
-    /// The actor's mode (mcp_server, ag_ui_client, etc.)
-    fn mode(&self) -> &str;
-
-    /// Whether this actor is server-role (mode ends in _server)
-    fn is_server(&self) -> bool {
-        self.mode().ends_with("_server")
+pub async fn run_actor(
+    actor_index: usize,
+    document: oatf::Document,
+    config: &ActorConfig,
+    trace: SharedTrace,
+    extractor_store: ExtractorStore,
+    await_config: HashMap<usize, Vec<AwaitExtractor>>,
+    cancel: CancellationToken,
+    ready_tx: Option<oneshot::Sender<()>>,        // Server: signal readiness
+    gate_rx: Option<broadcast::Receiver<()>>,      // Client: wait for gate
+    events: &EventEmitter,
+) -> Result<ActorResult, EngineError> {
+    match actor.mode.as_str() {
+        "mcp_server" => run_mcp_server_actor(...).await,
+        "ag_ui_client" => run_agui_client_actor(...).await,
+        "a2a_server" => run_a2a_server_actor(...).await,
+        "a2a_client" => run_a2a_client_actor(...).await,
+        "mcp_client" => run_mcp_client_actor(...).await,
+        other => Err(EngineError::Driver(...)),
     }
-
-    /// Initialize the actor's transport and resources.
-    /// For server actors: bind the listener.
-    /// For client actors: validate configuration (URL reachable, etc.)
-    async fn init(&mut self, config: &ActorConfig) -> Result<(), ActorError>;
-
-    /// Signal that the actor's transport is ready to accept connections.
-    /// Only meaningful for server actors. Client actors return immediately.
-    async fn wait_ready(&self) -> Result<(), ActorError>;
-
-    /// Run the actor's phase sequence to completion.
-    /// Returns when: all phases complete, a terminal phase is reached,
-    /// or the cancellation token fires.
-    async fn run(
-        &mut self,
-        shared: SharedState,
-        cancel: CancellationToken,
-    ) -> Result<ActorResult, ActorError>;
-
-    /// Graceful shutdown. Close transports, flush state.
-    async fn shutdown(&mut self) -> Result<(), ActorError>;
 }
 ```
 
-**Relationship to PhaseLoop/PhaseDriver:** `ActorRunner` is the *lifecycle* trait — it manages actor initialization, readiness, execution, and shutdown. Each `ActorRunner::run()` implementation creates a `PhaseLoop<D>` (TJ-SPEC-013 §8.4) with the appropriate protocol-specific `PhaseDriver`, then calls `phase_loop.run()`. The PhaseLoop handles the common phase machinery (trace, extractors, triggers, phase advancement, `await_extractors`), while the PhaseDriver produces protocol-specific events. This gives the orchestrator a uniform interface (`ActorRunner`) while eliminating duplicated phase logic across protocols (`PhaseLoop`).
+Each per-mode function handles initialization, transport binding/connection, readiness signaling, and phase loop creation internally. Server-mode actors signal readiness via `ready_tx` after binding. Client-mode actors wait for the readiness gate via `gate_rx` before starting protocol I/O.
 
-**`ActorConfig`** — protocol-specific configuration passed from the CLI:
+**Design rationale:** A trait-based `ActorRunner` abstraction was considered but rejected. The `PhaseDriver` trait (TJ-SPEC-013 §8.4) already provides protocol abstraction. Adding a second trait layer for lifecycle management introduces dynamic dispatch and object-safety constraints without meaningful benefit. The free function with match is simpler, more idiomatic Rust, and easier to extend.
+
+**`ActorConfig`** — runtime configuration for actor execution, derived from CLI flags:
 
 ```rust
 struct ActorConfig {
-    /// MCP server: HTTP bind address. None → stdio.
-    mcp_server_bind: Option<SocketAddr>,              // --mcp-server
+    /// MCP server: HTTP bind address string. None → stdio.
+    mcp_server_bind: Option<String>,                  // --mcp-server
     /// MCP client: spawn command for stdio transport
     mcp_client_command: Option<String>,                // --mcp-client-command
     mcp_client_args: Option<String>,                   // --mcp-client-args
     /// MCP client: HTTP endpoint
-    mcp_client_endpoint: Option<Url>,                  // --mcp-client-endpoint
+    mcp_client_endpoint: Option<String>,               // --mcp-client-endpoint
     /// AG-UI client: agent endpoint
-    agui_client_endpoint: Option<Url>,                 // --agui-client-endpoint
-    /// A2A server: HTTP bind address
-    a2a_server_bind: Option<SocketAddr>,               // --a2a-server
+    agui_client_endpoint: Option<String>,              // --agui-client-endpoint
+    /// A2A server: HTTP bind address string
+    a2a_server_bind: Option<String>,                   // --a2a-server
     /// A2A client: agent endpoint
-    a2a_client_endpoint: Option<Url>,                  // --a2a-client-endpoint
-    /// Global HTTP headers for all client transports
-    global_headers: Vec<(String, String)>,             // --header
-    /// Per-mode auth headers from THOUGHTJACK_{MODE}_* env vars
-    mode_headers: HashMap<String, Vec<(String, String)>>,
+    a2a_client_endpoint: Option<String>,               // --a2a-client-endpoint
+    /// Extra HTTP headers for client-mode transports
+    headers: Vec<(String, String)>,                    // --header
+    /// Bypass synthesize output validation
+    raw_synthesize: bool,                              // --raw-synthesize
 
     /// Common overrides
     grace_period: Option<Duration>,                   // --grace-period
-    max_session: Option<Duration>,                    // --max-session
+    max_session: Duration,                            // --max-session (always set)
+    readiness_timeout: Duration,                      // --readiness-timeout
 }
 ```
+
+**Design rationale:** All endpoint and bind address fields use `String` rather than parsed types (`SocketAddr`, `Url`). Parsing is deferred to the point of use, keeping `ActorConfig` a simple data bag that maps 1:1 to CLI flags. The `max_session` is non-optional with a CLI default (e.g., `"5m"`), ensuring every orchestration has a session limit. Per-mode auth headers (`THOUGHTJACK_{MODE}_*` env vars) are not yet implemented and are omitted from the config.
 
 **`ActorResult`** — what each actor returns on completion:
 
 ```rust
 struct ActorResult {
     actor_name: String,
-    final_phase: String,
+    termination: TerminationReason,
     phases_completed: usize,
     total_phases: usize,
-    termination_reason: TerminationReason,
+    final_phase: Option<String>,
 }
 
 enum TerminationReason {
     TerminalPhaseReached,   // Normal: last phase has no trigger
-    AllPhasesAdvanced,      // All triggers fired (unusual — means no terminal phase?)
     Cancelled,              // Shutdown signal received
-    MaxSessionTimeout,      // --max-session exceeded
-    TransportClosed,        // Connection dropped
-    Error(ActorError),      // Actor failed
+    MaxSessionExpired,      // --max-session exceeded
+    TransportClosed,        // Connection dropped (e.g., stdio EOF)
 }
 ```
 
-**Mapping to TJ-SPEC-014 `execution_summary.actors[]`:** The orchestrator converts each `ActorResult` to the output schema defined in TJ-SPEC-014 §3.2:
+`ActorResult` is returned by `PhaseLoop::run()`. The `final_phase` is `Some(name)` if the phase has a name, `None` otherwise. `total_phases` is always set from the actor's phase count. Actor errors are NOT represented in `TerminationReason` — they propagate as `Result::Err(EngineError)` from `run_actor()` and are wrapped in `ActorOutcome::Error` by the orchestrator.
 
-| `ActorResult` field | Output field | Conversion |
+**Mapping to TJ-SPEC-014 `execution_summary.actors[]`:** The orchestrator converts each `ActorOutcome` to the output schema defined in TJ-SPEC-014 §3.2:
+
+| `ActorOutcome` | Output field | Conversion |
 |---|---|---|
-| `actor_name` | `name` | Direct |
-| `final_phase` | `terminal_phase` | `Some(final_phase)` if terminal reached; `None` if error/cancelled before terminal |
-| `phases_completed` | `phases_completed` | Direct |
-| `total_phases` | `total_phases` | Direct |
-| `termination_reason` | `status` | `TerminalPhaseReached \| AllPhasesAdvanced \| TransportClosed` → `completed`; `Cancelled` → `cancelled`; `MaxSessionTimeout` → `timeout`; `Error(_)` → `error` |
-| `termination_reason` | `error` | `Error(e)` → `Some(e.to_string())`; all others → `None` |
+| `Success(r).actor_name` | `name` | Direct |
+| `Success(r).final_phase` | `terminal_phase` | Direct (already `Option<String>`) |
+| `Success(r).phases_completed` | `phases_completed` | Direct |
+| `Success(r).total_phases` | `total_phases` | Direct |
+| `Success(r).termination` | `status` | `TerminalPhaseReached \| TransportClosed` → `"completed"`; `Cancelled` → `"cancelled"`; `MaxSessionExpired` → `"timeout"` |
+| `Error { error, .. }` | `status` | → `"error"` |
+| `Error { error, .. }` | `error` | → `Some(error)` |
 
 ---
 
@@ -210,52 +199,40 @@ enum TerminationReason {
 ### 3.1 Startup Sequence
 
 ```
-parse document
-    │
+load document
+    │  Load and validate OATF document
+    │  Extract await_extractors into runtime lookup table
+    │  Detect await_extractors cycles (EC-ORCH-003)
     ▼
 classify actors
-    │  Partition into server_actors[] and client_actors[]
-    │  Server: mode ends in _server
-    │  Client: mode ends in _client
+    │  Partition into servers and clients
+    │  Server: mode contains "server"
+    │  Client: everything else
     ▼
-validate support
-    │  Check each actor.mode against supported modes
-    │  Supported: mcp_server, ag_ui_client, a2a_server, a2a_client
-    │  Unsupported: skip with warning (per TJ-SPEC-013 §3.5)
-    │  If zero supported actors remain: error and exit
-    ▼
-build runners
-    │  Create ActorRunner instance per supported actor
-    │  Wire CLI config (--agui-client-endpoint goes to ag_ui_client runner, etc.)
-    ▼
-create shared state
-    │  ExtractorStore (empty, writable by all actors)
+create shared resources
+    │  ExtractorStore (empty Arc<DashMap>)
     │  SharedTrace (empty, appendable by all actors)
     │  CancellationToken (unfired)
+    │  ReadinessGate (if any servers: one oneshot per server)
     ▼
-init server actors (concurrent)
-    │  For each server actor: call runner.init()
-    │  Server actors bind their listeners here
-    │  If any server actor fails init: abort all, exit with error
+spawn all actor tasks (concurrent via JoinSet)
+    │  For each actor: spawn tokio task calling run_actor()
+    │  Server actors: receive ready_tx (oneshot::Sender)
+    │  Client actors: receive gate_rx (broadcast::Receiver)
+    │  Each task creates transport + driver + PhaseLoop internally
+    │  All tasks start executing immediately
     ▼
-wait for server readiness (concurrent)
-    │  For each server actor: call runner.wait_ready()
-    │  Block until ALL server actors report ready
+wait for server readiness
+    │  ReadinessGate::wait_all_ready(readiness_timeout)
     │  Timeout: 30s (default, configurable via --readiness-timeout)
-    │  If timeout: abort all, exit with error
-    ▼
-init client actors (concurrent)
-    │  For each client actor: call runner.init()
-    │  Client actors validate their configuration here
-    │  If any client actor fails init: abort all, exit with error
-    ▼
-start all actors (concurrent)
-    │  Spawn a tokio task per actor: runner.run(shared, cancel)
-    │  All actors run concurrently from this point
+    │  If timeout: cancel all, abort tasks, exit with error
+    │  On success: broadcast fires, client actors unblock
     ▼
 wait for completion
     │  See §3.2
 ```
+
+**Design rationale:** All actor tasks are spawned upfront into a `JoinSet` before waiting for server readiness. Server actors handle their own transport binding and readiness signaling internally. Client actors block on the gate receiver before starting protocol I/O. This eliminates the need for separate init/start phases and simplifies the orchestrator to a spawn-then-wait pattern.
 
 ### 3.2 Completion Conditions
 
@@ -275,80 +252,66 @@ The orchestrator monitors all actor tasks and shuts down when any of these condi
 
 ```rust
 async fn wait_for_completion(
-    &self,
-    actor_handles: Vec<JoinHandle<ActorResult>>,
-    client_actor_names: HashSet<String>,
-    cancel: CancellationToken,
-    grace_period: Duration,
-    max_session: Duration,
+    mut join_set: JoinSet<ActorTaskResult>,
+    config: &ActorConfig,
+    cancel: &CancellationToken,
+    total_clients: usize,
 ) {
-    let mut completed: HashMap<String, ActorResult> = HashMap::new();
-    let mut pending = actor_handles;
-
-    let session_deadline = Instant::now() + max_session;
+    let mut outcomes: Vec<ActorOutcome> = Vec::new();
+    let mut clients_done = 0;
+    let max_session_deadline = Instant::now() + config.max_session;
 
     loop {
-        // Wait for next actor to complete, or timeout
+        if join_set.is_empty() { break; }
+
         tokio::select! {
-            result = next_completed(&mut pending) => {
-                let (name, result) = result;
-                completed.insert(name.clone(), result);
+            Some(join_result) = join_set.join_next() => {
+                let (outcome, is_server) = unpack_join_result(join_result);
 
-                // Check: are all client actors done?
-                // Guard: if no client actors exist, skip this heuristic entirely
-                // and fall back to the "all actors done" path below.
-                let all_clients_done = !client_actor_names.is_empty()
-                    && client_actor_names.iter()
-                        .all(|name| completed.contains_key(name));
-
-                if all_clients_done && !pending.is_empty() {
-                    // Start grace period for remaining server actors
-                    tokio::time::sleep(grace_period).await;
-                    cancel.cancel();
-                    // Collect remaining results with short timeout
-                    collect_remaining(&mut pending, &mut completed, Duration::from_secs(5)).await;
-                    break;
+                if is_server == Some(false) {
+                    clients_done += 1;
                 }
+                outcomes.push(outcome);
 
-                if pending.is_empty() {
-                    break; // All actors done
+                // Check shutdown conditions
+                if total_clients > 0 && clients_done >= total_clients {
+                    // All clients done → grace period → cancel servers
+                    apply_grace_and_cancel(config, cancel).await;
+                } else if total_clients == 0 && join_set.is_empty() {
+                    // Zero-client mode: all servers done → grace → cancel
+                    apply_grace_and_cancel(config, cancel).await;
                 }
             }
-            _ = tokio::time::sleep_until(session_deadline.into()) => {
+            _ = tokio::time::sleep_until(max_session_deadline) => {
                 // Max session timeout — cancel everything
                 cancel.cancel();
-                collect_remaining(&mut pending, &mut completed, Duration::from_secs(5)).await;
+            }
+            _ = cancel.cancelled() => {
                 break;
             }
         }
+    }
+
+    // Drain any remaining tasks after cancel
+    join_set.abort_all();
+    while let Some(join_result) = join_set.join_next().await {
+        outcomes.push(unpack_join_result(join_result).0);
     }
 }
 ```
 
 ### 3.3 Shutdown Sequence
 
-When shutdown is initiated (grace period expired, max session timeout, or SIGINT/SIGTERM):
+When shutdown is initiated (grace period expired, max session timeout, or external cancellation):
 
-1. Fire the `CancellationToken` — all actors receive the signal
-2. Each actor's `run()` method checks the token between events and exits its event loop
+1. Fire the `CancellationToken` — all actors receive the signal via `cancel.cancelled()`
+2. Each actor's `PhaseLoop::run()` exits its `tokio::select!` loop
 3. Each actor's transport closes gracefully (send final responses, close connections)
-4. Orchestrator calls `runner.shutdown()` on each actor for cleanup
-5. Collect all `ActorResult` values
+4. Orchestrator calls `join_set.abort_all()` to terminate any remaining tasks
+5. Drain remaining `JoinSet` results into `ActorOutcome` collection
 6. Pass the merged `SharedTrace` to the verdict pipeline (TJ-SPEC-014)
 
-**SIGINT/SIGTERM handling:**
-
-```rust
-tokio::select! {
-    _ = orchestrator.wait_for_completion(...) => {}
-    _ = tokio::signal::ctrl_c() => {
-        tracing::info!("Received shutdown signal");
-        cancel.cancel();
-        // Give actors 5 seconds to clean up
-        collect_remaining(&mut pending, &mut completed, Duration::from_secs(5)).await;
-    }
-}
-```
+**SIGINT/SIGTERM handling:** Signal handling is done at the CLI level (`main.rs`), not inside the orchestrator. The CLI wraps the orchestrator call in a `tokio::select!` with `tokio::signal::ctrl_c()`. On signal, it cancels the shared `CancellationToken`, which propagates to all actors via child tokens.
 
 ---
 
@@ -362,43 +325,42 @@ The extractor store holds values captured by all actors, accessible by all actor
 struct ExtractorStore {
     /// Per-actor extractor values
     /// Key: (actor_name, extractor_name) → Value: captured string
-    values: Arc<RwLock<HashMap<(String, String), String>>>,
+    store: Arc<DashMap<(String, String), String>>,
 }
 
 impl ExtractorStore {
     /// Write an extractor value (called by the capturing actor)
     fn set(&self, actor_name: &str, extractor_name: &str, value: String) {
-        self.values.write().unwrap()
-            .insert((actor_name.to_string(), extractor_name.to_string()), value);
+        self.store.insert(
+            (actor_name.to_string(), extractor_name.to_string()),
+            value,
+        );
     }
 
     /// Read an extractor value (called by any actor)
     fn get(&self, actor_name: &str, extractor_name: &str) -> Option<String> {
-        self.values.read().unwrap()
+        self.store
             .get(&(actor_name.to_string(), extractor_name.to_string()))
-            .cloned()
+            .map(|v| v.value().clone())
     }
 
-    /// Resolve a template reference.
-    /// "extractor_name" → look up in current actor's scope
-    /// "actor_name.extractor_name" → look up in specified actor's scope
-    fn resolve(
-        &self,
-        reference: &str,
-        current_actor: &str,
-    ) -> Option<String> {
-        if let Some((actor, name)) = reference.split_once('.') {
-            self.get(actor, name)
-        } else {
-            self.get(current_actor, reference)
-        }
+    /// Returns all extractors as qualified `actor_name.extractor_name` keys.
+    fn all_qualified(&self) -> HashMap<String, String> {
+        self.store.iter()
+            .map(|entry| {
+                let (actor, name) = entry.key();
+                (format!("{actor}.{name}"), entry.value().clone())
+            })
+            .collect()
     }
 }
 ```
 
+**Design rationale:** `DashMap` provides lock-free concurrent reads and fine-grained write locking per shard, eliminating the `RwLock` contention described in the earlier design. Template reference resolution (`"extractor_name"` vs `"actor.extractor_name"`) is handled by `build_interpolation_extractors()` in the `PhaseLoop`, not by the store itself. The store is a simple key-value map; the PhaseLoop merges local and cross-actor values into a flat map for SDK interpolation.
+
 ### 4.2 Consistency Model
 
-The extractor store provides **immediate visibility** — writes are visible to all actors as soon as the `RwLock` is released. However, cross-actor references face a timing challenge: actor B may resolve `{{a.some_value}}` before actor A has captured it. OATF §5.6 specifies that undefined references resolve to empty string, but in CI environments, this timing sensitivity causes flaky tests.
+The extractor store provides **immediate visibility** — writes are visible to all actors as soon as the `DashMap` shard lock is released. However, cross-actor references face a timing challenge: actor B may resolve `{{a.some_value}}` before actor A has captured it. OATF §5.6 specifies that undefined references resolve to empty string, but in CI environments, this timing sensitivity causes flaky tests.
 
 ThoughtJack mitigates this with an **`await_extractors`** mechanism on phase entry:
 
@@ -469,7 +431,7 @@ async fn await_phase_extractors(
 
 ### 4.3 Integration with PhaseLoop
 
-Extractor capture and cross-actor synchronization are handled by the `PhaseLoop` (TJ-SPEC-013 §8.4), not by individual protocol runners. Each `ActorRunner` creates a `PhaseLoop` with a protocol-specific `PhaseDriver`. The `PhaseLoop` owns the `ExtractorStore` reference and performs both local and shared writes on every event:
+Extractor capture and cross-actor synchronization are handled by the `PhaseLoop` (TJ-SPEC-013 §8.4), not by individual protocol drivers. Each `run_actor()` branch creates a `PhaseLoop` with a protocol-specific `PhaseDriver`. The `PhaseLoop` owns the `ExtractorStore` reference and performs both local and shared writes on every event:
 
 ```rust
 // Inside PhaseLoop::run_extractors() — called for every protocol event
@@ -509,17 +471,16 @@ This merged map is published on a `watch` channel (TJ-SPEC-013 §8.4) after each
 
 ### 5.1 Design
 
-All actors append to a single `SharedTrace` instance (defined in TJ-SPEC-013 §9.1). The orchestrator creates one `SharedTrace` and passes `Arc` clones to all actor runners through `SharedState`. There is no separate non-thread-safe trace type — `SharedTrace` is used in both single-actor and multi-actor execution.
+All actors append to a single `SharedTrace` instance (defined in TJ-SPEC-013 §9.1). The orchestrator creates one `SharedTrace` and one `ExtractorStore`, then passes clones to each actor task as individual parameters. There is no `SharedState` wrapper struct — both types implement `Clone` via inner `Arc` and are passed directly to `run_actor()`.
 
 ```rust
 // In orchestrator startup:
 let trace = SharedTrace::new();
+let extractor_store = ExtractorStore::new();
 
-// Passed to each actor runner via SharedState:
-struct SharedState {
-    trace: SharedTrace,           // Arc-cloned — all actors share one trace
-    extractors: ExtractorStore,   // Arc-cloned — all actors share one store
-}
+// Cloned into each actor task:
+let tr = trace.clone();        // Arc-cloned — all actors share one trace
+let es = extractor_store.clone(); // Arc-cloned — all actors share one store
 ```
 
 Each actor runner calls `trace.append(actor, phase, direction, method, content)` for every protocol message. The `Mutex` inside `SharedTrace` serializes concurrent appends, and the global `AtomicU64` sequence counter ensures a total ordering across all actors.
@@ -579,154 +540,149 @@ The orchestrator implements this as a readiness gate:
 
 ```rust
 struct ReadinessGate {
-    server_count: usize,
-    ready_tx: Vec<oneshot::Sender<()>>,   // One per server actor
-    ready_rx: Vec<oneshot::Receiver<()>>,  // Orchestrator waits on all
-    gate_tx: broadcast::Sender<()>,        // Fires when all servers ready
+    ready_rxs: Vec<(String, oneshot::Receiver<()>)>,  // (actor_name, receiver) per server
+    gate_tx: broadcast::Sender<()>,                    // Fires when all servers ready
 }
 
 impl ReadinessGate {
-    fn new(server_count: usize) -> Self {
-        let mut ready_tx = Vec::new();
-        let mut ready_rx = Vec::new();
-        for _ in 0..server_count {
-            let (tx, rx) = oneshot::channel();
-            ready_tx.push(tx);
-            ready_rx.push(rx);
-        }
+    /// Creates a gate for the given server actor names.
+    /// Returns (gate, senders) — each server gets a named oneshot::Sender.
+    fn new(server_actors: &[String]) -> (Self, Vec<(String, oneshot::Sender<()>)>) {
         let (gate_tx, _) = broadcast::channel(1);
-        Self { server_count, ready_tx, ready_rx, gate_tx }
-    }
-
-    /// Server actor calls this when its transport is bound
-    fn signal_ready(tx: oneshot::Sender<()>) {
-        let _ = tx.send(());
-    }
-
-    /// Orchestrator calls this to wait for all servers
-    async fn wait_all_ready(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<(), ReadinessError> {
-        let result = tokio::time::timeout(
-            timeout,
-            futures::future::join_all(self.ready_rx.drain(..)),
-        ).await;
-
-        match result {
-            Ok(results) => {
-                if results.iter().all(|r| r.is_ok()) {
-                    // All servers ready — open the gate
-                    let _ = self.gate_tx.send(());
-                    Ok(())
-                } else {
-                    Err(ReadinessError::ServerFailed)
-                }
-            }
-            Err(_) => Err(ReadinessError::Timeout),
+        let mut receivers = Vec::new();
+        let mut senders = Vec::new();
+        for name in server_actors {
+            let (tx, rx) = oneshot::channel();
+            receivers.push((name.clone(), rx));
+            senders.push((name.clone(), tx));
         }
+        let gate = Self { ready_rxs: receivers, gate_tx };
+        (gate, senders)
     }
 
-    /// Client actor calls this to wait for the gate to open
-    fn subscribe_gate(&self) -> broadcast::Receiver<()> {
+    /// Client actor calls this to subscribe for the gate broadcast.
+    fn subscribe(&self) -> broadcast::Receiver<()> {
         self.gate_tx.subscribe()
     }
+
+    /// Orchestrator calls this to wait for all servers (consumes self).
+    async fn wait_all_ready(self, timeout: Duration) -> Result<(), GateError> {
+        let result = tokio::time::timeout(timeout, wait_all_receivers(self.ready_rxs)).await;
+        match result {
+            Ok(Ok(())) => {
+                let _ = self.gate_tx.send(());  // Open the gate
+                Ok(())
+            }
+            Ok(Err(gate_err)) => Err(gate_err),
+            Err(_) => Err(GateError::Timeout { not_ready: ... }),
+        }
+    }
+}
+
+enum GateError {
+    Timeout { not_ready: Vec<String> },         // Which actors didn't signal
+    ServerFailed { actor: String },             // Which actor dropped its sender
 }
 ```
+
+The `new()` constructor takes `&[String]` (server actor names) rather than a count, enabling the gate to report *which* actors failed to become ready. `wait_all_ready()` consumes `self` — the gate is single-use.
 
 ### 6.2 Server Actor Flow
 
 ```rust
-// Inside MCP server runner's run()
-async fn run(&mut self, shared: SharedState, cancel: CancellationToken) -> Result<ActorResult, ActorError> {
-    // Bind transport
-    self.transport.bind(&self.bind_address).await?;
+// Inside run_actor() → mcp_server branch
+async fn run_mcp_server_actor(
+    ..., ready_tx: Option<oneshot::Sender<()>>, cancel: CancellationToken,
+) -> Result<ActorResult, EngineError> {
+    // Create transport (stdio or HTTP based on config)
+    let transport = create_transport(config)?;
 
-    // Signal ready
-    self.ready_signal.send(()).map_err(|_| ActorError::ReadinessSignalFailed)?;
+    // Signal ready (after transport is bound, if HTTP)
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(());
+    }
 
-    // Now enter the event loop — process incoming requests
-    self.event_loop(shared, cancel).await
+    // Create driver and PhaseLoop, then run
+    let driver = McpServerDriver::new(transport);
+    let phase_loop = PhaseLoop::new(driver, ...);
+    phase_loop.run().await
 }
 ```
 
 ### 6.3 Client Actor Flow
 
 ```rust
-// Inside AG-UI client runner's run()
-async fn run(&mut self, shared: SharedState, cancel: CancellationToken) -> Result<ActorResult, ActorError> {
-    // Wait for readiness gate
-    let mut gate = self.readiness_gate.subscribe_gate();
-    gate.recv().await.map_err(|_| ActorError::ReadinessGateFailed)?;
+// Inside run_actor() → ag_ui_client branch
+async fn run_agui_client_actor(
+    ..., gate_rx: Option<broadcast::Receiver<()>>, cancel: CancellationToken,
+) -> Result<ActorResult, EngineError> {
+    // Wait for readiness gate (if multi-actor)
+    if let Some(mut rx) = gate_rx {
+        let _ = rx.recv().await;
+    }
 
     // Gate open — all servers are accepting connections
-    // Now begin phase execution
-    self.phase_loop(shared, cancel).await
+    // Create driver and PhaseLoop, then run
+    let driver = AgUiClientDriver::new(endpoint, headers);
+    let phase_loop = PhaseLoop::new(driver, ...);
+    phase_loop.run().await
 }
 ```
 
 ### 6.4 Single-Actor Documents
 
-When a document has only one actor (single-phase or multi-phase form, normalized to `actors: [{ name: "default", ... }]`), the orchestrator is not activated. The existing single-actor code paths from TJ-SPEC-013, 016, and 017 handle execution directly. This avoids unnecessary overhead for the common case.
+When a document has one or fewer actors after SDK normalization (single-phase or multi-phase form, or a single-element `actors[]`), the orchestrator is bypassed. The CLI runs the single actor directly via `run_actor()` without `JoinSet`, `ReadinessGate`, or grace period coordination. This avoids unnecessary overhead for the common case.
 
-The orchestrator activates only when `document.attack.execution.actors.len() > 1`.
+The orchestrator activates only when `document.attack.execution.actors.len() > 1`, regardless of whether the document was authored in single-phase, multi-phase, or multi-actor form.
 
 ---
 
 ## 7. Actor-to-Mode Router
 
-### 7.1 Runner Factory
+### 7.1 Mode Dispatch
 
-The orchestrator maps actor modes to concrete runner implementations:
+The `run_actor()` function dispatches to a mode-specific handler via pattern match. There is no separate factory — `run_actor()` creates the transport, driver, and `PhaseLoop` in a single function:
 
 ```rust
-fn build_runner(
-    actor: &oatf::Actor,
-    document: &oatf::Document,
+pub async fn run_actor(
+    actor_index: usize,
+    document: oatf::Document,
     config: &ActorConfig,
-    shared: SharedState,
-    ready_signal: Option<oneshot::Sender<()>>,
-    readiness_gate: Option<broadcast::Receiver<()>>,
-) -> Result<Box<dyn ActorRunner>, ActorError> {
+    trace: SharedTrace,
+    extractor_store: ExtractorStore,
+    await_config: HashMap<usize, Vec<AwaitExtractor>>,
+    cancel: CancellationToken,
+    ready_tx: Option<oneshot::Sender<()>>,
+    gate_rx: Option<broadcast::Receiver<()>>,
+    events: &EventEmitter,
+) -> Result<ActorResult, EngineError> {
+    let actor = &document.attack.execution.actors[actor_index];
     match actor.mode.as_str() {
-        "mcp_server" => Ok(Box::new(McpServerRunner::new(
-            actor, document, config, shared, ready_signal,
-        )?)),
-        "ag_ui_client" => Ok(Box::new(AgUiClientRunner::new(
-            actor, document, config, shared, readiness_gate,
-        )?)),
-        "a2a_server" => Ok(Box::new(A2aServerRunner::new(
-            actor, document, config, shared, ready_signal,
-        )?)),
-        "a2a_client" => Ok(Box::new(A2aClientRunner::new(
-            actor, document, config, shared, readiness_gate,
-        )?)),
-        "mcp_client" => Ok(Box::new(McpClientRunner::new(
-            actor, document, config, shared, readiness_gate,
-        )?)),
-        mode => {
-            tracing::warn!(
-                actor = %actor.name,
-                mode = %mode,
-                "Unsupported mode — skipping actor"
-            );
-            Err(ActorError::UnsupportedMode(mode.to_string()))
-        }
+        "mcp_server" => { /* create transport + McpServerDriver + PhaseLoop */ }
+        "ag_ui_client" => { /* create AgUiClientDriver + PhaseLoop */ }
+        "a2a_server" => { /* create transport + A2aServerDriver + PhaseLoop */ }
+        "a2a_client" => { /* create A2aClientDriver + PhaseLoop */ }
+        "mcp_client" => { /* create McpClientDriver + PhaseLoop */ }
+        other => Err(EngineError::Driver(
+            format!("unsupported actor mode: {other}")
+        )),
     }
 }
 ```
 
+Unsupported modes return `Err(EngineError::Driver(...))`, which the orchestrator wraps in `ActorOutcome::Error`. This is a hard error for that actor, not a skip-with-warning — the orchestrator's `unpack_join_result()` handles the error and other actors continue.
+
 ### 7.2 Supported Mode Matrix
 
-| Mode | Runner | Role | Spec | Introduced |
+| Mode | Driver | Role | Spec | Introduced |
 |------|--------|------|------|------------|
-| `mcp_server` | `McpServerRunner` | Server | TJ-SPEC-013 | v0.5 |
-| `ag_ui_client` | `AgUiClientRunner` | Client | TJ-SPEC-016 | v0.7 |
-| `a2a_server` | `A2aServerRunner` | Server | TJ-SPEC-017 | v0.8 |
-| `a2a_client` | `A2aClientRunner` | Client | TJ-SPEC-017 | v0.8 |
-| `mcp_client` | `McpClientRunner` | Client | TJ-SPEC-018 | v0.9 |
+| `mcp_server` | `McpServerDriver` | Server | TJ-SPEC-013 | v0.5 |
+| `ag_ui_client` | `AgUiClientDriver` | Client | TJ-SPEC-016 | v0.7 |
+| `a2a_server` | `A2aServerDriver` | Server | TJ-SPEC-017 | v0.8 |
+| `a2a_client` | `A2aClientDriver` | Client | TJ-SPEC-017 | v0.8 |
+| `mcp_client` | `McpClientDriver` | Client | TJ-SPEC-018 | v0.9 |
 
-When the orchestrator encounters an unsupported mode, it skips that actor with a warning (per TJ-SPEC-013 §3.5) and continues with the remaining actors. If zero supported actors remain after filtering, the orchestrator exits with an error.
+When `run_actor()` encounters an unsupported mode, it returns `Err(EngineError::Driver(...))`. The orchestrator records this as `ActorOutcome::Error` and other actors continue executing independently.
 
 ---
 
@@ -736,12 +692,12 @@ When the orchestrator encounters an unsupported mode, it skips that actor with a
 
 | Failure | Behavior | Impact on Other Actors |
 |---------|----------|----------------------|
-| Transport bind failure (server) | Actor fails `init()`. Orchestrator aborts startup. | All actors abort. Exit with error. |
-| Transport connect failure (client) | Actor fails `init()`. Orchestrator aborts startup. | All actors abort. Exit with error. |
-| Readiness timeout | Orchestrator fails at readiness gate. | All actors abort. Exit with error. |
-| Runtime panic in actor task | `JoinHandle` returns `Err`. Orchestrator logs error. | Other actors continue. Verdict may be `error`. |
-| Transport closed mid-execution | Actor returns with `TransportClosed`. | Other actors continue. May trigger grace period. |
-| Actor error during phase execution | Actor returns with `Error(...)`. | Other actors continue. Verdict includes error. |
+| Transport bind failure (server) | `run_actor()` returns `Err(EngineError)`. Recorded as `ActorOutcome::Error`. | Other actors continue. Readiness gate may timeout if server never signals. |
+| Transport connect failure (client) | `run_actor()` returns `Err(EngineError)`. Recorded as `ActorOutcome::Error`. | Other actors continue. Counted as "client done" for grace period. |
+| Readiness timeout | Orchestrator cancels all actors, aborts `JoinSet`. | All actors abort. Exit with error. |
+| Runtime panic in actor task | `JoinSet` returns `JoinError`. Recorded as `ActorOutcome::Panic`. | Other actors continue. Verdict may be `error`. |
+| Transport closed mid-execution | Actor returns `Ok(ActorResult { termination: TransportClosed, .. })`. | Other actors continue. May trigger grace period. |
+| Actor error during phase execution | `run_actor()` returns `Err(EngineError)`. Recorded as `ActorOutcome::Error`. | Other actors continue. Verdict includes error. |
 
 ### 8.2 Partial Completion
 
@@ -793,13 +749,13 @@ Multi-actor documents use `thoughtjack run` (TJ-SPEC-013 §12). The orchestrator
 
 ```bash
 # Cross-protocol: MCP server (stdio) + A2A server (HTTP)
-thoughtjack run --config cross-protocol.yaml --a2a-server 0.0.0.0:9090
+thoughtjack run --scenario cross-protocol.yaml --a2a-server 0.0.0.0:9090
 
 # MCP server (stdio) + AG-UI client
-thoughtjack run --config attack.yaml --agui-client-endpoint http://localhost:8000/agent
+thoughtjack run --scenario attack.yaml --agui-client-endpoint http://localhost:8000/agent
 
 # Full spectrum
-thoughtjack run --config full-spectrum.yaml \
+thoughtjack run --scenario full-spectrum.yaml \
   --a2a-server 0.0.0.0:9090 \
   --agui-client-endpoint http://localhost:8000/agent \
   --output verdict.json
@@ -807,35 +763,35 @@ thoughtjack run --config full-spectrum.yaml \
 
 ### 9.2 Flag Routing
 
-The orchestrator routes CLI flags to the appropriate actor runners based on the flag prefix:
+All CLI flags are collected into a single `ActorConfig` struct and shared by all actors. Each actor's `run_actor()` branch reads only the fields relevant to its mode:
 
-| Flag | Routed To | Multiple Actors? |
-|------|-----------|-----------------|
-| `--mcp-server <addr:port>` | All `mcp_server` actors | Auto-increment ports if multiple |
-| `--mcp-client-command <cmd>` | All `mcp_client` actors (stdio) | Same command for all |
-| `--mcp-client-endpoint <url>` | All `mcp_client` actors (http) | Same endpoint for all |
-| `--agui-client-endpoint <url>` | All `ag_ui_client` actors | Same agent for all |
-| `--a2a-server <addr:port>` | All `a2a_server` actors | Auto-increment ports if multiple |
-| `--a2a-client-endpoint <url>` | All `a2a_client` actors | Same agent for all |
+| Flag | Used By | Multiple Actors |
+|------|---------|-----------------|
+| `--mcp-server <addr:port>` | `mcp_server` actors | Same bind address for all |
+| `--mcp-client-command <cmd>` | `mcp_client` actors (stdio) | Same command for all |
+| `--mcp-client-endpoint <url>` | `mcp_client` actors (http) | Same endpoint for all |
+| `--agui-client-endpoint <url>` | `ag_ui_client` actors | Same agent for all |
+| `--a2a-server <addr:port>` | `a2a_server` actors | Same bind address for all |
+| `--a2a-client-endpoint <url>` | `a2a_client` actors | Same agent for all |
 | `--header <key:value>` | All HTTP client actors | Same headers for all |
+| `--raw-synthesize` | All actors | Global |
 | `--grace-period <dur>` | Orchestrator | Global |
 | `--max-session <dur>` | Orchestrator | Global |
+| `--readiness-timeout <dur>` | Orchestrator | Global |
 | `--output <path>` | Verdict pipeline (TJ-SPEC-014) | Global |
 | `--no-semantic` | Verdict pipeline (TJ-SPEC-014) | Global |
 
-**Port auto-increment:** When multiple server actors of the same protocol exist (uncommon but valid), the orchestrator assigns sequential ports starting from the base address. For example, two `a2a_server` actors with `--a2a-server 0.0.0.0:9090` get ports 9090 and 9091.
-
-**Auth routing:** Per-mode environment variables (TJ-SPEC-013 §12.5) are routed to matching actor modes. `THOUGHTJACK_MCP_CLIENT_AUTHORIZATION` applies to all `mcp_client` actors, etc.
-
 **Stdio exclusivity:** At most one `mcp_server` actor can use stdio (the process's stdin/stdout). If `--mcp-server` is not set and the document has multiple `mcp_server` actors, this is a validation error. A single `mcp_server` actor without `--mcp-server` uses stdio (default).
+
+**Port sharing:** Multiple server actors of the same protocol mode sharing the same bind address is not currently supported. Each server mode should use a distinct address, or only one server of each type should be defined. Future versions may add port auto-increment.
 
 ### 9.3 Single-Actor Fallback
 
-When the document is single-actor, `thoughtjack run` skips the orchestrator and runs the actor directly. No readiness gate, no actor lifecycle management. This is a performance optimization, not a behavioral difference.
+When the document has one or fewer actors after SDK normalization, `thoughtjack run` skips the orchestrator and calls `run_actor()` directly. No readiness gate, no `JoinSet`, no grace period coordination. This is a performance optimization, not a behavioral difference.
 
 ```bash
 # Single-actor mcp_server — runs directly, no orchestrator overhead
-thoughtjack run --config rug-pull.yaml
+thoughtjack run --scenario rug-pull.yaml
 ```
 
 ---
@@ -847,7 +803,7 @@ The orchestrator emits structured events via TJ-SPEC-008's event system:
 | Event | When | Payload |
 |-------|------|---------|
 | `orchestrator.started` | After document parsed, actors classified | Actor count, server/client split |
-| `actor.init` | Actor runner initialized | Actor name, mode |
+| `actor.spawned` | Actor task spawned into JoinSet | Actor name, mode |
 | `actor.ready` | Server actor signals readiness | Actor name, bind address |
 | `readiness_gate.open` | All server actors ready | Server count, time elapsed |
 | `readiness_gate.timeout` | Server readiness timed out | Which actors not ready |
@@ -855,8 +811,9 @@ The orchestrator emits structured events via TJ-SPEC-008's event system:
 | `actor.phase_advanced` | Actor advances to next phase | Actor name, from_phase, to_phase |
 | `actor.completed` | Actor finishes execution | Actor name, reason, phases completed |
 | `actor.error` | Actor fails | Actor name, error message |
-| `orchestrator.grace_period_started` | All clients done, grace period begins | Duration |
-| `orchestrator.shutdown` | Shutdown initiated | Reason (grace expired, timeout, signal) |
+| `orchestrator.grace_period_started` | All clients done, grace period begins | Duration (seconds) |
+| `orchestrator.grace_period_expired` | Grace period ended, cancelling remaining actors | Messages captured during grace |
+| `orchestrator.shutdown` | Shutdown initiated | Reason (max_session_expired, etc.) |
 | `orchestrator.completed` | All actors collected, ready for verdict | Actor results summary |
 
 ---
@@ -876,14 +833,14 @@ The orchestrator emits structured events via TJ-SPEC-008's event system:
 ### EC-ORCH-003: `await_extractors` Circular Dependency
 
 **Scenario:** Actor A's phase 2 awaits `{{b.value}}`. Actor B's phase 2 awaits `{{a.value}}`. Both would block indefinitely.
-**Expected:** Detected at startup, not at runtime. During YAML pre-processing (§4.2), `await_extractors` entries are extracted into a dependency graph. Before spawning actors, the orchestrator builds a directed graph of (actor, phase) → awaited (actor, extractor) edges and checks for cycles. If a cycle is detected, the run fails immediately with a clear error: `"Circular await_extractors dependency detected: actor_a.phase-2 → b.value → actor_b.phase-2 → a.value → actor_a.phase-2"`. No actors are spawned. Exit code 1.
+**Expected:** Detected at startup during document loading, not at runtime. After extracting `await_extractors` entries, `detect_await_cycles()` builds an actor dependency graph and performs DFS cycle detection. If a cycle is found, loading fails with `LoaderError::CyclicDependency`. No actors are spawned. Exit code 10 (RUNTIME_ERROR).
 
 **Rationale:** All `await_extractors` configuration is static (known from the YAML before execution). Waiting for a timeout on every test run with a misconfigured circular dependency would waste 30+ seconds and produce a confusing "extractor timed out" error rather than identifying the root cause.
 
 ### EC-ORCH-004: Readiness Gate — Partial Server Startup (Port Conflict)
 
-**Scenario:** Three server actors: `mcp_a` (port 8001), `mcp_b` (port 8002, already in use), `a2a_c` (port 9000). `mcp_b` fails to bind.
-**Expected:** Readiness gate timeout fires (default 30s, configurable via `--readiness-timeout`). Orchestrator cancels `mcp_a` and `a2a_c` (which bound successfully). All listeners closed, pending connections rejected. Exit with error: `"Readiness gate failed: actor 'mcp_b' did not become ready within 30s: address already in use"`. No client actors start.
+**Scenario:** Three server actors: `mcp_a` (port 8001), `mcp_b` (port 8002, already in use), `a2a_c` (port 9000). `mcp_b` fails to bind. Its `run_actor()` returns `Err` and the oneshot sender is dropped.
+**Expected:** `ReadinessGate::wait_all_ready()` detects the dropped sender and returns `GateError::ServerFailed { actor: "mcp_b" }` (or times out if the error races with the timeout). Orchestrator cancels all actors, aborts the `JoinSet`. Exit with error. No client actors start. `--readiness-timeout` (default 30s) controls the maximum wait.
 
 ### EC-ORCH-005: Readiness Gate — Server Binds But Crashes Immediately
 
@@ -907,8 +864,8 @@ The orchestrator emits structured events via TJ-SPEC-008's event system:
 
 ### EC-ORCH-009: Single Actor in Multi-Actor Document
 
-**Scenario:** OATF document defines `actors: [{ name: "solo", mode: "mcp_server", ... }]` — one actor in a multi-actor document structure.
-**Expected:** Orchestrator runs normally with one actor. Readiness gate waits for one server. No client actors means grace period starts immediately on terminal phase (degenerates to single-actor rule). `execution_summary.actors` has one-element array. No overhead from unused orchestration machinery.
+**Scenario:** OATF document defines `actors: [{ name: "solo", mode: "mcp_server", ... }]` — one actor in the multi-actor document structure.
+**Expected:** Orchestrator is bypassed (`actors.len() <= 1`). The single actor runs directly via `run_actor()` without `JoinSet` or `ReadinessGate`. `execution_summary.actors` has a one-element array. No overhead from unused orchestration machinery.
 
 ### EC-ORCH-010: Actor Name Collision
 
@@ -918,7 +875,7 @@ The orchestrator emits structured events via TJ-SPEC-008's event system:
 ### EC-ORCH-011: Extractor Store — High Contention Write Storm
 
 **Scenario:** Four actors each capturing extractors at 100+ events/sec, all writing to the shared `ExtractorStore`.
-**Expected:** `RwLock` serializes writes. Read latency increases but remains bounded (each write is a single HashMap insert, ~100ns). No data loss, no deadlock. In practice, protocol I/O latency (ms) dominates extractor store contention (ns).
+**Expected:** `DashMap` shards writes across multiple locks. Read and write latency remains bounded (each write is a single shard-locked insert, ~100ns). No data loss, no deadlock. In practice, protocol I/O latency (ms) dominates extractor store contention (ns).
 
 ### EC-ORCH-012: Trace Ordering — Simultaneous Events Across Protocols
 
@@ -994,12 +951,12 @@ The system SHALL block phase execution until all actors have completed transport
 The system SHALL route each actor to the correct protocol driver based on its `mode` field, supporting `mcp_server`, `mcp_client`, `a2a_server`, `a2a_client`, and `ag_ui_client`.
 
 **Acceptance Criteria:**
-- `mcp_server` → MCP Server runner (TJ-SPEC-013)
-- `ag_ui_client` → AG-UI Client runner (TJ-SPEC-016)
-- `a2a_server` → A2A Server runner (TJ-SPEC-017)
-- `a2a_client` → A2A Client runner (TJ-SPEC-017)
-- `mcp_client` → MCP Client runner (TJ-SPEC-018)
-- Unrecognized mode values: actor skipped with warning at runner build time (not a document validation error — OATF treats mode as an open string per §11.5; this is a ThoughtJack runtime support limitation)
+- `mcp_server` → `McpServerDriver` (TJ-SPEC-013)
+- `ag_ui_client` → `AgUiClientDriver` (TJ-SPEC-016)
+- `a2a_server` → `A2aServerDriver` (TJ-SPEC-017)
+- `a2a_client` → `A2aClientDriver` (TJ-SPEC-017)
+- `mcp_client` → `McpClientDriver` (TJ-SPEC-018)
+- Unrecognized mode values: `run_actor()` returns `Err(EngineError::Driver(...))`, recorded as `ActorOutcome::Error`
 - Each recognized mode maps to exactly one driver implementation
 
 ### F-ORCH-006: Cross-Actor Phase Coordination
@@ -1051,14 +1008,12 @@ The system SHALL isolate actor errors so that one actor's failure does not crash
 - Execution summary includes per-actor status, phases completed, and total phases
 
 ### F-ORCH-011: Single-Actor Bypass
-The system SHALL route single-actor documents directly to the protocol runner without orchestrator overhead.
+The system SHALL route single-actor documents directly to `run_actor()` without orchestrator overhead.
 
 **Acceptance Criteria:**
-- Documents using single-phase or multi-phase form (no `actors[]`) bypass the orchestrator after SDK normalization
-- Documents using multi-actor form (`actors[]`) with exactly one actor run through the orchestrator normally (EC-ORCH-009) — the `actors[]` form signals intent for orchestration semantics even with one actor
-- The bypass decision is made after SDK normalization: `document.attack.execution.actors.len() == 1 && !document_uses_actors_form`
-- No `SharedTrace` mutex contention for single-actor mode
-- No readiness gate for single-actor mode
+- Documents with one or fewer actors after SDK normalization bypass the orchestrator (`actors.len() <= 1`)
+- The bypass applies regardless of document form (single-phase, multi-phase, or single-element `actors[]`)
+- No `JoinSet`, no `ReadinessGate`, no grace period coordination for single-actor mode
 - Behavior identical to multi-actor mode from the actor's perspective
 
 
@@ -1092,22 +1047,23 @@ The system SHALL route single-actor documents directly to the protocol runner wi
 ## 14. Definition of Done
 
 - [ ] Orchestrator starts all actors concurrently from `execution.actors`
-- [ ] Actor-to-mode routing dispatches to correct protocol runner
+- [ ] Actor-to-mode routing dispatches to correct protocol driver
 - [ ] `ExtractorStore` provides thread-safe cross-actor value propagation
 - [ ] `all_qualified()` returns qualified names for SDK interpolation
 - [ ] `await_extractors` blocks phase entry until cross-actor extractors available
-- [ ] `await_extractors` timeout produces error after configurable limit
+- [ ] `await_extractors` timeout produces warning after configurable limit
+- [ ] `await_extractors` circular dependencies detected at load time (EC-ORCH-003)
 - [ ] `SharedTrace` provides global sequence-ordered trace across all actors
 - [ ] Readiness gate synchronizes server/client actor startup
 - [ ] Actor errors isolated — other actors continue executing
 - [ ] Execution summary includes per-actor status, phases completed, error details
 - [ ] SIGINT/SIGTERM triggers coordinated shutdown within 5 seconds
 - [ ] Single-actor documents bypass orchestrator with no overhead
-- [ ] `thoughtjack run` routes CLI flags to protocol-specific runners
-- [ ] All 15 edge cases (EC-ORCH-001 through EC-ORCH-015) have tests
+- [ ] `thoughtjack run` routes CLI flags via `ActorConfig` to `run_actor()`
+- [ ] All 16 edge cases (EC-ORCH-001 through EC-ORCH-016) have tests
 - [ ] Actor startup < 500ms (NFR-001)
 - [ ] Extractor store set < 10μs, all_qualified < 1ms (NFR-002)
-- [ ] `cargo clippy -- -D warnings` passes
+- [ ] `cargo clippy --tests -- -D warnings` passes
 - [ ] `cargo test` passes
 
 ---
@@ -1121,4 +1077,5 @@ The system SHALL route single-actor documents directly to the protocol runner wi
 - [TJ-SPEC-016: AG-UI Protocol Support](./TJ-SPEC-016_AGUI_Protocol_Support.md)
 - [TJ-SPEC-017: A2A Protocol Support](./TJ-SPEC-017_A2A_Protocol_Support.md)
 - [TJ-SPEC-018: MCP Client Mode](./TJ-SPEC-018_MCP_Client_Mode.md)
-- [Tokio Sync Primitives](https://docs.rs/tokio/latest/tokio/sync/index.html) — Barriers, channels, cancellation
+- [Tokio Sync Primitives](https://docs.rs/tokio/latest/tokio/sync/index.html) — Oneshot, broadcast, watch channels, cancellation
+- [DashMap](https://docs.rs/dashmap/latest/dashmap/) — Concurrent HashMap for ExtractorStore
