@@ -246,7 +246,6 @@ impl HttpTransport {
 
         let handle = ResponseHandle {
             response_tx: Some(incoming.response_tx),
-            sse_tx: self.shared.sse_tx.clone(),
             context,
             _guard: guard,
         };
@@ -330,7 +329,6 @@ impl HttpTransport {
 /// Implements: TJ-SPEC-002 F-003
 pub struct ResponseHandle {
     response_tx: Option<mpsc::Sender<std::result::Result<Bytes, io::Error>>>,
-    sse_tx: broadcast::Sender<String>,
     context: ConnectionContext,
     _guard: ConnectionGuard,
 }
@@ -353,24 +351,19 @@ impl ResponseHandle {
 
     /// Sends a JSON-RPC message.
     ///
-    /// Responses go to the per-request body channel; notifications and
-    /// requests go to the SSE broadcast.
+    /// SSE-frames all messages on the POST response body, matching
+    /// `HttpTransport::send_message()` behavior.
     ///
     /// # Errors
     ///
     /// Returns [`TransportError`] on serialization or channel failure.
+    // TODO: per-request content-type negotiation — put ResponseMode on
+    // ResponseHandle so Direct requests can use plain application/json
+    // instead of SSE framing.
     pub async fn send_message(&self, message: &JsonRpcMessage) -> Result<()> {
-        match message {
-            JsonRpcMessage::Response(_) => {
-                let serialized = serde_json::to_vec(message)?;
-                self.send_raw(&serialized).await
-            }
-            JsonRpcMessage::Notification(_) | JsonRpcMessage::Request(_) => {
-                let serialized = serde_json::to_string(message)?;
-                let _ = self.sse_tx.send(serialized);
-                Ok(())
-            }
-        }
+        let serialized = serde_json::to_string(message)?;
+        let sse_data = format!("event: message\ndata: {serialized}\n\n");
+        self.send_raw(sse_data.as_bytes()).await
     }
 
     /// Finalizes the HTTP response by dropping the body sender.
@@ -1280,7 +1273,6 @@ mod tests {
     #[tokio::test]
     async fn response_handle_send_and_finalize() {
         let (response_tx, mut response_rx) = mpsc::channel(64);
-        let (sse_tx, _) = broadcast::channel(256);
         let connections: Arc<DashMap<u64, ConnectionState>> = Arc::new(DashMap::new());
         connections.insert(
             42,
@@ -1293,7 +1285,6 @@ mod tests {
 
         let handle = ResponseHandle {
             response_tx: Some(response_tx),
-            sse_tx,
             context: ConnectionContext {
                 connection_id: 42,
                 remote_addr: Some(SocketAddr::from(([127, 0, 0, 1], 9999))),
@@ -1318,12 +1309,10 @@ mod tests {
     #[tokio::test]
     async fn response_handle_adapter_implements_transport() {
         let (response_tx, mut response_rx) = mpsc::channel(64);
-        let (sse_tx, _sse_rx) = broadcast::channel(256);
         let connections: Arc<DashMap<u64, ConnectionState>> = Arc::new(DashMap::new());
 
         let handle = ResponseHandle {
             response_tx: Some(response_tx),
-            sse_tx,
             context: ConnectionContext {
                 connection_id: 1,
                 remote_addr: None,

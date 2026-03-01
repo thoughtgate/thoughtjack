@@ -159,8 +159,8 @@ cargo test
 # Run with coverage
 cargo llvm-cov --html
 
-# Lint
-cargo clippy -- -D warnings
+# Lint (must match CI — include --tests)
+cargo clippy --tests -- -D warnings
 
 # Format
 cargo fmt
@@ -277,6 +277,7 @@ Fixes #42
 - All public items must have doc comments
 - Prefer `thiserror` for error types
 - Use `tracing` macros, not `println!`
+- **Clippy nursery lints are enabled** (`Cargo.toml` `[lints.clippy]` sets `nursery = "warn"`, CI promotes to errors). `cognitive_complexity` threshold is set to 50 in `clippy.toml`.
 
 ### Requirement Traceability
 
