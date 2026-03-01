@@ -23,7 +23,7 @@ Attack scenarios are authored as OATF (Open Agentic Testing Framework) documents
 - **SDK**: `oatf-rs` — OATF document parsing, validation, interpolation, trigger evaluation, extractor capture
 - **Concurrency primitives**: `tokio::sync::watch` (extractor publication), `CancellationToken` (cooperative shutdown), `DashMap` (shared extractor store)
 
-**Monolithic crate**: ThoughtJack is a single crate. All protocol drivers, the engine, and CLI live in one `Cargo.toml`. No workspace. Ignore any workspace references in older specs.
+**Monolithic crate**: ThoughtJack is a single crate. All protocol drivers, the engine, and CLI live in one `Cargo.toml`. A `[workspace]` in `Cargo.toml` includes the `fuzz/` crate for cargo-fuzz targets.
 
 When adding dependencies, always check crates.io for the latest stable version:
 ```bash
