@@ -539,4 +539,35 @@ attack:
         );
         assert!(detect_await_cycles(&map).is_err());
     }
+
+    /// EC-OATF-006: Document with schema violation → `load_document()` returns
+    /// `LoaderError::OatfLoad` with a descriptive message.
+    #[test]
+    fn ec_oatf_006_sdk_validation_error() {
+        // Missing required `oatf:` version field — should fail SDK validation
+        let yaml = r#"
+attack:
+  name: bad_document
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: calculator
+          description: "test"
+"#;
+
+        let result = load_document(yaml);
+        assert!(result.is_err(), "invalid document should produce error");
+
+        let err = result.unwrap_err();
+        match &err {
+            LoaderError::OatfLoad(msg) => {
+                assert!(
+                    !msg.is_empty(),
+                    "OatfLoad error should have a descriptive message, got empty"
+                );
+            }
+            other => panic!("Expected LoaderError::OatfLoad, got: {other:?}"),
+        }
+    }
 }
