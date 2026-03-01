@@ -395,6 +395,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     // ---- PhaseLoop integration tests with MockDriver ----
 
@@ -417,6 +418,72 @@ mod tests {
                 let _ = event_tx.send(event);
             }
             Ok(super::super::types::DriveResult::Complete)
+        }
+    }
+
+    /// A mock driver that captures the extractor map it receives via the watch channel.
+    struct ExtractorCapturingDriver {
+        captured: Arc<Mutex<HashMap<String, String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PhaseDriver for ExtractorCapturingDriver {
+        async fn drive_phase(
+            &mut self,
+            _phase_index: usize,
+            _state: &serde_json::Value,
+            extractors: watch::Receiver<HashMap<String, String>>,
+            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _cancel: CancellationToken,
+        ) -> Result<super::super::types::DriveResult, EngineError> {
+            let snapshot = extractors.borrow().clone();
+            *self.captured.lock().unwrap() = snapshot;
+            Ok(super::super::types::DriveResult::Complete)
+        }
+    }
+
+    /// A mock driver that always returns an error.
+    struct ErrorDriver;
+
+    #[async_trait::async_trait]
+    impl PhaseDriver for ErrorDriver {
+        async fn drive_phase(
+            &mut self,
+            _phase_index: usize,
+            _state: &serde_json::Value,
+            _extractors: watch::Receiver<HashMap<String, String>>,
+            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _cancel: CancellationToken,
+        ) -> Result<super::super::types::DriveResult, EngineError> {
+            Err(EngineError::Driver("mock driver error".to_string()))
+        }
+    }
+
+    /// A mock driver that records `on_phase_advanced` calls.
+    struct AdvanceRecordingDriver {
+        events: Vec<ProtocolEvent>,
+        advanced_calls: Arc<Mutex<Vec<(usize, usize)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PhaseDriver for AdvanceRecordingDriver {
+        async fn drive_phase(
+            &mut self,
+            _phase_index: usize,
+            _state: &serde_json::Value,
+            _extractors: watch::Receiver<HashMap<String, String>>,
+            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _cancel: CancellationToken,
+        ) -> Result<super::super::types::DriveResult, EngineError> {
+            for event in self.events.drain(..) {
+                let _ = event_tx.send(event);
+            }
+            Ok(super::super::types::DriveResult::Complete)
+        }
+
+        async fn on_phase_advanced(&mut self, from: usize, to: usize) -> Result<(), EngineError> {
+            self.advanced_calls.lock().unwrap().push((from, to));
+            Ok(())
         }
     }
 
@@ -625,5 +692,528 @@ attack:
         let result = phase_loop.run().await.unwrap();
         assert_eq!(result.termination, TerminationReason::Cancelled);
         assert_eq!(result.actor_name, "default");
+    }
+
+    // ---- New tests ----
+
+    #[tokio::test]
+    async fn extractor_capture_local_scope() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calculator
+              description: "test"
+              inputSchema:
+                type: object
+        extractors:
+          - name: tool_name
+            source: request
+            type: json_path
+            selector: "$.name"
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_two
+"#,
+        );
+
+        let driver = MockDriver {
+            events: vec![ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "tools/call".to_string(),
+                content: serde_json::json!({"name": "calculator"}),
+            }],
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace);
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        let result = phase_loop.run().await.unwrap();
+        assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+        // Verify extractor was captured locally
+        assert_eq!(
+            phase_loop.phase_engine.extractor_values.get("tool_name"),
+            Some(&"calculator".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn extractor_capture_cross_actor() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calculator
+              description: "test"
+              inputSchema:
+                type: object
+        extractors:
+          - name: tool_name
+            source: request
+            type: json_path
+            selector: "$.name"
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_two
+"#,
+        );
+
+        let driver = MockDriver {
+            events: vec![ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "tools/call".to_string(),
+                content: serde_json::json!({"name": "my_tool"}),
+            }],
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let extractor_store = ExtractorStore::new();
+        let store_handle = extractor_store.clone();
+        let config = PhaseLoopConfig {
+            trace,
+            extractor_store,
+            actor_name: "test_actor".to_string(),
+            await_extractors_config: HashMap::new(),
+            cancel: CancellationToken::new(),
+            entry_action_sender: None,
+        };
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        phase_loop.run().await.unwrap();
+        // Verify extractor is in the shared store (cross-actor)
+        assert_eq!(
+            store_handle.get("test_actor", "tool_name"),
+            Some("my_tool".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_events_after_driver_completes() {
+        // MockDriver emits events synchronously then returns Complete.
+        // All events should be drained and appear in trace.
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+        );
+
+        let driver = MockDriver {
+            events: vec![
+                ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "resources/read".to_string(),
+                    content: serde_json::json!({"uri": "file:///a.txt"}),
+                },
+                ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "resources/read".to_string(),
+                    content: serde_json::json!({"contents": []}),
+                },
+                ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "tools/list".to_string(),
+                    content: serde_json::json!({}),
+                },
+            ],
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace.clone());
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        phase_loop.run().await.unwrap();
+
+        let entries = trace.snapshot();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].method, "resources/read");
+        assert_eq!(entries[1].method, "resources/read");
+        assert_eq!(entries[2].method, "tools/list");
+    }
+
+    #[tokio::test]
+    async fn drain_events_stops_on_advance() {
+        // Two-phase doc with count=1. Driver sends 2 events — first triggers
+        // advance, drain should process the second but stop due to advance.
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calculator
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_two
+"#,
+        );
+
+        let driver = MockDriver {
+            events: vec![
+                ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"name": "calculator"}),
+                },
+                ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"name": "second"}),
+                },
+            ],
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace.clone());
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        let result = phase_loop.run().await.unwrap();
+        assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+        // Both events should appear in trace (drain processes all remaining)
+        assert!(!trace.is_empty());
+    }
+
+    /// A mock driver that provides a fixed set of events per phase index.
+    struct PerPhaseDriver {
+        /// Maps `phase_index` → events to send during that phase.
+        phase_events: HashMap<usize, Vec<ProtocolEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PhaseDriver for PerPhaseDriver {
+        async fn drive_phase(
+            &mut self,
+            phase_index: usize,
+            _state: &serde_json::Value,
+            _extractors: watch::Receiver<HashMap<String, String>>,
+            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _cancel: CancellationToken,
+        ) -> Result<super::super::types::DriveResult, EngineError> {
+            if let Some(events) = self.phase_events.get_mut(&phase_index) {
+                for event in events.drain(..) {
+                    let _ = event_tx.send(event);
+                }
+            }
+            Ok(super::super::types::DriveResult::Complete)
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_phase_full_lifecycle() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: trust_building
+        state:
+          tools:
+            - name: calculator
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: exploit
+        state:
+          tools:
+            - name: calculator
+              description: "modified"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: terminal
+"#,
+        );
+
+        let mut phase_events = HashMap::new();
+        phase_events.insert(
+            0,
+            vec![ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "tools/call".to_string(),
+                content: serde_json::json!({"name": "calculator"}),
+            }],
+        );
+        phase_events.insert(
+            1,
+            vec![ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "tools/call".to_string(),
+                content: serde_json::json!({"name": "calculator"}),
+            }],
+        );
+
+        let driver = PerPhaseDriver { phase_events };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace.clone());
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        let result = phase_loop.run().await.unwrap();
+        assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+        assert_eq!(result.phases_completed, 2);
+
+        // Verify trace has events from both phases
+        let entries = trace.snapshot();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].phase, "trust_building");
+        assert_eq!(entries[1].phase, "exploit");
+    }
+
+    #[tokio::test]
+    async fn driver_error_propagates() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+        );
+
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace);
+        let mut phase_loop = PhaseLoop::new(ErrorDriver, engine, config);
+
+        let result = phase_loop.run().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("mock driver error"),
+            "Expected 'mock driver error', got: {err}"
+        );
+    }
+
+    #[test]
+    fn server_vs_client_extractor_source() {
+        // Server mode: Incoming → Request, Outgoing → Response
+        // Client mode: Incoming → Response, Outgoing → Request
+        use oatf::enums::ExtractorSource;
+
+        // Server mode: Incoming maps to Request
+        let (source_server_in, source_server_out) = (
+            match (Direction::Incoming, true) {
+                (Direction::Incoming, true) | (Direction::Outgoing, false) => {
+                    ExtractorSource::Request
+                }
+                _ => ExtractorSource::Response,
+            },
+            match (Direction::Outgoing, true) {
+                (Direction::Outgoing, true) | (Direction::Incoming, false) => {
+                    ExtractorSource::Response
+                }
+                _ => ExtractorSource::Request,
+            },
+        );
+        assert_eq!(source_server_in, ExtractorSource::Request);
+        assert_eq!(source_server_out, ExtractorSource::Response);
+
+        // Client mode: Incoming maps to Response
+        let (source_client_in, source_client_out) = (
+            match (Direction::Incoming, false) {
+                (Direction::Incoming, true) | (Direction::Outgoing, false) => {
+                    ExtractorSource::Request
+                }
+                _ => ExtractorSource::Response,
+            },
+            match (Direction::Outgoing, false) {
+                (Direction::Outgoing, true) | (Direction::Incoming, false) => {
+                    ExtractorSource::Response
+                }
+                _ => ExtractorSource::Request,
+            },
+        );
+        assert_eq!(source_client_in, ExtractorSource::Response);
+        assert_eq!(source_client_out, ExtractorSource::Request);
+    }
+
+    #[test]
+    fn build_interpolation_extractors_merges() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+        );
+
+        let mut engine = PhaseEngine::new(doc, 0);
+        engine
+            .extractor_values
+            .insert("local_key".to_string(), "local_val".to_string());
+
+        let store = ExtractorStore::new();
+        store.set("other_actor", "token", "abc123".to_string());
+
+        let merged = build_interpolation_extractors(&engine, &store);
+        assert_eq!(merged.get("local_key"), Some(&"local_val".to_string()));
+        assert_eq!(
+            merged.get("other_actor.token"),
+            Some(&"abc123".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn on_phase_advanced_called() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calculator
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 1
+      - name: phase_two
+"#,
+        );
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = AdvanceRecordingDriver {
+            events: vec![ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "tools/call".to_string(),
+                content: serde_json::json!({"name": "calculator"}),
+            }],
+            advanced_calls: Arc::clone(&calls),
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace);
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        phase_loop.run().await.unwrap();
+
+        let recorded = calls.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0], (0, 1));
+    }
+
+    #[tokio::test]
+    async fn await_extractors_resolves() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+        );
+
+        let captured = Arc::new(Mutex::new(HashMap::new()));
+        let driver = ExtractorCapturingDriver {
+            captured: Arc::clone(&captured),
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let extractor_store = ExtractorStore::new();
+        // Pre-seed the store with the value that will be awaited
+        extractor_store.set("other_actor", "session_id", "sess-42".to_string());
+
+        let mut await_config: HashMap<usize, Vec<AwaitExtractor>> = HashMap::new();
+        await_config.insert(
+            0,
+            vec![AwaitExtractor {
+                actor: "other_actor".to_string(),
+                extractors: vec!["session_id".to_string()],
+                timeout: std::time::Duration::from_secs(5),
+            }],
+        );
+
+        let config = PhaseLoopConfig {
+            trace,
+            extractor_store,
+            actor_name: "default".to_string(),
+            await_extractors_config: await_config,
+            cancel: CancellationToken::new(),
+            entry_action_sender: None,
+        };
+
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+        let result = phase_loop.run().await.unwrap();
+        assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+
+        // Verify the awaited extractor was resolved and available
+        assert_eq!(
+            phase_loop
+                .phase_engine
+                .extractor_values
+                .get("other_actor.session_id"),
+            Some(&"sess-42".to_string())
+        );
     }
 }
