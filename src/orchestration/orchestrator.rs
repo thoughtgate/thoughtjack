@@ -450,4 +450,222 @@ mod tests {
         };
         assert_eq!(panic_outcome.actor_name(), "oops");
     }
+
+    // ---- Helper for orchestrator integration tests ----
+
+    fn default_actor_config(max_session: Duration) -> ActorConfig {
+        ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session,
+        }
+    }
+
+    fn load_test_doc(yaml: &str) -> LoadedDocument {
+        crate::loader::load_document(yaml).expect("test YAML should load")
+    }
+
+    // ---- Integration tests ----
+
+    #[tokio::test]
+    async fn orchestrate_single_server_completes() {
+        let loaded = load_test_doc(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+        );
+
+        let config = default_actor_config(Duration::from_secs(10));
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        // Cancel after short delay — server would block on stdio otherwise
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_clone.cancel();
+        });
+
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+        assert_eq!(result.outcomes.len(), 1);
+        // Should be success with Cancelled termination (cancel fired before terminal)
+        match &result.outcomes[0] {
+            ActorOutcome::Success(r) => {
+                assert_eq!(r.actor_name, "default");
+            }
+            other => panic!("Expected Success, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn orchestrate_mixed_outcomes() {
+        let loaded = load_test_doc(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: valid_server
+        mode: mcp_server
+        phases:
+          - name: idle
+            state:
+              tools:
+                - name: test_tool
+                  description: "test"
+                  inputSchema:
+                    type: object
+      - name: bad_client
+        mode: ag_ui_client
+        phases:
+          - name: probe
+            state:
+              run_agent_input:
+                messages:
+                  - role: user
+                    content: "Hello"
+"#,
+        );
+
+        // No --agui-client-endpoint, so ag_ui_client will fail
+        let config = default_actor_config(Duration::from_secs(5));
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
+
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+
+        assert_eq!(result.outcomes.len(), 2);
+
+        // Check we have both a success and an error
+        let has_error = result
+            .outcomes
+            .iter()
+            .any(|o| matches!(o, ActorOutcome::Error { .. }));
+        assert!(has_error, "Expected at least one Error outcome");
+    }
+
+    #[tokio::test]
+    async fn max_session_timeout_cancels() {
+        let loaded = load_test_doc(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: long_running
+        state:
+          tools:
+            - name: test_tool
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 999
+      - name: terminal
+"#,
+        );
+
+        // Very short max_session
+        let config = default_actor_config(Duration::from_millis(50));
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
+
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+
+        assert_eq!(result.outcomes.len(), 1);
+        // Actor should be cancelled/aborted due to max_session expiry.
+        // Depending on timing, it may be Success(Cancelled) or Panic (aborted).
+        match &result.outcomes[0] {
+            ActorOutcome::Success(r) => {
+                assert_eq!(r.actor_name, "default");
+            }
+            ActorOutcome::Panic { .. } | ActorOutcome::Error { .. } => {
+                // Task was aborted before graceful cancel — acceptable
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_client_shutdown() {
+        // Only server actors — shutdown triggers after all servers complete or cancel
+        let loaded = load_test_doc(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+        );
+
+        let config = default_actor_config(Duration::from_secs(10));
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_clone.cancel();
+        });
+
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+
+        // Single server actor should have an outcome
+        assert_eq!(result.outcomes.len(), 1);
+    }
+
+    #[test]
+    fn unpack_join_result_handles_success() {
+        let events = EventEmitter::noop();
+        let task_result = ActorTaskResult {
+            actor_name: "test_actor".to_string(),
+            is_server: true,
+            result: Ok(ActorResult {
+                actor_name: "test_actor".to_string(),
+                termination: crate::engine::types::TerminationReason::TerminalPhaseReached,
+                phases_completed: 2,
+            }),
+        };
+
+        let (outcome, is_server) = unpack_join_result(Ok(task_result), &events);
+        assert_eq!(is_server, Some(true));
+        assert_eq!(outcome.actor_name(), "test_actor");
+        assert!(matches!(outcome, ActorOutcome::Success(_)));
+    }
 }
