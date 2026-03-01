@@ -17,7 +17,6 @@ categories = ["development-tools::testing"]
 
 [features]
 default = []
-docgen = []
 
 [dependencies]
 tokio = { version = "1.49", features = ["full"] }

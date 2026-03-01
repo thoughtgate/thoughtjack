@@ -10,8 +10,6 @@ pub mod built_info {
 }
 
 pub mod cli;
-#[cfg(feature = "docgen")]
-pub mod docgen;
 pub mod engine;
 pub mod error;
 pub mod loader;
