@@ -65,10 +65,12 @@ fn map_event_type(raw: &str) -> &str {
         "TEXT_MESSAGE_START" => "text_message_start",
         "TEXT_MESSAGE_CONTENT" => "text_message_content",
         "TEXT_MESSAGE_END" => "text_message_end",
+        "TEXT_MESSAGE_CHUNK" => "text_message_chunk",
         // Tool
         "TOOL_CALL_START" => "tool_call_start",
         "TOOL_CALL_ARGS" => "tool_call_args",
         "TOOL_CALL_END" => "tool_call_end",
+        "TOOL_CALL_CHUNK" => "tool_call_chunk",
         "TOOL_CALL_RESULT" => "tool_call_result",
         // State
         "STATE_SNAPSHOT" => "state_snapshot",
@@ -182,12 +184,17 @@ impl SseParser {
     }
 
     /// Dispatch an accumulated event (called on blank line).
+    ///
+    /// AG-UI's canonical encoder only emits `data:` lines (no `event:`).
+    /// The event type is carried inside the JSON payload as `data["type"]`.
+    /// When an explicit SSE `event:` line *is* present we prefer it, but
+    /// when absent we fall back to `data["type"]`.
     fn dispatch_event(&mut self) -> Option<Result<AgUiEvent, String>> {
         if self.current_data.is_empty() && self.current_event_type.is_none() {
             return None;
         }
 
-        let raw_type = self.current_event_type.take().unwrap_or_default();
+        let sse_event_type = self.current_event_type.take();
         let data_str = std::mem::take(&mut self.current_data);
 
         if data_str.is_empty() {
@@ -197,14 +204,23 @@ impl SseParser {
         let data: Value = match serde_json::from_str(&data_str) {
             Ok(v) => v,
             Err(e) => {
+                let label = sse_event_type.as_deref().unwrap_or("");
                 self.consecutive_errors += 1;
                 return Some(Err(format!(
-                    "malformed JSON in SSE data for event '{raw_type}': {e}"
+                    "malformed JSON in SSE data for event '{label}': {e}"
                 )));
             }
         };
 
         self.consecutive_errors = 0;
+
+        // Resolve raw type: prefer SSE `event:` field, fall back to JSON `type`.
+        let raw_type = sse_event_type.unwrap_or_else(|| {
+            data.get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        });
 
         // CUSTOM event subtype detection: if name == "interrupt" → event type "interrupt"
         let event_type = if raw_type == "CUSTOM" {
@@ -359,10 +375,12 @@ impl MessageAccumulator {
     /// Process an SSE event and update accumulated state.
     fn process_event(&mut self, event: &AgUiEvent) {
         match event.event_type.as_str() {
-            "text_message_start" | "text_message_content" | "text_message_end" => {
+            "text_message_start" | "text_message_content" | "text_message_end"
+            | "text_message_chunk" => {
                 self.process_text_event(event);
             }
-            "tool_call_start" | "tool_call_args" | "tool_call_end" | "tool_call_result" => {
+            "tool_call_start" | "tool_call_args" | "tool_call_end" | "tool_call_result"
+            | "tool_call_chunk" => {
                 self.process_tool_event(event);
             }
             "reasoning_message_start"
@@ -412,6 +430,32 @@ impl MessageAccumulator {
             "text_message_end" => {
                 if let Some(msg) = self.messages.get_mut(message_id) {
                     msg.complete = true;
+                }
+            }
+            "text_message_chunk" => {
+                // Compact single-event variant: combines start/content/end.
+                // Creates or updates the message entry. If delta is present,
+                // appends content. If no delta, marks complete.
+                let role = event
+                    .data
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("assistant")
+                    .to_string();
+                let entry = self
+                    .messages
+                    .entry(message_id.to_string())
+                    .or_insert_with(|| AccumulatedMessage {
+                        message_id: message_id.to_string(),
+                        role,
+                        content: String::new(),
+                        tool_calls: Vec::new(),
+                        complete: false,
+                    });
+                if let Some(delta) = event.data.get("delta").and_then(Value::as_str) {
+                    entry.content.push_str(delta);
+                } else {
+                    entry.complete = true;
                 }
             }
             _ => {}
@@ -473,7 +517,50 @@ impl MessageAccumulator {
             }
             "tool_call_result" => {
                 if let Some(tc) = self.tool_calls.get_mut(tool_call_id) {
-                    tc.result = event.data.get("result").cloned();
+                    // AG-UI protocol field is "content", not "result"
+                    tc.result = event.data.get("content").cloned();
+                }
+            }
+            "tool_call_chunk" => {
+                // Compact single-event variant: combines start/args/end.
+                // Creates or updates the tool call entry. If delta is present,
+                // appends arguments. If no delta, marks complete.
+                let entry = self
+                    .tool_calls
+                    .entry(tool_call_id.to_string())
+                    .or_insert_with(|| {
+                        let tool_call_name = event
+                            .data
+                            .get("toolCallName")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let parent_message_id = event
+                            .data
+                            .get("parentMessageId")
+                            .and_then(Value::as_str)
+                            .map(String::from);
+
+                        // Link to parent message on first creation
+                        if let Some(ref parent_id) = parent_message_id
+                            && let Some(msg) = self.messages.get_mut(parent_id.as_str())
+                        {
+                            msg.tool_calls.push(tool_call_id.to_string());
+                        }
+
+                        AccumulatedToolCall {
+                            tool_call_id: tool_call_id.to_string(),
+                            tool_call_name,
+                            parent_message_id,
+                            arguments: String::new(),
+                            result: None,
+                            complete: false,
+                        }
+                    });
+                if let Some(delta) = event.data.get("delta").and_then(Value::as_str) {
+                    entry.arguments.push_str(delta);
+                } else {
+                    entry.complete = true;
                 }
             }
             _ => {}
@@ -598,6 +685,8 @@ impl MessageAccumulator {
 struct RunAgentInput {
     thread_id: String,
     run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_run_id: Option<String>,
     messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Value>>,
@@ -670,9 +759,15 @@ fn build_run_agent_input(
         .and_then(Value::as_str)
         .map_or_else(|| uuid::Uuid::new_v4().to_string(), String::from);
 
+    let parent_run_id = interpolated
+        .get("parentRunId")
+        .and_then(Value::as_str)
+        .map(String::from);
+
     Ok(RunAgentInput {
         thread_id: doc_thread_id.to_string(),
         run_id,
+        parent_run_id,
         messages,
         tools: interpolated.get("tools").and_then(Value::as_array).cloned(),
         context: interpolated
@@ -687,6 +782,25 @@ fn build_run_agent_input(
 // ============================================================================
 // AgUiTransport
 // ============================================================================
+
+/// Result of sending a `RunAgentInput` to the AG-UI agent.
+///
+/// Distinguishes a successful SSE stream from an HTTP error response so
+/// that `drive_phase()` can emit a `run_error` protocol event for
+/// non-success statuses instead of terminating the actor.
+///
+/// Implements: TJ-SPEC-016 F-001
+enum SendResult {
+    /// Agent responded with 2xx — SSE stream ready to consume.
+    Stream(SseStream),
+    /// Agent responded with a non-success HTTP status.
+    HttpError {
+        /// HTTP status code (e.g. 400, 500).
+        status: u16,
+        /// Response body text.
+        body: String,
+    },
+}
 
 /// HTTP transport for AG-UI agent communication.
 ///
@@ -720,15 +834,17 @@ impl AgUiTransport {
         &self.thread_id
     }
 
-    /// Sends a `RunAgentInput` and returns an SSE stream.
+    /// Sends a `RunAgentInput` and returns an SSE stream or HTTP error info.
     ///
     /// Retries on HTTP 429 with exponential backoff (up to 3 retries).
-    /// Returns an error on 4xx/5xx responses.
+    /// Non-success responses are returned as `SendResult::HttpError` so the
+    /// caller can emit a `run_error` protocol event (per spec §9.1).
     ///
     /// # Errors
     ///
-    /// Returns `EngineError::Driver` on HTTP errors or connection failures.
-    async fn send_run(&self, input: &RunAgentInput) -> Result<SseStream, EngineError> {
+    /// Returns `EngineError::Driver` only on transport-level failures
+    /// (connection refused, DNS, TLS).
+    async fn send_run(&self, input: &RunAgentInput) -> Result<SendResult, EngineError> {
         let mut backoff = INITIAL_RETRY_BACKOFF;
 
         for attempt in 0..=MAX_RETRIES {
@@ -751,7 +867,7 @@ impl AgUiTransport {
             let status = response.status();
 
             if status.is_success() {
-                return Ok(SseStream::new(response));
+                return Ok(SendResult::Stream(SseStream::new(response)));
             }
 
             if status.as_u16() == 429 && attempt < MAX_RETRIES {
@@ -770,9 +886,10 @@ impl AgUiTransport {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable>".to_string());
-            return Err(EngineError::Driver(format!(
-                "AG-UI agent returned HTTP {status}: {body}"
-            )));
+            return Ok(SendResult::HttpError {
+                status: status.as_u16(),
+                body,
+            });
         }
 
         unreachable!("retry loop should return before exceeding MAX_RETRIES")
@@ -848,8 +965,23 @@ impl PhaseDriver for AgUiDriver {
             content: input_value,
         });
 
-        // Send request, get SSE stream
-        let mut stream = self.transport.send_run(&input).await?;
+        // Send request, get SSE stream (or HTTP error per §9.1)
+        let mut stream = match self.transport.send_run(&input).await? {
+            SendResult::Stream(s) => s,
+            SendResult::HttpError { status, body } => {
+                tracing::warn!(status, %body, "AG-UI agent returned HTTP error");
+                let _ = event_tx.send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "run_error".to_string(),
+                    content: json!({
+                        "type": "RUN_ERROR",
+                        "message": format!("HTTP {status}: {body}"),
+                        "code": format!("HTTP_{status}"),
+                    }),
+                });
+                return Ok(DriveResult::Complete);
+            }
+        };
 
         // Reset accumulator for this run
         self.accumulator.reset();
@@ -1246,11 +1378,14 @@ mod tests {
         });
         acc.process_event(&AgUiEvent {
             event_type: "tool_call_result".to_string(),
-            data: json!({"toolCallId": "tc1", "result": "42"}),
+            data: json!({"messageId": "m1", "toolCallId": "tc1", "content": "42"}),
             raw_type: "TOOL_CALL_RESULT".to_string(),
         });
 
-        assert!(acc.tool_calls.get("tc1").unwrap().result.is_some());
+        assert_eq!(
+            acc.tool_calls.get("tc1").unwrap().result,
+            Some(json!("42"))
+        );
     }
 
     #[test]
@@ -1465,10 +1600,23 @@ mod tests {
     }
 
     #[test]
+    fn parent_run_id_from_state() {
+        let state = json!({
+            "run_agent_input": {
+                "parentRunId": "parent-run-abc",
+                "messages": [{"role": "user", "content": "hi"}]
+            }
+        });
+        let result = build_run_agent_input(&state, &HashMap::new(), "t1").unwrap();
+        assert_eq!(result.parent_run_id.as_deref(), Some("parent-run-abc"));
+    }
+
+    #[test]
     fn run_agent_input_serialization() {
         let input = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
+            parent_run_id: None,
             messages: vec![json!({"role": "user", "content": "hi"})],
             tools: None,
             context: None,
@@ -1479,8 +1627,26 @@ mod tests {
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["threadId"], "t1");
         assert_eq!(json["runId"], "r1");
+        assert!(json.get("parentRunId").is_none());
         assert!(json.get("tools").is_none());
         assert!(json.get("forwardedProps").is_none());
+    }
+
+    #[test]
+    fn run_agent_input_parent_run_id() {
+        let input = RunAgentInput {
+            thread_id: "t1".to_string(),
+            run_id: "r2".to_string(),
+            parent_run_id: Some("r1".to_string()),
+            messages: vec![],
+            tools: None,
+            context: None,
+            state: None,
+            forwarded_props: None,
+        };
+
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["parentRunId"], "r1");
     }
 
     #[test]
@@ -1488,6 +1654,7 @@ mod tests {
         let input = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
+            parent_run_id: None,
             messages: vec![],
             tools: None,
             context: None,
@@ -1504,5 +1671,409 @@ mod tests {
         assert!(json.get("thread_id").is_none());
         assert!(json.get("run_id").is_none());
         assert!(json.get("forwarded_props").is_none());
+    }
+
+    // ---- Edge Case Tests ----
+
+    /// EC-AGUI-007: Out-of-order text message content deltas are concatenated
+    /// in arrival order. Content may be garbled — that's a valid observation.
+    #[test]
+    fn ec_agui_007_out_of_order_deltas() {
+        let mut acc = MessageAccumulator::new();
+
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_start".to_string(),
+            data: json!({"messageId": "m1", "role": "assistant"}),
+            raw_type: "TEXT_MESSAGE_START".to_string(),
+        });
+        // Simulated out-of-order: chunk 0, chunk 2, chunk 1
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_content".to_string(),
+            data: json!({"messageId": "m1", "delta": "AAA"}),
+            raw_type: "TEXT_MESSAGE_CONTENT".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_content".to_string(),
+            data: json!({"messageId": "m1", "delta": "CCC"}),
+            raw_type: "TEXT_MESSAGE_CONTENT".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_content".to_string(),
+            data: json!({"messageId": "m1", "delta": "BBB"}),
+            raw_type: "TEXT_MESSAGE_CONTENT".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_end".to_string(),
+            data: json!({"messageId": "m1"}),
+            raw_type: "TEXT_MESSAGE_END".to_string(),
+        });
+
+        let msg = acc.messages.get("m1").unwrap();
+        // Arrival-order concatenation: AAA + CCC + BBB
+        assert_eq!(msg.content, "AAACCCBBB");
+        assert!(msg.complete);
+    }
+
+    /// EC-AGUI-010: Thread ID persists across multiple `build_run_agent_input`
+    /// calls when the document doesn't specify a threadId.
+    #[test]
+    fn ec_agui_010_thread_id_persistence_across_builds() {
+        let transport = AgUiTransport::new("http://localhost:8000", vec![]);
+        let tid = transport.thread_id();
+
+        let state = json!({
+            "run_agent_input": {
+                "messages": [{"role": "user", "content": "hi"}]
+            }
+        });
+
+        let r1 = build_run_agent_input(&state, &HashMap::new(), tid).unwrap();
+        let r2 = build_run_agent_input(&state, &HashMap::new(), tid).unwrap();
+        let r3 = build_run_agent_input(&state, &HashMap::new(), tid).unwrap();
+
+        // Same thread_id across all three calls
+        assert_eq!(r1.thread_id, r2.thread_id);
+        assert_eq!(r2.thread_id, r3.thread_id);
+        // But different run_ids (auto-generated UUIDs)
+        assert_ne!(r1.run_id, r2.run_id);
+        assert_ne!(r2.run_id, r3.run_id);
+    }
+
+    /// EC-AGUI-012: Unknown SSE event types pass through the full parser
+    /// pipeline with their raw data intact.
+    #[test]
+    fn ec_agui_012_unknown_event_type_full_parser() {
+        let mut parser = SseParser::new();
+        let input = b"event: custom_debug_info\ndata: {\"debug\":true}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        let event = events[0].as_ref().unwrap();
+        // Unknown types pass through as-is (no snake_case mapping)
+        assert_eq!(event.event_type, "custom_debug_info");
+        assert_eq!(event.raw_type, "custom_debug_info");
+        assert_eq!(event.data["debug"], true);
+    }
+
+    /// EC-AGUI-013: Reasoning content with sensitive data is available in
+    /// `accumulated_response()` for indicator evaluation.
+    #[test]
+    fn ec_agui_013_reasoning_in_accumulated_response() {
+        let mut acc = MessageAccumulator::new();
+
+        acc.process_event(&AgUiEvent {
+            event_type: "reasoning_message_start".to_string(),
+            data: json!({"messageId": "r1"}),
+            raw_type: "REASONING_MESSAGE_START".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "reasoning_message_content".to_string(),
+            data: json!({"messageId": "r1", "delta": "System prompt says: "}),
+            raw_type: "REASONING_MESSAGE_CONTENT".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "reasoning_message_content".to_string(),
+            data: json!({"messageId": "r1", "delta": "You are a secret agent"}),
+            raw_type: "REASONING_MESSAGE_CONTENT".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "reasoning_message_end".to_string(),
+            data: json!({"messageId": "r1"}),
+            raw_type: "REASONING_MESSAGE_END".to_string(),
+        });
+
+        let result = acc.accumulated_response();
+        let reasoning = result["reasoning"].as_array().unwrap();
+        assert_eq!(reasoning.len(), 1);
+        assert_eq!(
+            reasoning[0]["content"],
+            "System prompt says: You are a secret agent"
+        );
+    }
+
+    /// EC-AGUI-014: Streamed tool call arguments via `TOOL_CALL_ARGS` deltas
+    /// are concatenated into a complete JSON string.
+    #[test]
+    fn ec_agui_014_streamed_tool_call_args() {
+        let mut acc = MessageAccumulator::new();
+
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_start".to_string(),
+            data: json!({"toolCallId": "tc1", "toolCallName": "calculator"}),
+            raw_type: "TOOL_CALL_START".to_string(),
+        });
+        // Exact delta split from spec
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_args".to_string(),
+            data: json!({"toolCallId": "tc1", "delta": "{\"expr"}),
+            raw_type: "TOOL_CALL_ARGS".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_args".to_string(),
+            data: json!({"toolCallId": "tc1", "delta": "ession\":\"2+2\"}"}),
+            raw_type: "TOOL_CALL_ARGS".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_end".to_string(),
+            data: json!({"toolCallId": "tc1"}),
+            raw_type: "TOOL_CALL_END".to_string(),
+        });
+
+        let tc = acc.tool_calls.get("tc1").unwrap();
+        assert_eq!(tc.arguments, r#"{"expression":"2+2"}"#);
+        assert!(tc.complete);
+
+        // Also verify it appears in accumulated_response
+        let result = acc.accumulated_response();
+        let reasoning = result["reasoning"].as_array().unwrap();
+        assert!(reasoning.is_empty());
+    }
+
+    // ---- Additional Gap Tests ----
+
+    /// `RunAgentInput` with `context` field.
+    #[test]
+    fn build_with_context_field() {
+        let state = json!({
+            "run_agent_input": {
+                "messages": [{"role": "user", "content": "hi"}],
+                "context": [{"type": "document", "content": "secret data"}]
+            }
+        });
+
+        let result = build_run_agent_input(&state, &HashMap::new(), "t1").unwrap();
+        let context = result.context.unwrap();
+        assert_eq!(context.len(), 1);
+        assert_eq!(context[0]["type"], "document");
+    }
+
+    /// Explicit runId from document overrides auto-generation.
+    #[test]
+    fn run_id_from_document() {
+        let state = json!({
+            "run_agent_input": {
+                "runId": "custom-run-42",
+                "messages": [{"role": "user", "content": "hi"}]
+            }
+        });
+
+        let result = build_run_agent_input(&state, &HashMap::new(), "t1").unwrap();
+        assert_eq!(result.run_id, "custom-run-42");
+    }
+
+    /// SSE event with data: but no event: line and no `type` in JSON.
+    #[test]
+    fn parse_data_only_event_no_type() {
+        let mut parser = SseParser::new();
+        let input = b"data: {\"value\":1}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        let event = events[0].as_ref().unwrap();
+        // No event: line AND no data.type → empty raw_type
+        assert_eq!(event.raw_type, "");
+        assert_eq!(event.event_type, "");
+    }
+
+    /// AG-UI canonical SSE format: type carried inside JSON `data.type`,
+    /// no SSE `event:` line.
+    #[test]
+    fn parse_agui_canonical_format() {
+        let mut parser = SseParser::new();
+        let input = b"data: {\"type\":\"RUN_STARTED\",\"threadId\":\"abc\",\"runId\":\"xyz\"}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        let event = events[0].as_ref().unwrap();
+        assert_eq!(event.raw_type, "RUN_STARTED");
+        assert_eq!(event.event_type, "run_started");
+        assert_eq!(event.data["threadId"], "abc");
+    }
+
+    /// AG-UI canonical format: multiple events without `event:` lines.
+    #[test]
+    fn parse_agui_canonical_stream() {
+        let mut parser = SseParser::new();
+        let input = concat!(
+            "data: {\"type\":\"TEXT_MESSAGE_START\",\"messageId\":\"m1\",\"role\":\"assistant\"}\n\n",
+            "data: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"messageId\":\"m1\",\"delta\":\"Hi\"}\n\n",
+            "data: {\"type\":\"TEXT_MESSAGE_END\",\"messageId\":\"m1\"}\n\n",
+        );
+        let events = parser.feed(input.as_bytes());
+
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].as_ref().unwrap().event_type, "text_message_start");
+        assert_eq!(
+            events[1].as_ref().unwrap().event_type,
+            "text_message_content"
+        );
+        assert_eq!(events[2].as_ref().unwrap().event_type, "text_message_end");
+    }
+
+    /// SSE `event:` line takes precedence over JSON `data.type` when both
+    /// are present.
+    #[test]
+    fn parse_sse_event_line_takes_precedence() {
+        let mut parser = SseParser::new();
+        let input = b"event: RUN_STARTED\ndata: {\"type\":\"RUN_FINISHED\"}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        let event = events[0].as_ref().unwrap();
+        // SSE event: line wins
+        assert_eq!(event.raw_type, "RUN_STARTED");
+        assert_eq!(event.event_type, "run_started");
+    }
+
+    /// AG-UI canonical format: CUSTOM event with interrupt subtype.
+    #[test]
+    fn parse_agui_canonical_custom_interrupt() {
+        let mut parser = SseParser::new();
+        let input =
+            b"data: {\"type\":\"CUSTOM\",\"name\":\"interrupt\",\"value\":{\"reason\":\"stop\"}}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        let event = events[0].as_ref().unwrap();
+        assert_eq!(event.raw_type, "CUSTOM");
+        assert_eq!(event.event_type, "interrupt");
+    }
+
+    /// `accumulated_response` includes `tool_call` result in the output.
+    #[test]
+    fn accumulated_response_includes_tool_call_result() {
+        let mut acc = MessageAccumulator::new();
+
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_start".to_string(),
+            data: json!({"messageId": "m1", "role": "assistant"}),
+            raw_type: "TEXT_MESSAGE_START".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_start".to_string(),
+            data: json!({
+                "toolCallId": "tc1",
+                "toolCallName": "calc",
+                "parentMessageId": "m1"
+            }),
+            raw_type: "TOOL_CALL_START".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_end".to_string(),
+            data: json!({"toolCallId": "tc1"}),
+            raw_type: "TOOL_CALL_END".to_string(),
+        });
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_result".to_string(),
+            data: json!({"messageId": "m1", "toolCallId": "tc1", "content": "42"}),
+            raw_type: "TOOL_CALL_RESULT".to_string(),
+        });
+
+        let result = acc.accumulated_response();
+        let messages = result["messages"].as_array().unwrap();
+        let tool_calls = messages[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["name"], "calc");
+        assert_eq!(tool_calls[0]["result"], "42");
+    }
+
+    /// `text_message_chunk` events accumulate content across multiple chunks.
+    #[test]
+    fn text_message_chunk_accumulates_content() {
+        let mut acc = MessageAccumulator::new();
+
+        // First chunk with delta creates message and appends content
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_chunk".to_string(),
+            data: json!({"messageId": "m1", "role": "assistant", "delta": "Hello "}),
+            raw_type: "TEXT_MESSAGE_CHUNK".to_string(),
+        });
+        // Second chunk appends more content
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_chunk".to_string(),
+            data: json!({"messageId": "m1", "delta": "world"}),
+            raw_type: "TEXT_MESSAGE_CHUNK".to_string(),
+        });
+        // Final chunk without delta marks complete
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_chunk".to_string(),
+            data: json!({"messageId": "m1"}),
+            raw_type: "TEXT_MESSAGE_CHUNK".to_string(),
+        });
+
+        let msg = acc.messages.get("m1").expect("message should exist");
+        assert_eq!(msg.content, "Hello world");
+        assert_eq!(msg.role, "assistant");
+        assert!(msg.complete);
+    }
+
+    /// `tool_call_chunk` events accumulate arguments across multiple chunks.
+    #[test]
+    fn tool_call_chunk_accumulates_arguments() {
+        let mut acc = MessageAccumulator::new();
+
+        // Set up parent message first
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_start".to_string(),
+            data: json!({"messageId": "m1", "role": "assistant"}),
+            raw_type: "TEXT_MESSAGE_START".to_string(),
+        });
+
+        // First chunk creates tool call with name and partial args
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_chunk".to_string(),
+            data: json!({
+                "toolCallId": "tc1",
+                "toolCallName": "calculator",
+                "parentMessageId": "m1",
+                "delta": "{\"expr\":"
+            }),
+            raw_type: "TOOL_CALL_CHUNK".to_string(),
+        });
+        // Second chunk appends more args
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_chunk".to_string(),
+            data: json!({"toolCallId": "tc1", "delta": "\"2+2\"}"}),
+            raw_type: "TOOL_CALL_CHUNK".to_string(),
+        });
+        // Final chunk without delta marks complete
+        acc.process_event(&AgUiEvent {
+            event_type: "tool_call_chunk".to_string(),
+            data: json!({"toolCallId": "tc1"}),
+            raw_type: "TOOL_CALL_CHUNK".to_string(),
+        });
+
+        let tc = acc.tool_calls.get("tc1").expect("tool call should exist");
+        assert_eq!(tc.tool_call_name, "calculator");
+        assert_eq!(tc.arguments, "{\"expr\":\"2+2\"}");
+        assert!(tc.complete);
+
+        // Verify parent message linkage
+        let msg = acc.messages.get("m1").unwrap();
+        assert!(msg.tool_calls.contains(&"tc1".to_string()));
+    }
+
+    /// `text_message_chunk` single-event convenience (all content in one chunk).
+    #[test]
+    fn text_message_chunk_single_shot() {
+        let mut acc = MessageAccumulator::new();
+
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_chunk".to_string(),
+            data: json!({"messageId": "m1", "role": "user", "delta": "Complete message"}),
+            raw_type: "TEXT_MESSAGE_CHUNK".to_string(),
+        });
+        // End marker
+        acc.process_event(&AgUiEvent {
+            event_type: "text_message_chunk".to_string(),
+            data: json!({"messageId": "m1"}),
+            raw_type: "TEXT_MESSAGE_CHUNK".to_string(),
+        });
+
+        let result = acc.accumulated_response();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["content"], "Complete message");
+        assert_eq!(messages[0]["role"], "user");
     }
 }
