@@ -47,7 +47,6 @@ const TASK_NOT_CANCELABLE: i64 = -32001;
 const PUSH_NOT_SUPPORTED: i64 = -32002;
 
 /// A2A error code: Unsupported operation.
-#[allow(dead_code)]
 const UNSUPPORTED_OPERATION: i64 = -32003;
 
 /// JSON-RPC error code: Parse error.
@@ -58,6 +57,9 @@ const INVALID_REQUEST: i64 = -32600;
 
 /// JSON-RPC error code: Method not found.
 const METHOD_NOT_FOUND: i64 = -32601;
+
+/// JSON-RPC error code: Invalid params.
+const INVALID_PARAMS: i64 = -32602;
 
 /// Terminal task states per A2A protocol.
 const TERMINAL_STATES: &[&str] = &["completed", "canceled", "failed", "rejected"];
@@ -185,9 +187,6 @@ struct A2aSharedState {
     extractors: RwLock<Option<watch::Receiver<HashMap<String, String>>>>,
     /// Current phase effective state.
     state: RwLock<Value>,
-    /// Cancellation token for cooperative shutdown.
-    #[allow(dead_code)]
-    cancel: CancellationToken,
     /// Bypass synthesize output validation.
     raw_synthesize: bool,
 }
@@ -302,6 +301,17 @@ async fn handle_message_send(
     request_id: &Value,
     params: &Value,
 ) -> Response {
+    // Validate required params.message field
+    if params.get("message").is_none() || params["message"].is_null() {
+        let error = jsonrpc_error(
+            request_id,
+            INVALID_PARAMS,
+            "Invalid params: missing required 'message' field",
+        );
+        emit_outgoing(shared, "message/send", error.get("error").unwrap_or(&Value::Null)).await;
+        return axum::Json(error).into_response();
+    }
+
     let (result, method) = dispatch_task_response(shared, request_id, params).await;
     emit_outgoing(
         shared,
@@ -315,11 +325,23 @@ async fn handle_message_send(
 /// Handle `message/stream` — SSE streaming task response.
 ///
 /// Implements: TJ-SPEC-017 F-004
+#[allow(clippy::too_many_lines)]
 async fn handle_message_stream(
     shared: &Arc<A2aSharedState>,
     request_id: &Value,
     params: &Value,
 ) -> Response {
+    // Validate required params.message field
+    if params.get("message").is_none() || params["message"].is_null() {
+        let error = jsonrpc_error(
+            request_id,
+            INVALID_PARAMS,
+            "Invalid params: missing required 'message' field",
+        );
+        emit_outgoing(shared, "message/stream", error.get("error").unwrap_or(&Value::Null)).await;
+        return axum::Json(error).into_response();
+    }
+
     let state = shared.state.read().await.clone();
     let request_message = params.get("message").cloned().unwrap_or(Value::Null);
 
@@ -527,7 +549,10 @@ async fn handle_tasks_cancel(
     axum::Json(result).into_response()
 }
 
-/// Handle `tasks/resubscribe` — acknowledge but return current task state.
+/// Handle `tasks/resubscribe` — resubscribe to task updates.
+///
+/// Returns error if the task is not found or already in a terminal state
+/// (completed, canceled, failed, rejected).
 ///
 /// Implements: TJ-SPEC-017 F-005
 async fn handle_tasks_resubscribe(
@@ -548,6 +573,16 @@ async fn handle_tasks_resubscribe(
                 )
             },
             |task| {
+                if is_terminal(&task.status) {
+                    return jsonrpc_error(
+                        request_id,
+                        UNSUPPORTED_OPERATION,
+                        &format!(
+                            "Cannot resubscribe to task in terminal state: '{}'",
+                            task.status
+                        ),
+                    );
+                }
                 let task_result = json!({
                     "kind": "task",
                     "id": task.id,
@@ -893,6 +928,12 @@ pub struct A2aServerDriver {
     server_handle: Option<JoinHandle<()>>,
     /// Actual bound address (resolved after bind).
     bound_addr: Option<SocketAddr>,
+    /// Cancel token for the HTTP server's lifetime (not per-phase).
+    ///
+    /// This is separate from the per-phase cancel token passed to
+    /// `drive_phase()`. The HTTP server must persist across phase
+    /// transitions and only shut down when the driver is dropped.
+    server_cancel: CancellationToken,
 }
 
 #[async_trait]
@@ -906,7 +947,9 @@ impl PhaseDriver for A2aServerDriver {
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         // Update shared state with current phase
-        let agent_card = state.get("agent_card").cloned().unwrap_or(json!({}));
+        let agent_card_raw = state.get("agent_card").cloned().unwrap_or(json!({}));
+        let current_extractors = extractors.borrow().clone();
+        let (agent_card, _) = interpolate_value(&agent_card_raw, &current_extractors, None, None);
         *self.shared.agent_card.write().await = agent_card;
         *self.shared.state.write().await = state.clone();
         *self.shared.event_tx.write().await = Some(event_tx);
@@ -926,7 +969,7 @@ impl PhaseDriver for A2aServerDriver {
             tracing::info!(%addr, "A2A server listening");
 
             let router = build_router(Arc::clone(&self.shared));
-            let server_cancel = cancel.clone();
+            let server_cancel = self.server_cancel.clone();
 
             self.server_handle = Some(tokio::spawn(async move {
                 axum::serve(
@@ -961,15 +1004,12 @@ impl PhaseDriver for A2aServerDriver {
 /// Implements: TJ-SPEC-017 F-001
 #[must_use]
 pub fn create_a2a_server_driver(bind_addr: &str, raw_synthesize: bool) -> A2aServerDriver {
-    let cancel = CancellationToken::new();
-
     let shared = Arc::new(A2aSharedState {
         agent_card: RwLock::new(json!({})),
         task_store: RwLock::new(TaskStore::new()),
         event_tx: RwLock::new(None),
         extractors: RwLock::new(None),
         state: RwLock::new(json!({})),
-        cancel,
         raw_synthesize,
     });
 
@@ -979,6 +1019,13 @@ pub fn create_a2a_server_driver(bind_addr: &str, raw_synthesize: bool) -> A2aSer
         shared,
         server_handle: None,
         bound_addr: None,
+        server_cancel: CancellationToken::new(),
+    }
+}
+
+impl Drop for A2aServerDriver {
+    fn drop(&mut self) {
+        self.server_cancel.cancel();
     }
 }
 
@@ -1246,7 +1293,6 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
-            cancel: CancellationToken::new(),
             raw_synthesize: false,
         });
 
@@ -1279,7 +1325,6 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
-            cancel: CancellationToken::new(),
             raw_synthesize: false,
         });
 
@@ -1319,7 +1364,6 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
-            cancel: CancellationToken::new(),
             raw_synthesize: false,
         });
 
@@ -1352,7 +1396,6 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
-            cancel: CancellationToken::new(),
             raw_synthesize: false,
         });
 
@@ -1396,7 +1439,6 @@ mod tests {
                     }
                 ]
             })),
-            cancel: CancellationToken::new(),
             raw_synthesize: false,
         });
 
@@ -1448,7 +1490,6 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
-            cancel: CancellationToken::new(),
             raw_synthesize: false,
         });
 
@@ -1475,6 +1516,131 @@ mod tests {
         let resp: Value = serde_json::from_slice(&resp_body).unwrap();
 
         assert_eq!(resp["error"]["code"], PUSH_NOT_SUPPORTED);
+    }
+
+    #[tokio::test]
+    async fn message_send_missing_message_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "message/send",
+            "params": {}
+        });
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn message_stream_missing_message_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "message/stream",
+            "params": {}
+        });
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn resubscribe_terminal_task_returns_unsupported() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let task_store = {
+            let mut store = TaskStore::new();
+            let (task_id, _) = store.create_task(None);
+            store.get_task_mut(&task_id).unwrap().status = "completed".to_string();
+            (store, task_id)
+        };
+        let (store, task_id) = task_store;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(store),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            raw_synthesize: false,
+        });
+
+        let router = build_router(shared);
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/resubscribe",
+            "params": { "id": task_id }
+        });
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], UNSUPPORTED_OPERATION);
     }
 
     #[test]

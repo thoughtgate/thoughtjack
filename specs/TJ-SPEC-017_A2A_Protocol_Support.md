@@ -216,91 +216,80 @@ interface SendMessageConfiguration {
 ThoughtJack serves an HTTP endpoint implementing the A2A protocol:
 
 ```rust
-struct A2aServerTransport {
-    listener: TcpListener,
-    bind_address: SocketAddr,
-    task_state: Arc<RwLock<TaskStore>>,
+/// Shared state between the axum handlers and the driver.
+/// Updated by drive_phase() at the start of each phase; read by
+/// axum handlers concurrently on each request.
+struct A2aSharedState {
+    agent_card: RwLock<Value>,
+    task_store: RwLock<TaskStore>,
+    event_tx: RwLock<Option<mpsc::UnboundedSender<ProtocolEvent>>>,
+    extractors: RwLock<Option<watch::Receiver<HashMap<String, String>>>>,
+    state: RwLock<Value>,
+    raw_synthesize: bool,
 }
 ```
 
-**PhaseDriver model:** The A2A server implements the `PhaseDriver` trait (TJ-SPEC-013 §8.4). The driver's `drive_phase()` runs the HTTP accept loop, dispatches responses using the state snapshot and fresh extractors (from the `watch::Receiver`) provided by the `PhaseLoop`, and emits `ProtocolEvent`s on the event channel. The `PhaseLoop` runs concurrently — receiving events, appending to trace, running extractors, publishing updated extractor maps, and checking triggers. When a trigger fires, the `PhaseLoop` cancels the driver via the `CancellationToken`, advancing the phase.
+**PhaseDriver model:** The A2A server implements the `PhaseDriver` trait (TJ-SPEC-013 §8.4). The driver uses an axum HTTP server with shared state (`Arc<A2aSharedState>`). On the first `drive_phase()` call, the server binds a `TcpListener` and spawns the axum server as an async task. Subsequent `drive_phase()` calls update the shared state (agent card, extractors, event channel) but reuse the existing server. The HTTP server persists across phase transitions via a driver-owned `server_cancel: CancellationToken` (separate from the per-phase cancel token). The server is shut down only when the driver is dropped.
 
 ```rust
 struct A2aServerDriver {
-    transport: A2aServerTransport,
-    generation_provider: Option<GenerationProvider>,
+    bind_addr: String,
+    shared: Arc<A2aSharedState>,
+    server_handle: Option<JoinHandle<()>>,
+    bound_addr: Option<SocketAddr>,
+    /// Cancel token for the HTTP server's lifetime (not per-phase).
+    /// Separate from the per-phase cancel token passed to drive_phase().
+    /// The HTTP server must persist across phase transitions.
+    server_cancel: CancellationToken,
 }
 
 #[async_trait]
 impl PhaseDriver for A2aServerDriver {
     async fn drive_phase(
         &mut self,
-        phase_index: usize,
+        _phase_index: usize,
         state: &serde_json::Value,
         extractors: watch::Receiver<HashMap<String, String>>,
         event_tx: mpsc::UnboundedSender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, Error> {
-        // A2A server listens — events arrive asynchronously from HTTP clients
-        loop {
-            tokio::select! {
-                conn = self.transport.listener.accept() => {
-                    let (stream, _addr) = conn?;
-                    let request = parse_http_request(stream).await?;
+        // Interpolate and update agent card with current extractors
+        let agent_card_raw = state.get("agent_card").cloned().unwrap_or(json!({}));
+        let current_extractors = extractors.borrow().clone();
+        let (agent_card, _) = interpolate_value(&agent_card_raw, &current_extractors, None, None);
+        *self.shared.agent_card.write().await = agent_card;
+        *self.shared.state.write().await = state.clone();
+        *self.shared.event_tx.write().await = Some(event_tx);
+        *self.shared.extractors.write().await = Some(extractors);
 
-                    match request {
-                        A2aRequest::AgentCard => {
-                            let response = self.handle_agent_card(state);
-
-                            let _ = event_tx.send(ProtocolEvent {
-                                direction: Direction::Incoming,
-                                method: "agent_card/get".to_string(),
-                                content: json!({}),
-                            });
-                            let _ = event_tx.send(ProtocolEvent {
-                                direction: Direction::Outgoing,
-                                method: "agent_card/get".to_string(),
-                                content: serde_json::to_value(&response)?,
-                            });
-
-                            send_http_response(stream, response).await?;
-                        }
-                        A2aRequest::JsonRpc { method, params, .. } => {
-                            // Emit incoming event
-                            let _ = event_tx.send(ProtocolEvent {
-                                direction: Direction::Incoming,
-                                method: method.clone(),
-                                content: params.clone(),
-                            });
-
-                            // Get fresh extractors for this request
-                            let current_extractors = extractors.borrow().clone();
-
-                            // Dispatch response using phase state
-                            let response = self.dispatch_task_response(
-                                &method, &params, state, &current_extractors,
-                            )?;
-
-                            // Emit outgoing event
-                            let _ = event_tx.send(ProtocolEvent {
-                                direction: Direction::Outgoing,
-                                method: method.clone(),
-                                content: response.result.clone(),
-                            });
-
-                            send_jsonrpc_response(stream, response).await?;
-                        }
-                    }
-                }
-                _ = cancel.cancelled() => return Ok(DriveResult::Complete),
-            }
+        // Start server on first call only
+        if self.server_handle.is_none() {
+            let listener = TcpListener::bind(&self.bind_addr).await?;
+            self.bound_addr = Some(listener.local_addr()?);
+            let router = build_router(Arc::clone(&self.shared));
+            let server_cancel = self.server_cancel.clone();
+            self.server_handle = Some(tokio::spawn(async move {
+                axum::serve(listener, router.into_make_service())
+                    .with_graceful_shutdown(server_cancel.cancelled_owned())
+                    .await
+                    .ok();
+            }));
         }
+
+        // Server-mode: wait for per-phase cancellation
+        cancel.cancelled().await;
+        Ok(DriveResult::Complete)
     }
 
     async fn on_phase_advanced(&mut self, _from: usize, _to: usize) -> Result<(), Error> {
-        // Phase advanced — the next call to drive_phase() will receive
-        // updated state with the new Agent Card and task responses.
+        // Agent card and state are updated at the start of the next drive_phase() call.
         Ok(())
+    }
+}
+
+impl Drop for A2aServerDriver {
+    fn drop(&mut self) {
+        self.server_cancel.cancel();
     }
 }
 ```
@@ -645,8 +634,10 @@ ThoughtJack implements an HTTP client for A2A communication:
 
 ```rust
 struct A2aClientTransport {
-    agent_url: Url,             // Target agent's base URL
-    client: reqwest::Client,    // HTTP client
+    agent_url: String,              // Target agent's base URL
+    client: reqwest::Client,        // HTTP client
+    headers: Vec<(String, String)>, // Custom headers for all requests
+    context_id: Option<String>,     // Persisted context ID across phases (EC-A2A-016)
 }
 
 impl A2aClientTransport {
@@ -734,8 +725,11 @@ impl PhaseDriver for A2aClientDriver {
         }
 
         // Build message from state.task_message (clone-once — client driver sends a single message)
+        // Includes contextId from previous phases, configuration, and metadata from state
         let current_extractors = extractors.borrow().clone();
-        let message = build_task_message(state, &current_extractors)?;
+        let message = build_task_message(
+            state, &current_extractors, self.transport.context_id.as_deref(), use_streaming,
+        )?;
 
         // Determine method: message/send or message/stream
         let use_streaming = state.get("streaming")
@@ -766,11 +760,19 @@ impl A2aClientDriver {
         // Send
         let response = self.transport.message_send(&message).await?;
 
+        // Detect event type via `kind` discriminator
+        let result = response["result"].clone();
+        let event_type = match result.get("kind").and_then(|k| k.as_str()) {
+            Some("task") => "task/created",
+            Some("message") => "message/response",
+            _ => "unknown",
+        };
+
         // Emit incoming — PhaseLoop handles trace, extractors, triggers
         let _ = event_tx.send(ProtocolEvent {
             direction: Direction::Incoming,
-            method: "message/send".to_string(),
-            content: response["result"].clone(),
+            method: event_type.to_string(),
+            content: result,
         });
 
         Ok(DriveResult::Complete)
@@ -865,6 +867,11 @@ state:
     messageId: "msg-1"            # Optional, auto-generated if absent
   streaming: false                 # Use message/send (false) or message/stream (true)
   fetch_agent_card: true           # Fetch Agent Card before sending task (first phase only)
+  configuration:                   # Optional: SendMessageConfiguration (A2A §MessageSendParams)
+    acceptedOutputModes: ["text/plain"]
+    historyLength: 0
+  metadata:                        # Optional: arbitrary key-value pairs passed through to agent
+    source: "thoughtjack"
 ```
 
 **Template interpolation:** All string fields support `{{extractor}}` references:
@@ -885,7 +892,8 @@ Per OATF §7.2.2, `a2a_client` actors observe these events:
 
 | Event | Fires When | Typical Trigger Use |
 |-------|-----------|-------------------|
-| `message/send` | Server responds to synchronous task (Task or Message) | Advance after receiving result |
+| `task/created` | Server responds synchronously with Task (kind: "task") | Advance after receiving task result |
+| `message/response` | Server responds synchronously with Message (kind: "message") | Advance after receiving direct message |
 | `message/stream` | Server opens SSE connection | Detect streaming started |
 | `task/created` | Server streams initial Task object (SSE) | Capture task ID / context ID |
 | `task/status` | Server streams TaskStatusUpdateEvent (SSE) | Advance on specific status |
@@ -1186,9 +1194,8 @@ And A2A-specific errors per the protocol specification:
 | Task ID does not exist | -32000 | Task not found |
 | Task cannot be cancelled (terminal state) | -32001 | Task not cancelable |
 | Push notifications not supported | -32002 | Push notification not supported |
-| Unsupported operation (e.g., streaming disabled) | -32003 | Unsupported operation |
-| Content type not supported | -32005 | Content type not supported |
-| Message sent to task in terminal state | -32003 | Unsupported operation |
+| Unsupported operation (e.g., `tasks/resubscribe` on terminal task) | -32003 | Unsupported operation |
+| Content type not supported | -32005 | Content type not supported (defined but not enforced — non-JSON fails as -32700) |
 
 For adversarial testing purposes, ThoughtJack may intentionally return non-standard errors to test agent error handling. This is controlled by behavioral modifiers (when A2A behavioral modifiers are defined in future OATF versions) or by the response entry content.
 
@@ -1304,7 +1311,7 @@ ThoughtJack as `a2a_client` sends tasks that cause the target agent to use a poi
 ### EC-A2A-004: Concurrent `message/send` Requests
 
 **Scenario:** Two agents send `message/send` simultaneously to the A2A server.
-**Expected:** The PhaseDriver's accept loop handles them sequentially (single-threaded within `drive_phase`). Both requests get responses from the same phase state. Both emit ProtocolEvents consumed by PhaseLoop. If one triggers phase advancement, the second request may see the old state (it was already dispatched) — this is correct for a security testing tool.
+**Expected:** The axum HTTP server handles requests concurrently via async task pool. Both requests read the same phase state (consistency maintained via `RwLock` on `A2aSharedState`). Both emit ProtocolEvents consumed by PhaseLoop. If one triggers phase advancement, the second request may see the old state (it was already dispatched) — this is correct for a security testing tool.
 
 ### EC-A2A-005: `message/stream` — Client Disconnects Mid-SSE
 
@@ -1339,7 +1346,7 @@ ThoughtJack as `a2a_client` sends tasks that cause the target agent to use a poi
 ### EC-A2A-011: A2A Server — Push Notification Configuration
 
 **Scenario:** Client sends `tasks/pushNotificationConfig/set` to configure webhooks.
-**Expected:** Configuration stored in task state. ThoughtJack does NOT actually send push notifications (it's a simulation tool, not a real agent). Configuration acknowledged with success response. Captured in trace for indicator evaluation.
+**Expected:** ThoughtJack does NOT actually send push notifications (it's a simulation tool, not a real agent). Server returns A2A error code -32002 (`PushNotificationNotSupportedError`): "Push notification not supported". This is the protocol-correct response per the A2A spec for agents that do not support push notifications. Event captured in trace for indicator evaluation.
 
 ### EC-A2A-012: Cross-Protocol — A2A Client Task References MCP Extractor
 
@@ -1405,8 +1412,8 @@ The system SHALL construct and serve an A2A Agent Card from the OATF phase state
 - Agent Card constructed from `state.agent_card` (name, description, skills, url, version, provider, protocolVersions, defaultInputModes, defaultOutputModes, securitySchemes, security, capabilities)
 - Card served at `/.well-known/agent.json`
 - Card content may change per phase (via state inheritance)
-- Card template supports `{{extractor}}` interpolation
-- Required fields validated: `name`, `skills`, `defaultInputModes`, `defaultOutputModes`
+- Card template supports `{{extractor}}` interpolation (via `interpolate_value()` on the agent card JSON before serving)
+- Agent Card validation is intentionally omitted — serving incomplete or malformed cards is a valid attack scenario (e.g., testing how clients handle cards with no skills or missing required fields)
 
 ### F-003: Task Response Dispatch
 
@@ -1415,7 +1422,7 @@ The system SHALL dispatch task responses using `select_response()` and `interpol
 **Acceptance Criteria:**
 - `state.task_responses` entries matched via `select_response()` against incoming message
 - First-match-wins response selection
-- `synthesize` branch: prompt interpolated, delegated to `GenerationProvider`; output validated against A2A message structure before injection by default (OATF §7.4 step 3); `--raw-synthesize` bypasses validation
+- `synthesize` branch: prompt interpolated, delegated to `GenerationProvider`; output validated against A2A message structure before injection by default (OATF §7.4 step 3); `--raw-synthesize` bypasses validation. **Note:** `GenerationProvider` is not yet implemented across the engine (see TJ-SPEC-013); synthesize requests currently return `status: "failed"` until the provider is available
 - Static branch: `messages` and `artifacts` interpolated and returned
 - Task result includes `kind: "task"`, server-generated `id` and `contextId`, `status.state` from matching entry, `history` array (user message + agent response), and `artifacts`
 - Direct Message result (when `response_type: message`) includes `kind: "message"`, role, parts, messageId
@@ -1455,6 +1462,8 @@ The system SHALL implement an HTTP client for sending A2A messages to remote age
 - Response type detection via `kind` discriminator: `"task"` or `"message"` for synchronous; `"task"`, `"status-update"`, `"artifact-update"`, `"message"` for streaming
 - Response parsed and emitted as `ProtocolEvent` on event channel
 - `contextId` and `taskId` extracted from responses for multi-turn tracking
+- `message/send` retries on HTTP 429 with exponential backoff (1s initial, doubling, max 3 retries); `message/stream` does not retry
+- Per-event stream timeout of 60s prevents resource leaks when agents go silent without closing the stream
 
 ### F-007: A2A Client PhaseDriver Implementation
 
@@ -1473,7 +1482,7 @@ The system SHALL map A2A protocol events to OATF trigger event types per OATF §
 
 **Acceptance Criteria:**
 - Server mode: `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, `tasks/resubscribe`, `tasks/pushNotificationConfig/*`, `agent_card/get`, `agent/authenticatedExtendedCard` events
-- Client mode: `message/send`, `message/stream`, `agent_card/get`, `task/created` (initial Task), `task/status:*`, `task/artifact`, `message/response` events
+- Client mode: `task/created` (sync or SSE Task), `message/response` (sync or SSE Message), `message/stream` (stream opened), `agent_card/get`, `task/status:*`, `task/artifact` events
 - Qualifiers resolved from task status for `task/status:completed`, `task/status:failed`, `task/status:rejected`, `task/status:auth-required`, etc.
 - Client SSE event type detection uses `kind` discriminator (not heuristic field inspection)
 - All events from the OATF Event-Mode Validity Matrix for `a2a_server` and `a2a_client` supported
@@ -1527,19 +1536,21 @@ The system SHALL support A2A actors in multi-actor documents alongside MCP and A
 ### NFR-003: SSE Streaming Latency
 
 - First SSE event SHALL be sent within 100ms of request receipt
-- Inter-event delay for task status progression configurable (default: 500ms)
+- Inter-event delay for task status progression configurable (default: 200ms)
 
 ### NFR-004: Client Request Latency
 
 - `message/send` round-trip SHALL complete within configured timeout (default: 30s)
 - Agent Card fetch SHALL complete within 5s
+- `message/send` SHALL retry on HTTP 429 with exponential backoff (1s initial, doubling, max 3 retries); `message/stream` does not retry
+- Per-event stream timeout: 60s (agent silent for >60s causes stream close)
 
 ---
 
 ## 15. Definition of Done
 
 - [ ] A2A HTTP server binds and serves JSON-RPC + SSE
-- [ ] Agent Card served at `/.well-known/agent.json` from OATF state (with required fields: name, skills, defaultInputModes, defaultOutputModes, protocolVersions, securitySchemes)
+- [ ] Agent Card served at `/.well-known/agent.json` from OATF state (with `{{extractor}}` interpolation; no field validation — serving malformed cards is a valid attack scenario)
 - [ ] `select_response()` and `interpolate_template()` used for task response dispatch
 - [ ] Task responses include `kind: "task"`, server-generated `id` and `contextId`, `history` array, and `artifacts`
 - [ ] Direct Message responses supported when `response_type: message` configured

@@ -355,3 +355,298 @@ attack:
         "expected connection error, got: {result:?}"
     );
 }
+
+// ============================================================================
+// 5. Sync vs streaming mismatch — server returns SSE for message/send (EC-A2A-009)
+// ============================================================================
+
+#[tokio::test]
+async fn a2a_client_sync_receives_sse() {
+    // Mock returns SSE (text/event-stream) even though client sends message/send (sync)
+    let sse_body = format!(
+        "data: {}\n\n",
+        json!({
+            "kind": "status-update",
+            "taskId": "task-1",
+            "contextId": "ctx-1",
+            "status": {"state": "completed"},
+            "final": true
+        })
+    );
+
+    let agent_card = json!({
+        "name": "Mismatch Agent",
+        "url": "http://localhost",
+        "version": "1.0",
+        "capabilities": {},
+        "skills": [],
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"]
+    });
+
+    let router = Router::new()
+        .route(
+            "/.well-known/agent.json",
+            get(move || {
+                let card = agent_card.clone();
+                async move { axum::Json(card) }
+            }),
+        )
+        .route(
+            "/",
+            post(move || {
+                let body = sse_body.clone();
+                // Return SSE content-type for a sync request
+                async move { ([("content-type", "text/event-stream")], body) }
+            }),
+        );
+
+    let mock = MockServer::start(router).await;
+
+    let driver = create_a2a_client_driver(&mock.url(), vec![], false);
+    let doc = load_doc(
+        r#"
+oatf: "0.1"
+attack:
+  name: a2a_sync_mismatch
+  execution:
+    mode: a2a_client
+    state:
+      streaming: false
+      task_message:
+        role: user
+        parts:
+          - kind: text
+            text: "Hello"
+"#,
+    );
+
+    let engine = PhaseEngine::new(doc, 0);
+    let trace = SharedTrace::new();
+    let mut phase_loop = PhaseLoop::new(driver, engine, test_config(trace.clone()));
+
+    // The sync path calls response.json() on SSE content — should fail to parse
+    let result = phase_loop.run().await;
+    assert!(
+        result.is_err(),
+        "expected parse error from SSE-as-JSON, got: {result:?}"
+    );
+}
+
+// ============================================================================
+// 6. Direct Message response instead of Task (EC-A2A-013)
+// ============================================================================
+
+#[tokio::test]
+async fn a2a_client_direct_message_response() {
+    // Mock returns a Message (kind: "message") instead of a Task (kind: "task")
+    let task_response = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "kind": "message",
+            "role": "agent",
+            "messageId": "agent-msg-1",
+            "contextId": "ctx-1",
+            "parts": [{"kind": "text", "text": "Direct reply"}]
+        }
+    });
+
+    let router = mock_a2a_router(task_response);
+    let mock = MockServer::start(router).await;
+
+    let driver = create_a2a_client_driver(&mock.url(), vec![], false);
+    let doc = load_doc(
+        r#"
+oatf: "0.1"
+attack:
+  name: a2a_direct_message
+  execution:
+    mode: a2a_client
+    state:
+      task_message:
+        role: user
+        parts:
+          - kind: text
+            text: "Hello"
+"#,
+    );
+
+    let engine = PhaseEngine::new(doc, 0);
+    let trace = SharedTrace::new();
+    let mut phase_loop = PhaseLoop::new(driver, engine, test_config(trace.clone()));
+
+    let result = phase_loop.run().await.unwrap();
+    assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+
+    let entries = trace.snapshot();
+    // Trace should contain a "message/response" event (from detect_event_type)
+    let methods: Vec<&str> = entries.iter().map(|e| e.method.as_str()).collect();
+    assert!(
+        methods.contains(&"message/response"),
+        "expected message/response in trace, got: {methods:?}"
+    );
+}
+
+// ============================================================================
+// 7. auth-required status in SSE stream (EC-A2A-014)
+// ============================================================================
+
+#[tokio::test]
+async fn a2a_client_auth_required_status() {
+    // Mock returns SSE with auth-required status
+    let sse_body = [
+        format!(
+            "data: {}\n\n",
+            json!({
+                "kind": "status-update",
+                "taskId": "task-1",
+                "contextId": "ctx-1",
+                "status": {"state": "auth-required"},
+                "final": true
+            })
+        ),
+    ]
+    .join("");
+
+    let agent_card = json!({
+        "name": "Auth Agent",
+        "url": "http://localhost",
+        "version": "1.0",
+        "capabilities": {"streaming": true},
+        "skills": [],
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"]
+    });
+
+    let router = Router::new()
+        .route(
+            "/.well-known/agent.json",
+            get(move || {
+                let card = agent_card.clone();
+                async move { axum::Json(card) }
+            }),
+        )
+        .route(
+            "/",
+            post(move || {
+                let body = sse_body.clone();
+                async move { ([("content-type", "text/event-stream")], body) }
+            }),
+        );
+
+    let mock = MockServer::start(router).await;
+
+    let driver = create_a2a_client_driver(&mock.url(), vec![], false);
+    let doc = load_doc(
+        r#"
+oatf: "0.1"
+attack:
+  name: a2a_auth_required
+  execution:
+    mode: a2a_client
+    state:
+      streaming: true
+      task_message:
+        role: user
+        parts:
+          - kind: text
+            text: "Need auth"
+"#,
+    );
+
+    let engine = PhaseEngine::new(doc, 0);
+    let trace = SharedTrace::new();
+    let mut phase_loop = PhaseLoop::new(driver, engine, test_config(trace.clone()));
+
+    let result = phase_loop.run().await.unwrap();
+    assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+
+    // Trace should contain a qualified "task/status:auth-required" event
+    let entries = trace.snapshot();
+    let methods: Vec<&str> = entries.iter().map(|e| e.method.as_str()).collect();
+    assert!(
+        methods.contains(&"task/status:auth-required"),
+        "expected task/status:auth-required in trace, got: {methods:?}"
+    );
+}
+
+// ============================================================================
+// 8. rejected status in SSE stream (EC-A2A-015)
+// ============================================================================
+
+#[tokio::test]
+async fn a2a_client_rejected_status() {
+    // Mock returns SSE with rejected status
+    let sse_body = format!(
+        "data: {}\n\n",
+        json!({
+            "kind": "status-update",
+            "taskId": "task-1",
+            "contextId": "ctx-1",
+            "status": {"state": "rejected"},
+            "final": true
+        })
+    );
+
+    let agent_card = json!({
+        "name": "Reject Agent",
+        "url": "http://localhost",
+        "version": "1.0",
+        "capabilities": {"streaming": true},
+        "skills": [],
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"]
+    });
+
+    let router = Router::new()
+        .route(
+            "/.well-known/agent.json",
+            get(move || {
+                let card = agent_card.clone();
+                async move { axum::Json(card) }
+            }),
+        )
+        .route(
+            "/",
+            post(move || {
+                let body = sse_body.clone();
+                async move { ([("content-type", "text/event-stream")], body) }
+            }),
+        );
+
+    let mock = MockServer::start(router).await;
+
+    let driver = create_a2a_client_driver(&mock.url(), vec![], false);
+    let doc = load_doc(
+        r#"
+oatf: "0.1"
+attack:
+  name: a2a_rejected
+  execution:
+    mode: a2a_client
+    state:
+      streaming: true
+      task_message:
+        role: user
+        parts:
+          - kind: text
+            text: "Will be rejected"
+"#,
+    );
+
+    let engine = PhaseEngine::new(doc, 0);
+    let trace = SharedTrace::new();
+    let mut phase_loop = PhaseLoop::new(driver, engine, test_config(trace.clone()));
+
+    let result = phase_loop.run().await.unwrap();
+    assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+
+    // Trace should contain a qualified "task/status:rejected" event
+    let entries = trace.snapshot();
+    let methods: Vec<&str> = entries.iter().map(|e| e.method.as_str()).collect();
+    assert!(
+        methods.contains(&"task/status:rejected"),
+        "expected task/status:rejected in trace, got: {methods:?}"
+    );
+}
