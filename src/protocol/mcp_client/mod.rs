@@ -69,6 +69,8 @@ pub(super) enum McpClientMessage {
         result: Value,
         /// Whether this is an error response.
         is_error: bool,
+        /// Original request params (for qualifier resolution on response events).
+        request_params: Option<Value>,
     },
     /// Server-to-client notification.
     Notification {
@@ -90,16 +92,25 @@ pub(super) enum McpClientMessage {
 
 /// Tracks a pending outgoing request for response correlation.
 ///
-/// Implements: TJ-SPEC-018 F-002
+/// Stores both method and params so that qualifier resolution on
+/// response events can access the original request context
+/// (e.g., `tools/call:calculator` resolves from `params.name`).
+///
+/// Implements: TJ-SPEC-018 F-002, F-008
 #[derive(Debug)]
 pub(super) struct PendingRequest {
     /// Original request method.
     pub(super) method: String,
+    /// Original request params (for qualifier resolution on response events).
+    pub(super) params: Option<Value>,
 }
 
 /// Correlated response returned via oneshot channel.
 ///
-/// Implements: TJ-SPEC-018 F-002
+/// Includes the original request params so that qualifier resolution
+/// on response events can access the request context.
+///
+/// Implements: TJ-SPEC-018 F-002, F-008
 #[derive(Debug)]
 pub(super) struct CorrelatedResponse {
     /// Correlated request method.
@@ -108,6 +119,8 @@ pub(super) struct CorrelatedResponse {
     pub(super) result: Value,
     /// Whether this is an error response.
     pub(super) is_error: bool,
+    /// Original request params (for qualifier resolution).
+    pub(super) request_params: Option<Value>,
 }
 
 /// Notification routed by the multiplexer.

@@ -225,7 +225,9 @@ impl McpClientTransportReader for StdioReader {
 
 /// Classify a parsed `JsonRpcMessage` into `McpClientMessage`.
 ///
-/// Uses the pending request map for response correlation.
+/// Uses the pending request map for response correlation. Extracts
+/// the original request params so that qualifier resolution on
+/// response events can access the request context.
 pub(super) fn classify_message(
     msg: JsonRpcMessage,
     pending: &std::sync::Mutex<HashMap<String, PendingRequest>>,
@@ -233,11 +235,12 @@ pub(super) fn classify_message(
     match msg {
         JsonRpcMessage::Response(resp) => {
             let id_key = resp.id.to_string();
-            let method = pending
+            let pending_req = pending
                 .lock()
                 .expect("pending lock poisoned")
-                .remove(&id_key)
-                .map_or_else(|| "unknown".to_string(), |p| p.method);
+                .remove(&id_key);
+            let (method, request_params) =
+                pending_req.map_or_else(|| ("unknown".to_string(), None), |p| (p.method, p.params));
 
             let is_error = resp.error.is_some();
             let result = if let Some(err) = resp.error {
@@ -251,6 +254,7 @@ pub(super) fn classify_message(
                 method,
                 result,
                 is_error,
+                request_params,
             }
         }
         JsonRpcMessage::Request(req) => {
@@ -397,8 +401,18 @@ impl McpClientTransportWriter for HttpWriter {
     }
 }
 
+/// Maximum number of retries for HTTP connection errors.
+const HTTP_MAX_RETRIES: u32 = 3;
+
+/// Base delay for exponential backoff (doubled each retry).
+const HTTP_RETRY_BASE_MS: u64 = 250;
+
 impl HttpWriter {
     /// POST a JSON-RPC message to the endpoint and collect any response messages.
+    ///
+    /// Retries connection-level errors (refused, timeout) with exponential
+    /// backoff per TJ-SPEC-018 §10.1. HTTP error status codes and body
+    /// parsing errors are NOT retried.
     ///
     /// Parses the HTTP response body based on Content-Type:
     /// - `application/json` → single JSON-RPC message
@@ -409,25 +423,7 @@ impl HttpWriter {
         let body = serde_json::to_vec(msg)
             .map_err(|e| EngineError::Driver(format!("JSON serialization failed: {e}")))?;
 
-        let mut request = self
-            .client
-            .post(&self.endpoint)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream");
-
-        // Include session ID if captured
-        if let Some(ref sid) = *self.session_id.lock().await {
-            request = request.header("Mcp-Session-Id", sid.as_str());
-        }
-
-        // Include user-specified headers
-        for (key, value) in &self.headers {
-            request = request.header(key.as_str(), value.as_str());
-        }
-
-        let response = request.body(body).send().await.map_err(|e| {
-            EngineError::Driver(format!("HTTP POST to {} failed: {e}", self.endpoint))
-        })?;
+        let response = self.send_with_retry(&body).await?;
 
         // Capture session ID from response
         if let Some(sid) = response.headers().get("mcp-session-id")
@@ -464,6 +460,61 @@ impl HttpWriter {
         }
 
         Ok(())
+    }
+
+    /// Send an HTTP POST with retry on connection-level errors.
+    ///
+    /// Retries up to `HTTP_MAX_RETRIES` times with exponential backoff
+    /// for connection refused and timeout errors. Other errors (e.g.,
+    /// TLS, invalid URL) fail immediately.
+    async fn send_with_retry(&self, body: &[u8]) -> Result<reqwest::Response, EngineError> {
+        let mut last_err = None;
+        for attempt in 0..=HTTP_MAX_RETRIES {
+            let mut request = self
+                .client
+                .post(&self.endpoint)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream");
+
+            if let Some(ref sid) = *self.session_id.lock().await {
+                request = request.header("Mcp-Session-Id", sid.as_str());
+            }
+
+            for (key, value) in &self.headers {
+                request = request.header(key.as_str(), value.as_str());
+            }
+
+            match request.body(body.to_vec()).send().await {
+                Ok(resp) => return Ok(resp),
+                Err(e) if e.is_connect() || e.is_timeout() => {
+                    if attempt < HTTP_MAX_RETRIES {
+                        let delay_ms = HTTP_RETRY_BASE_MS * 2u64.pow(attempt);
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            max_retries = HTTP_MAX_RETRIES,
+                            delay_ms,
+                            error = %e,
+                            "HTTP connection failed, retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    return Err(EngineError::Driver(format!(
+                        "HTTP POST to {} failed: {e}",
+                        self.endpoint
+                    )));
+                }
+            }
+        }
+
+        Err(EngineError::Driver(format!(
+            "HTTP POST to {} failed after {} attempts: {}",
+            self.endpoint,
+            HTTP_MAX_RETRIES + 1,
+            last_err.expect("last_err set on retry exhaustion")
+        )))
     }
 
     /// Parse a single JSON response body as a `JsonRpcMessage` and push to channel.
@@ -759,6 +810,7 @@ mod tests {
             "1".to_string(),
             PendingRequest {
                 method: "tools/list".to_string(),
+                params: None,
             },
         );
 
@@ -788,29 +840,23 @@ mod tests {
         /// Generates a well-formed SSE frame with a JSON-RPC response as data.
         fn arb_sse_frame() -> impl Strategy<Value = Vec<u8>> {
             (1..=100_i64).prop_map(|id| {
-                format!(
-                    "data: {{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{}}}}\n\n"
-                )
-                .into_bytes()
+                format!("data: {{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{}}}}\n\n")
+                    .into_bytes()
             })
         }
 
         /// Generates a valid SSE stream with split points.
-        fn arb_sse_stream_with_splits(
-        ) -> impl Strategy<Value = (Vec<u8>, Vec<usize>)> {
-            prop::collection::vec(arb_sse_frame(), 1..6)
-                .prop_flat_map(|frames| {
-                    let stream: Vec<u8> =
-                        frames.into_iter().flatten().collect();
-                    let len = stream.len();
-                    let splits = prop::collection::vec(0..len, 1..8)
-                        .prop_map(|mut pts| {
-                            pts.sort_unstable();
-                            pts.dedup();
-                            pts
-                        });
-                    (Just(stream), splits)
-                })
+        fn arb_sse_stream_with_splits() -> impl Strategy<Value = (Vec<u8>, Vec<usize>)> {
+            prop::collection::vec(arb_sse_frame(), 1..6).prop_flat_map(|frames| {
+                let stream: Vec<u8> = frames.into_iter().flatten().collect();
+                let len = stream.len();
+                let splits = prop::collection::vec(0..len, 1..8).prop_map(|mut pts| {
+                    pts.sort_unstable();
+                    pts.dedup();
+                    pts
+                });
+                (Just(stream), splits)
+            })
         }
 
         proptest! {

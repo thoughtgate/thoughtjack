@@ -926,16 +926,10 @@ mod tests {
             leaf.prop_recursive(3, 32, 8, |inner| {
                 prop_oneof![
                     // Array of values
-                    prop::collection::vec(inner.clone(), 0..5)
-                        .prop_map(Value::Array),
+                    prop::collection::vec(inner.clone(), 0..5).prop_map(Value::Array),
                     // Object with string keys
-                    prop::collection::vec(
-                        ("[a-zA-Z_][a-zA-Z0-9_]{0,15}", inner),
-                        0..5,
-                    )
-                    .prop_map(|entries| {
-                        Value::Object(entries.into_iter().collect())
-                    }),
+                    prop::collection::vec(("[a-zA-Z_][a-zA-Z0-9_]{0,15}", inner), 0..5,)
+                        .prop_map(|entries| { Value::Object(entries.into_iter().collect()) }),
                 ]
             })
         }
@@ -953,15 +947,9 @@ mod tests {
 
             leaf.prop_recursive(3, 32, 8, |inner| {
                 prop_oneof![
-                    prop::collection::vec(inner.clone(), 0..5)
-                        .prop_map(Value::Array),
-                    prop::collection::vec(
-                        ("[a-zA-Z_][a-zA-Z0-9_]{0,15}", inner),
-                        0..5,
-                    )
-                    .prop_map(|entries| {
-                        Value::Object(entries.into_iter().collect())
-                    }),
+                    prop::collection::vec(inner.clone(), 0..5).prop_map(Value::Array),
+                    prop::collection::vec(("[a-zA-Z_][a-zA-Z0-9_]{0,15}", inner), 0..5,)
+                        .prop_map(|entries| { Value::Object(entries.into_iter().collect()) }),
                 ]
             })
         }
@@ -977,16 +965,19 @@ mod tests {
 
             prop_oneof![
                 // Request (params uses non-null to ensure round-trip fidelity)
-                (arb_method, prop::option::of(arb_non_null_json_value()), arb_id.clone()).prop_map(
-                    |(method, params, id)| {
+                (
+                    arb_method,
+                    prop::option::of(arb_non_null_json_value()),
+                    arb_id.clone()
+                )
+                    .prop_map(|(method, params, id)| {
                         JsonRpcMessage::Request(JsonRpcRequest {
                             jsonrpc: JSONRPC_VERSION.to_string(),
                             method,
                             params,
                             id,
                         })
-                    }
-                ),
+                    }),
                 // Success Response
                 (arb_json_value(), arb_id.clone()).prop_map(|(result, id)| {
                     JsonRpcMessage::Response(JsonRpcResponse::success(id, result))

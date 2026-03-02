@@ -96,42 +96,48 @@ MCP supports two transports. ThoughtJack's client mode implements both:
 **stdio**: ThoughtJack spawns the target agent process and communicates over stdin/stdout.
 
 ```rust
-struct McpClientStdioTransport {
-    child: Child,          // Spawned agent process
-    stdin: ChildStdin,     // ThoughtJack writes requests here
-    stdout: BufReader<ChildStdout>,  // ThoughtJack reads responses here
-    pending: HashMap<Value, PendingRequest>,  // id → (method, sent_at)
+// Split transport halves for stdio — reader exclusively owned by multiplexer,
+// writer shared via Arc<Mutex>
+struct StdioReader {
+    stdout: BufReader<ChildStdout>,
 }
 
-impl McpClientStdioTransport {
-    async fn spawn(command: &str, args: &[String]) -> Result<Self, TransportError> {
-        let child = Command::new(command)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        // ...
-    }
+struct StdioWriter {
+    stdin: ChildStdin,
+}
+
+fn spawn_stdio_transport(command: &str, args: &[String])
+    -> Result<(StdioReader, StdioWriter, Child), EngineError>
+{
+    let mut child = Command::new(command)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())  // Captured for diagnostics on exit
+        .spawn()?;
+    // Take stdin/stdout from child, return (reader, writer, child)
 }
 ```
 
 **Streamable HTTP**: ThoughtJack connects to the agent's HTTP endpoint.
 
 ```rust
-struct McpClientHttpTransport {
-    endpoint: Url,
+// HTTP transport uses an internal channel: writer POSTs requests and pushes
+// parsed responses into the channel; reader pops from the channel.
+struct HttpWriter {
     client: reqwest::Client,
-    session_id: Option<String>,
-    pending: HashMap<Value, PendingRequest>,
+    endpoint: String,
+    session_id: Arc<Mutex<Option<String>>>,
+    headers: Vec<(String, String)>,
+    message_tx: mpsc::UnboundedSender<JsonRpcMessage>,
 }
 
-impl McpClientHttpTransport {
-    async fn connect(endpoint: Url) -> Result<Self, TransportError> {
-        // Initial POST to establish session
-        // Server may return Mcp-Session-Id header
-    }
+struct HttpReader {
+    message_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
 }
+
+fn create_http_transport(endpoint: &str, headers: &[(String, String)])
+    -> Result<(HttpReader, HttpWriter), EngineError>;
 ```
 
 Both transports implement a split transport model. The reader is owned exclusively by the multiplexer (no lock contention on reads), and the writer is shared via `Arc<Mutex>` (brief lock hold during writes only):
@@ -154,6 +160,14 @@ trait McpClientTransportWriter: Send {
         result: Value,
     ) -> Result<(), TransportError>;
 
+    /// Send a JSON-RPC error response
+    async fn send_error_response(
+        &mut self,
+        id: &Value,
+        code: i64,
+        message: &str,
+    ) -> Result<(), TransportError>;
+
     /// Send a JSON-RPC notification (no id, no response expected)
     async fn send_notification(
         &mut self,
@@ -167,8 +181,11 @@ trait McpClientTransportWriter: Send {
 
 #[async_trait]
 trait McpClientTransportReader: Send {
-    /// Read next incoming message (response, notification, or server request)
-    async fn recv(&mut self) -> Result<Option<McpClientMessage>, TransportError>;
+    /// Read next incoming message, classifying responses via the pending map
+    async fn recv(
+        &mut self,
+        pending: &Mutex<HashMap<String, PendingRequest>>,
+    ) -> Result<Option<McpClientMessage>, TransportError>;
 }
 
 /// Concrete transports implement this to produce the split halves.
@@ -289,6 +306,7 @@ struct CorrelatedResponse {
     method: String,
     result: Value,
     is_error: bool,
+    request_params: Option<Value>,  // Original request params for qualifier resolution
 }
 
 impl MessageMultiplexer {
@@ -310,18 +328,14 @@ impl MessageMultiplexer {
             loop {
                 tokio::select! {
                     // reader is owned — no mutex, no contention with writers
-                    msg = reader.recv() => {
+                    // reader.recv() classifies raw JSON-RPC via the pending map,
+                    // extracting method + request_params for response correlation
+                    msg = reader.recv(&pending) => {
                         match msg {
-                            Ok(Some(McpClientMessage::Response { id, result, is_error, .. })) => {
-                                // Correlate with original request method
-                                let method = pending.lock().unwrap()
-                                    .remove(&id)
-                                    .map(|p| p.method)
-                                    .unwrap_or_else(|| "unknown".to_string());
-
+                            Ok(Some(McpClientMessage::Response { id, method, result, is_error, request_params })) => {
                                 // Route to waiting sender
                                 if let Some(tx) = senders.lock().unwrap().remove(&id) {
-                                    let _ = tx.send(CorrelatedResponse { method, result, is_error });
+                                    let _ = tx.send(CorrelatedResponse { method, result, is_error, request_params });
                                 }
                             }
                             Ok(Some(McpClientMessage::Notification { method, params })) => {
@@ -381,52 +395,61 @@ async fn server_request_handler(
     handler_state: Arc<tokio::sync::RwLock<HandlerState>>,
     extractors_rx: watch::Receiver<HashMap<String, String>>,
     handler_event_tx: mpsc::UnboundedSender<ProtocolEvent>,
-    generation_provider: Option<GenerationProvider>,
+    raw_synthesize: bool,
     cancel: CancellationToken,
 ) {
     loop {
         tokio::select! {
+            biased;
+            () = cancel.cancelled() => break,
             msg = server_request_rx.recv() => {
-                match msg {
-                    Some(req) => {
-                        let content = req.params.clone().unwrap_or(Value::Null);
+                let Some(req) = msg else { break };
 
-                        // Emit incoming event — PhaseLoop handles trace append,
-                        // extractor capture, and trigger evaluation
-                        let _ = handler_event_tx.send(ProtocolEvent {
-                            direction: Direction::Incoming,
-                            method: req.method.clone(),
-                            content: content.clone(),
-                        });
+                let content = req.params.clone().unwrap_or(Value::Null);
 
-                        // Build response from current phase state + fresh extractors
-                        let hs = handler_state.read().await;
-                        let current_extractors = extractors_rx.borrow().clone();
-                        let result = match req.method.as_str() {
-                            "sampling/createMessage" => {
-                                handle_sampling(&hs.state, &current_extractors, &generation_provider, &content)
-                            }
-                            "elicitation/create" => handle_elicitation(&hs.state, &current_extractors, &content),
-                            "roots/list" => handle_roots_list(&hs.state),
-                            "ping" => Ok(json!({})),
-                            _ => Ok(json!({})),
-                        };
-                        drop(hs);
+                // Emit incoming event — PhaseLoop handles trace append,
+                // extractor capture, and trigger evaluation
+                let _ = handler_event_tx.send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: req.method.clone(),
+                    content: content.clone(),
+                });
 
-                        if let Ok(result) = result {
-                            // Emit outgoing response event
-                            let _ = handler_event_tx.send(ProtocolEvent {
-                                direction: Direction::Outgoing,
-                                method: req.method.clone(),
-                                content: result.clone(),
-                            });
-                            let _ = writer.lock().await.send_response(&req.id, result).await;
-                        }
+                // Build response from current phase state + fresh extractors
+                let hs = handler_state.read().await;
+                let current_extractors = extractors_rx.borrow().clone();
+                let result = match req.method.as_str() {
+                    "sampling/createMessage" => {
+                        handle_sampling(&hs.state, &current_extractors, &content, raw_synthesize)
                     }
-                    None => break,
+                    "elicitation/create" => Ok(handle_elicitation(&hs.state, &current_extractors, &content)),
+                    "roots/list" => Ok(handle_roots_list(&hs.state)),
+                    "ping" => Ok(json!({})),
+                    other => {
+                        tracing::debug!(method = %other, "unknown server-initiated request");
+                        Ok(json!({}))
+                    }
+                };
+                drop(hs);
+
+                match result {
+                    Ok(result_value) => {
+                        // Emit outgoing response event
+                        let _ = handler_event_tx.send(ProtocolEvent {
+                            direction: Direction::Outgoing,
+                            method: req.method.clone(),
+                            content: result_value.clone(),
+                        });
+                        let _ = writer.lock().await.send_response(&req.id, result_value).await;
+                    }
+                    Err(e) => {
+                        // Send JSON-RPC error response so server doesn't hang
+                        let _ = writer.lock().await
+                            .send_error_response(&req.id, -32603, &e.to_string())
+                            .await;
+                    }
                 }
             }
-            _ = cancel.cancelled() => break,
         }
     }
 }
@@ -443,20 +466,21 @@ The multiplexer and server-request handler run as background tasks for the entir
 ```rust
 struct McpClientDriver {
     writer: Arc<Mutex<Box<dyn McpClientTransportWriter>>>,
-    mux: MessageMultiplexer,
-    notification_rx: mpsc::UnboundedReceiver<NotificationMessage>,
-    // Server request handler sends events here; driver forwards to event_tx
-    handler_event_rx: mpsc::UnboundedReceiver<ProtocolEvent>,
-    // Shared state for server_request_handler to read
+    pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
+    mux: Option<MessageMultiplexer>,  // Spawned on first drive_phase
+    notification_rx: Option<mpsc::UnboundedReceiver<NotificationMessage>>,
+    handler_event_rx: Option<mpsc::UnboundedReceiver<ProtocolEvent>>,
     handler_state: Arc<tokio::sync::RwLock<HandlerState>>,
-    // Background task handle
-    handler_handle: JoinHandle<()>,
-    // Server capabilities (captured during init)
+    handler_handle: Option<JoinHandle<()>>,
     server_capabilities: Option<Value>,
-    // Config
     request_timeout: Duration,
     phase_timeout: Duration,
     initialized: bool,
+    raw_synthesize: bool,
+    reader: Option<Box<dyn McpClientTransportReader>>,  // Consumed on bootstrap
+    transport_cancel: CancellationToken,
+    child: Option<Child>,
+    child_stderr: Option<ChildStderr>,  // For diagnostics on exit
 }
 
 #[async_trait]
@@ -469,6 +493,11 @@ impl PhaseDriver for McpClientDriver {
         event_tx: mpsc::UnboundedSender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, Error> {
+        // Bootstrap on first call: spawn multiplexer and handler
+        if self.mux.is_none() {
+            self.bootstrap(extractors.clone());
+        }
+
         // Initialization handshake on first phase (§3.4)
         if !self.initialized {
             self.initialize(state, &event_tx).await?;
@@ -482,22 +511,33 @@ impl PhaseDriver for McpClientDriver {
             hs.state = state.clone();
         }
 
+        // Clone extractors for action interpolation
+        let current_extractors = extractors.borrow().clone();
+
         // Execute actions defined in the phase state
         if let Some(actions) = state.get("actions").and_then(|a| a.as_array()) {
             for action in actions {
-                // Forward any buffered handler events before each action
                 self.forward_pending_events(&event_tx);
-
-                // Execute action — emits outgoing + incoming events
-                self.execute_action(action, extractors, &event_tx).await?;
+                let normalized = normalize_action(action);
+                self.execute_action(&normalized, &current_extractors, &event_tx).await?;
             }
         }
 
-        // After all actions: continue forwarding notification and handler
-        // events until cancel fires. The PhaseLoop checks triggers on
-        // each forwarded event and will cancel if a trigger fires.
+        // Post-action event loop: forward handler and notification events
+        // until cancel fires or phase_timeout expires. Also monitors handler
+        // task JoinHandle for panics.
         loop {
             tokio::select! {
+                biased;
+                () = cancel.cancelled() => break,
+                // Monitor handler task for panics
+                result = &mut self.handler_handle => {
+                    if let Err(join_err) = result {
+                        tracing::error!("server request handler task panicked: {}", join_err);
+                    }
+                    self.handler_handle = None;
+                    break;
+                }
                 evt = self.handler_event_rx.recv() => {
                     if let Some(evt) = evt { let _ = event_tx.send(evt); }
                     else { break; }
@@ -511,10 +551,7 @@ impl PhaseDriver for McpClientDriver {
                         });
                     } else { break; }
                 }
-                _ = tokio::time::sleep(self.phase_timeout) => {
-                    break;
-                }
-                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(self.phase_timeout) => break,
             }
         }
 
@@ -573,7 +610,14 @@ async fn initialize(
 
     // Register response channel BEFORE sending (prevents race)
     let id = json!(self.next_id());
-    let response_rx = self.mux.register_response(&id);
+    let mux = self.mux.as_ref().unwrap();
+    let response_rx = mux.register_response(&id);
+
+    // Track pending request for correlation (including params for qualifier resolution)
+    self.pending.lock().unwrap().insert(
+        id.to_string(),
+        PendingRequest { method: "initialize".into(), params: Some(init_params.clone()) },
+    );
 
     self.writer.lock().await.send_request_with_id("initialize", Some(init_params.clone()), &id).await?;
 
@@ -584,14 +628,23 @@ async fn initialize(
         content: init_params,
     });
 
-    // Await response via oneshot — multiplexer handles any server
-    // requests that arrive before the init response
-    let response = tokio::time::timeout(
-        Duration::from_secs(30),
-        response_rx,
-    ).await
-        .map_err(|_| Error::InitTimeout)?
-        .map_err(|_| Error::MultiplexerClosed(self.mux.close_reason()))?;
+    // Await response — on multiplexer close, include child stderr for diagnostics
+    let response = match tokio::time::timeout(INIT_TIMEOUT, response_rx).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(_)) => {
+            let reason = mux.close_reason();
+            let stderr = self.capture_stderr().await;
+            let mut msg = format!("multiplexer closed during initialization: {reason}");
+            if !stderr.is_empty() { msg.push_str(&format!("\nserver stderr: {stderr}")); }
+            return Err(Error::Driver(msg));
+        }
+        Err(_) => return Err(Error::InitTimeout),
+    };
+
+    // Check for error response
+    if response.is_error {
+        return Err(Error::Driver(format!("server rejected initialization: {}", response.result)));
+    }
 
     // Capture server capabilities for later use
     self.server_capabilities = Some(response.result.clone());
@@ -649,9 +702,16 @@ async fn send_and_await(
     event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
 ) -> Result<CorrelatedResponse, Error> {
     let id = json!(self.next_id());
+    let mux = self.mux.as_ref().unwrap();
 
     // Register response channel BEFORE sending
-    let response_rx = self.mux.register_response(&id);
+    let response_rx = mux.register_response(&id);
+
+    // Track pending request for response correlation (method + params)
+    self.pending.lock().unwrap().insert(
+        id.to_string(),
+        PendingRequest { method: method.into(), params: params.clone() },
+    );
 
     // Send request
     self.writer.lock().await
@@ -664,19 +724,31 @@ async fn send_and_await(
         content: params.unwrap_or(Value::Null),
     });
 
-    // Await response — multiplexer handles concurrent server requests
-    let response = tokio::time::timeout(
-        self.request_timeout,
-        response_rx,
-    ).await
-        .map_err(|_| Error::RequestTimeout { method: method.to_string() })?
-        .map_err(|_| Error::MultiplexerClosed(self.mux.close_reason()))?;
+    // Await response — on multiplexer close, include child stderr for diagnostics
+    let response = match tokio::time::timeout(self.request_timeout, response_rx).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(_)) => {
+            let reason = mux.close_reason();
+            let stderr = self.capture_stderr().await;
+            let mut msg = format!("multiplexer closed while awaiting '{method}': {reason}");
+            if !stderr.is_empty() { msg.push_str(&format!("\nserver stderr: {stderr}")); }
+            return Err(Error::Driver(msg));
+        }
+        Err(_) => return Err(Error::RequestTimeout { method: method.to_string() }),
+    };
 
-    // Emit incoming event — PhaseLoop handles trace, extractors, triggers
+    // Emit incoming event — merge request params for qualifier resolution
+    // (e.g., tools/call:calculator resolves from request_params.name)
+    let mut content = response.result.clone();
+    if let Some(ref req_params) = response.request_params {
+        if let Some(obj) = content.as_object_mut() {
+            obj.insert("_request".to_string(), req_params.clone());
+        }
+    }
     let _ = event_tx.send(ProtocolEvent {
         direction: Direction::Incoming,
         method: response.method.clone(),
-        content: response.result.clone(),
+        content,
     });
 
     Ok(response)
@@ -694,7 +766,8 @@ async fn execute_action(
             self.send_and_await("tools/list", None, event_tx).await?;
         }
         "call_tool" => {
-            let name = action["name"].as_str().unwrap();
+            let raw_name = action["name"].as_str().unwrap_or_default();
+            let (name, _) = oatf::interpolate_template(raw_name, extractors, None, None);
             let args = oatf::interpolate_value(&action["arguments"], extractors, None, None).0;
             let params = json!({ "name": name, "arguments": args });
             self.send_and_await("tools/call", Some(params), event_tx).await?;
@@ -703,7 +776,8 @@ async fn execute_action(
             self.send_and_await("resources/list", None, event_tx).await?;
         }
         "read_resource" => {
-            let uri = action["uri"].as_str().unwrap();
+            let raw_uri = action["uri"].as_str().unwrap_or_default();
+            let (uri, _) = oatf::interpolate_template(raw_uri, extractors, None, None);
             let params = json!({ "uri": uri });
             self.send_and_await("resources/read", Some(params), event_tx).await?;
         }
@@ -711,10 +785,17 @@ async fn execute_action(
             self.send_and_await("prompts/list", None, event_tx).await?;
         }
         "get_prompt" => {
-            let name = action["name"].as_str().unwrap();
+            let raw_name = action["name"].as_str().unwrap_or_default();
+            let (name, _) = oatf::interpolate_template(raw_name, extractors, None, None);
             let args = oatf::interpolate_value(&action["arguments"], extractors, None, None).0;
             let params = json!({ "name": name, "arguments": args });
             self.send_and_await("prompts/get", Some(params), event_tx).await?;
+        }
+        "subscribe_resource" => {
+            let raw_uri = action["uri"].as_str().unwrap_or_default();
+            let (uri, _) = oatf::interpolate_template(raw_uri, extractors, None, None);
+            let params = json!({ "uri": uri });
+            self.send_and_await("resources/subscribe", Some(params), event_tx).await?;
         }
         _ => {
             tracing::warn!("Unknown client action type: {}", action_type);
@@ -806,21 +887,19 @@ When `try_send()` fails due to a full buffer, the multiplexer drops the server r
 match server_request_tx.try_send(ServerRequestMessage { id, method, params }) {
     Ok(()) => {}
     Err(TrySendError::Full(_)) => {
-        tracing::warn!(
-            "Server request buffer full ({}/64). Dropping request '{}' (id={}).",
-            64, method, id
-        );
+        tracing::warn!("server request buffer full, dropping request");
         // Send error response back to server so it doesn't hang waiting
-        transport.send(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {
-                "code": -32000,
-                "message": "Client overwhelmed: server request buffer full"
-            }
-        })).await;
+        let _ = writer.lock().await.send_error_response(
+            &id, -32000, "Client overwhelmed: server request buffer full"
+        ).await;
     }
-    Err(TrySendError::Closed(_)) => break, // Handler task crashed
+    Err(TrySendError::Closed(_)) => {
+        // Handler task crashed — stop the multiplexer
+        tracing::error!("server request handler channel closed, stopping multiplexer");
+        break MultiplexerClosed::TransportError(
+            "server request handler channel closed".to_string()
+        );
+    }
 }
 ```
 
@@ -974,62 +1053,46 @@ The handler functions access the current phase state via `HandlerState` (§3.2) 
 fn handle_sampling(
     state: &Value,
     extractors: &HashMap<String, String>,
-    generation_provider: &Option<GenerationProvider>,
     params: &Value,
+    raw_synthesize: bool,
 ) -> Result<Value, Error> {
     let responses = state.get("sampling_responses");
 
     if let Some(responses) = responses {
-        // Ordered-match: first matching entry wins
-        let entry = oatf::select_response(responses, params);
+        // Deserialize into Vec<ResponseEntry> then ordered-match
+        let entries: Vec<ResponseEntry> = serde_json::from_value(responses.clone())?;
+        let entry = oatf::select_response(&entries, params);
 
         match entry {
-            Some(entry) if entry.synthesize.is_some() => {
-                // LLM-generated sampling response
-                let prompt = oatf::interpolate_template(
-                    &entry.synthesize.prompt,
+            Some(entry) if entry.synthesize.is_some() && entry.extra.is_empty() => {
+                // GenerationProvider not yet available — stub error
+                Err(Error::Driver("synthesize not yet supported".into()))
+            }
+            Some(entry) => {
+                // Static sampling response from entry.extra fields
+                let extra_value = serde_json::to_value(&entry.extra)?;
+                let (interpolated, _) = oatf::interpolate_value(
+                    &extra_value,
                     &extractors,
                     Some(params),
                     None,
                 );
-                let content = generation_provider.as_ref().unwrap().generate(
-                    &prompt.0, "mcp", &sampling_context(),
-                )?;
-                // Validate unless --raw-synthesize is set
-                if !self.raw_synthesize {
-                    validate_synthesized_output("mcp", &content, None)?;
-                }
-                Ok(content)
+                Ok(interpolated)
             }
-            Some(entry) => {
-                // Static sampling response
-                let response = oatf::interpolate_value(
-                    &entry.response,
-                    &extractors,
-                    Some(params),
-                    None,
-                ).0;
-                Ok(response)
-            }
-            None => {
-                // No matching entry — return minimal valid response
-                Ok(json!({
-                    "role": "assistant",
-                    "content": {"type": "text", "text": ""},
-                    "model": "default",
-                    "stopReason": "endTurn"
-                }))
-            }
+            None => Ok(default_sampling_response()),
         }
     } else {
-        // No sampling_responses defined — return minimal response
-        Ok(json!({
-            "role": "assistant",
-            "content": {"type": "text", "text": ""},
-            "model": "default",
-            "stopReason": "endTurn"
-        }))
+        Ok(default_sampling_response())
     }
+}
+
+fn default_sampling_response() -> Value {
+    json!({
+        "role": "assistant",
+        "content": {"type": "text", "text": ""},
+        "model": "default",
+        "stopReason": "endTurn"
+    })
 }
 ```
 
@@ -1040,26 +1103,22 @@ fn handle_elicitation(
     state: &Value,
     extractors: &HashMap<String, String>,
     params: &Value,
-) -> Result<Value, Error> {
+) -> Value {
     let responses = state.get("elicitation_responses");
 
     if let Some(responses) = responses {
-        let entry = oatf::select_response(responses, params);
+        let entries: Vec<ResponseEntry> = serde_json::from_value(responses.clone())
+            .unwrap_or_default();
+        let entry = oatf::select_response(&entries, params);
         match entry {
             Some(entry) => {
-                let response = oatf::interpolate_value(
-                    &entry.response,
-                    &extractors,
-                    Some(params),
-                    None,
-                ).0;
-                Ok(response)
+                let extra_value = serde_json::to_value(&entry.extra).unwrap_or(Value::Null);
+                oatf::interpolate_value(&extra_value, &extractors, Some(params), None).0
             }
-            None => Ok(json!({"action": "cancel"})),
+            None => json!({"action": "cancel"}),
         }
     } else {
-        // No elicitation_responses — cancel by default
-        Ok(json!({"action": "cancel"}))
+        json!({"action": "cancel"})
     }
 }
 ```
@@ -1769,9 +1828,11 @@ The system SHALL handle multiplexer failure modes with distinct error types.
 **Acceptance Criteria:**
 - `RequestTimeout`: server didn't respond within timeout
 - `MultiplexerClosed::TransportEof`: server closed connection normally
-- `MultiplexerClosed::TransportError`: transport-level failure
-- `MultiplexerClosed::HandlerPanic`: handler task panicked
-- All four variants distinguishable in error logs and execution summary
+- `MultiplexerClosed::TransportError`: transport-level failure (also covers handler channel closure)
+- `MultiplexerClosed::Cancelled`: actor was cancelled (shutdown, `--max-session`)
+- Handler task panics detected via `JoinHandle` monitoring in the driver's post-action event loop (not a `MultiplexerClosed` variant)
+- All error variants distinguishable in error logs and execution summary
+- Stdio stderr captured and included in `MultiplexerClosed` error messages for diagnostics
 
 ---
 

@@ -592,47 +592,46 @@ attack:
         fn arb_dag(
             max_actors: usize,
         ) -> impl Strategy<Value = HashMap<(String, usize), Vec<AwaitExtractor>>> {
-            (2..=max_actors).prop_flat_map(|n| {
-                let names = (0..n).map(|i| format!("actor_{i}")).collect::<Vec<_>>();
-                // Generate edges: each node can have edges to nodes with higher index only
-                let edge_strategies: Vec<_> = (0..n)
-                    .map(|from| {
-                        let targets: Vec<String> = names[from + 1..].to_vec();
-                        if targets.is_empty() {
-                            Just(Vec::<String>::new()).boxed()
-                        } else {
-                            prop::collection::vec(
-                                prop::sample::select(targets),
-                                0..=2,
-                            )
-                            .prop_map(|mut v| {
-                                v.sort();
-                                v.dedup();
-                                v
-                            })
-                            .boxed()
-                        }
-                    })
-                    .collect();
+            (2..=max_actors)
+                .prop_flat_map(|n| {
+                    let names = (0..n).map(|i| format!("actor_{i}")).collect::<Vec<_>>();
+                    // Generate edges: each node can have edges to nodes with higher index only
+                    let edge_strategies: Vec<_> = (0..n)
+                        .map(|from| {
+                            let targets: Vec<String> = names[from + 1..].to_vec();
+                            if targets.is_empty() {
+                                Just(Vec::<String>::new()).boxed()
+                            } else {
+                                prop::collection::vec(prop::sample::select(targets), 0..=2)
+                                    .prop_map(|mut v| {
+                                        v.sort();
+                                        v.dedup();
+                                        v
+                                    })
+                                    .boxed()
+                            }
+                        })
+                        .collect();
 
-                (Just(names), edge_strategies)
-            }).prop_map(|(names, edges)| {
-                let mut map = HashMap::new();
-                for (from_idx, targets) in edges.into_iter().enumerate() {
-                    if !targets.is_empty() {
-                        let specs: Vec<AwaitExtractor> = targets
-                            .into_iter()
-                            .map(|target| AwaitExtractor {
-                                actor: target,
-                                extractors: vec!["token".to_string()],
-                                timeout: Duration::from_secs(5),
-                            })
-                            .collect();
-                        map.insert((names[from_idx].clone(), 0), specs);
+                    (Just(names), edge_strategies)
+                })
+                .prop_map(|(names, edges)| {
+                    let mut map = HashMap::new();
+                    for (from_idx, targets) in edges.into_iter().enumerate() {
+                        if !targets.is_empty() {
+                            let specs: Vec<AwaitExtractor> = targets
+                                .into_iter()
+                                .map(|target| AwaitExtractor {
+                                    actor: target,
+                                    extractors: vec!["token".to_string()],
+                                    timeout: Duration::from_secs(5),
+                                })
+                                .collect();
+                            map.insert((names[from_idx].clone(), 0), specs);
+                        }
                     }
-                }
-                map
-            })
+                    map
+                })
         }
 
         proptest! {

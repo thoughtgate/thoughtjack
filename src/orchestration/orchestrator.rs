@@ -198,7 +198,16 @@ pub async fn orchestrate(
     }
 
     // 6. Wait for completion with shutdown coordination
-    wait_for_completion(join_set, &task_meta, &trace, config, &cancel, events, client_count).await
+    wait_for_completion(
+        join_set,
+        &task_meta,
+        &trace,
+        config,
+        &cancel,
+        events,
+        client_count,
+    )
+    .await
 }
 
 /// Spawns one task per actor into a `JoinSet`.
@@ -292,9 +301,8 @@ async fn wait_for_completion(
     let mut outcomes: Vec<ActorOutcome> = Vec::with_capacity(join_set.len());
     let mut clients_done = 0;
     let mut grace_started = false;
-    let max_session_sleep = tokio::time::sleep_until(
-        tokio::time::Instant::now() + config.max_session,
-    );
+    let max_session_sleep =
+        tokio::time::sleep_until(tokio::time::Instant::now() + config.max_session);
     tokio::pin!(max_session_sleep);
 
     let cancelled = cancel.cancelled();
@@ -382,12 +390,10 @@ fn unpack_join_result(
             (outcome, Some(is_server))
         }
         Err(join_err) => {
-            let (actor_name, is_server) = task_meta
-                .get(&join_err.id())
-                .map_or_else(
-                    || ("(unknown)".to_string(), None),
-                    |(name, server)| (name.clone(), Some(*server)),
-                );
+            let (actor_name, is_server) = task_meta.get(&join_err.id()).map_or_else(
+                || ("(unknown)".to_string(), None),
+                |(name, server)| (name.clone(), Some(*server)),
+            );
 
             if join_err.is_cancelled() {
                 // Task was aborted (e.g., after max_session or grace period).
@@ -435,11 +441,7 @@ fn emit_completion_summary(outcomes: &[ActorOutcome], events: &EventEmitter) {
 /// This must not be `.await`ed inline inside `tokio::select!` because that
 /// would block the event loop, preventing `max_session` and external
 /// cancellation from firing during the grace period.
-fn spawn_grace_task(
-    config: &ActorConfig,
-    cancel: &CancellationToken,
-    events: &Arc<EventEmitter>,
-) {
+fn spawn_grace_task(config: &ActorConfig, cancel: &CancellationToken, events: &Arc<EventEmitter>) {
     let grace = config.grace_period.unwrap_or(Duration::ZERO);
     #[allow(clippy::cast_possible_truncation)]
     let duration_seconds = grace.as_secs();

@@ -258,6 +258,7 @@ fn classify_response_with_pending() {
         "1".to_string(),
         PendingRequest {
             method: "tools/list".to_string(),
+            params: None,
         },
     );
 
@@ -297,6 +298,7 @@ fn classify_error_response() {
         "1".to_string(),
         PendingRequest {
             method: "tools/call".to_string(),
+            params: None,
         },
     );
 
@@ -479,6 +481,7 @@ fn classify_response_removes_pending_entry() {
         "1".to_string(),
         PendingRequest {
             method: "tools/list".to_string(),
+            params: None,
         },
     );
 
@@ -496,6 +499,7 @@ fn classify_response_with_string_id() {
         "\"req-42\"".to_string(),
         PendingRequest {
             method: "tools/call".to_string(),
+            params: None,
         },
     );
 
@@ -760,6 +764,7 @@ async fn multiplexer_routes_response_to_oneshot() {
         method: "tools/list".to_string(),
         result: json!({"tools": ["calc"]}),
         is_error: false,
+        request_params: None,
     }]);
 
     let mux = MessageMultiplexer::spawn(
@@ -882,6 +887,7 @@ async fn multiplexer_unmatched_response_id_ec_mcpc_001() {
         method: "unknown".to_string(),
         result: json!({}),
         is_error: false,
+        request_params: None,
     }]);
 
     let _mux = MessageMultiplexer::spawn(
@@ -1411,6 +1417,7 @@ fn create_test_driver(
         reader: Some(reader),
         transport_cancel: CancellationToken::new(),
         child: None,
+        child_stderr: None,
     }
 }
 
@@ -1455,6 +1462,7 @@ async fn driver_initialize_sends_handshake() {
             "serverInfo": {"name": "test-server", "version": "1.0"}
         }),
         is_error: false,
+        request_params: None,
     }]);
 
     let mut driver = create_test_driver(Arc::clone(&writer), Box::new(reader));
@@ -1491,6 +1499,7 @@ async fn driver_initialize_rejects_error_response_ec_mcpc_005() {
         method: "initialize".to_string(),
         result: json!({"code": -32600, "message": "Invalid Request"}),
         is_error: true,
+        request_params: None,
     }]);
 
     let mut driver = create_test_driver(Arc::clone(&writer), Box::new(reader));

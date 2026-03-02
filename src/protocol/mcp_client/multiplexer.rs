@@ -64,7 +64,7 @@ impl MessageMultiplexer {
                     }
                     msg = reader.recv(&pending) => {
                         match msg {
-                            Ok(Some(McpClientMessage::Response { id, method, result, is_error })) => {
+                            Ok(Some(McpClientMessage::Response { id, method, result, is_error, request_params })) => {
                                 let id_key = id.to_string();
                                 let sender = senders
                                     .lock()
@@ -72,7 +72,7 @@ impl MessageMultiplexer {
                                     .remove(&id_key);
 
                                 if let Some(tx) = sender {
-                                    let _ = tx.send(CorrelatedResponse { method, result, is_error });
+                                    let _ = tx.send(CorrelatedResponse { method, result, is_error, request_params });
                                 } else {
                                     // EC-MCPC-001: unmatched response ID
                                     tracing::warn!(id = %id, "received response for unknown request id");
@@ -96,16 +96,26 @@ impl MessageMultiplexer {
                                     method: method.clone(),
                                     params,
                                 };
-                                if server_request_tx.try_send(req).is_err() {
-                                    tracing::warn!(
-                                        method = %method,
-                                        id = %id,
-                                        "server request buffer full, dropping request"
-                                    );
-                                    // Return error to server so it doesn't hang
-                                    let _ = writer.lock().await
-                                        .send_error_response(&id, -32000, "Client overwhelmed: server request buffer full")
-                                        .await;
+                                match server_request_tx.try_send(req) {
+                                    Ok(()) => {}
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        tracing::warn!(
+                                            method = %method,
+                                            id = %id,
+                                            "server request buffer full, dropping request"
+                                        );
+                                        // Return error to server so it doesn't hang
+                                        let _ = writer.lock().await
+                                            .send_error_response(&id, -32000, "Client overwhelmed: server request buffer full")
+                                            .await;
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        // Handler task crashed — stop the multiplexer
+                                        tracing::error!("server request handler channel closed, stopping multiplexer");
+                                        break MultiplexerClosed::TransportError(
+                                            "server request handler channel closed".to_string()
+                                        );
+                                    }
                                 }
                             }
                             Ok(None) => {

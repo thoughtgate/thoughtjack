@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use oatf::primitives::interpolate_value;
+use oatf::primitives::{interpolate_template, interpolate_value};
 use serde_json::{Value, json};
-use tokio::process::Child;
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, ChildStderr};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -69,9 +70,28 @@ pub struct McpClientDriver {
     /// Spawned child process (for stdio transport).
     #[allow(dead_code)]
     pub(super) child: Option<Child>,
+    /// Stderr from spawned child (for diagnostics on exit).
+    pub(super) child_stderr: Option<ChildStderr>,
 }
 
 impl McpClientDriver {
+    /// Try to read buffered stderr from the child process.
+    ///
+    /// Consumes the stderr handle. Returns the output (truncated to 4 KB)
+    /// or an empty string if no stderr is available.
+    async fn capture_stderr(&mut self) -> String {
+        let Some(mut stderr) = self.child_stderr.take() else {
+            return String::new();
+        };
+        let mut buf = vec![0u8; 4096];
+        match tokio::time::timeout(std::time::Duration::from_millis(100), stderr.read(&mut buf))
+            .await
+        {
+            Ok(Ok(n)) if n > 0 => String::from_utf8_lossy(&buf[..n]).to_string(),
+            _ => String::new(),
+        }
+    }
+
     /// Generate the next monotonically increasing request ID.
     pub(super) const fn next_id(&mut self) -> u64 {
         let id = self.next_request_id;
@@ -97,7 +117,7 @@ impl McpClientDriver {
         let id = json!(self.next_id());
         let id_key = id.to_string();
 
-        // Register pending request for correlation
+        // Register pending request for correlation (includes params for qualifier resolution)
         self.pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -105,6 +125,7 @@ impl McpClientDriver {
                 id_key,
                 PendingRequest {
                     method: method.to_string(),
+                    params: params.clone(),
                 },
             );
 
@@ -130,26 +151,41 @@ impl McpClientDriver {
         });
 
         // Await response via oneshot — multiplexer handles concurrent server requests
-        let response = tokio::time::timeout(self.request_timeout, response_rx)
-            .await
-            .map_err(|_| {
-                EngineError::Driver(format!(
+        let response = match tokio::time::timeout(self.request_timeout, response_rx).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(_)) => {
+                let reason = mux.close_reason();
+                let stderr = self.capture_stderr().await;
+                let mut msg = format!("multiplexer closed while awaiting '{method}': {reason}");
+                if !stderr.is_empty() {
+                    use std::fmt::Write;
+                    let _ = write!(msg, "\nserver stderr: {stderr}");
+                }
+                return Err(EngineError::Driver(msg));
+            }
+            Err(_) => {
+                return Err(EngineError::Driver(format!(
                     "request timeout for '{method}' after {:?}",
                     self.request_timeout
-                ))
-            })?
-            .map_err(|_| {
-                let reason = mux.close_reason();
-                EngineError::Driver(format!(
-                    "multiplexer closed while awaiting '{method}': {reason}"
-                ))
-            })?;
+                )));
+            }
+        };
 
-        // Emit incoming event
+        // Emit incoming event.
+        // Merge request params into response content so qualifier resolution
+        // can access the original request context (e.g., tools/call:calculator
+        // resolves from params.name). Request params are placed under
+        // `_request` to avoid collisions with response fields.
+        let mut content = response.result.clone();
+        if let Some(ref req_params) = response.request_params
+            && let Some(obj) = content.as_object_mut()
+        {
+            obj.insert("_request".to_string(), req_params.clone());
+        }
         let _ = event_tx.send(ProtocolEvent {
             direction: Direction::Incoming,
             method: response.method.clone(),
-            content: response.result.clone(),
+            content,
         });
 
         Ok(response)
@@ -213,6 +249,7 @@ impl McpClientDriver {
                 id_key,
                 PendingRequest {
                     method: "initialize".to_string(),
+                    params: Some(init_params.clone()),
                 },
             );
 
@@ -238,15 +275,22 @@ impl McpClientDriver {
         });
 
         // Await response
-        let response = tokio::time::timeout(INIT_TIMEOUT, response_rx)
-            .await
-            .map_err(|_| EngineError::Driver("initialization timeout".to_string()))?
-            .map_err(|_| {
+        let response = match tokio::time::timeout(INIT_TIMEOUT, response_rx).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(_)) => {
                 let reason = mux.close_reason();
-                EngineError::Driver(format!(
-                    "multiplexer closed during initialization: {reason}"
-                ))
-            })?;
+                let stderr = self.capture_stderr().await;
+                let mut msg = format!("multiplexer closed during initialization: {reason}");
+                if !stderr.is_empty() {
+                    use std::fmt::Write;
+                    let _ = write!(msg, "\nserver stderr: {stderr}");
+                }
+                return Err(EngineError::Driver(msg));
+            }
+            Err(_) => {
+                return Err(EngineError::Driver("initialization timeout".to_string()));
+            }
+        };
 
         // Check for error response (EC-MCPC-005)
         if response.is_error {
@@ -299,7 +343,8 @@ impl McpClientDriver {
                 self.send_and_await("tools/list", None, event_tx).await?;
             }
             "call_tool" => {
-                let name = action["name"].as_str().unwrap_or_default();
+                let raw_name = action["name"].as_str().unwrap_or_default();
+                let (name, _) = interpolate_template(raw_name, extractors, None, None);
                 let arguments = action.get("arguments").cloned().unwrap_or(json!({}));
                 let (interpolated_args, _) = interpolate_value(&arguments, extractors, None, None);
                 let params = json!({"name": name, "arguments": interpolated_args});
@@ -311,7 +356,8 @@ impl McpClientDriver {
                     .await?;
             }
             "read_resource" => {
-                let uri = action["uri"].as_str().unwrap_or_default();
+                let raw_uri = action["uri"].as_str().unwrap_or_default();
+                let (uri, _) = interpolate_template(raw_uri, extractors, None, None);
                 let params = json!({"uri": uri});
                 self.send_and_await("resources/read", Some(params), event_tx)
                     .await?;
@@ -320,7 +366,8 @@ impl McpClientDriver {
                 self.send_and_await("prompts/list", None, event_tx).await?;
             }
             "get_prompt" => {
-                let name = action["name"].as_str().unwrap_or_default();
+                let raw_name = action["name"].as_str().unwrap_or_default();
+                let (name, _) = interpolate_template(raw_name, extractors, None, None);
                 let arguments = action.get("arguments").cloned().unwrap_or(json!({}));
                 let (interpolated_args, _) = interpolate_value(&arguments, extractors, None, None);
                 let params = json!({"name": name, "arguments": interpolated_args});
@@ -328,7 +375,8 @@ impl McpClientDriver {
                     .await?;
             }
             "subscribe_resource" => {
-                let uri = action["uri"].as_str().unwrap_or_default();
+                let raw_uri = action["uri"].as_str().unwrap_or_default();
+                let (uri, _) = interpolate_template(raw_uri, extractors, None, None);
                 let params = json!({"uri": uri});
                 self.send_and_await("resources/subscribe", Some(params), event_tx)
                     .await?;
@@ -455,6 +503,24 @@ impl PhaseDriver for McpClientDriver {
                 () = cancel.cancelled() => {
                     break;
                 }
+                // Monitor handler task for panics
+                result = async {
+                    if let Some(ref mut handle) = self.handler_handle {
+                        handle.await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    if let Err(join_err) = result {
+                        tracing::error!(
+                            error = %join_err,
+                            "server request handler task panicked"
+                        );
+                    }
+                    // Handler exited (normally or via panic) — stop event loop
+                    self.handler_handle = None;
+                    break;
+                }
                 evt = async {
                     if let Some(ref mut rx) = self.handler_event_rx {
                         rx.recv().await
@@ -549,18 +615,21 @@ pub fn create_mcp_client_driver(
     headers: &[(String, String)],
     raw_synthesize: bool,
 ) -> Result<McpClientDriver, EngineError> {
-    let (reader, writer, child): (
+    #[allow(clippy::type_complexity)]
+    let (reader, writer, child, child_stderr): (
         Box<dyn McpClientTransportReader>,
         Box<dyn McpClientTransportWriter>,
         Option<Child>,
+        Option<ChildStderr>,
     ) = match (command, endpoint) {
         (Some(cmd), _) => {
-            let (r, w, c) = spawn_stdio_transport(cmd, args)?;
-            (Box::new(r), Box::new(w), Some(c))
+            let (r, w, mut c) = spawn_stdio_transport(cmd, args)?;
+            let stderr = c.stderr.take();
+            (Box::new(r), Box::new(w), Some(c), stderr)
         }
         (None, Some(ep)) => {
             let (r, w) = create_http_transport(ep, headers)?;
-            (Box::new(r), Box::new(w), None)
+            (Box::new(r), Box::new(w), None, None)
         }
         (None, None) => {
             return Err(EngineError::Driver(
@@ -592,5 +661,6 @@ pub fn create_mcp_client_driver(
         reader: Some(reader),
         transport_cancel,
         child,
+        child_stderr,
     })
 }

@@ -2103,29 +2103,23 @@ mod tests {
         /// Generates a well-formed AG-UI SSE frame.
         fn arb_sse_frame() -> impl Strategy<Value = Vec<u8>> {
             prop::sample::select(EVENT_TYPES).prop_map(|event_type| {
-                format!(
-                    "event: {event_type}\ndata: {{\"type\":\"{event_type}\",\"ok\":true}}\n\n"
-                )
-                .into_bytes()
+                format!("event: {event_type}\ndata: {{\"type\":\"{event_type}\",\"ok\":true}}\n\n")
+                    .into_bytes()
             })
         }
 
         /// Generates a valid SSE stream with split points.
-        fn arb_sse_stream_with_splits(
-        ) -> impl Strategy<Value = (Vec<u8>, Vec<usize>)> {
-            prop::collection::vec(arb_sse_frame(), 1..6)
-                .prop_flat_map(|frames| {
-                    let stream: Vec<u8> =
-                        frames.into_iter().flatten().collect();
-                    let len = stream.len();
-                    let splits = prop::collection::vec(0..len, 1..8)
-                        .prop_map(|mut pts| {
-                            pts.sort_unstable();
-                            pts.dedup();
-                            pts
-                        });
-                    (Just(stream), splits)
-                })
+        fn arb_sse_stream_with_splits() -> impl Strategy<Value = (Vec<u8>, Vec<usize>)> {
+            prop::collection::vec(arb_sse_frame(), 1..6).prop_flat_map(|frames| {
+                let stream: Vec<u8> = frames.into_iter().flatten().collect();
+                let len = stream.len();
+                let splits = prop::collection::vec(0..len, 1..8).prop_map(|mut pts| {
+                    pts.sort_unstable();
+                    pts.dedup();
+                    pts
+                });
+                (Just(stream), splits)
+            })
         }
 
         proptest! {
