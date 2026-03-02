@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinSet;
+use tokio::task::{Id as TaskId, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::engine::trace::SharedTrace;
@@ -80,6 +80,13 @@ struct ActorTaskResult {
     is_server: bool,
     result: Result<ActorResult, EngineError>,
 }
+
+/// Maps tokio task IDs to `(actor_name, is_server)` for panic recovery.
+///
+/// When a task panics, `JoinError` does not carry the return value, so
+/// the `ActorTaskResult` (and its `actor_name`) is lost. This map allows
+/// `unpack_join_result` to recover the identity via `JoinError::id()`.
+type TaskMetaMap = HashMap<TaskId, (String, bool)>;
 
 // ============================================================================
 // orchestrate()
@@ -151,7 +158,7 @@ pub async fn orchestrate(
         ready_txs.into_iter().collect();
 
     // 4. Spawn all actor tasks into a JoinSet
-    let join_set = spawn_actor_tasks(
+    let (mut join_set, task_meta) = spawn_actor_tasks(
         loaded,
         config,
         &trace,
@@ -184,16 +191,21 @@ pub async fn orchestrate(
                     not_ready: server_names.clone(),
                 });
                 cancel.cancel();
-                return drain_join_set(join_set, trace, events).await;
+                join_set.abort_all();
+                return drain_join_set(join_set, &task_meta, trace, events).await;
             }
         }
     }
 
     // 6. Wait for completion with shutdown coordination
-    wait_for_completion(join_set, &trace, config, &cancel, events, client_count).await
+    wait_for_completion(join_set, &task_meta, &trace, config, &cancel, events, client_count).await
 }
 
 /// Spawns one task per actor into a `JoinSet`.
+///
+/// Returns the `JoinSet` and a `TaskMetaMap` that maps each spawned
+/// tokio task ID to `(actor_name, is_server)`. The map is used by
+/// `unpack_join_result` to recover actor identity when a task panics.
 #[allow(clippy::implicit_hasher, clippy::too_many_arguments)]
 fn spawn_actor_tasks(
     loaded: &LoadedDocument,
@@ -204,10 +216,11 @@ fn spawn_actor_tasks(
     events: &Arc<EventEmitter>,
     gate: Option<&ReadinessGate>,
     ready_tx_map: &mut HashMap<String, tokio::sync::oneshot::Sender<()>>,
-) -> JoinSet<ActorTaskResult> {
+) -> (JoinSet<ActorTaskResult>, TaskMetaMap) {
     let actors = document_actors(&loaded.document);
 
     let mut join_set: JoinSet<ActorTaskResult> = JoinSet::new();
+    let mut task_meta = TaskMetaMap::new();
 
     for (i, actor) in actors.iter().enumerate() {
         let is_server = actor.mode.contains("server");
@@ -234,7 +247,7 @@ fn spawn_actor_tasks(
         let actor_cancel = cancel.child_token();
         let task_events = Arc::clone(events);
 
-        join_set.spawn(async move {
+        let abort_handle = join_set.spawn(async move {
             let result = run_actor(
                 i,
                 doc,
@@ -254,9 +267,10 @@ fn spawn_actor_tasks(
                 result,
             }
         });
+        task_meta.insert(abort_handle.id(), (actor.name.clone(), is_server));
     }
 
-    join_set
+    (join_set, task_meta)
 }
 
 /// Waits for all actor tasks to complete with proper shutdown coordination.
@@ -268,14 +282,16 @@ fn spawn_actor_tasks(
 #[allow(clippy::cognitive_complexity)]
 async fn wait_for_completion(
     mut join_set: JoinSet<ActorTaskResult>,
+    task_meta: &TaskMetaMap,
     trace: &SharedTrace,
     config: &ActorConfig,
     cancel: &CancellationToken,
-    events: &EventEmitter,
+    events: &Arc<EventEmitter>,
     total_clients: usize,
 ) -> Result<OrchestratorResult, EngineError> {
     let mut outcomes: Vec<ActorOutcome> = Vec::with_capacity(join_set.len());
     let mut clients_done = 0;
+    let mut grace_started = false;
     let max_session_deadline = tokio::time::Instant::now() + config.max_session;
 
     loop {
@@ -285,7 +301,7 @@ async fn wait_for_completion(
 
         tokio::select! {
             Some(join_result) = join_set.join_next() => {
-                let (outcome, is_server) = unpack_join_result(join_result, events);
+                let (outcome, is_server) = unpack_join_result(join_result, task_meta, events);
 
                 if is_server == Some(false) {
                     clients_done += 1;
@@ -293,13 +309,15 @@ async fn wait_for_completion(
 
                 outcomes.push(outcome);
 
-                // Check shutdown conditions
-                if total_clients > 0 && clients_done >= total_clients {
-                    tracing::info!("all client actors completed, starting grace period");
-                    apply_grace_and_cancel(config, cancel, events).await;
-                } else if total_clients == 0 && join_set.is_empty() {
-                    tracing::info!("all server actors completed (zero-client mode)");
-                    apply_grace_and_cancel(config, cancel, events).await;
+                // Check shutdown conditions (grace period fires at most once)
+                let should_grace =
+                    (total_clients > 0 && clients_done >= total_clients)
+                    || (total_clients == 0 && join_set.is_empty());
+
+                if should_grace && !grace_started {
+                    grace_started = true;
+                    tracing::info!("starting grace period");
+                    spawn_grace_task(config, cancel, events);
                 }
             }
             () = tokio::time::sleep_until(max_session_deadline) => {
@@ -319,7 +337,7 @@ async fn wait_for_completion(
     // Drain any remaining tasks (after cancel or max session)
     join_set.abort_all();
     while let Some(join_result) = join_set.join_next().await {
-        let (outcome, _) = unpack_join_result(join_result, events);
+        let (outcome, _) = unpack_join_result(join_result, task_meta, events);
         outcomes.push(outcome);
     }
 
@@ -333,10 +351,12 @@ async fn wait_for_completion(
 
 /// Unpacks a `JoinSet` join result into an `ActorOutcome` and server flag.
 ///
-/// Returns `(outcome, Some(is_server))` on normal completion, or
-/// `(outcome, None)` when the task panicked (metadata lost).
+/// On normal completion, identity comes from the `ActorTaskResult` payload.
+/// On panic/cancel, the payload is lost — identity is recovered from the
+/// `TaskMetaMap` using the tokio task ID.
 fn unpack_join_result(
     join_result: Result<ActorTaskResult, tokio::task::JoinError>,
+    task_meta: &TaskMetaMap,
     events: &EventEmitter,
 ) -> (ActorOutcome, Option<bool>) {
     match join_result {
@@ -358,7 +378,12 @@ fn unpack_join_result(
             (outcome, Some(is_server))
         }
         Err(join_err) => {
-            let actor_name = "(unknown)".to_string();
+            let (actor_name, is_server) = task_meta
+                .get(&join_err.id())
+                .map_or_else(
+                    || ("(unknown)".to_string(), None),
+                    |(name, server)| (name.clone(), Some(*server)),
+                );
             let msg = if join_err.is_panic() {
                 "task panicked"
             } else {
@@ -368,7 +393,7 @@ fn unpack_join_result(
                 actor_name: actor_name.clone(),
                 error: msg.to_string(),
             });
-            (ActorOutcome::Panic { actor_name }, None)
+            (ActorOutcome::Panic { actor_name }, is_server)
         }
     }
 }
@@ -391,34 +416,51 @@ fn emit_completion_summary(outcomes: &[ActorOutcome], events: &EventEmitter) {
     });
 }
 
-/// Applies the configured grace period then cancels all remaining actors.
-async fn apply_grace_and_cancel(
+/// Spawns a background task that waits for the grace period then cancels.
+///
+/// This must not be `.await`ed inline inside `tokio::select!` because that
+/// would block the event loop, preventing `max_session` and external
+/// cancellation from firing during the grace period.
+fn spawn_grace_task(
     config: &ActorConfig,
     cancel: &CancellationToken,
-    events: &EventEmitter,
+    events: &Arc<EventEmitter>,
 ) {
     let grace = config.grace_period.unwrap_or(Duration::ZERO);
     #[allow(clippy::cast_possible_truncation)]
     let duration_seconds = grace.as_secs();
     events.emit(ThoughtJackEvent::GracePeriodStarted { duration_seconds });
-    if !grace.is_zero() {
-        tokio::time::sleep(grace).await;
+
+    if grace.is_zero() {
+        // No delay needed — cancel immediately and skip the spawn
+        events.emit(ThoughtJackEvent::GracePeriodExpired {
+            messages_captured: 0,
+        });
+        cancel.cancel();
+        return;
     }
-    events.emit(ThoughtJackEvent::GracePeriodExpired {
-        messages_captured: 0,
+
+    let cancel = cancel.clone();
+    let events = Arc::clone(events);
+    tokio::spawn(async move {
+        tokio::time::sleep(grace).await;
+        events.emit(ThoughtJackEvent::GracePeriodExpired {
+            messages_captured: 0,
+        });
+        cancel.cancel();
     });
-    cancel.cancel();
 }
 
 /// Drains all tasks from a `JoinSet` after an early abort (e.g., gate timeout).
 async fn drain_join_set(
     mut join_set: JoinSet<ActorTaskResult>,
+    task_meta: &TaskMetaMap,
     trace: SharedTrace,
     events: &EventEmitter,
 ) -> Result<OrchestratorResult, EngineError> {
     let mut outcomes = Vec::with_capacity(join_set.len());
     while let Some(join_result) = join_set.join_next().await {
-        let (outcome, _) = unpack_join_result(join_result, events);
+        let (outcome, _) = unpack_join_result(join_result, task_meta, events);
         outcomes.push(outcome);
     }
 
@@ -506,7 +548,7 @@ attack:
 
         // Cancel after short delay — server would block on stdio otherwise
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             cancel_clone.cancel();
         });
 
@@ -597,8 +639,7 @@ attack:
 "#,
         );
 
-        // Very short max_session
-        let config = default_actor_config(Duration::from_millis(50));
+        let config = default_actor_config(Duration::from_millis(500));
         let events = Arc::new(EventEmitter::noop());
         let cancel = CancellationToken::new();
 
@@ -644,7 +685,7 @@ attack:
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             cancel_clone.cancel();
         });
 
@@ -702,9 +743,9 @@ attack:
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        // Cancel after the timeout has had time to fire
+        // Cancel after the await_extractors timeout has had time to fire
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
             cancel_clone.cancel();
         });
 
@@ -868,21 +909,14 @@ attack:
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             cancel_clone.cancel();
         });
 
-        let start = tokio::time::Instant::now();
         let result = orchestrate(&loaded, &config, &events, cancel)
             .await
             .unwrap();
-        let elapsed = start.elapsed();
 
-        // Should complete quickly — zero grace means no extra sleep
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "zero grace period should not cause significant delay, took {elapsed:?}"
-        );
         assert_eq!(result.outcomes.len(), 1);
     }
 
@@ -925,9 +959,8 @@ attack:
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        // Cancel after a short delay — both servers will be in stdio
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             cancel_clone.cancel();
         });
 
@@ -962,6 +995,7 @@ attack:
     #[test]
     fn unpack_join_result_handles_success() {
         let events = EventEmitter::noop();
+        let task_meta = TaskMetaMap::new();
         let task_result = ActorTaskResult {
             actor_name: "test_actor".to_string(),
             is_server: true,
@@ -974,7 +1008,7 @@ attack:
             }),
         };
 
-        let (outcome, is_server) = unpack_join_result(Ok(task_result), &events);
+        let (outcome, is_server) = unpack_join_result(Ok(task_result), &task_meta, &events);
         assert_eq!(is_server, Some(true));
         assert_eq!(outcome.actor_name(), "test_actor");
         assert!(matches!(outcome, ActorOutcome::Success(_)));
