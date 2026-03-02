@@ -119,10 +119,20 @@ pub async fn show(args: &ScenariosShowArgs) -> Result<(), ThoughtJackError> {
 /// error if execution fails.
 ///
 /// Implements: TJ-SPEC-010 F-008
-#[allow(clippy::unused_async)]
 pub async fn run_scenario(
-    _args: &ScenariosRunArgs,
-    _cancel: CancellationToken,
+    args: &ScenariosRunArgs,
+    cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
-    todo!("scenarios run wired in engine prompt")
+    let scenario = scenarios::find_scenario(&args.name).ok_or_else(|| {
+        let mut message = format!("Unknown scenario '{}'", args.name);
+
+        if let Some(suggestion) = scenarios::suggest_scenario(&args.name) {
+            let _ = write!(message, "\n\nDid you mean '{suggestion}'?");
+        }
+
+        message.push_str("\n\nUse 'thoughtjack scenarios list' to see available scenarios.");
+        ThoughtJackError::Usage(message)
+    })?;
+
+    super::run::run_from_yaml(scenario.yaml, &args.run, cancel).await
 }

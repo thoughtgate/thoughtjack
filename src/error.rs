@@ -15,7 +15,7 @@ use thiserror::Error;
 /// These errors cover failure modes during OATF document parsing
 /// and validation.
 ///
-/// Implements: TJ-SPEC-007 F-009
+/// Implements: TJ-SPEC-007 F-007
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// YAML parsing failed
@@ -72,7 +72,7 @@ pub enum ConfigError {
 
 /// A single validation issue found during configuration validation.
 ///
-/// Implements: TJ-SPEC-007 F-009
+/// Implements: TJ-SPEC-007 F-007
 #[derive(Debug, Clone)]
 pub struct ValidationIssue {
     /// JSON path to the problematic field (e.g., "phases[2].advance.trigger")
@@ -95,7 +95,7 @@ impl std::fmt::Display for ValidationIssue {
 
 /// Severity level for validation issues.
 ///
-/// Implements: TJ-SPEC-007 F-009
+/// Implements: TJ-SPEC-007 F-007
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     /// Error - validation failure that prevents configuration from being used
@@ -112,7 +112,7 @@ pub enum Severity {
 ///
 /// These codes follow Unix conventions and TJ-SPEC-007 v2 requirements.
 ///
-/// Implements: TJ-SPEC-007 F-009
+/// Implements: TJ-SPEC-007 F-006
 pub struct ExitCode;
 
 impl ExitCode {
@@ -214,7 +214,7 @@ pub enum LoaderError {
 /// This enum aggregates all domain-specific errors and provides
 /// a unified interface for error handling and exit code mapping.
 ///
-/// Implements: TJ-SPEC-007 F-009
+/// Implements: TJ-SPEC-007 F-006, F-007
 #[derive(Debug, Error)]
 pub enum ThoughtJackError {
     /// Configuration loading or validation error
@@ -274,7 +274,7 @@ impl ThoughtJackError {
     /// Maps each error variant to its corresponding exit code
     /// as defined in TJ-SPEC-007 v2.
     ///
-    /// Implements: TJ-SPEC-007 F-009
+    /// Implements: TJ-SPEC-007 F-006
     #[must_use]
     pub const fn exit_code(&self) -> i32 {
         match self {

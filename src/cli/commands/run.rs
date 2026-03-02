@@ -37,22 +37,43 @@ use crate::verdict::output::{
 ///
 /// Implements: TJ-SPEC-007 F-002
 pub async fn run(args: &RunArgs, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
-    // 1. Read YAML
     let yaml = std::fs::read_to_string(&args.config)?;
+    run_from_yaml(&yaml, args, cancel).await
+}
 
-    // 2. Load document
-    let loaded = loader::load_document(&yaml)?;
+/// Execute an OATF scenario from raw YAML content.
+///
+/// Shared implementation for both `run` (reads from file) and
+/// `scenarios run` (uses built-in YAML).
+///
+/// # Errors
+///
+/// Returns an error if scenario loading, execution, or verdict output fails.
+///
+/// Implements: TJ-SPEC-007 F-002
+pub async fn run_from_yaml(
+    yaml: &str,
+    args: &RunArgs,
+    cancel: CancellationToken,
+) -> Result<(), ThoughtJackError> {
+    // EC-CLI-010: warn when synthesize validation is bypassed
+    if args.raw_synthesize {
+        tracing::warn!("Synthesize output validation disabled (--raw-synthesize)");
+    }
 
-    // 3. Build ActorConfig from RunArgs
+    // 1. Load document
+    let loaded = loader::load_document(yaml)?;
+
+    // 2. Build ActorConfig from RunArgs
     let config = build_actor_config(args);
 
-    // 4. Set up EventEmitter
+    // 3. Set up EventEmitter
     let events: Arc<EventEmitter> = match &args.events_file {
         Some(path) => Arc::new(EventEmitter::from_file(path)?),
         None => Arc::new(EventEmitter::noop()),
     };
 
-    // 5. Get actors
+    // 4. Get actors
     let actors = loaded
         .document
         .attack
@@ -61,7 +82,7 @@ pub async fn run(args: &RunArgs, cancel: CancellationToken) -> Result<(), Though
         .as_ref()
         .ok_or_else(|| ThoughtJackError::Usage("no actors in document".into()))?;
 
-    // 6. Execute: single-actor bypass or multi-actor orchestrate
+    // 5. Execute: single-actor bypass or multi-actor orchestrate
     let start = Instant::now();
     let (outcomes, trace) = if actors.len() <= 1 {
         run_single_actor(&loaded, &config, &events, cancel).await?
@@ -74,7 +95,7 @@ pub async fn run(args: &RunArgs, cancel: CancellationToken) -> Result<(), Though
     #[allow(clippy::cast_possible_truncation)]
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    // 7. Build ActorInfo list for verdict
+    // 6. Build ActorInfo list for verdict
     let actor_infos: Vec<ActorInfo> = actors
         .iter()
         .map(|a| ActorInfo {
@@ -83,7 +104,7 @@ pub async fn run(args: &RunArgs, cancel: CancellationToken) -> Result<(), Though
         })
         .collect();
 
-    // 8. Evaluate verdict
+    // 7. Evaluate verdict
     let trace_snapshot = trace.snapshot();
     let eval_config = EvaluationConfig {
         cel_evaluator: None,
@@ -99,16 +120,16 @@ pub async fn run(args: &RunArgs, cancel: CancellationToken) -> Result<(), Though
         &source,
     );
 
-    // 9. Build actor statuses from outcomes
+    // 8. Build actor statuses from outcomes
     let actor_statuses = build_actor_statuses(&outcomes, actors);
 
-    // 10. Resolve grace period
+    // 9. Resolve grace period
     let grace_applied = resolve_grace_period(
         args.grace_period.map(Into::into),
         loaded.document.attack.grace_period.as_deref(),
     );
 
-    // 11. Build output
+    // 10. Build output
     let output = build_verdict_output(
         &loaded.document.attack,
         &verdict,
@@ -118,15 +139,15 @@ pub async fn run(args: &RunArgs, cancel: CancellationToken) -> Result<(), Though
         duration_ms,
     );
 
-    // 12. Write JSON verdict if --output
+    // 11. Write JSON verdict if --output
     if let Some(ref path) = args.output {
         write_json_verdict(&output, path)?;
     }
 
-    // 13. Print human summary
+    // 12. Print human summary
     print_human_summary(&output);
 
-    // 14. Exit code
+    // 13. Exit code
     let code = verdict_exit_code(&verdict.result);
     if code != 0 {
         return Err(ThoughtJackError::Verdict {

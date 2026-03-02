@@ -95,6 +95,86 @@ pub fn build_actor_config(args: &RunArgs) -> ActorConfig {
 }
 
 // ============================================================================
+// Mode-Specific Header Resolution (TJ-SPEC-007 §4)
+// ============================================================================
+
+/// Returns the env-var prefix for a given actor mode.
+///
+/// Used for `THOUGHTJACK_{PREFIX}_AUTHORIZATION` and
+/// `THOUGHTJACK_{PREFIX}_HEADER_{NAME}` env vars.
+fn mode_env_prefix(mode: &str) -> Option<&'static str> {
+    match mode {
+        "mcp_client" => Some("MCP_CLIENT"),
+        "a2a_client" => Some("A2A_CLIENT"),
+        "ag_ui_client" => Some("AGUI"),
+        _ => None,
+    }
+}
+
+/// Merges base headers with override headers (case-insensitive dedup).
+///
+/// Override headers take precedence over base headers for the same
+/// header name (case-insensitive comparison).
+fn merge_headers(
+    base: &[(String, String)],
+    overrides: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut merged: Vec<(String, String)> = base.to_vec();
+    for (name, value) in overrides {
+        merged.retain(|(k, _)| !k.eq_ignore_ascii_case(name));
+        merged.push((name.clone(), value.clone()));
+    }
+    merged
+}
+
+/// Collects mode-specific headers from environment variables.
+///
+/// Reads:
+/// - `THOUGHTJACK_{PREFIX}_AUTHORIZATION` → `Authorization` header
+/// - `THOUGHTJACK_{PREFIX}_HEADER_{NAME}` → arbitrary header
+///   (underscores in `{NAME}` become hyphens)
+fn collect_env_headers(prefix: &str) -> Vec<(String, String)> {
+    let mut headers = Vec::new();
+
+    // Check for THOUGHTJACK_{PREFIX}_AUTHORIZATION
+    let auth_var = format!("THOUGHTJACK_{prefix}_AUTHORIZATION");
+    if let Ok(value) = std::env::var(&auth_var) {
+        headers.push(("Authorization".to_string(), value));
+    }
+
+    // Scan env for THOUGHTJACK_{PREFIX}_HEADER_* vars
+    let header_prefix = format!("THOUGHTJACK_{prefix}_HEADER_");
+    for (key, value) in std::env::vars() {
+        if let Some(suffix) = key.strip_prefix(&header_prefix) {
+            let header_name = suffix.replace('_', "-");
+            headers.push((header_name, value));
+        }
+    }
+
+    headers
+}
+
+/// Resolves HTTP headers for a given actor mode.
+///
+/// Merges base headers (from `--header`) with mode-specific env vars:
+/// - `THOUGHTJACK_{PREFIX}_AUTHORIZATION` → sets `Authorization` header
+/// - `THOUGHTJACK_{PREFIX}_HEADER_{NAME}` → sets arbitrary header
+///   (underscores in `{NAME}` become hyphens)
+///
+/// Mode-specific env vars take precedence over `--header` for the same
+/// header name (case-insensitive).
+///
+/// Implements: TJ-SPEC-007 F-002
+fn resolve_headers_for_mode(base: &[(String, String)], mode: &str) -> Vec<(String, String)> {
+    let Some(prefix) = mode_env_prefix(mode) else {
+        return base.to_vec();
+    };
+
+    let env_headers = collect_env_headers(prefix);
+    merge_headers(base, &env_headers)
+}
+
+// ============================================================================
 // run_actor
 // ============================================================================
 
@@ -357,8 +437,9 @@ async fn run_agui_client_actor(
         bind_address: endpoint.to_string(),
     });
 
-    // Create driver
-    let driver = agui::create_agui_driver(endpoint, config.headers.clone(), config.raw_synthesize);
+    // Create driver (merge mode-specific auth env vars with --header)
+    let headers = resolve_headers_for_mode(&config.headers, "ag_ui_client");
+    let driver = agui::create_agui_driver(endpoint, headers, config.raw_synthesize);
 
     // Create phase engine
     let engine = PhaseEngine::new(document, actor_index);
@@ -500,12 +581,9 @@ async fn run_a2a_client_actor(
         bind_address: endpoint.to_string(),
     });
 
-    // Create driver
-    let driver = a2a_client::create_a2a_client_driver(
-        endpoint,
-        config.headers.clone(),
-        config.raw_synthesize,
-    );
+    // Create driver (merge mode-specific auth env vars with --header)
+    let headers = resolve_headers_for_mode(&config.headers, "a2a_client");
+    let driver = a2a_client::create_a2a_client_driver(endpoint, headers, config.raw_synthesize);
 
     // Create phase engine
     let engine = PhaseEngine::new(document, actor_index);
@@ -579,11 +657,13 @@ async fn run_mcp_client_actor(
             (driver, format!("stdio:{command}"))
         }
         (None, Some(endpoint)) => {
+            // Merge mode-specific auth env vars with --header
+            let headers = resolve_headers_for_mode(&config.headers, "mcp_client");
             let driver = mcp_client::create_mcp_client_driver(
                 None,
                 &[],
                 Some(endpoint),
-                &config.headers,
+                &headers,
                 config.raw_synthesize,
             )?;
             (driver, endpoint.to_string())
@@ -1139,5 +1219,70 @@ attack:
             err.to_string().contains("mcp_client mode requires"),
             "Expected transport error, got: {err}"
         );
+    }
+
+    // ---- Header resolution tests ----
+
+    #[test]
+    fn resolve_headers_passthrough_for_server_mode() {
+        let base = vec![("X-Custom".to_string(), "val".to_string())];
+        let resolved = resolve_headers_for_mode(&base, "mcp_server");
+        assert_eq!(resolved, base, "server modes should pass through unchanged");
+    }
+
+    #[test]
+    fn mode_env_prefix_maps_client_modes() {
+        assert_eq!(mode_env_prefix("mcp_client"), Some("MCP_CLIENT"));
+        assert_eq!(mode_env_prefix("a2a_client"), Some("A2A_CLIENT"));
+        assert_eq!(mode_env_prefix("ag_ui_client"), Some("AGUI"));
+        assert_eq!(mode_env_prefix("mcp_server"), None);
+        assert_eq!(mode_env_prefix("a2a_server"), None);
+    }
+
+    #[test]
+    fn merge_headers_override_replaces_base() {
+        let base = vec![("Authorization".to_string(), "Bearer cli-token".to_string())];
+        let overrides = vec![("Authorization".to_string(), "Bearer env-token".to_string())];
+        let merged = merge_headers(&base, &overrides);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].1, "Bearer env-token");
+    }
+
+    #[test]
+    fn merge_headers_case_insensitive() {
+        let base = vec![("authorization".to_string(), "Bearer cli".to_string())];
+        let overrides = vec![("Authorization".to_string(), "Bearer env".to_string())];
+        let merged = merge_headers(&base, &overrides);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].0, "Authorization");
+        assert_eq!(merged[0].1, "Bearer env");
+    }
+
+    #[test]
+    fn merge_headers_appends_new() {
+        let base = vec![("Accept".to_string(), "application/json".to_string())];
+        let overrides = vec![("X-Api-Key".to_string(), "key-123".to_string())];
+        let merged = merge_headers(&base, &overrides);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].0, "Accept");
+        assert_eq!(merged[1].0, "X-Api-Key");
+    }
+
+    #[test]
+    fn merge_headers_empty_override_preserves_base() {
+        let base = vec![
+            ("Accept".to_string(), "application/json".to_string()),
+            ("X-Custom".to_string(), "value".to_string()),
+        ];
+        let merged = merge_headers(&base, &[]);
+        assert_eq!(merged, base);
+    }
+
+    #[test]
+    fn merge_headers_empty_base_uses_overrides() {
+        let overrides = vec![("Authorization".to_string(), "Bearer token".to_string())];
+        let merged = merge_headers(&[], &overrides);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].1, "Bearer token");
     }
 }

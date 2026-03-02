@@ -80,52 +80,52 @@ pub struct RunArgs {
     #[arg(short, long, env = "THOUGHTJACK_CONFIG")]
     pub config: PathBuf,
 
-    /// Start an MCP server on stdio (name for actor matching).
-    #[arg(long)]
+    /// MCP server HTTP listen address (omit for stdio).
+    #[arg(long, value_name = "ADDR:PORT")]
     pub mcp_server: Option<String>,
 
     /// Spawn MCP client by running a command (e.g., "npx -y @modelcontextprotocol/server-everything").
-    #[arg(long)]
+    #[arg(long, value_name = "CMD")]
     pub mcp_client_command: Option<String>,
 
     /// Extra arguments for `--mcp-client-command`.
-    #[arg(long, requires = "mcp_client_command")]
+    #[arg(long, value_name = "ARGS", requires = "mcp_client_command")]
     pub mcp_client_args: Option<String>,
 
     /// Connect MCP client to an HTTP endpoint instead of spawning.
-    #[arg(long, conflicts_with = "mcp_client_command")]
+    #[arg(long, value_name = "URL", conflicts_with = "mcp_client_command")]
     pub mcp_client_endpoint: Option<String>,
 
     /// Connect AG-UI client to an endpoint.
-    #[arg(long)]
+    #[arg(long, value_name = "URL")]
     pub agui_client_endpoint: Option<String>,
 
-    /// Start an A2A server on the given `[host:]port`.
-    #[arg(long)]
+    /// A2A server listen address [default: 127.0.0.1:9090].
+    #[arg(long, value_name = "ADDR:PORT")]
     pub a2a_server: Option<String>,
 
-    /// Connect A2A client to an endpoint.
-    #[arg(long)]
+    /// A2A client target endpoint.
+    #[arg(long, value_name = "URL")]
     pub a2a_client_endpoint: Option<String>,
 
-    /// Grace period duration after final phase (e.g., "30s", "2m").
-    #[arg(long)]
+    /// Override document grace period.
+    #[arg(long, value_name = "DURATION")]
     pub grace_period: Option<humantime::Duration>,
 
-    /// Maximum session duration (e.g., "5m", "1h").
-    #[arg(long, default_value = "5m")]
+    /// Safety timeout for entire session [default: 5m].
+    #[arg(long, value_name = "DURATION", default_value = "5m")]
     pub max_session: humantime::Duration,
 
-    /// Timeout for server readiness gate (e.g., "30s", "2m").
-    #[arg(long, default_value = "30s")]
+    /// Timeout for server readiness gate [default: 30s].
+    #[arg(long, value_name = "DURATION", default_value = "30s")]
     pub readiness_timeout: humantime::Duration,
 
-    /// Verdict output file path ("-" for stdout).
-    #[arg(short, long)]
+    /// Write JSON verdict to file (use `-` for stdout).
+    #[arg(short, long, value_name = "PATH")]
     pub output: Option<String>,
 
-    /// Extra HTTP headers for client-mode transports (repeatable).
-    #[arg(long)]
+    /// HTTP headers for client transports (repeatable).
+    #[arg(long, value_name = "KEY:VALUE")]
     pub header: Vec<String>,
 
     /// Disable semantic (LLM-as-judge) indicator evaluation.
@@ -239,7 +239,7 @@ pub struct ValidateArgs {
 
 /// Arguments for version display.
 ///
-/// Implements: TJ-SPEC-007 F-008
+/// Implements: TJ-SPEC-007 F-005
 #[derive(Args, Debug)]
 pub struct VersionArgs {
     /// Output format.
@@ -253,7 +253,7 @@ pub struct VersionArgs {
 
 /// Color output choice.
 ///
-/// Implements: TJ-SPEC-007 F-012
+/// Implements: TJ-SPEC-007 F-001
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum ColorChoice {
     /// Auto-detect terminal support.

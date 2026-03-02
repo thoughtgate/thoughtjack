@@ -87,11 +87,12 @@ Commands:
   help         Print help for a command
 
 Options:
-  -v, --verbose...     Increase logging verbosity (-v, -vv, -vvv)
-  -q, --quiet          Suppress non-essential output
-      --color <WHEN>   Colorize output [default: auto] [possible values: auto, always, never]
-  -h, --help           Print help
-  -V, --version        Print version
+  -v, --verbose...           Increase logging verbosity (-v, -vv, -vvv)
+  -q, --quiet                Suppress non-essential output
+      --color <WHEN>         Colorize output [default: auto] [possible values: auto, always, never]
+      --log-format <FORMAT>  Log output format [default: human] [possible values: human, json]
+  -h, --help                 Print help
+  -V, --version              Print version
 ```
 
 **Implementation:**
@@ -115,12 +116,16 @@ pub struct Cli {
     /// Color output control
     #[arg(long, default_value = "auto", global = true, env = "THOUGHTJACK_COLOR")]
     pub color: ColorChoice,
+
+    /// Log output format (human-readable or JSON)
+    #[arg(long, default_value = "human", global = true, env = "THOUGHTJACK_LOG_FORMAT")]
+    pub log_format: LogFormatChoice,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
     /// Execute an OATF document
-    Run(RunArgs),
+    Run(Box<RunArgs>),
 
     /// List, inspect, and run built-in attack scenarios
     Scenarios(ScenariosCommand),
@@ -166,12 +171,17 @@ thoughtjack run --config <path>
 # Session control
   --grace-period <duration>         # Override document grace period
   --max-session <duration>          # Safety timeout [default: 5m]
+  --readiness-timeout <duration>    # Timeout for server readiness gate [default: 30s]
 
 # Output
-  --output <path>                   # Write JSON verdict to file (use - for stdout)
+  -o, --output <path>               # Write JSON verdict to file (use - for stdout)
   --header <key:value>              # Global HTTP headers for client transports (repeatable)
   --no-semantic                     # Skip semantic indicators
   --raw-synthesize                  # Bypass synthesize output validation (inject LLM output as-is)
+
+# Observability (see TJ-SPEC-008)
+  --metrics-port <port>             # Enable Prometheus metrics endpoint
+  --events-file <path>              # Write structured events to JSONL file
 ```
 
 **Implementation:**
@@ -223,14 +233,18 @@ pub struct RunArgs {
     #[arg(long, value_name = "DURATION", default_value = "5m")]
     pub max_session: humantime::Duration,
 
+    /// Timeout for server readiness gate [default: 30s]
+    #[arg(long, value_name = "DURATION", default_value = "30s")]
+    pub readiness_timeout: humantime::Duration,
+
     // --- Output ---
-    /// Write JSON verdict to file (use - for stdout)
-    #[arg(long, value_name = "PATH")]
+    /// Write JSON verdict to file (use `-` for stdout)
+    #[arg(short, long, value_name = "PATH")]
     pub output: Option<String>,
 
     /// HTTP headers for client transports (repeatable)
-    #[arg(long = "header", value_name = "KEY:VALUE")]
-    pub headers: Vec<String>,
+    #[arg(long, value_name = "KEY:VALUE")]
+    pub header: Vec<String>,
 
     /// Skip semantic indicators
     #[arg(long)]
@@ -239,6 +253,15 @@ pub struct RunArgs {
     /// Bypass synthesize output validation
     #[arg(long)]
     pub raw_synthesize: bool,
+
+    // --- Observability (TJ-SPEC-008) ---
+    /// Enable Prometheus metrics endpoint on the specified port
+    #[arg(long, env = "THOUGHTJACK_METRICS_PORT")]
+    pub metrics_port: Option<u16>,
+
+    /// Write structured events to a JSONL file instead of stderr
+    #[arg(long, env = "THOUGHTJACK_EVENTS_FILE")]
+    pub events_file: Option<PathBuf>,
 }
 ```
 
@@ -291,24 +314,34 @@ thoughtjack scenarios run rug-pull --mcp-server 0.0.0.0:8080 --output verdict.js
 
 **Implementation:**
 ```rust
+/// Wrapper struct for `scenarios` subcommand (Clap nested subcommand pattern).
+#[derive(Args)]
+pub struct ScenariosCommand {
+    #[command(subcommand)]
+    pub subcommand: ScenariosSubcommand,
+}
+
 #[derive(Subcommand)]
-pub enum ScenariosCommand {
+pub enum ScenariosSubcommand {
     /// List available built-in scenarios
     List(ScenariosListArgs),
     /// Display scenario details
     Show(ScenariosShowArgs),
     /// Execute a built-in scenario
-    Run(ScenariosRunArgs),
+    Run(Box<ScenariosRunArgs>),
 }
 
 #[derive(Args)]
 pub struct ScenariosListArgs {
-    /// Filter by category
+    /// Filter by category (typed enum: injection, exfiltration, etc.)
     #[arg(long)]
-    pub category: Option<String>,
+    pub category: Option<ScenarioCategory>,
     /// Filter by tag
     #[arg(long)]
     pub tag: Option<String>,
+    /// Output format
+    #[arg(long, default_value = "human")]
+    pub format: OutputFormat,
 }
 
 #[derive(Args)]
@@ -364,13 +397,47 @@ The system SHALL provide version and build information.
 
 **Acceptance Criteria:**
 - Shows version, commit hash, build date, Rust version
-- Machine-parseable output
+- Machine-parseable output via `--format json`
 
 **Usage:**
 ```bash
 thoughtjack version
 # thoughtjack 0.5.0 (abc1234 2025-02-25) rustc 1.85.0
+
+thoughtjack version --format json
+# {"version":"0.5.0","git_hash":"abc1234","build_date":"2025-02-25","rustc":"1.85.0",...}
 ```
+
+**Implementation:**
+```rust
+#[derive(Args)]
+pub struct VersionArgs {
+    /// Output format
+    #[arg(short, long, default_value = "human")]
+    pub format: OutputFormat,
+}
+```
+
+### F-006: Exit Codes
+
+The system SHALL use distinct exit codes to communicate verdict results and error categories to callers (CI systems, scripts). See §5 for the full mapping table.
+
+**Acceptance Criteria:**
+- Verdict results map to exit codes 0–3
+- Runtime errors use exit code 10
+- Usage errors use exit code 64
+- Signal interrupts use Unix-standard 128+signal codes
+
+### F-007: Error Types
+
+The system SHALL provide structured error types that map to appropriate exit codes and produce clear diagnostic messages.
+
+**Acceptance Criteria:**
+- `ThoughtJackError` aggregates all domain errors with `exit_code()` method
+- `ConfigError` covers OATF parsing and validation failures
+- `TransportError` covers I/O and connection failures
+- `EngineError` covers phase engine, driver, and SDK failures
+- Validation errors include JSON path, message, and severity level
 
 ---
 
@@ -553,24 +620,35 @@ src/cli/
 
 ### 9.2 Error Formatting
 
-```rust
-impl ThoughtJackError {
-    pub fn format(&self, color: bool) -> String {
-        let prefix = if color {
-            "error:".red().bold().to_string()
-        } else {
-            "error:".to_string()
-        };
+Errors are printed via `Display` trait (`eprintln!("error: {e}")`) in `main.rs`. Each
+variant's `#[error(...)]` message provides context. Validation errors nest under
+`ConfigError::ValidationError` rather than a top-level variant. Transport-missing
+errors use the `Usage(String)` variant with a descriptive message.
 
-        match self {
-            ThoughtJackError::Config(e) => format!("{prefix} Configuration error\n\n{e}"),
-            ThoughtJackError::Validation(errors) => format!("{prefix} Document validation failed\n\n{errors}"),
-            ThoughtJackError::TransportMissing { actor, mode, options } =>
-                format!("{prefix} Actor '{actor}' ({mode}) requires {options}"),
-            ThoughtJackError::Io(e) => format!("{prefix} {e}"),
-            ThoughtJackError::Usage(msg) => format!("{prefix} {msg}\n\nFor more information, try '--help'"),
-        }
-    }
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum ThoughtJackError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    Transport(#[from] TransportError),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Usage(String),
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+    #[error(transparent)]
+    Loader(#[from] LoaderError),
+    #[error("orchestration error: {0}")]
+    Orchestration(String),
+    #[error("{message}")]
+    Verdict { message: String, code: i32 },
+    // ... JSON, YAML variants
+}
+
+impl ThoughtJackError {
+    pub const fn exit_code(&self) -> i32 { /* see F-006 */ }
 }
 ```
 
@@ -646,6 +724,9 @@ impl ThoughtJackError {
 | `THOUGHTJACK_CONFIG` | — | OATF document path |
 | `THOUGHTJACK_COLOR` | `auto` | Color output mode |
 | `THOUGHTJACK_LOG_LEVEL` | `warn` | Logging level (overrides -v) |
+| `THOUGHTJACK_LOG_FORMAT` | `human` | Log output format (`human` or `json`) |
+| `THOUGHTJACK_METRICS_PORT` | — | Prometheus metrics endpoint port |
+| `THOUGHTJACK_EVENTS_FILE` | — | JSONL file for structured events |
 | `THOUGHTJACK_MCP_CLIENT_AUTHORIZATION` | — | MCP client Authorization header |
 | `THOUGHTJACK_A2A_CLIENT_AUTHORIZATION` | — | A2A client Authorization header |
 | `THOUGHTJACK_AGUI_AUTHORIZATION` | — | AG-UI Authorization header |
