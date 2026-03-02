@@ -542,8 +542,9 @@ mod tests {
 
     #[tokio::test]
     async fn orchestrate_single_server_completes() {
-        let loaded = load_test_doc(
-            r#"
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
 oatf: "0.1"
 attack:
   name: test
@@ -556,36 +557,40 @@ attack:
           inputSchema:
             type: object
 "#,
-        );
+            );
 
-        let config = default_actor_config(Duration::from_secs(10));
-        let events = Arc::new(EventEmitter::noop());
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
+            let config = default_actor_config(Duration::from_secs(10));
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
+            let cancel_clone = cancel.clone();
 
-        // Cancel after short delay — server would block on stdio otherwise
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            cancel_clone.cancel();
-        });
+            // Cancel after short delay — server would block on stdio otherwise
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                cancel_clone.cancel();
+            });
 
-        let result = orchestrate(&loaded, &config, &events, cancel)
-            .await
-            .unwrap();
-        assert_eq!(result.outcomes.len(), 1);
-        // Should be success with Cancelled termination (cancel fired before terminal)
-        match &result.outcomes[0] {
-            ActorOutcome::Success(r) => {
-                assert_eq!(r.actor_name, "default");
+            let result = orchestrate(&loaded, &config, &events, cancel)
+                .await
+                .unwrap();
+            assert_eq!(result.outcomes.len(), 1);
+            // Should be success with Cancelled termination (cancel fired before terminal)
+            match &result.outcomes[0] {
+                ActorOutcome::Success(r) => {
+                    assert_eq!(r.actor_name, "default");
+                }
+                other => panic!("Expected Success, got: {other:?}"),
             }
-            other => panic!("Expected Success, got: {other:?}"),
-        }
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     #[tokio::test]
     async fn orchestrate_mixed_outcomes() {
-        let loaded = load_test_doc(
-            r#"
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
 oatf: "0.1"
 attack:
   name: test
@@ -611,31 +616,35 @@ attack:
                   - role: user
                     content: "Hello"
 "#,
-        );
+            );
 
-        // No --agui-client-endpoint, so ag_ui_client will fail
-        let config = default_actor_config(Duration::from_secs(5));
-        let events = Arc::new(EventEmitter::noop());
-        let cancel = CancellationToken::new();
+            // No --agui-client-endpoint, so ag_ui_client will fail
+            let config = default_actor_config(Duration::from_secs(5));
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
 
-        let result = orchestrate(&loaded, &config, &events, cancel)
-            .await
-            .unwrap();
+            let result = orchestrate(&loaded, &config, &events, cancel)
+                .await
+                .unwrap();
 
-        assert_eq!(result.outcomes.len(), 2);
+            assert_eq!(result.outcomes.len(), 2);
 
-        // Check we have both a success and an error
-        let has_error = result
-            .outcomes
-            .iter()
-            .any(|o| matches!(o, ActorOutcome::Error { .. }));
-        assert!(has_error, "Expected at least one Error outcome");
+            // Check we have both a success and an error
+            let has_error = result
+                .outcomes
+                .iter()
+                .any(|o| matches!(o, ActorOutcome::Error { .. }));
+            assert!(has_error, "Expected at least one Error outcome");
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     #[tokio::test]
     async fn max_session_timeout_cancels() {
-        let loaded = load_test_doc(
-            r#"
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
 oatf: "0.1"
 attack:
   name: test
@@ -654,34 +663,38 @@ attack:
           count: 999
       - name: terminal
 "#,
-        );
+            );
 
-        let config = default_actor_config(Duration::from_millis(500));
-        let events = Arc::new(EventEmitter::noop());
-        let cancel = CancellationToken::new();
+            let config = default_actor_config(Duration::from_millis(500));
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
 
-        let result = orchestrate(&loaded, &config, &events, cancel)
-            .await
-            .unwrap();
+            let result = orchestrate(&loaded, &config, &events, cancel)
+                .await
+                .unwrap();
 
-        assert_eq!(result.outcomes.len(), 1);
-        // Actor should be cancelled/aborted due to max_session expiry.
-        // Depending on timing, it may be Success(Cancelled) or Panic (aborted).
-        match &result.outcomes[0] {
-            ActorOutcome::Success(r) => {
-                assert_eq!(r.actor_name, "default");
+            assert_eq!(result.outcomes.len(), 1);
+            // Actor should be cancelled/aborted due to max_session expiry.
+            // Depending on timing, it may be Success(Cancelled) or Panic (aborted).
+            match &result.outcomes[0] {
+                ActorOutcome::Success(r) => {
+                    assert_eq!(r.actor_name, "default");
+                }
+                ActorOutcome::Panic { .. } | ActorOutcome::Error { .. } => {
+                    // Task was aborted before graceful cancel — acceptable
+                }
             }
-            ActorOutcome::Panic { .. } | ActorOutcome::Error { .. } => {
-                // Task was aborted before graceful cancel — acceptable
-            }
-        }
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     #[tokio::test]
     async fn zero_client_shutdown() {
-        // Only server actors — shutdown triggers after all servers complete or cancel
-        let loaded = load_test_doc(
-            r#"
+        tokio::time::timeout(Duration::from_secs(15), async {
+            // Only server actors — shutdown triggers after all servers complete or cancel
+            let loaded = load_test_doc(
+                r#"
 oatf: "0.1"
 attack:
   name: test
@@ -694,24 +707,27 @@ attack:
           inputSchema:
             type: object
 "#,
-        );
+            );
 
-        let config = default_actor_config(Duration::from_secs(10));
-        let events = Arc::new(EventEmitter::noop());
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
+            let config = default_actor_config(Duration::from_secs(10));
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
+            let cancel_clone = cancel.clone();
 
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            cancel_clone.cancel();
-        });
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                cancel_clone.cancel();
+            });
 
-        let result = orchestrate(&loaded, &config, &events, cancel)
-            .await
-            .unwrap();
+            let result = orchestrate(&loaded, &config, &events, cancel)
+                .await
+                .unwrap();
 
-        // Single server actor should have an outcome
-        assert_eq!(result.outcomes.len(), 1);
+            // Single server actor should have an outcome
+            assert_eq!(result.outcomes.len(), 1);
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     // ---- Edge case tests (EC-ORCH-*) ----
@@ -720,8 +736,9 @@ attack:
     /// + short timeout → times out gracefully without blocking forever.
     #[tokio::test]
     async fn ec_orch_002_await_extractor_timeout() {
-        let loaded = load_test_doc(
-            r#"
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
 oatf: "0.1"
 attack:
   name: test
@@ -753,25 +770,28 @@ attack:
                   inputSchema:
                     type: object
 "#,
-        );
+            );
 
-        let config = default_actor_config(Duration::from_secs(5));
-        let events = Arc::new(EventEmitter::noop());
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
+            let config = default_actor_config(Duration::from_secs(5));
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
+            let cancel_clone = cancel.clone();
 
-        // Cancel after the await_extractors timeout has had time to fire
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            cancel_clone.cancel();
-        });
+            // Cancel after the await_extractors timeout has had time to fire
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                cancel_clone.cancel();
+            });
 
-        let result = orchestrate(&loaded, &config, &events, cancel)
-            .await
-            .unwrap();
+            let result = orchestrate(&loaded, &config, &events, cancel)
+                .await
+                .unwrap();
 
-        // Both actors should complete (consumer timed out but proceeded)
-        assert_eq!(result.outcomes.len(), 2);
+            // Both actors should complete (consumer timed out but proceeded)
+            assert_eq!(result.outcomes.len(), 2);
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     /// EC-ORCH-010: Two actors with the same `name:` — rejected at load time
@@ -820,91 +840,101 @@ attack:
     /// no data races, all values retrievable.
     #[tokio::test]
     async fn ec_orch_011_high_contention_store() {
-        let store = ExtractorStore::new();
-        let mut handles = Vec::new();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let store = ExtractorStore::new();
+            let mut handles = Vec::new();
 
-        for i in 0..50 {
-            let store_clone = store.clone();
-            handles.push(tokio::spawn(async move {
-                let actor = format!("actor_{i}");
-                let value = format!("value_{i}");
-                store_clone.set(&actor, "token", value.clone());
-                // Read back immediately
-                let got = store_clone.get(&actor, "token");
-                assert_eq!(got, Some(value));
-            }));
-        }
+            for i in 0..50 {
+                let store_clone = store.clone();
+                handles.push(tokio::spawn(async move {
+                    let actor = format!("actor_{i}");
+                    let value = format!("value_{i}");
+                    store_clone.set(&actor, "token", value.clone());
+                    // Read back immediately
+                    let got = store_clone.get(&actor, "token");
+                    assert_eq!(got, Some(value));
+                }));
+            }
 
-        for handle in handles {
-            handle.await.unwrap();
-        }
+            for handle in handles {
+                handle.await.unwrap();
+            }
 
-        // Verify all 50 values are present
-        let all = store.all_qualified();
-        assert_eq!(all.len(), 50);
-        for i in 0..50 {
-            let key = format!("actor_{i}.token");
-            assert_eq!(
-                all.get(&key),
-                Some(&format!("value_{i}")),
-                "missing or wrong value for {key}"
-            );
-        }
+            // Verify all 50 values are present
+            let all = store.all_qualified();
+            assert_eq!(all.len(), 50);
+            for i in 0..50 {
+                let key = format!("actor_{i}.token");
+                assert_eq!(
+                    all.get(&key),
+                    Some(&format!("value_{i}")),
+                    "missing or wrong value for {key}"
+                );
+            }
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     /// EC-ORCH-012: Multiple actors emitting events → merged trace preserves
     /// per-actor ordering via monotonic sequence numbers.
     #[tokio::test]
     async fn ec_orch_012_trace_ordering() {
-        let trace = SharedTrace::new();
-        let mut handles = Vec::new();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let trace = SharedTrace::new();
+            let mut handles = Vec::new();
 
-        // 5 actors, each emitting 10 events
-        for actor_id in 0..5 {
-            let trace_clone = trace.clone();
-            handles.push(tokio::spawn(async move {
-                for seq in 0..10 {
-                    trace_clone.append(
-                        &format!("actor_{actor_id}"),
-                        "phase_1",
-                        crate::engine::types::Direction::Incoming,
-                        &format!("event_{seq}"),
-                        &serde_json::json!({"actor": actor_id, "seq": seq}),
+            // 5 actors, each emitting 10 events
+            for actor_id in 0..5 {
+                let trace_clone = trace.clone();
+                handles.push(tokio::spawn(async move {
+                    for seq in 0..10 {
+                        trace_clone.append(
+                            &format!("actor_{actor_id}"),
+                            "phase_1",
+                            crate::engine::types::Direction::Incoming,
+                            &format!("event_{seq}"),
+                            &serde_json::json!({"actor": actor_id, "seq": seq}),
+                        );
+                    }
+                }));
+            }
+
+            for handle in handles {
+                handle.await.unwrap();
+            }
+
+            let entries = trace.snapshot();
+            assert_eq!(entries.len(), 50);
+
+            // Verify: per-actor events maintain their relative ordering
+            for actor_id in 0..5 {
+                let actor_name = format!("actor_{actor_id}");
+                let actor_entries: Vec<_> =
+                    entries.iter().filter(|e| e.actor == actor_name).collect();
+                assert_eq!(actor_entries.len(), 10);
+
+                // Sequence numbers should be monotonically increasing for each actor
+                for window in actor_entries.windows(2) {
+                    assert!(
+                        window[0].seq < window[1].seq,
+                        "per-actor events should maintain ordering: {} < {}",
+                        window[0].seq,
+                        window[1].seq
                     );
                 }
-            }));
-        }
-
-        for handle in handles {
-            handle.await.unwrap();
-        }
-
-        let entries = trace.snapshot();
-        assert_eq!(entries.len(), 50);
-
-        // Verify: per-actor events maintain their relative ordering
-        for actor_id in 0..5 {
-            let actor_name = format!("actor_{actor_id}");
-            let actor_entries: Vec<_> = entries.iter().filter(|e| e.actor == actor_name).collect();
-            assert_eq!(actor_entries.len(), 10);
-
-            // Sequence numbers should be monotonically increasing for each actor
-            for window in actor_entries.windows(2) {
-                assert!(
-                    window[0].seq < window[1].seq,
-                    "per-actor events should maintain ordering: {} < {}",
-                    window[0].seq,
-                    window[1].seq
-                );
             }
-        }
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     /// EC-ORCH-014: `grace_period: 0` → shutdown proceeds immediately, no delay.
     #[tokio::test]
     async fn ec_orch_014_zero_grace_period() {
-        let loaded = load_test_doc(
-            r#"
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
 oatf: "0.1"
 attack:
   name: test
@@ -917,32 +947,36 @@ attack:
           inputSchema:
             type: object
 "#,
-        );
+            );
 
-        let mut config = default_actor_config(Duration::from_secs(10));
-        config.grace_period = Some(Duration::ZERO);
-        let events = Arc::new(EventEmitter::noop());
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
+            let mut config = default_actor_config(Duration::from_secs(10));
+            config.grace_period = Some(Duration::ZERO);
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
+            let cancel_clone = cancel.clone();
 
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            cancel_clone.cancel();
-        });
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                cancel_clone.cancel();
+            });
 
-        let result = orchestrate(&loaded, &config, &events, cancel)
-            .await
-            .unwrap();
+            let result = orchestrate(&loaded, &config, &events, cancel)
+                .await
+                .unwrap();
 
-        assert_eq!(result.outcomes.len(), 1);
+            assert_eq!(result.outcomes.len(), 1);
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     /// EC-ORCH-016: Only server actors, no clients → servers complete,
     /// orchestrator shuts down cleanly.
     #[tokio::test]
     async fn ec_orch_016_zero_client_shutdown() {
-        let loaded = load_test_doc(
-            r#"
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
 oatf: "0.1"
 attack:
   name: test
@@ -969,44 +1003,47 @@ attack:
                   inputSchema:
                     type: object
 "#,
-        );
+            );
 
-        let config = default_actor_config(Duration::from_secs(10));
-        let events = Arc::new(EventEmitter::noop());
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
+            let config = default_actor_config(Duration::from_secs(10));
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
+            let cancel_clone = cancel.clone();
 
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            cancel_clone.cancel();
-        });
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                cancel_clone.cancel();
+            });
 
-        let result = orchestrate(&loaded, &config, &events, cancel)
-            .await
-            .unwrap();
+            let result = orchestrate(&loaded, &config, &events, cancel)
+                .await
+                .unwrap();
 
-        // Both servers should have outcomes
-        assert_eq!(result.outcomes.len(), 2);
-        // All outcomes should be for servers (no clients)
-        for outcome in &result.outcomes {
-            match outcome {
-                ActorOutcome::Success(r) => {
-                    assert!(
-                        r.actor_name == "server1" || r.actor_name == "server2",
-                        "unexpected actor: {}",
-                        r.actor_name
-                    );
-                }
-                other => {
-                    // Error/Panic outcomes are acceptable depending on timing
-                    let name = other.actor_name();
-                    assert!(
-                        name == "server1" || name == "server2",
-                        "unexpected actor: {name}"
-                    );
+            // Both servers should have outcomes
+            assert_eq!(result.outcomes.len(), 2);
+            // All outcomes should be for servers (no clients)
+            for outcome in &result.outcomes {
+                match outcome {
+                    ActorOutcome::Success(r) => {
+                        assert!(
+                            r.actor_name == "server1" || r.actor_name == "server2",
+                            "unexpected actor: {}",
+                            r.actor_name
+                        );
+                    }
+                    other => {
+                        // Error/Panic outcomes are acceptable depending on timing
+                        let name = other.actor_name();
+                        assert!(
+                            name == "server1" || name == "server2",
+                            "unexpected actor: {name}"
+                        );
+                    }
                 }
             }
-        }
+        })
+        .await
+        .expect("test timed out after 15s");
     }
 
     #[test]

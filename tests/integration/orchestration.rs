@@ -41,26 +41,27 @@ const fn default_actor_config(max_session: Duration) -> ActorConfig {
 
 #[tokio::test]
 async fn two_actor_extractor_handoff() {
-    // MCP server has an extractor that captures a value.
-    // AG-UI client uses await_extractors to resolve it.
-    // Since we can't easily trigger MCP server via HTTP in this test,
-    // we test via orchestrate() with a short max_session and verify
-    // the trace shows both actors ran.
-    let sse_body = format!(
-        "{}{}",
-        sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
-        sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
-    );
-    let router = Router::new().route(
-        "/",
-        post(move || {
-            let body = sse_body.clone();
-            async move { ([("content-type", "text/event-stream")], body) }
-        }),
-    );
-    let mock = MockServer::start(router).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        // MCP server has an extractor that captures a value.
+        // AG-UI client uses await_extractors to resolve it.
+        // Since we can't easily trigger MCP server via HTTP in this test,
+        // we test via orchestrate() with a short max_session and verify
+        // the trace shows both actors ran.
+        let sse_body = format!(
+            "{}{}",
+            sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
+            sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
+        );
+        let router = Router::new().route(
+            "/",
+            post(move || {
+                let body = sse_body.clone();
+                async move { ([("content-type", "text/event-stream")], body) }
+            }),
+        );
+        let mock = MockServer::start(router).await;
 
-    let yaml = r#"
+        let yaml = r#"
 oatf: "0.1"
 attack:
   name: extractor_handoff
@@ -87,32 +88,35 @@ attack:
                     content: "Hello"
 "#;
 
-    let loaded = load_document(yaml).unwrap();
-    let mut config = default_actor_config(Duration::from_secs(5));
-    config.agui_client_endpoint = Some(mock.url());
-    config.mcp_server_bind = Some("127.0.0.1:0".to_string());
-    let events = Arc::new(EventEmitter::noop());
-    let cancel = CancellationToken::new();
+        let loaded = load_document(yaml).unwrap();
+        let mut config = default_actor_config(Duration::from_secs(5));
+        config.agui_client_endpoint = Some(mock.url());
+        config.mcp_server_bind = Some("127.0.0.1:0".to_string());
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
 
-    let result = orchestrate(&loaded, &config, &events, cancel)
-        .await
-        .unwrap();
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
 
-    // Both actors should have outcomes
-    assert_eq!(result.outcomes.len(), 2);
+        // Both actors should have outcomes
+        assert_eq!(result.outcomes.len(), 2);
 
-    // Client should have completed (terminal phase reached or cancelled)
-    let client_outcome = result
-        .outcomes
-        .iter()
-        .find(|o| o.actor_name() == "client")
-        .expect("client outcome missing");
-    match client_outcome {
-        ActorOutcome::Success(r) => {
-            assert_eq!(r.actor_name, "client");
+        // Client should have completed (terminal phase reached or cancelled)
+        let client_outcome = result
+            .outcomes
+            .iter()
+            .find(|o| o.actor_name() == "client")
+            .expect("client outcome missing");
+        match client_outcome {
+            ActorOutcome::Success(r) => {
+                assert_eq!(r.actor_name, "client");
+            }
+            other => panic!("Expected client Success, got: {other:?}"),
         }
-        other => panic!("Expected client Success, got: {other:?}"),
-    }
+    })
+    .await
+    .expect("test timed out after 30s");
 }
 
 // ============================================================================
@@ -121,21 +125,22 @@ attack:
 
 #[tokio::test]
 async fn await_extractors_timeout() {
-    let sse_body = format!(
-        "{}{}",
-        sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
-        sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
-    );
-    let router = Router::new().route(
-        "/",
-        post(move || {
-            let body = sse_body.clone();
-            async move { ([("content-type", "text/event-stream")], body) }
-        }),
-    );
-    let mock = MockServer::start(router).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let sse_body = format!(
+            "{}{}",
+            sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
+            sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
+        );
+        let router = Router::new().route(
+            "/",
+            post(move || {
+                let body = sse_body.clone();
+                async move { ([("content-type", "text/event-stream")], body) }
+            }),
+        );
+        let mock = MockServer::start(router).await;
 
-    let yaml = r#"
+        let yaml = r#"
 oatf: "0.1"
 attack:
   name: await_timeout
@@ -167,30 +172,33 @@ attack:
                     content: "test"
 "#;
 
-    let loaded = load_document(yaml).unwrap();
-    let mut config = default_actor_config(Duration::from_secs(10));
-    config.agui_client_endpoint = Some(mock.url());
-    config.mcp_server_bind = Some("127.0.0.1:0".to_string());
-    let events = Arc::new(EventEmitter::noop());
-    let cancel = CancellationToken::new();
+        let loaded = load_document(yaml).unwrap();
+        let mut config = default_actor_config(Duration::from_secs(10));
+        config.agui_client_endpoint = Some(mock.url());
+        config.mcp_server_bind = Some("127.0.0.1:0".to_string());
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
 
-    let result = orchestrate(&loaded, &config, &events, cancel)
-        .await
-        .unwrap();
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
 
-    // Both actors should have outcomes
-    assert_eq!(result.outcomes.len(), 2);
+        // Both actors should have outcomes
+        assert_eq!(result.outcomes.len(), 2);
 
-    // Consumer should have proceeded despite the timeout
-    let consumer = result
-        .outcomes
-        .iter()
-        .find(|o| o.actor_name() == "consumer")
-        .expect("consumer outcome missing");
-    assert!(
-        matches!(consumer, ActorOutcome::Success(_)),
-        "consumer should succeed after timeout, got: {consumer:?}"
-    );
+        // Consumer should have proceeded despite the timeout
+        let consumer = result
+            .outcomes
+            .iter()
+            .find(|o| o.actor_name() == "consumer")
+            .expect("consumer outcome missing");
+        assert!(
+            matches!(consumer, ActorOutcome::Success(_)),
+            "consumer should succeed after timeout, got: {consumer:?}"
+        );
+    })
+    .await
+    .expect("test timed out after 30s");
 }
 
 // ============================================================================
@@ -199,21 +207,22 @@ attack:
 
 #[tokio::test]
 async fn grace_period_on_clients_done() {
-    let sse_body = format!(
-        "{}{}",
-        sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
-        sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
-    );
-    let router = Router::new().route(
-        "/",
-        post(move || {
-            let body = sse_body.clone();
-            async move { ([("content-type", "text/event-stream")], body) }
-        }),
-    );
-    let mock = MockServer::start(router).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let sse_body = format!(
+            "{}{}",
+            sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
+            sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
+        );
+        let router = Router::new().route(
+            "/",
+            post(move || {
+                let body = sse_body.clone();
+                async move { ([("content-type", "text/event-stream")], body) }
+            }),
+        );
+        let mock = MockServer::start(router).await;
 
-    let yaml = r#"
+        let yaml = r#"
 oatf: "0.1"
 attack:
   name: grace_period
@@ -244,38 +253,41 @@ attack:
                     content: "Hello"
 "#;
 
-    let loaded = load_document(yaml).unwrap();
-    let mut config = default_actor_config(Duration::from_secs(10));
-    config.agui_client_endpoint = Some(mock.url());
-    config.mcp_server_bind = Some("127.0.0.1:0".to_string());
-    config.grace_period = Some(Duration::from_millis(200));
-    let events = Arc::new(EventEmitter::noop());
-    let cancel = CancellationToken::new();
+        let loaded = load_document(yaml).unwrap();
+        let mut config = default_actor_config(Duration::from_secs(10));
+        config.agui_client_endpoint = Some(mock.url());
+        config.mcp_server_bind = Some("127.0.0.1:0".to_string());
+        config.grace_period = Some(Duration::from_millis(200));
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
 
-    let start = tokio::time::Instant::now();
-    let result = orchestrate(&loaded, &config, &events, cancel)
-        .await
-        .unwrap();
-    let elapsed = start.elapsed();
+        let start = tokio::time::Instant::now();
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
 
-    assert_eq!(result.outcomes.len(), 2);
+        assert_eq!(result.outcomes.len(), 2);
 
-    // Grace period should have added ~200ms before cancelling the server
-    assert!(
-        elapsed >= Duration::from_millis(150),
-        "expected grace delay, elapsed: {elapsed:?}"
-    );
+        // Grace period should have added ~200ms before cancelling the server
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "expected grace delay, elapsed: {elapsed:?}"
+        );
 
-    // Client should have completed normally
-    let client = result
-        .outcomes
-        .iter()
-        .find(|o| o.actor_name() == "client")
-        .expect("client outcome missing");
-    assert!(
-        matches!(client, ActorOutcome::Success(_)),
-        "expected client Success, got: {client:?}"
-    );
+        // Client should have completed normally
+        let client = result
+            .outcomes
+            .iter()
+            .find(|o| o.actor_name() == "client")
+            .expect("client outcome missing");
+        assert!(
+            matches!(client, ActorOutcome::Success(_)),
+            "expected client Success, got: {client:?}"
+        );
+    })
+    .await
+    .expect("test timed out after 30s");
 }
 
 // ============================================================================
@@ -284,21 +296,22 @@ attack:
 
 #[tokio::test]
 async fn zero_grace_period() {
-    let sse_body = format!(
-        "{}{}",
-        sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
-        sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
-    );
-    let router = Router::new().route(
-        "/",
-        post(move || {
-            let body = sse_body.clone();
-            async move { ([("content-type", "text/event-stream")], body) }
-        }),
-    );
-    let mock = MockServer::start(router).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let sse_body = format!(
+            "{}{}",
+            sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
+            sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
+        );
+        let router = Router::new().route(
+            "/",
+            post(move || {
+                let body = sse_body.clone();
+                async move { ([("content-type", "text/event-stream")], body) }
+            }),
+        );
+        let mock = MockServer::start(router).await;
 
-    let yaml = r#"
+        let yaml = r#"
 oatf: "0.1"
 attack:
   name: zero_grace
@@ -329,27 +342,30 @@ attack:
                     content: "Hello"
 "#;
 
-    let loaded = load_document(yaml).unwrap();
-    let mut config = default_actor_config(Duration::from_secs(10));
-    config.agui_client_endpoint = Some(mock.url());
-    config.mcp_server_bind = Some("127.0.0.1:0".to_string());
-    config.grace_period = Some(Duration::ZERO);
-    let events = Arc::new(EventEmitter::noop());
-    let cancel = CancellationToken::new();
+        let loaded = load_document(yaml).unwrap();
+        let mut config = default_actor_config(Duration::from_secs(10));
+        config.agui_client_endpoint = Some(mock.url());
+        config.mcp_server_bind = Some("127.0.0.1:0".to_string());
+        config.grace_period = Some(Duration::ZERO);
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
 
-    let start = tokio::time::Instant::now();
-    let result = orchestrate(&loaded, &config, &events, cancel)
-        .await
-        .unwrap();
-    let elapsed = start.elapsed();
+        let start = tokio::time::Instant::now();
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
 
-    assert_eq!(result.outcomes.len(), 2);
+        assert_eq!(result.outcomes.len(), 2);
 
-    // Zero grace period: should complete quickly (no significant delay)
-    assert!(
-        elapsed < Duration::from_secs(3),
-        "zero grace should not delay, elapsed: {elapsed:?}"
-    );
+        // Zero grace period: should complete quickly (no significant delay)
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "zero grace should not delay, elapsed: {elapsed:?}"
+        );
+    })
+    .await
+    .expect("test timed out after 30s");
 }
 
 // ============================================================================
@@ -358,9 +374,10 @@ attack:
 
 #[tokio::test]
 async fn client_error_counts_as_done() {
-    // AG-UI client with no endpoint → connection refused → error
-    // Error should count as "done" for grace period calculation
-    let yaml = r#"
+    tokio::time::timeout(Duration::from_secs(30), async {
+        // AG-UI client with no endpoint → connection refused → error
+        // Error should count as "done" for grace period calculation
+        let yaml = r#"
 oatf: "0.1"
 attack:
   name: client_error
@@ -391,31 +408,34 @@ attack:
                     content: "Hello"
 "#;
 
-    let loaded = load_document(yaml).unwrap();
-    let mut config = default_actor_config(Duration::from_secs(5));
-    // Point at a port that nothing is listening on
-    config.agui_client_endpoint = Some("http://127.0.0.1:1".to_string());
-    config.mcp_server_bind = Some("127.0.0.1:0".to_string());
-    config.grace_period = Some(Duration::ZERO);
-    let events = Arc::new(EventEmitter::noop());
-    let cancel = CancellationToken::new();
+        let loaded = load_document(yaml).unwrap();
+        let mut config = default_actor_config(Duration::from_secs(5));
+        // Point at a port that nothing is listening on
+        config.agui_client_endpoint = Some("http://127.0.0.1:1".to_string());
+        config.mcp_server_bind = Some("127.0.0.1:0".to_string());
+        config.grace_period = Some(Duration::ZERO);
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
 
-    let result = orchestrate(&loaded, &config, &events, cancel)
-        .await
-        .unwrap();
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
 
-    assert_eq!(result.outcomes.len(), 2);
+        assert_eq!(result.outcomes.len(), 2);
 
-    // Client should have an error outcome
-    let client = result
-        .outcomes
-        .iter()
-        .find(|o| o.actor_name() == "bad_client")
-        .expect("bad_client outcome missing");
-    assert!(
-        matches!(client, ActorOutcome::Error { .. }),
-        "expected client Error, got: {client:?}"
-    );
+        // Client should have an error outcome
+        let client = result
+            .outcomes
+            .iter()
+            .find(|o| o.actor_name() == "bad_client")
+            .expect("bad_client outcome missing");
+        assert!(
+            matches!(client, ActorOutcome::Error { .. }),
+            "expected client Error, got: {client:?}"
+        );
+    })
+    .await
+    .expect("test timed out after 30s");
 }
 
 // ============================================================================
@@ -424,32 +444,33 @@ attack:
 
 #[tokio::test]
 async fn trace_merge_ordering() {
-    // Start two AG-UI clients hitting different mock servers concurrently.
-    // Both emit events → merged trace should have monotonic seq numbers.
-    let make_mock = || async {
-        let sse_body = format!(
-            "{}{}{}",
-            sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
-            sse_event(
-                "TEXT_MESSAGE_CHUNK",
-                &json!({"messageId": "m1", "role": "assistant", "delta": "hi"})
-            ),
-            sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
-        );
-        let router = Router::new().route(
-            "/",
-            post(move || {
-                let body = sse_body.clone();
-                async move { ([("content-type", "text/event-stream")], body) }
-            }),
-        );
-        MockServer::start(router).await
-    };
+    tokio::time::timeout(Duration::from_secs(30), async {
+        // Start two AG-UI clients hitting different mock servers concurrently.
+        // Both emit events → merged trace should have monotonic seq numbers.
+        let make_mock = || async {
+            let sse_body = format!(
+                "{}{}{}",
+                sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
+                sse_event(
+                    "TEXT_MESSAGE_CHUNK",
+                    &json!({"messageId": "m1", "role": "assistant", "delta": "hi"})
+                ),
+                sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
+            );
+            let router = Router::new().route(
+                "/",
+                post(move || {
+                    let body = sse_body.clone();
+                    async move { ([("content-type", "text/event-stream")], body) }
+                }),
+            );
+            MockServer::start(router).await
+        };
 
-    let mock1 = make_mock().await;
-    let mock2 = make_mock().await;
+        let mock1 = make_mock().await;
+        let mock2 = make_mock().await;
 
-    let yaml = r#"
+        let yaml = r#"
 oatf: "0.1"
 attack:
   name: trace_merge
@@ -475,35 +496,38 @@ attack:
                     content: "Hello from 2"
 "#;
 
-    let loaded = load_document(yaml).unwrap();
-    // Both clients need the endpoint; but ActorConfig only has one field.
-    // Since both are ag_ui_client, they'll both use the same endpoint.
-    // Use mock1 for both; the point is trace ordering, not separate endpoints.
-    let mut config = default_actor_config(Duration::from_secs(10));
-    config.agui_client_endpoint = Some(mock1.url());
-    let events = Arc::new(EventEmitter::noop());
-    let cancel = CancellationToken::new();
+        let loaded = load_document(yaml).unwrap();
+        // Both clients need the endpoint; but ActorConfig only has one field.
+        // Since both are ag_ui_client, they'll both use the same endpoint.
+        // Use mock1 for both; the point is trace ordering, not separate endpoints.
+        let mut config = default_actor_config(Duration::from_secs(10));
+        config.agui_client_endpoint = Some(mock1.url());
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
 
-    let result = orchestrate(&loaded, &config, &events, cancel)
-        .await
-        .unwrap();
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
 
-    assert_eq!(result.outcomes.len(), 2);
+        assert_eq!(result.outcomes.len(), 2);
 
-    // Verify merged trace has monotonically increasing seq numbers
-    let entries = result.trace.snapshot();
-    assert!(!entries.is_empty());
-    for window in entries.windows(2) {
-        assert!(
-            window[0].seq < window[1].seq,
-            "trace seq should be monotonic: {} < {}",
-            window[0].seq,
-            window[1].seq
-        );
-    }
+        // Verify merged trace has monotonically increasing seq numbers
+        let entries = result.trace.snapshot();
+        assert!(!entries.is_empty());
+        for window in entries.windows(2) {
+            assert!(
+                window[0].seq < window[1].seq,
+                "trace seq should be monotonic: {} < {}",
+                window[0].seq,
+                window[1].seq
+            );
+        }
 
-    // Keep mock2 alive to suppress unused warning
-    drop(mock2);
+        // Keep mock2 alive to suppress unused warning
+        drop(mock2);
+    })
+    .await
+    .expect("test timed out after 30s");
 }
 
 // ============================================================================
@@ -512,7 +536,8 @@ attack:
 
 #[tokio::test]
 async fn max_session_cancels_all() {
-    let yaml = r#"
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let yaml = r#"
 oatf: "0.1"
 attack:
   name: max_session
@@ -532,22 +557,25 @@ attack:
       - name: terminal
 "#;
 
-    let loaded = load_document(yaml).unwrap();
-    let config = default_actor_config(Duration::from_millis(200));
-    let events = Arc::new(EventEmitter::noop());
-    let cancel = CancellationToken::new();
+        let loaded = load_document(yaml).unwrap();
+        let config = default_actor_config(Duration::from_millis(200));
+        let events = Arc::new(EventEmitter::noop());
+        let cancel = CancellationToken::new();
 
-    let start = tokio::time::Instant::now();
-    let result = orchestrate(&loaded, &config, &events, cancel)
-        .await
-        .unwrap();
-    let elapsed = start.elapsed();
+        let start = tokio::time::Instant::now();
+        let result = orchestrate(&loaded, &config, &events, cancel)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
 
-    assert_eq!(result.outcomes.len(), 1);
+        assert_eq!(result.outcomes.len(), 1);
 
-    // Should have been cancelled by max_session
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "max_session should cancel within timeout, elapsed: {elapsed:?}"
-    );
+        // Should have been cancelled by max_session
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "max_session should cancel within timeout, elapsed: {elapsed:?}"
+        );
+    })
+    .await
+    .expect("test timed out after 30s");
 }
