@@ -1102,6 +1102,7 @@ mod tests {
     // ---- SSE Event Type Mapping Tests ----
 
     #[test]
+    // Complexity: exhaustive assertion of all 26 AG-UI SSE event type mappings
     #[allow(clippy::cognitive_complexity)]
     fn map_all_26_event_types() {
         // Lifecycle

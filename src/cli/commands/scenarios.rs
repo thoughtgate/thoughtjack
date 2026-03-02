@@ -121,6 +121,7 @@ pub async fn show(args: &ScenariosShowArgs) -> Result<(), ThoughtJackError> {
 /// Implements: TJ-SPEC-010 F-008
 pub async fn run_scenario(
     args: &ScenariosRunArgs,
+    quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
     let scenario = scenarios::find_scenario(&args.name).ok_or_else(|| {
@@ -134,5 +135,5 @@ pub async fn run_scenario(
         ThoughtJackError::Usage(message)
     })?;
 
-    super::run::run_from_yaml(scenario.yaml, &args.run, cancel).await
+    super::run::run_from_yaml(scenario.yaml, &args.run, quiet, cancel).await
 }

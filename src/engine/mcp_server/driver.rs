@@ -568,6 +568,7 @@ impl McpServerDriver {
     /// Includes `mode`, `url`, and `elicitationId` on the wire per MCP spec.
     /// Auto-generates a UUID for url-mode if `elicitationId` is absent in
     /// the OATF document.
+    // Complexity: elicitation matching with mode/url/validation branching per MCP spec
     #[allow(clippy::cognitive_complexity)]
     async fn maybe_send_elicitation(
         &self,

@@ -5,7 +5,7 @@
 # limit recursion depth when parsing tool responses.
 #
 # Usage:
-#   thoughtjack server run --config library/servers/nested_json_dos.yaml
+#   thoughtjack run --config library/servers/nested_json_dos.yaml
 
 server:
   name: "config-service"

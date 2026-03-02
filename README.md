@@ -60,13 +60,13 @@ cargo build --release
 
 ```bash
 # Run a built-in scenario
-thoughtjack server run --scenario rug-pull
+thoughtjack scenarios run rug-pull --config <oatf.yaml>
 
 # Or run from a config file
-thoughtjack server run --config library/servers/rug_pull.yaml
+thoughtjack run --config library/servers/rug_pull.yaml
 
 # Validate a configuration
-thoughtjack server validate library/servers/rug_pull.yaml
+thoughtjack validate library/servers/rug_pull.yaml
 
 # Connect any MCP client via stdio
 ```
@@ -114,7 +114,7 @@ thoughtjack scenarios list
 thoughtjack scenarios show rug-pull
 
 # Run a scenario directly
-thoughtjack server run --scenario rug-pull
+thoughtjack scenarios run rug-pull --config <oatf.yaml>
 ```
 
 ## Attack Patterns
@@ -329,89 +329,51 @@ tools:
 ### Commands
 
 ```
-thoughtjack server run                  # Run the adversarial server
-thoughtjack server validate <config>    # Validate configuration files
-thoughtjack server list [--category]    # List library attack patterns
+thoughtjack run --config <oatf.yaml>    # Run an OATF scenario
+thoughtjack validate <oatf.yaml>        # Validate an OATF document
 thoughtjack scenarios list              # List built-in scenarios
-thoughtjack scenarios show <name>       # Show scenario details
-thoughtjack diagram <config>            # Generate Mermaid diagram from config
-thoughtjack docs generate               # Generate documentation site pages
-thoughtjack docs validate               # Validate generated docs
-thoughtjack completions <shell>         # Generate shell completions (bash|zsh|fish|powershell|elvish)
+thoughtjack scenarios show <name>       # Show scenario YAML
+thoughtjack scenarios run <name>        # Run a built-in scenario
 thoughtjack version                     # Display version and build info
 ```
 
-### Flags for `server run`
+### Flags for `run`
 
 | Flag | Env Variable | Description |
 |------|-------------|-------------|
-| `-c, --config <path>` | `THOUGHTJACK_CONFIG` | Path to YAML configuration file |
-| `--scenario <name>` | | Run a built-in scenario by name |
-| `-t, --tool <path>` | | Path to a single tool definition (quick-start mode) |
-| `--http <[host:]port>` | | Bind HTTP transport instead of stdio |
-| `--behavior <mode>` | `THOUGHTJACK_BEHAVIOR` | Override delivery behavior (normal, slow-loris, unbounded-line, nested-json, response-delay) |
-| `--log-format <format>` | | Log output format (human, json) |
-| `--state-scope <scope>` | `THOUGHTJACK_STATE_SCOPE` | Phase state scope (per-connection, global) |
-| `--profile <preset>` | | Server profile (default, aggressive, stealth) |
-| `--spoof-client <name>` | `THOUGHTJACK_SPOOF_CLIENT` | Spoof client identity string |
-| `--library <path>` | `THOUGHTJACK_LIBRARY` | Attack pattern library directory (default: `./library`) |
-| `--capture-dir <path>` | `THOUGHTJACK_CAPTURE_DIR` | Directory to capture request/response traffic |
-| `--capture-redact` | | Redact sensitive data in captured traffic |
-| `--allow-external-handlers` | `THOUGHTJACK_ALLOW_EXTERNAL_HANDLERS` | Allow external handler scripts |
+| `-c, --config <path>` | `THOUGHTJACK_CONFIG` | Path to OATF scenario YAML document |
+| `--mcp-server <ADDR:PORT>` | | MCP server HTTP listen address (omit for stdio) |
+| `--mcp-client-command <CMD>` | | Spawn MCP client by running a command |
+| `--mcp-client-args <ARGS>` | | Extra arguments for `--mcp-client-command` |
+| `--mcp-client-endpoint <URL>` | | Connect MCP client to an HTTP endpoint |
+| `--agui-client-endpoint <URL>` | | Connect AG-UI client to an endpoint |
+| `--a2a-server <ADDR:PORT>` | | A2A server listen address [default: 127.0.0.1:9090] |
+| `--a2a-client-endpoint <URL>` | | A2A client target endpoint |
+| `--grace-period <DURATION>` | | Override document grace period |
+| `--max-session <DURATION>` | | Safety timeout for entire session [default: 5m] |
+| `--readiness-timeout <DURATION>` | | Timeout for server readiness gate [default: 30s] |
+| `-o, --output <PATH>` | | Write JSON verdict to file (use `-` for stdout) |
+| `--header <KEY:VALUE>` | | HTTP headers for client transports (repeatable) |
+| `--no-semantic` | | Disable semantic (LLM-as-judge) indicator evaluation |
+| `--raw-synthesize` | | Bypass synthesize output validation |
 | `--metrics-port <port>` | `THOUGHTJACK_METRICS_PORT` | Enable Prometheus metrics endpoint |
 | `--events-file <path>` | `THOUGHTJACK_EVENTS_FILE` | Write structured events to JSONL file |
-| `--max-nest-depth <n>` | `THOUGHTJACK_MAX_NEST_DEPTH` | Maximum nesting depth for generators |
-| `--max-payload-bytes <n>` | `THOUGHTJACK_MAX_PAYLOAD_BYTES` | Maximum payload size in bytes |
-| `--max-batch-size <n>` | `THOUGHTJACK_MAX_BATCH_SIZE` | Maximum batch size for generators |
 | `-v, --verbose` | | Increase verbosity (-v info, -vv debug, -vvv trace) |
 | `-q, --quiet` | | Suppress all non-error output |
-| `--color <when>` | `THOUGHTJACK_COLOR` | Color output (auto, always, never) |
 
 ### Flags for `scenarios list`
 
 | Flag | Description |
 |------|-------------|
 | `--category <name>` | Filter by category |
+| `--tag <tag>` | Filter by tag |
 | `--format <format>` | Output format (human, json) |
 
 ### Flags for `scenarios show`
 
 | Flag | Description |
 |------|-------------|
-| `--format <format>` | Output format (human, json) |
-| `--yaml` | Output raw YAML config |
-
-### Flags for `diagram`
-
-| Flag | Description |
-|------|-------------|
-| `--diagram-type <type>` | Diagram type (auto, state, sequence, flowchart) |
-| `--output <path>` | Output file path |
-
-### Flags for `docs generate`
-
-| Flag | Description |
-|------|-------------|
-| `--output-dir <path>` | Output directory for generated pages |
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `THOUGHTJACK_CONFIG` | -- | Default config file path |
-| `THOUGHTJACK_LIBRARY` | `./library` | Library root directory |
-| `THOUGHTJACK_STATE_SCOPE` | `per-connection` | Phase state scope |
-| `THOUGHTJACK_BEHAVIOR` | -- | Override delivery behavior |
-| `THOUGHTJACK_SPOOF_CLIENT` | -- | Client identity string |
-| `THOUGHTJACK_CAPTURE_DIR` | -- | Traffic capture directory |
-| `THOUGHTJACK_METRICS_PORT` | -- | Prometheus metrics port |
-| `THOUGHTJACK_EVENTS_FILE` | -- | Structured event output file |
-| `THOUGHTJACK_MAX_PAYLOAD_BYTES` | -- | Generator payload size limit |
-| `THOUGHTJACK_MAX_NEST_DEPTH` | -- | Generator nesting depth limit |
-| `THOUGHTJACK_MAX_BATCH_SIZE` | -- | Generator batch size limit |
-| `THOUGHTJACK_ALLOW_EXTERNAL_HANDLERS` | -- | Enable external handler scripts |
-| `THOUGHTJACK_TIMER_INTERVAL_MS` | `100` | Phase engine timer check interval (ms) |
-| `THOUGHTJACK_COLOR` | `auto` | Color output control |
+| `<name>` | Scenario name |
 
 ### Exit Codes
 

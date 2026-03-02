@@ -193,33 +193,35 @@ impl McpClientTransportReader for StdioReader {
         &mut self,
         pending: &std::sync::Mutex<HashMap<String, PendingRequest>>,
     ) -> Result<Option<McpClientMessage>, EngineError> {
-        let mut line = String::new();
-        let bytes_read = self
-            .stdout
-            .read_line(&mut line)
-            .await
-            .map_err(|e| EngineError::Driver(format!("stdout read failed: {e}")))?;
+        loop {
+            let mut line = String::new();
+            let bytes_read = self
+                .stdout
+                .read_line(&mut line)
+                .await
+                .map_err(|e| EngineError::Driver(format!("stdout read failed: {e}")))?;
 
-        if bytes_read == 0 {
-            return Ok(None); // EOF
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            // Empty line — skip (EC-MCPC-010: lenient parsing)
-            return self.recv(pending).await;
-        }
-
-        let msg: JsonRpcMessage = match serde_json::from_str(trimmed) {
-            Ok(m) => m,
-            Err(e) => {
-                // EC-MCPC-010: non-JSON lines are skipped with a warning
-                tracing::warn!(error = %e, line = %trimmed.chars().take(200).collect::<String>(), "skipping non-JSON line from server");
-                return self.recv(pending).await;
+            if bytes_read == 0 {
+                return Ok(None); // EOF
             }
-        };
 
-        Ok(Some(classify_message(msg, pending)))
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                // Empty line — skip (EC-MCPC-010: lenient parsing)
+                continue;
+            }
+
+            let msg: JsonRpcMessage = match serde_json::from_str(trimmed) {
+                Ok(m) => m,
+                Err(e) => {
+                    // EC-MCPC-010: non-JSON lines are skipped with a warning
+                    tracing::warn!(error = %e, line = %trimmed.chars().take(200).collect::<String>(), "skipping non-JSON line from server");
+                    continue;
+                }
+            };
+
+            return Ok(Some(classify_message(msg, pending)));
+        }
     }
 }
 
@@ -237,7 +239,7 @@ pub(super) fn classify_message(
             let id_key = resp.id.to_string();
             let pending_req = pending
                 .lock()
-                .expect("pending lock poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&id_key);
             let (method, request_params) =
                 pending_req.map_or_else(|| ("unknown".to_string(), None), |p| (p.method, p.params));

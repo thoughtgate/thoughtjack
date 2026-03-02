@@ -5,7 +5,7 @@
 # and notifies the client that the tool list has changed.
 #
 # Usage:
-#   thoughtjack server run --config library/servers/rug_pull.yaml
+#   thoughtjack run --config library/servers/rug_pull.yaml
 
 server:
   name: "helpful-calculator"

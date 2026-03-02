@@ -175,6 +175,38 @@ fn resolve_headers_for_mode(base: &[(String, String)], mode: &str) -> Vec<(Strin
 }
 
 // ============================================================================
+// ActorRunContext
+// ============================================================================
+
+/// Bundles the parameters shared by all `run_*_actor()` functions.
+///
+/// Avoids repeating 10+ arguments across every actor runner function.
+///
+/// Implements: TJ-SPEC-015 F-003
+pub(crate) struct ActorRunContext<'a> {
+    /// Index of this actor in the document's actor list.
+    pub actor_index: usize,
+    /// The OATF document.
+    pub document: oatf::Document,
+    /// Runtime configuration derived from CLI flags.
+    pub config: &'a ActorConfig,
+    /// Shared append-only trace buffer.
+    pub trace: SharedTrace,
+    /// Cross-actor extractor store.
+    pub extractor_store: ExtractorStore,
+    /// Per-phase `await_extractors` configuration.
+    pub await_config: HashMap<usize, Vec<AwaitExtractor>>,
+    /// Cancellation token for cooperative shutdown.
+    pub cancel: CancellationToken,
+    /// Oneshot sender to signal readiness (server-mode actors).
+    pub ready_tx: Option<oneshot::Sender<()>>,
+    /// Broadcast receiver for the readiness gate (client-mode actors).
+    pub gate_rx: Option<broadcast::Receiver<()>>,
+    /// Event emitter for observability.
+    pub events: &'a EventEmitter,
+}
+
+// ============================================================================
 // run_actor
 // ============================================================================
 
@@ -211,94 +243,32 @@ pub async fn run_actor(
     let actors = document_actors(&document);
     let actor = &actors[actor_index];
     let actor_name = actor.name.clone();
-    let mode = &actor.mode;
+    let mode = actor.mode.clone();
 
     events.emit(ThoughtJackEvent::ActorInit {
         actor_name: actor_name.clone(),
         mode: mode.clone(),
     });
 
+    let ctx = ActorRunContext {
+        actor_index,
+        document,
+        config,
+        trace,
+        extractor_store,
+        await_config,
+        cancel,
+        ready_tx,
+        gate_rx,
+        events,
+    };
+
     match mode.as_str() {
-        "mcp_server" => {
-            run_mcp_server_actor(
-                actor_index,
-                &actor_name,
-                document,
-                config,
-                trace,
-                extractor_store,
-                await_config,
-                cancel,
-                ready_tx,
-                gate_rx,
-                events,
-            )
-            .await
-        }
-        "ag_ui_client" => {
-            run_agui_client_actor(
-                actor_index,
-                &actor_name,
-                document,
-                config,
-                trace,
-                extractor_store,
-                await_config,
-                cancel,
-                ready_tx,
-                gate_rx,
-                events,
-            )
-            .await
-        }
-        "a2a_server" => {
-            run_a2a_server_actor(
-                actor_index,
-                &actor_name,
-                document,
-                config,
-                trace,
-                extractor_store,
-                await_config,
-                cancel,
-                ready_tx,
-                gate_rx,
-                events,
-            )
-            .await
-        }
-        "a2a_client" => {
-            run_a2a_client_actor(
-                actor_index,
-                &actor_name,
-                document,
-                config,
-                trace,
-                extractor_store,
-                await_config,
-                cancel,
-                ready_tx,
-                gate_rx,
-                events,
-            )
-            .await
-        }
-        "mcp_client" => {
-            run_mcp_client_actor(
-                actor_index,
-                &actor_name,
-                document,
-                config,
-                trace,
-                extractor_store,
-                await_config,
-                cancel,
-                ready_tx,
-                gate_rx,
-                events,
-            )
-            .await
-        }
+        "mcp_server" => run_mcp_server_actor(&actor_name, ctx).await,
+        "ag_ui_client" => run_agui_client_actor(&actor_name, ctx).await,
+        "a2a_server" => run_a2a_server_actor(&actor_name, ctx).await,
+        "a2a_client" => run_a2a_client_actor(&actor_name, ctx).await,
+        "mcp_client" => run_mcp_client_actor(&actor_name, ctx).await,
         other => Err(EngineError::Driver(format!(
             "driver for mode '{other}' not yet implemented"
         ))),
@@ -306,20 +276,22 @@ pub async fn run_actor(
 }
 
 /// Runs an MCP server actor — creates transport, driver, and phase loop.
-#[allow(clippy::too_many_arguments)]
 async fn run_mcp_server_actor(
-    actor_index: usize,
     actor_name: &str,
-    document: oatf::Document,
-    config: &ActorConfig,
-    trace: SharedTrace,
-    extractor_store: ExtractorStore,
-    await_config: HashMap<usize, Vec<AwaitExtractor>>,
-    cancel: CancellationToken,
-    ready_tx: Option<oneshot::Sender<()>>,
-    _gate_rx: Option<broadcast::Receiver<()>>,
-    events: &EventEmitter,
+    ctx: ActorRunContext<'_>,
 ) -> Result<ActorResult, EngineError> {
+    let ActorRunContext {
+        actor_index,
+        document,
+        config,
+        trace,
+        extractor_store,
+        await_config,
+        cancel,
+        ready_tx,
+        gate_rx: _gate_rx,
+        events,
+    } = ctx;
     // Create transport based on CLI flags
     let transport: Arc<dyn crate::transport::Transport> =
         if let Some(ref bind_addr) = config.mcp_server_bind {
@@ -402,20 +374,22 @@ async fn run_mcp_server_actor(
 /// ensuring server actors are ready to accept connections.
 ///
 /// Implements: TJ-SPEC-016 F-001
-#[allow(clippy::too_many_arguments)]
 async fn run_agui_client_actor(
-    actor_index: usize,
     actor_name: &str,
-    document: oatf::Document,
-    config: &ActorConfig,
-    trace: SharedTrace,
-    extractor_store: ExtractorStore,
-    await_config: HashMap<usize, Vec<AwaitExtractor>>,
-    cancel: CancellationToken,
-    ready_tx: Option<oneshot::Sender<()>>,
-    gate_rx: Option<broadcast::Receiver<()>>,
-    events: &EventEmitter,
+    ctx: ActorRunContext<'_>,
 ) -> Result<ActorResult, EngineError> {
+    let ActorRunContext {
+        actor_index,
+        document,
+        config,
+        trace,
+        extractor_store,
+        await_config,
+        cancel,
+        ready_tx,
+        gate_rx,
+        events,
+    } = ctx;
     let endpoint = config.agui_client_endpoint.as_deref().ok_or_else(|| {
         EngineError::Driver("ag_ui_client mode requires --agui-client-endpoint".to_string())
     })?;
@@ -477,20 +451,22 @@ async fn run_agui_client_actor(
 /// Server-mode: binds HTTP transport inside `drive_phase()`, signals readiness.
 ///
 /// Implements: TJ-SPEC-017 F-001
-#[allow(clippy::too_many_arguments)]
 async fn run_a2a_server_actor(
-    actor_index: usize,
     actor_name: &str,
-    document: oatf::Document,
-    config: &ActorConfig,
-    trace: SharedTrace,
-    extractor_store: ExtractorStore,
-    await_config: HashMap<usize, Vec<AwaitExtractor>>,
-    cancel: CancellationToken,
-    ready_tx: Option<oneshot::Sender<()>>,
-    _gate_rx: Option<broadcast::Receiver<()>>,
-    events: &EventEmitter,
+    ctx: ActorRunContext<'_>,
 ) -> Result<ActorResult, EngineError> {
+    let ActorRunContext {
+        actor_index,
+        document,
+        config,
+        trace,
+        extractor_store,
+        await_config,
+        cancel,
+        ready_tx,
+        gate_rx: _gate_rx,
+        events,
+    } = ctx;
     let bind_addr = config
         .a2a_server_bind
         .as_deref()
@@ -546,20 +522,22 @@ async fn run_a2a_server_actor(
 /// Client-mode: waits for readiness gate, then sends task messages.
 ///
 /// Implements: TJ-SPEC-017 F-007
-#[allow(clippy::too_many_arguments)]
 async fn run_a2a_client_actor(
-    actor_index: usize,
     actor_name: &str,
-    document: oatf::Document,
-    config: &ActorConfig,
-    trace: SharedTrace,
-    extractor_store: ExtractorStore,
-    await_config: HashMap<usize, Vec<AwaitExtractor>>,
-    cancel: CancellationToken,
-    ready_tx: Option<oneshot::Sender<()>>,
-    gate_rx: Option<broadcast::Receiver<()>>,
-    events: &EventEmitter,
+    ctx: ActorRunContext<'_>,
 ) -> Result<ActorResult, EngineError> {
+    let ActorRunContext {
+        actor_index,
+        document,
+        config,
+        trace,
+        extractor_store,
+        await_config,
+        cancel,
+        ready_tx,
+        gate_rx,
+        events,
+    } = ctx;
     let endpoint = config.a2a_client_endpoint.as_deref().ok_or_else(|| {
         EngineError::Driver("a2a_client mode requires --a2a-client-endpoint".to_string())
     })?;
@@ -622,20 +600,22 @@ async fn run_a2a_client_actor(
 /// spawns server process, creates driver + engine + phase loop.
 ///
 /// Implements: TJ-SPEC-018 F-004
-#[allow(clippy::too_many_arguments)]
 async fn run_mcp_client_actor(
-    actor_index: usize,
     actor_name: &str,
-    document: oatf::Document,
-    config: &ActorConfig,
-    trace: SharedTrace,
-    extractor_store: ExtractorStore,
-    await_config: HashMap<usize, Vec<AwaitExtractor>>,
-    cancel: CancellationToken,
-    ready_tx: Option<oneshot::Sender<()>>,
-    gate_rx: Option<broadcast::Receiver<()>>,
-    events: &EventEmitter,
+    ctx: ActorRunContext<'_>,
 ) -> Result<ActorResult, EngineError> {
+    let ActorRunContext {
+        actor_index,
+        document,
+        config,
+        trace,
+        extractor_store,
+        await_config,
+        cancel,
+        ready_tx,
+        gate_rx,
+        events,
+    } = ctx;
     // Determine transport from CLI flags
     let (driver, bind_address) = match (
         config.mcp_client_command.as_deref(),

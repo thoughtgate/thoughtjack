@@ -30,7 +30,7 @@ jobs:
       - name: Validate all configs
         run: |
           for f in library/servers/*.yaml; do
-            thoughtjack server validate "$f" --format json
+            thoughtjack validate "$f" --format json
           done
 ```
 
@@ -40,7 +40,7 @@ Use `--format json` for structured output from validation and listing commands:
 
 ```bash
 # JSON validation output
-thoughtjack server validate my_config.yaml --format json
+thoughtjack validate my_config.yaml --format json
 
 # JSON scenario listing
 thoughtjack scenarios list --format json
@@ -51,7 +51,7 @@ thoughtjack scenarios list --format json
 When running the server in CI, use JSON logs for machine parsing:
 
 ```bash
-thoughtjack server run --config my_config.yaml --log-format json -vv
+thoughtjack run --config my_config.yaml --log-format json -vv
 ```
 
 Each log line is a JSON object:
@@ -65,7 +65,7 @@ Each log line is a JSON object:
 Write structured events to a JSONL file for post-run analysis:
 
 ```bash
-thoughtjack server run \
+thoughtjack run \
   --config my_config.yaml \
   --events-file events.jsonl \
   --log-format json
@@ -86,7 +86,7 @@ jq 'select(.event == "ServerStopped") | .summary' events.jsonl
 Capture all request/response traffic for analysis:
 
 ```bash
-thoughtjack server run \
+thoughtjack run \
   --config my_config.yaml \
   --capture-dir ./captures \
   --capture-redact
@@ -108,7 +108,7 @@ ThoughtJack uses specific exit codes that CI pipelines can check:
 
 ```yaml
 - name: Run scenario
-  run: thoughtjack server run --config test.yaml
+  run: thoughtjack run --config test.yaml
   continue-on-error: false
 ```
 
@@ -126,7 +126,7 @@ thoughtjack docs validate
 For long-running test sessions, expose metrics:
 
 ```bash
-thoughtjack server run \
+thoughtjack run \
   --config my_config.yaml \
   --http 8080 \
   --metrics-port 9090

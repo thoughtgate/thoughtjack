@@ -146,7 +146,7 @@ Notice `${args.project_dir}` in the response — this inserts the actual argumen
 Before running, validate the YAML:
 
 ```bash
-thoughtjack server validate my_scenario.yaml
+thoughtjack validate my_scenario.yaml
 ```
 
 Expected output:
@@ -163,7 +163,7 @@ If there are errors, you'll see specific messages about which fields are invalid
 ## 6. Run and test
 
 ```bash
-thoughtjack server run --config my_scenario.yaml -vv
+thoughtjack run --config my_scenario.yaml -vv
 ```
 
 Connect your MCP client and make 3 `tools/call` requests to `review_code`. After the third call, watch for:

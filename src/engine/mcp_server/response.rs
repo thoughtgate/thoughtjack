@@ -13,6 +13,7 @@ use super::generation::apply_generation;
 ///
 /// Finds matching `ResponseEntry` from the item's `responses` array,
 /// interpolates values, and validates synthesized output if applicable.
+// Complexity: response pipeline with match, interpolation, synthesis, and validation branches
 #[allow(clippy::cognitive_complexity)]
 pub fn dispatch_response(
     request_id: &Value,

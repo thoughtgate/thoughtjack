@@ -71,7 +71,7 @@ This displays the scenario's description, MITRE ATT&CK mapping, what to observe,
 The **rug pull** is a temporal attack: the server starts with a benign calculator tool, builds trust over 5 calls, then injects a malicious `read_file` tool.
 
 ```bash
-thoughtjack server run --scenario rug-pull
+thoughtjack run --scenario rug-pull
 ```
 
 ThoughtJack is now listening on stdin/stdout using the MCP JSON-RPC protocol. It will:
@@ -95,7 +95,7 @@ When testing your MCP client against this scenario, watch for:
 Run the same scenario with debug-level logging to see internal state transitions:
 
 ```bash
-thoughtjack server run --scenario rug-pull -vv
+thoughtjack run --scenario rug-pull -vv
 ```
 
 With `-vv` (debug level), you'll see log lines for:
@@ -109,7 +109,7 @@ With `-vv` (debug level), you'll see log lines for:
 For machine-parseable logs, use JSON format:
 
 ```bash
-thoughtjack server run --scenario rug-pull -vv --log-format json
+thoughtjack run --scenario rug-pull -vv --log-format json
 ```
 
 ## 5. Run from a config file
@@ -123,13 +123,13 @@ thoughtjack scenarios show rug-pull --yaml
 Config files from the `library/` directory work the same way:
 
 ```bash
-thoughtjack server run --config library/servers/rug_pull.yaml
+thoughtjack run --config library/servers/rug_pull.yaml
 ```
 
 Always validate configs before running:
 
 ```bash
-thoughtjack server validate library/servers/rug_pull.yaml
+thoughtjack validate library/servers/rug_pull.yaml
 ```
 
 ## Next steps

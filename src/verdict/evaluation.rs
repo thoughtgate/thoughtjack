@@ -205,6 +205,7 @@ fn evaluate_single_indicator(
 /// attack-level result.
 ///
 /// Implements: TJ-SPEC-014 F-002, F-003, F-004
+// Complexity: verdict aggregation across multiple indicator types and evaluation strategies
 #[allow(clippy::cognitive_complexity)]
 pub fn evaluate_verdict(
     attack: &oatf::Attack,

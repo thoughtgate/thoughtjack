@@ -68,7 +68,7 @@ impl MessageMultiplexer {
                                 let id_key = id.to_string();
                                 let sender = senders
                                     .lock()
-                                    .expect("response_senders lock poisoned")
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                                     .remove(&id_key);
 
                                 if let Some(tx) = sender {
@@ -150,7 +150,7 @@ impl MessageMultiplexer {
         let (tx, rx) = oneshot::channel();
         self.response_senders
             .lock()
-            .expect("response_senders lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id.to_string(), tx);
         rx
     }
@@ -159,7 +159,7 @@ impl MessageMultiplexer {
     pub(super) fn close_reason(&self) -> MultiplexerClosed {
         self.close_reason
             .lock()
-            .expect("close_reason lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .unwrap_or(MultiplexerClosed::TransportEof)
     }

@@ -595,6 +595,7 @@ impl A2aClientDriver {
     }
 
     /// Handles streaming `message/stream` SSE response.
+    // Complexity: SSE streaming loop with multiple event types and task state transitions
     #[allow(clippy::cognitive_complexity)]
     async fn drive_streaming(
         &mut self,

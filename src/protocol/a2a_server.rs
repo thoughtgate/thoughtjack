@@ -725,6 +725,7 @@ async fn dispatch_task_response(
 /// Resolves task content from phase state using `select_response()`.
 ///
 /// Returns `(status, history_messages, artifacts)`.
+// Complexity: task content resolution with response matching, interpolation, and artifact assembly
 #[allow(clippy::cognitive_complexity)]
 fn resolve_task_content(
     state: &Value,

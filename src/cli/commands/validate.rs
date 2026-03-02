@@ -18,7 +18,7 @@ use crate::loader;
 ///
 /// Implements: TJ-SPEC-007 F-004
 #[allow(clippy::unused_async)]
-pub async fn validate(args: &ValidateArgs) -> Result<(), ThoughtJackError> {
+pub async fn validate(args: &ValidateArgs, quiet: bool) -> Result<(), ThoughtJackError> {
     let yaml = std::fs::read_to_string(&args.path)?;
 
     let loaded = loader::load_document(&yaml)?;
@@ -27,7 +27,7 @@ pub async fn validate(args: &ValidateArgs) -> Result<(), ThoughtJackError> {
         let normalized = serde_yaml::to_string(&loaded.document)
             .map_err(|e| ThoughtJackError::Usage(e.to_string()))?;
         print!("{normalized}");
-    } else {
+    } else if !quiet {
         eprintln!("Valid OATF document: {}", args.path.display());
     }
 

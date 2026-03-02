@@ -36,9 +36,13 @@ use crate::verdict::output::{
 /// Returns an error if scenario loading, execution, or verdict output fails.
 ///
 /// Implements: TJ-SPEC-007 F-002
-pub async fn run(args: &RunArgs, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
+pub async fn run(
+    args: &RunArgs,
+    quiet: bool,
+    cancel: CancellationToken,
+) -> Result<(), ThoughtJackError> {
     let yaml = std::fs::read_to_string(&args.config)?;
-    run_from_yaml(&yaml, args, cancel).await
+    run_from_yaml(&yaml, args, quiet, cancel).await
 }
 
 /// Execute an OATF scenario from raw YAML content.
@@ -54,6 +58,7 @@ pub async fn run(args: &RunArgs, cancel: CancellationToken) -> Result<(), Though
 pub async fn run_from_yaml(
     yaml: &str,
     args: &RunArgs,
+    quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
     // EC-CLI-010: warn when synthesize validation is bypassed
@@ -145,7 +150,9 @@ pub async fn run_from_yaml(
     }
 
     // 12. Print human summary
-    print_human_summary(&output);
+    if !quiet {
+        print_human_summary(&output);
+    }
 
     // 13. Exit code
     let code = verdict_exit_code(&verdict.result);
