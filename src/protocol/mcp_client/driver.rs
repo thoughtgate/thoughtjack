@@ -68,6 +68,9 @@ pub struct McpClientDriver {
     /// Cancellation token for background tasks.
     pub(super) transport_cancel: CancellationToken,
     /// Spawned child process (for stdio transport).
+    ///
+    /// Held for RAII: dropping the `Child` kills the process. The field
+    /// is not read directly but its lifetime determines the child's lifetime.
     #[allow(dead_code)]
     pub(super) child: Option<Child>,
     /// Stderr from spawned child (for diagnostics on exit).

@@ -229,12 +229,9 @@ async fn handle_jsonrpc(
     let request: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
-            return axum::Json(jsonrpc_error(
-                &Value::Null,
-                PARSE_ERROR,
-                &format!("Parse error: {e}"),
-            ))
-            .into_response();
+            tracing::debug!("A2A JSON parse error: {e}");
+            return axum::Json(jsonrpc_error(&Value::Null, PARSE_ERROR, "Parse error"))
+                .into_response();
         }
     };
 
@@ -931,6 +928,7 @@ pub struct A2aServerDriver {
     /// Bind address for the HTTP server.
     bind_addr: String,
     /// Bypass synthesize output validation.
+    // Reserved for GenerationProvider integration (v0.6+)
     #[allow(dead_code)]
     raw_synthesize: bool,
     /// Shared state between driver and axum handlers.

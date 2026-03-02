@@ -6,6 +6,7 @@
 
 pub mod http;
 pub mod jsonrpc;
+pub mod sse;
 pub mod stdio;
 
 pub use http::{HttpTransport, ResponseHandle, ResponseHandleAdapter};

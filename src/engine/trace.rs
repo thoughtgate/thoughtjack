@@ -7,13 +7,20 @@
 //!
 //! See TJ-SPEC-013 §8.4 and TJ-SPEC-015 for merged trace requirements.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use super::types::Direction;
+
+/// Maximum number of trace entries before new appends are dropped.
+///
+/// Prevents unbounded memory growth in long-running scenarios.
+///
+/// Implements: TJ-SPEC-013 F-001
+const MAX_TRACE_ENTRIES: usize = 100_000;
 
 // ============================================================================
 // TraceEntry
@@ -57,6 +64,8 @@ pub struct TraceEntry {
 pub struct SharedTrace {
     entries: Arc<Mutex<Vec<TraceEntry>>>,
     seq_counter: Arc<AtomicU64>,
+    /// Whether the capacity warning has been logged (log once).
+    capacity_warned: Arc<AtomicBool>,
 }
 
 impl SharedTrace {
@@ -66,10 +75,14 @@ impl SharedTrace {
         Self {
             entries: Arc::new(Mutex::new(Vec::new())),
             seq_counter: Arc::new(AtomicU64::new(0)),
+            capacity_warned: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Appends a new trace entry with the next sequence number.
+    ///
+    /// If the trace has reached `MAX_TRACE_ENTRIES`, new entries are
+    /// silently dropped and a warning is logged once.
     ///
     /// Recovers gracefully from mutex poisoning to maintain resilience.
     pub fn append(
@@ -84,6 +97,16 @@ impl SharedTrace {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if entries.len() >= MAX_TRACE_ENTRIES {
+            if !self.capacity_warned.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    max = MAX_TRACE_ENTRIES,
+                    "trace buffer full — dropping new entries"
+                );
+            }
+            return;
+        }
 
         // Generate seq inside the lock so entries are always in seq order.
         let seq = self.seq_counter.fetch_add(1, Ordering::Relaxed);
@@ -295,6 +318,23 @@ mod tests {
     fn default_trace_is_empty() {
         let trace = SharedTrace::default();
         assert!(trace.is_empty());
+    }
+
+    #[test]
+    fn capacity_limit_drops_entries() {
+        let trace = SharedTrace::new();
+        for i in 0..MAX_TRACE_ENTRIES + 100 {
+            trace.append(
+                "actor",
+                "phase",
+                Direction::Incoming,
+                &format!("method_{i}"),
+                &serde_json::json!({}),
+            );
+        }
+
+        assert_eq!(trace.len(), MAX_TRACE_ENTRIES);
+        assert!(trace.capacity_warned.load(Ordering::Relaxed));
     }
 
     // ---- Property Tests ----

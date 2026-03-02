@@ -29,6 +29,9 @@ pub(super) struct MessageMultiplexer {
     /// Why the multiplexer closed (set on loop exit).
     close_reason: Arc<std::sync::Mutex<Option<MultiplexerClosed>>>,
     /// Join handle for the background task.
+    ///
+    /// Held for RAII: dropping aborts the background task. The field
+    /// is not read directly but its lifetime governs the task's lifetime.
     #[allow(dead_code)]
     handle: JoinHandle<()>,
 }

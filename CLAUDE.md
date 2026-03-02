@@ -169,13 +169,7 @@ cargo fmt
 cargo fmt -- --check
 
 # Run a scenario (v0.5)
-cargo run -- run --scenario <path.yaml>
-
-# Run the server (v0.2 mode)
-cargo run -- server run --config <path>
-
-# Validate a config
-cargo run -- server validate <path>
+cargo run -- run --config <path.yaml>
 ```
 
 ## Commit Conventions

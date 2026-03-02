@@ -37,6 +37,9 @@ const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Maximum consecutive SSE parse errors before closing the connection (§9.2).
 const MAX_CONSECUTIVE_ERRORS: usize = 10;
 
+/// Default HTTP request timeout for connection establishment.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Maximum retry attempts for HTTP 429 responses (EC-AGUI-004).
 const MAX_RETRIES: u32 = 3;
 
@@ -118,20 +121,16 @@ struct AgUiEvent {
 // SseParser
 // ============================================================================
 
-/// Incremental SSE frame parser.
+/// AG-UI SSE parser wrapping the shared `transport::SseParser`.
 ///
-/// Reads bytes, accumulates lines, and yields complete `AgUiEvent` values.
-/// Handles multi-line data fields, malformed JSON (skip with warning),
-/// and the CUSTOM event subtype detection for `interrupt`.
+/// Converts raw SSE frames into typed `AgUiEvent` values with
+/// OATF event type mapping and CUSTOM/interrupt subtype detection.
+/// Inherits buffer overflow protection from the shared parser.
 ///
 /// Implements: TJ-SPEC-016 F-001
 struct SseParser {
-    /// Line accumulation buffer.
-    buffer: String,
-    /// Current SSE `event:` field value.
-    current_event_type: Option<String>,
-    /// Accumulated `data:` field content (may span multiple lines).
-    current_data: String,
+    /// Shared SSE parser with buffer limits.
+    inner: crate::transport::sse::SseParser,
     /// Number of consecutive parse errors (resets on success).
     consecutive_errors: usize,
 }
@@ -141,81 +140,56 @@ impl SseParser {
     #[must_use]
     const fn new() -> Self {
         Self {
-            buffer: String::new(),
-            current_event_type: None,
-            current_data: String::new(),
+            inner: crate::transport::sse::SseParser::new(),
             consecutive_errors: 0,
         }
     }
 
     /// Feed raw bytes into the parser and extract any complete events.
     fn feed(&mut self, bytes: &[u8]) -> Vec<Result<AgUiEvent, String>> {
-        let text = String::from_utf8_lossy(bytes);
-        self.buffer.push_str(&text);
-
+        let raw_events = self.inner.feed(bytes);
         let mut events = Vec::new();
 
-        // Process complete lines (terminated by \n)
-        while let Some(newline_pos) = self.buffer.find('\n') {
-            let line = self.buffer[..newline_pos]
-                .trim_end_matches('\r')
-                .to_string();
-            self.buffer = self.buffer[newline_pos + 1..].to_string();
-
-            if line.is_empty() {
-                // Blank line = dispatch event
-                if let Some(event) = self.dispatch_event() {
-                    events.push(event);
+        for raw in raw_events {
+            match raw {
+                Err(e) => {
+                    self.consecutive_errors += 1;
+                    events.push(Err(format!("SSE parse error: {e}")));
                 }
-            } else if let Some(value) = line.strip_prefix("event:") {
-                self.current_event_type = Some(value.trim().to_string());
-            } else if let Some(value) = line.strip_prefix("data:") {
-                if !self.current_data.is_empty() {
-                    self.current_data.push('\n');
+                Ok(raw_event) => {
+                    events.push(self.dispatch_raw_event(raw_event));
                 }
-                self.current_data.push_str(value.trim_start());
-            } else if line.starts_with(':') {
-                // SSE comment — ignore
             }
-            // Other lines are ignored per SSE spec
         }
 
         events
     }
 
-    /// Dispatch an accumulated event (called on blank line).
+    /// Convert a raw SSE event into an AG-UI event.
     ///
     /// AG-UI's canonical encoder only emits `data:` lines (no `event:`).
     /// The event type is carried inside the JSON payload as `data["type"]`.
     /// When an explicit SSE `event:` line *is* present we prefer it, but
     /// when absent we fall back to `data["type"]`.
-    fn dispatch_event(&mut self) -> Option<Result<AgUiEvent, String>> {
-        if self.current_data.is_empty() && self.current_event_type.is_none() {
-            return None;
-        }
-
-        let sse_event_type = self.current_event_type.take();
-        let data_str = std::mem::take(&mut self.current_data);
-
-        if data_str.is_empty() {
-            return None;
-        }
-
-        let data: Value = match serde_json::from_str(&data_str) {
+    fn dispatch_raw_event(
+        &mut self,
+        raw_event: crate::transport::sse::RawSseEvent,
+    ) -> Result<AgUiEvent, String> {
+        let data: Value = match serde_json::from_str(&raw_event.data) {
             Ok(v) => v,
             Err(e) => {
-                let label = sse_event_type.as_deref().unwrap_or("");
+                let label = raw_event.event_type.as_deref().unwrap_or("");
                 self.consecutive_errors += 1;
-                return Some(Err(format!(
+                return Err(format!(
                     "malformed JSON in SSE data for event '{label}': {e}"
-                )));
+                ));
             }
         };
 
         self.consecutive_errors = 0;
 
         // Resolve raw type: prefer SSE `event:` field, fall back to JSON `type`.
-        let raw_type = sse_event_type.unwrap_or_else(|| {
+        let raw_type = raw_event.event_type.unwrap_or_else(|| {
             data.get("type")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
@@ -237,11 +211,11 @@ impl SseParser {
             map_event_type(&raw_type).to_string()
         };
 
-        Some(Ok(AgUiEvent {
+        Ok(AgUiEvent {
             event_type,
             data,
             raw_type,
-        }))
+        })
     }
 
     /// Returns the current consecutive error count.
@@ -332,9 +306,6 @@ struct AccumulatedMessage {
 struct AccumulatedToolCall {
     tool_call_id: String,
     tool_call_name: String,
-    /// Tracked for potential future use in cross-referencing.
-    #[allow(dead_code)]
-    parent_message_id: Option<String>,
     arguments: String,
     result: Option<Value>,
     complete: bool,
@@ -480,15 +451,9 @@ impl MessageAccumulator {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let parent_message_id = event
-                    .data
-                    .get("parentMessageId")
-                    .and_then(Value::as_str)
-                    .map(String::from);
-
                 // Link to parent message
-                if let Some(ref parent_id) = parent_message_id
-                    && let Some(msg) = self.messages.get_mut(parent_id.as_str())
+                if let Some(parent_id) = event.data.get("parentMessageId").and_then(Value::as_str)
+                    && let Some(msg) = self.messages.get_mut(parent_id)
                 {
                     msg.tool_calls.push(tool_call_id.to_string());
                 }
@@ -498,7 +463,6 @@ impl MessageAccumulator {
                     AccumulatedToolCall {
                         tool_call_id: tool_call_id.to_string(),
                         tool_call_name,
-                        parent_message_id,
                         arguments: String::new(),
                         result: None,
                         complete: false,
@@ -537,15 +501,11 @@ impl MessageAccumulator {
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string();
-                        let parent_message_id = event
-                            .data
-                            .get("parentMessageId")
-                            .and_then(Value::as_str)
-                            .map(String::from);
 
                         // Link to parent message on first creation
-                        if let Some(ref parent_id) = parent_message_id
-                            && let Some(msg) = self.messages.get_mut(parent_id.as_str())
+                        if let Some(parent_id) =
+                            event.data.get("parentMessageId").and_then(Value::as_str)
+                            && let Some(msg) = self.messages.get_mut(parent_id)
                         {
                             msg.tool_calls.push(tool_call_id.to_string());
                         }
@@ -553,7 +513,6 @@ impl MessageAccumulator {
                         AccumulatedToolCall {
                             tool_call_id: tool_call_id.to_string(),
                             tool_call_name,
-                            parent_message_id,
                             arguments: String::new(),
                             result: None,
                             complete: false,
@@ -862,6 +821,7 @@ impl AgUiTransport {
 
             let response = request
                 .json(input)
+                .timeout(DEFAULT_TIMEOUT)
                 .send()
                 .await
                 .map_err(|e| EngineError::Driver(format!("AG-UI HTTP request failed: {e}")))?;
@@ -894,7 +854,10 @@ impl AgUiTransport {
             });
         }
 
-        unreachable!("retry loop should return before exceeding MAX_RETRIES")
+        Ok(SendResult::HttpError {
+            status: 503,
+            body: "retry loop exhausted".into(),
+        })
     }
 }
 
@@ -915,6 +878,7 @@ impl AgUiTransport {
 /// Implements: TJ-SPEC-016 F-001
 pub struct AgUiDriver {
     transport: AgUiTransport,
+    // Reserved for GenerationProvider integration (v0.6+)
     #[allow(dead_code)]
     raw_synthesize: bool,
     run_timeout: Duration,

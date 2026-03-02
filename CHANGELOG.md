@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-02
+
+### Added
+
+- OATF-based execution engine with PhaseEngine, PhaseLoop, and PhaseDriver trait (TJ-SPEC-013)
+- Multi-actor orchestration with ExtractorStore, ActorRunner, and Orchestrator (TJ-SPEC-015)
+- Shared extractor publication via watch channels with cross-actor await support
+- Verdict evaluation pipeline with grace period, CEL-based indicator evaluation, and JSON/human output (TJ-SPEC-014)
+- MCP server PhaseDriver reimplemented on the v0.5 engine (TJ-SPEC-013 §8.2)
+- MCP client PhaseDriver with split transport and server request handler (TJ-SPEC-018)
+- A2A server PhaseDriver with Agent Card, task dispatch, and SSE streaming (TJ-SPEC-017)
+- A2A client PhaseDriver with task message construction and streaming (TJ-SPEC-017)
+- AG-UI client PhaseDriver with SSE streaming and message accumulation (TJ-SPEC-016)
+- Shared SSE parser (`transport::sse`) with buffer overflow protection (16 MiB buffer, 4 MiB data limits)
+- SharedTrace capacity limit (100,000 entries) to prevent unbounded memory growth
+- HTTP request timeouts on SSE connection establishment
+- Add continuous fuzzing infrastructure (b063c37)
+- Auto-generate scenario index and fix MDX frontmatter (74072bd)
+- Google Analytics tracking (da58aec)
+- Auto-generate scenario index page and fix stale references (094b53d)
+
+### Fixed
+
+- Replace `unreachable!()` with proper error returns in retry loops
+- Prevent information disclosure in A2A server JSON parse error responses
+- SSE parser buffer limits prevent OOM from malicious servers
+- Clean up `#[allow(dead_code)]` annotations with explanatory comments
+
+### Not Included
+
+- Semantic evaluation (LLM-as-judge via SemanticEvaluator) — returns `Skipped` verdict; planned for future release
+- Synthesize generation (GenerationProvider) — returns graceful error; planned for future release
+
 ### Bug Fixes
 
 - Skip release signing when triggered by PR runs (e33f0fc)
@@ -42,13 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 - Add security policy and contributing guidelines (931a79e)
-
-### Features
-
-- Add Google Analytics tracking (da58aec)
-- Auto-generate scenario index and fix MDX frontmatter (74072bd)
-- Add continuous fuzzing infrastructure (b063c37)
-- Auto-generate scenario index page and fix stale references (094b53d)
 
 ### Testing
 

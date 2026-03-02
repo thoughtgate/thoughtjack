@@ -76,8 +76,9 @@ struct HttpSharedState {
     max_message_size: usize,
     sse_connections: AtomicUsize,
     cancel: CancellationToken,
-    // TODO: make session ID configurable — auto (UUID, current default),
+    // TODO(v0.6): make session ID configurable — auto (UUID, current default),
     // custom (user-provided string), or none (no Mcp-Session-Id header).
+    // Deferred: not needed for v0.5 adversarial testing scenarios.
     session_id: String,
     /// Pending server-initiated request/response channels keyed by JSON-RPC request ID.
     ///
@@ -361,9 +362,9 @@ impl ResponseHandle {
     /// # Errors
     ///
     /// Returns [`TransportError`] on serialization or channel failure.
-    // TODO: per-request content-type negotiation — put ResponseMode on
+    // TODO(v0.6): per-request content-type negotiation — put ResponseMode on
     // ResponseHandle so Direct requests can use plain application/json
-    // instead of SSE framing.
+    // instead of SSE framing. Deferred: SSE framing works for all v0.5 scenarios.
     pub async fn send_message(&self, message: &JsonRpcMessage) -> Result<()> {
         let serialized = serde_json::to_string(message)?;
         let sse_data = format!("event: message\ndata: {serialized}\n\n");

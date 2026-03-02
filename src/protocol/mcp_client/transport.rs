@@ -73,6 +73,7 @@ pub(super) trait McpClientTransportWriter: Send {
     /// # Errors
     ///
     /// Returns `EngineError::Driver` on close failure.
+    // Future: graceful close handshake
     #[allow(dead_code)]
     async fn close(&mut self) -> Result<(), EngineError>;
 }
@@ -616,71 +617,45 @@ pub(super) fn create_http_transport(
 // MCP SSE Parser
 // ============================================================================
 
-/// Minimal SSE parser for MCP Streamable HTTP responses.
+/// MCP SSE parser wrapping the shared `transport::SseParser`.
 ///
-/// Parses `data:` lines as complete JSON-RPC messages. A blank line
-/// dispatches the accumulated data. Comments (`:` prefix) are ignored.
+/// Parses `data:` lines as complete JSON-RPC messages. Inherits buffer
+/// overflow protection from the shared parser.
 ///
 /// Implements: TJ-SPEC-018 F-001
 struct McpSseParser {
-    /// Line accumulation buffer.
-    buffer: String,
-    /// Accumulated `data:` field content.
-    current_data: String,
+    /// Shared SSE parser with buffer limits.
+    inner: crate::transport::sse::SseParser,
 }
 
 impl McpSseParser {
     /// Creates a new SSE parser.
     const fn new() -> Self {
         Self {
-            buffer: String::new(),
-            current_data: String::new(),
+            inner: crate::transport::sse::SseParser::new(),
         }
     }
 
     /// Feed raw bytes and extract any complete JSON-RPC messages.
     fn feed(&mut self, bytes: &[u8]) -> Vec<Result<JsonRpcMessage, String>> {
-        let text = String::from_utf8_lossy(bytes);
-        self.buffer.push_str(&text);
-
+        let raw_events = self.inner.feed(bytes);
         let mut messages = Vec::new();
 
-        while let Some(newline_pos) = self.buffer.find('\n') {
-            let line = self.buffer[..newline_pos]
-                .trim_end_matches('\r')
-                .to_string();
-            self.buffer = self.buffer[newline_pos + 1..].to_string();
-
-            if line.is_empty() {
-                // Blank line = dispatch event
-                if let Some(result) = self.dispatch_event() {
-                    messages.push(result);
+        for raw in raw_events {
+            match raw {
+                Err(e) => {
+                    messages.push(Err(format!("MCP SSE parse error: {e}")));
                 }
-            } else if let Some(value) = line.strip_prefix("data:") {
-                if !self.current_data.is_empty() {
-                    self.current_data.push('\n');
-                }
-                self.current_data.push_str(value.trim_start());
-            } else if line.starts_with(':') {
-                // SSE comment — ignore
+                Ok(raw_event) => match serde_json::from_str::<JsonRpcMessage>(&raw_event.data) {
+                    Ok(msg) => messages.push(Ok(msg)),
+                    Err(e) => {
+                        messages.push(Err(format!("malformed JSON in MCP SSE data: {e}")));
+                    }
+                },
             }
-            // Other lines (e.g. `event:`, `id:`) are ignored for now
         }
 
         messages
-    }
-
-    /// Dispatch an accumulated data event as a `JsonRpcMessage`.
-    fn dispatch_event(&mut self) -> Option<Result<JsonRpcMessage, String>> {
-        let data_str = std::mem::take(&mut self.current_data);
-        if data_str.is_empty() {
-            return None;
-        }
-
-        match serde_json::from_str::<JsonRpcMessage>(&data_str) {
-            Ok(msg) => Some(Ok(msg)),
-            Err(e) => Some(Err(format!("malformed JSON in MCP SSE data: {e}"))),
-        }
     }
 }
 

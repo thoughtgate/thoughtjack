@@ -52,18 +52,17 @@ const DEFAULT_STREAM_TIMEOUT: Duration = Duration::from_secs(60);
 // A2aSseParser
 // ============================================================================
 
-/// Minimal SSE parser for A2A streaming responses.
+/// A2A SSE parser wrapping the shared `transport::SseParser`.
 ///
 /// A2A SSE is simpler than AG-UI: data-only lines (no `event:` type),
-/// each containing a complete JSON-RPC response. A blank line dispatches
-/// the accumulated data.
+/// each containing a complete JSON-RPC response. Extracts the `result`
+/// field from the JSON-RPC envelope. Inherits buffer overflow protection
+/// from the shared parser.
 ///
 /// Implements: TJ-SPEC-017 F-006
 struct A2aSseParser {
-    /// Line accumulation buffer.
-    buffer: String,
-    /// Accumulated `data:` field content.
-    current_data: String,
+    /// Shared SSE parser with buffer limits.
+    inner: crate::transport::sse::SseParser,
     /// Number of consecutive parse errors (resets on success).
     consecutive_errors: usize,
 }
@@ -72,8 +71,7 @@ impl A2aSseParser {
     /// Creates a new SSE parser.
     const fn new() -> Self {
         Self {
-            buffer: String::new(),
-            current_data: String::new(),
+            inner: crate::transport::sse::SseParser::new(),
             consecutive_errors: 0,
         }
     }
@@ -83,48 +81,31 @@ impl A2aSseParser {
     /// Each dispatched event is either `Ok(Value)` (the parsed `result`
     /// field from the JSON-RPC response) or `Err(String)` for parse failures.
     fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Value, String>> {
-        let text = String::from_utf8_lossy(bytes);
-        self.buffer.push_str(&text);
-
+        let raw_events = self.inner.feed(bytes);
         let mut events = Vec::new();
 
-        while let Some(newline_pos) = self.buffer.find('\n') {
-            let line = self.buffer[..newline_pos]
-                .trim_end_matches('\r')
-                .to_string();
-            self.buffer = self.buffer[newline_pos + 1..].to_string();
-
-            if line.is_empty() {
-                // Blank line = dispatch event
-                if let Some(event) = self.dispatch_event() {
-                    events.push(event);
+        for raw in raw_events {
+            match raw {
+                Err(e) => {
+                    self.consecutive_errors += 1;
+                    events.push(Err(format!("A2A SSE parse error: {e}")));
                 }
-            } else if let Some(value) = line.strip_prefix("data:") {
-                if !self.current_data.is_empty() {
-                    self.current_data.push('\n');
+                Ok(raw_event) => {
+                    events.push(self.dispatch_raw_event(&raw_event.data));
                 }
-                self.current_data.push_str(value.trim_start());
-            } else if line.starts_with(':') {
-                // SSE comment — ignore
             }
-            // Other lines (including `event:`) are noted but not used
         }
 
         events
     }
 
-    /// Dispatch an accumulated data event.
-    fn dispatch_event(&mut self) -> Option<Result<Value, String>> {
-        let data_str = std::mem::take(&mut self.current_data);
-        if data_str.is_empty() {
-            return None;
-        }
-
-        let parsed: Value = match serde_json::from_str(&data_str) {
+    /// Dispatch a raw data string as a JSON-RPC result.
+    fn dispatch_raw_event(&mut self, data_str: &str) -> Result<Value, String> {
+        let parsed: Value = match serde_json::from_str(data_str) {
             Ok(v) => v,
             Err(e) => {
                 self.consecutive_errors += 1;
-                return Some(Err(format!("malformed JSON in A2A SSE data: {e}")));
+                return Err(format!("malformed JSON in A2A SSE data: {e}"));
             }
         };
 
@@ -133,7 +114,7 @@ impl A2aSseParser {
         // Extract the `result` field from the JSON-RPC response envelope
         let result = parsed.get("result").cloned().unwrap_or(parsed);
 
-        Some(Ok(result))
+        Ok(result)
     }
 
     /// Returns the current consecutive error count.
@@ -328,7 +309,7 @@ impl A2aClientTransport {
             )));
         }
 
-        unreachable!("retry loop should return before exceeding MAX_RETRIES")
+        Err(EngineError::Driver("A2A retry loop exhausted".into()))
     }
 
     /// Opens a streaming `message/stream` request, returns an SSE stream.
@@ -349,6 +330,7 @@ impl A2aClientTransport {
 
         let response = request
             .json(body)
+            .timeout(DEFAULT_TIMEOUT)
             .send()
             .await
             .map_err(|e| EngineError::Driver(format!("A2A message/stream failed: {e}")))?;
@@ -490,6 +472,7 @@ pub struct A2aClientDriver {
     /// HTTP transport for A2A communication.
     transport: A2aClientTransport,
     /// Bypass synthesize output validation.
+    // Reserved for GenerationProvider integration (v0.6+)
     #[allow(dead_code)]
     raw_synthesize: bool,
 }

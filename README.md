@@ -482,19 +482,23 @@ The attack scenario catalog is auto-generated from built-in scenarios using `tho
 
 ## Project Status
 
-**Current: v0.4** — Single-crate architecture with 26 attack scenarios. Core engine with all transports, generators, delivery behaviors, and side effects. Phase engine state machine with event count, time-based, and content-matching triggers. Dynamic responses with `$handler` directive for HTTP and command handlers, response sequences, match blocks, and template interpolation. 26 attack scenarios (24 built-in, 2 library-only) across 6 categories with `scenarios list`/`show` commands. Mermaid diagram generation from configs. Documentation site with auto-generated scenario pages. Full CLI with config validation, library listing, and shell completions. Observability via structured logging (human/JSON), Prometheus metrics, and JSONL event streams.
+**Current: v0.5** — OATF-based execution engine with multi-protocol, multi-actor support. Attack scenarios authored as declarative OATF YAML documents. Core `PhaseEngine`/`PhaseLoop`/`PhaseDriver` architecture with extractor publication via watch channels. Multi-actor orchestration with shared extractor store and cooperative shutdown. Protocol drivers for MCP server, MCP client, A2A server, A2A client, and AG-UI client modes. Verdict pipeline with grace period, CEL-based indicator evaluation, and JSON/human output. Built on the v0.4 foundation of transports, generators, delivery behaviors, and side effects.
 
 **Implemented**:
+- OATF engine: PhaseEngine, PhaseLoop, PhaseDriver trait (TJ-SPEC-013)
+- Multi-actor orchestration with ExtractorStore and merged traces (TJ-SPEC-015)
+- Verdict evaluation with grace period and CEL indicators (TJ-SPEC-014)
+- Protocol drivers: MCP server, MCP client, A2A server, A2A client, AG-UI client
 - Dynamic response templates (`$handler`, `match`, `sequence`)
 - External handlers (HTTP + command with `--allow-external-handlers`)
 - Built-in scenario library with metadata, fuzzy matching, and `scenarios` subcommand
 - Template interpolation with variable namespaces and built-in functions
-- Mermaid diagram generation (`diagram` command)
 - Documentation site generation (`docs generate`/`docs validate`)
 - Traffic capture and redaction (`--capture-dir`)
-- JSON log format (`--log-format json`)
 
-**Roadmap**: Streaming payloads, record/replay mode, agent benchmark harness.
+Semantic evaluation (LLM-as-judge) and synthesize generation (GenerationProvider) are planned for a future release.
+
+**Roadmap**: Semantic evaluation, synthesize generation, streaming payloads, record/replay mode, agent benchmark harness.
 
 ## Warning
 
