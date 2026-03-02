@@ -148,6 +148,101 @@ mod tests {
         assert_eq!(store2.get("actor1", "token"), Some("abc".to_string()));
     }
 
+    // ---- Property Tests ----
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_no_lost_writes(
+                entries in prop::collection::vec(
+                    ("[a-z]{1,8}", "[a-z]{1,8}", "[a-zA-Z0-9]{1,20}"),
+                    1..50,
+                )
+            ) {
+                let store = ExtractorStore::new();
+                let mut expected = std::collections::HashSet::new();
+
+                for (actor, name, value) in &entries {
+                    store.set(actor, name, value.clone());
+                    expected.insert((actor.clone(), name.clone()));
+                }
+
+                // All distinct (actor, name) pairs should be readable
+                for (actor, name) in &expected {
+                    prop_assert!(store.get(actor, name).is_some(),
+                        "lost write for ({}, {})", actor, name);
+                }
+            }
+
+            #[test]
+            fn prop_version_monotonic(
+                writes in prop::collection::vec(
+                    ("[a-z]{1,5}", "[a-z]{1,5}", "[a-z]{1,10}"),
+                    1..20,
+                )
+            ) {
+                let store = ExtractorStore::new();
+                let rx = store.subscribe();
+
+                for (actor, name, value) in &writes {
+                    store.set(actor, name, value.clone());
+                }
+
+                let version = *rx.borrow();
+                prop_assert!(version >= writes.len() as u64,
+                    "version {} should be >= write count {}", version, writes.len());
+            }
+
+            #[test]
+            fn prop_qualified_key_format(
+                entries in prop::collection::vec(
+                    ("[a-z]{1,8}", "[a-z]{1,8}", "[a-z]{1,10}"),
+                    1..20,
+                )
+            ) {
+                let store = ExtractorStore::new();
+                for (actor, name, value) in &entries {
+                    store.set(actor, name, value.clone());
+                }
+
+                let qualified = store.all_qualified();
+                for key in qualified.keys() {
+                    // Every key must contain exactly one '.'
+                    let dot_count = key.chars().filter(|c| *c == '.').count();
+                    prop_assert_eq!(dot_count, 1,
+                        "qualified key '{}' should have exactly one dot", key);
+
+                    let parts: Vec<&str> = key.splitn(2, '.').collect();
+                    prop_assert_eq!(parts.len(), 2);
+                    prop_assert!(!parts[0].is_empty(), "actor part should not be empty");
+                    prop_assert!(!parts[1].is_empty(), "name part should not be empty");
+                }
+            }
+
+            #[test]
+            fn prop_last_writer_wins(
+                actor in "[a-z]{1,5}",
+                name in "[a-z]{1,5}",
+                values in prop::collection::vec("[a-z]{1,10}", 2..10),
+            ) {
+                let store = ExtractorStore::new();
+                for value in &values {
+                    store.set(&actor, &name, value.clone());
+                }
+
+                let result = store.get(&actor, &name).unwrap();
+                // Result should be one of the values we wrote
+                prop_assert!(values.contains(&result),
+                    "get() returned '{}' which was never written", result);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn subscribe_notifies_on_set() {
         let store = ExtractorStore::new();

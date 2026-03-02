@@ -896,6 +896,47 @@ mod tests {
         assert_eq!(verdict.result, oatf::enums::AttackResult::Error);
     }
 
+    // ── Property Tests ─────────────────────────────────────────────────
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_extract_protocol_idempotent(mode in "[a-z_]{1,20}") {
+                let once = extract_protocol(&mode);
+                let twice = extract_protocol(once);
+                prop_assert_eq!(once, twice);
+            }
+
+            #[test]
+            fn prop_known_modes_correct(
+                (mode, expected) in prop::sample::select(vec![
+                    ("mcp_server", "mcp"),
+                    ("mcp_client", "mcp"),
+                    ("a2a_server", "a2a"),
+                    ("a2a_client", "a2a"),
+                    ("ag_ui", "ag_ui"),
+                ])
+            ) {
+                prop_assert_eq!(extract_protocol(mode), expected);
+            }
+
+            #[test]
+            fn prop_unknown_passthrough(
+                base in "[a-z]{1,10}".prop_filter(
+                    "must not end in _server or _client",
+                    |s| !s.ends_with("_server") && !s.ends_with("_client"),
+                ),
+            ) {
+                prop_assert_eq!(extract_protocol(&base), base.as_str());
+            }
+        }
+    }
+
     // ── EC-VERDICT-020: `all` Correlation With Partial Matches ───────────
 
     /// EC-VERDICT-020: `correlation: "all"` with partial matches →

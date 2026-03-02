@@ -580,6 +580,126 @@ attack:
         assert!(detect_await_cycles(&map).is_err());
     }
 
+    // ========================================================================
+    // Property-based tests
+    // ========================================================================
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Generates a random DAG (forward-only edges via topological ordering).
+        fn arb_dag(
+            max_actors: usize,
+        ) -> impl Strategy<Value = HashMap<(String, usize), Vec<AwaitExtractor>>> {
+            (2..=max_actors).prop_flat_map(|n| {
+                let names = (0..n).map(|i| format!("actor_{i}")).collect::<Vec<_>>();
+                // Generate edges: each node can have edges to nodes with higher index only
+                let edge_strategies: Vec<_> = (0..n)
+                    .map(|from| {
+                        let targets: Vec<String> = names[from + 1..].to_vec();
+                        if targets.is_empty() {
+                            Just(Vec::<String>::new()).boxed()
+                        } else {
+                            prop::collection::vec(
+                                prop::sample::select(targets),
+                                0..=2,
+                            )
+                            .prop_map(|mut v| {
+                                v.sort();
+                                v.dedup();
+                                v
+                            })
+                            .boxed()
+                        }
+                    })
+                    .collect();
+
+                (Just(names), edge_strategies)
+            }).prop_map(|(names, edges)| {
+                let mut map = HashMap::new();
+                for (from_idx, targets) in edges.into_iter().enumerate() {
+                    if !targets.is_empty() {
+                        let specs: Vec<AwaitExtractor> = targets
+                            .into_iter()
+                            .map(|target| AwaitExtractor {
+                                actor: target,
+                                extractors: vec!["token".to_string()],
+                                timeout: Duration::from_secs(5),
+                            })
+                            .collect();
+                        map.insert((names[from_idx].clone(), 0), specs);
+                    }
+                }
+                map
+            })
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_dag_no_false_positive(dag in arb_dag(6)) {
+                // Forward-only edges guarantee no cycles
+                prop_assert!(detect_await_cycles(&dag).is_ok(),
+                    "DAG with forward-only edges should never have cycles");
+            }
+
+            #[test]
+            fn prop_cycle_always_detected(n in 2..=6_usize) {
+                let names: Vec<String> = (0..n).map(|i| format!("actor_{i}")).collect();
+                // Create a forward DAG with one injected back-edge
+                let mut map: HashMap<(String, usize), Vec<AwaitExtractor>> = HashMap::new();
+
+                // Forward edges: 0→1, 1→2, ..., (n-2)→(n-1)
+                for i in 0..n - 1 {
+                    map.insert(
+                        (names[i].clone(), 0),
+                        vec![AwaitExtractor {
+                            actor: names[i + 1].clone(),
+                            extractors: vec!["token".to_string()],
+                            timeout: Duration::from_secs(5),
+                        }],
+                    );
+                }
+
+                // Back edge: (n-1)→0 — creates a cycle
+                map.insert(
+                    (names[n - 1].clone(), 0),
+                    vec![AwaitExtractor {
+                        actor: names[0].clone(),
+                        extractors: vec!["token".to_string()],
+                        timeout: Duration::from_secs(5),
+                    }],
+                );
+
+                prop_assert!(detect_await_cycles(&map).is_err(),
+                    "cycle 0→1→...→(n-1)→0 should be detected");
+            }
+
+            #[test]
+            fn prop_self_loop_detected(name in "[a-z_]{1,10}") {
+                let mut map = HashMap::new();
+                map.insert(
+                    (name.clone(), 0),
+                    vec![AwaitExtractor {
+                        actor: name,
+                        extractors: vec!["token".to_string()],
+                        timeout: Duration::from_secs(5),
+                    }],
+                );
+                prop_assert!(detect_await_cycles(&map).is_err(),
+                    "self-loop should always be detected");
+            }
+
+            #[test]
+            fn prop_empty_graph_ok(_dummy in 0..1_u8) {
+                let map: HashMap<(String, usize), Vec<AwaitExtractor>> = HashMap::new();
+                prop_assert!(detect_await_cycles(&map).is_ok());
+            }
+        }
+    }
+
     /// EC-OATF-006: Document with schema violation → `load_document()` returns
     /// `LoaderError::OatfLoad` with a descriptive message.
     #[test]

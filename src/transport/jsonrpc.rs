@@ -906,6 +906,173 @@ mod tests {
         assert!(matches!(msg, JsonRpcMessage::Request(_)));
     }
 
+    // ========================================================================
+    // Property-based tests
+    // ========================================================================
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Generates an arbitrary `serde_json::Value` with bounded depth.
+        fn arb_json_value() -> impl Strategy<Value = Value> {
+            let leaf = prop_oneof![
+                Just(Value::Null),
+                any::<bool>().prop_map(Value::Bool),
+                any::<i64>().prop_map(|n| Value::Number(n.into())),
+                "[a-zA-Z0-9_ /.:@#\\-]{0,50}".prop_map(Value::String),
+            ];
+
+            leaf.prop_recursive(3, 32, 8, |inner| {
+                prop_oneof![
+                    // Array of values
+                    prop::collection::vec(inner.clone(), 0..5)
+                        .prop_map(Value::Array),
+                    // Object with string keys
+                    prop::collection::vec(
+                        ("[a-zA-Z_][a-zA-Z0-9_]{0,15}", inner),
+                        0..5,
+                    )
+                    .prop_map(|entries| {
+                        Value::Object(entries.into_iter().collect())
+                    }),
+                ]
+            })
+        }
+
+        /// Generates an arbitrary non-null `serde_json::Value`.
+        ///
+        /// Used for params/result where `Some(Null)` doesn't round-trip
+        /// (serde maps JSON null to `None` for `Option<Value>` with default deserializer).
+        fn arb_non_null_json_value() -> impl Strategy<Value = Value> {
+            let leaf = prop_oneof![
+                any::<bool>().prop_map(Value::Bool),
+                any::<i64>().prop_map(|n| Value::Number(n.into())),
+                "[a-zA-Z0-9_ /.:@#\\-]{0,50}".prop_map(Value::String),
+            ];
+
+            leaf.prop_recursive(3, 32, 8, |inner| {
+                prop_oneof![
+                    prop::collection::vec(inner.clone(), 0..5)
+                        .prop_map(Value::Array),
+                    prop::collection::vec(
+                        ("[a-zA-Z_][a-zA-Z0-9_]{0,15}", inner),
+                        0..5,
+                    )
+                    .prop_map(|entries| {
+                        Value::Object(entries.into_iter().collect())
+                    }),
+                ]
+            })
+        }
+
+        /// Generates an arbitrary `JsonRpcMessage` across all 4 variants.
+        fn arb_jsonrpc_message() -> impl Strategy<Value = JsonRpcMessage> {
+            let arb_method = "[a-zA-Z_/][a-zA-Z0-9_/]{0,30}";
+            let arb_id = prop_oneof![
+                any::<i64>().prop_map(|n| Value::Number(n.into())),
+                "[a-zA-Z0-9_-]{1,20}".prop_map(Value::String),
+                Just(Value::Null),
+            ];
+
+            prop_oneof![
+                // Request (params uses non-null to ensure round-trip fidelity)
+                (arb_method, prop::option::of(arb_non_null_json_value()), arb_id.clone()).prop_map(
+                    |(method, params, id)| {
+                        JsonRpcMessage::Request(JsonRpcRequest {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            method,
+                            params,
+                            id,
+                        })
+                    }
+                ),
+                // Success Response
+                (arb_json_value(), arb_id.clone()).prop_map(|(result, id)| {
+                    JsonRpcMessage::Response(JsonRpcResponse::success(id, result))
+                }),
+                // Error Response
+                (any::<i64>(), "[a-zA-Z ]{1,30}", arb_id.clone()).prop_map(
+                    |(code, message, id)| {
+                        JsonRpcMessage::Response(JsonRpcResponse::error(id, code, message))
+                    }
+                ),
+                // Notification (params uses non-null to ensure round-trip fidelity)
+                (arb_method, prop::option::of(arb_non_null_json_value())).prop_map(
+                    |(method, params)| {
+                        JsonRpcMessage::Notification(JsonRpcNotification::new(method, params))
+                    }
+                ),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_jsonrpc_round_trip(msg in arb_jsonrpc_message()) {
+                let serialized = serde_json::to_string(&msg).unwrap();
+                let deserialized: JsonRpcMessage = serde_json::from_str(&serialized).unwrap();
+                prop_assert_eq!(msg, deserialized);
+            }
+
+            #[test]
+            fn prop_jsonrpc_id_preservation(id in prop_oneof![
+                any::<i64>().prop_map(|n| Value::Number(n.into())),
+                "[a-zA-Z0-9_-]{1,20}".prop_map(Value::String),
+                Just(Value::Null),
+                any::<bool>().prop_map(Value::Bool),
+            ]) {
+                // Request round-trip
+                let req = JsonRpcMessage::Request(JsonRpcRequest {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    method: "test".to_string(),
+                    params: None,
+                    id: id.clone(),
+                });
+                let serialized = serde_json::to_string(&req).unwrap();
+                let deserialized: JsonRpcMessage = serde_json::from_str(&serialized).unwrap();
+                prop_assert_eq!(deserialized.id(), Some(&id));
+            }
+
+            #[test]
+            fn prop_jsonrpc_variant_discrimination(msg in arb_jsonrpc_message()) {
+                let serialized = serde_json::to_string(&msg).unwrap();
+                let d1: JsonRpcMessage = serde_json::from_str(&serialized).unwrap();
+                let d2: JsonRpcMessage = serde_json::from_str(&serialized).unwrap();
+                prop_assert_eq!(
+                    std::mem::discriminant(&d1),
+                    std::mem::discriminant(&d2)
+                );
+            }
+
+            #[test]
+            fn prop_jsonrpc_method_preservation(method in "[a-zA-Z_/\u{0080}-\u{07FF}]{1,40}") {
+                let req = JsonRpcMessage::Request(JsonRpcRequest {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    method: method.clone(),
+                    params: None,
+                    id: json!(1),
+                });
+                let serialized = serde_json::to_string(&req).unwrap();
+                let deserialized: JsonRpcMessage = serde_json::from_str(&serialized).unwrap();
+                prop_assert_eq!(deserialized.method(), Some(method.as_str()));
+            }
+
+            #[test]
+            fn prop_jsonrpc_no_panic_on_object(value in arb_json_value()) {
+                // Wrap in an object to feed to the deserializer
+                if let Value::Object(_) = &value {
+                    let _ = serde_json::from_value::<JsonRpcMessage>(value);
+                } else {
+                    // Make it an object
+                    let obj = serde_json::json!({"arbitrary": value});
+                    let _ = serde_json::from_value::<JsonRpcMessage>(obj);
+                }
+            }
+        }
+    }
+
     /// Serialize then deserialize a request with complex params, verifying
     /// full round-trip fidelity (complements the existing basic round-trip test
     /// with more complex nested data).

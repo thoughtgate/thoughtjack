@@ -296,4 +296,53 @@ mod tests {
         let trace = SharedTrace::default();
         assert!(trace.is_empty());
     }
+
+    // ---- Property Tests ----
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_trace_seq_monotonic(n in 1..100_usize) {
+                let trace = SharedTrace::new();
+                for i in 0..n {
+                    trace.append(
+                        "actor",
+                        "phase",
+                        Direction::Incoming,
+                        &format!("method_{i}"),
+                        &serde_json::json!({}),
+                    );
+                }
+
+                let entries = trace.snapshot();
+                for window in entries.windows(2) {
+                    prop_assert!(window[0].seq < window[1].seq,
+                        "seq values must be strictly increasing: {} >= {}",
+                        window[0].seq, window[1].seq);
+                }
+            }
+
+            #[test]
+            fn prop_trace_all_preserved(n in 0..100_usize) {
+                let trace = SharedTrace::new();
+                for i in 0..n {
+                    trace.append(
+                        "actor",
+                        "phase",
+                        Direction::Incoming,
+                        &format!("method_{i}"),
+                        &serde_json::json!({}),
+                    );
+                }
+
+                prop_assert_eq!(trace.len(), n);
+                prop_assert_eq!(trace.snapshot().len(), n);
+            }
+        }
+    }
 }

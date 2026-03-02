@@ -112,3 +112,54 @@ pub fn strip_internal_fields(value: &Value, fields: &[&str]) -> Value {
 pub fn u64_to_usize(v: u64) -> usize {
     usize::try_from(v).unwrap_or(usize::MAX)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn prop_literal_self_match(literal in "[a-zA-Z0-9/_.-]{1,40}") {
+            // A template with no {var} matches only itself
+            prop_assert!(matches_uri_template(&literal, &literal),
+                "literal template '{}' should match itself", literal);
+        }
+
+        #[test]
+        fn prop_variable_substitution(
+            prefix in "[a-e]{1,5}",
+            value in "[0-9]{1,5}",
+            suffix in "[v-z]{1,5}",
+        ) {
+            // Use disjoint character sets so the greedy literal search
+            // never confuses variable content with the suffix.
+            let template = format!("{prefix}{{var}}{suffix}");
+            let uri = format!("{prefix}{value}{suffix}");
+            prop_assert!(matches_uri_template(&template, &uri));
+        }
+
+        #[test]
+        fn prop_empty_variable_rejected(
+            prefix in "[a-z]{1,5}",
+            suffix in "[a-z]{1,5}",
+        ) {
+            let template = format!("{prefix}{{x}}{suffix}");
+            // URI with no chars between prefix and suffix — variable is empty
+            let uri = format!("{prefix}{suffix}");
+            prop_assert!(!matches_uri_template(&template, &uri),
+                "template '{}' should NOT match '{}' (empty variable)", template, uri);
+        }
+
+        #[test]
+        fn prop_no_panic_on_arbitrary(
+            template in ".*",
+            uri in ".*",
+        ) {
+            // Should never panic, regardless of input
+            let _ = matches_uri_template(&template, &uri);
+        }
+    }
+}

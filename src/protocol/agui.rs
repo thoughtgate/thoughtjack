@@ -2075,4 +2075,129 @@ mod tests {
         assert_eq!(messages[0]["content"], "Complete message");
         assert_eq!(messages[0]["role"], "user");
     }
+
+    // ---- SSE Parser Property Tests ----
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Known AG-UI SSE event types in `SCREAMING_SNAKE_CASE`.
+        const EVENT_TYPES: &[&str] = &[
+            "RUN_STARTED",
+            "RUN_FINISHED",
+            "RUN_ERROR",
+            "STEP_STARTED",
+            "STEP_FINISHED",
+            "TEXT_MESSAGE_START",
+            "TEXT_MESSAGE_CONTENT",
+            "TEXT_MESSAGE_END",
+            "TOOL_CALL_START",
+            "TOOL_CALL_ARGS",
+            "TOOL_CALL_END",
+            "STATE_SNAPSHOT",
+            "CUSTOM",
+            "RAW",
+        ];
+
+        /// Generates a well-formed AG-UI SSE frame.
+        fn arb_sse_frame() -> impl Strategy<Value = Vec<u8>> {
+            prop::sample::select(EVENT_TYPES).prop_map(|event_type| {
+                format!(
+                    "event: {event_type}\ndata: {{\"type\":\"{event_type}\",\"ok\":true}}\n\n"
+                )
+                .into_bytes()
+            })
+        }
+
+        /// Generates a valid SSE stream with split points.
+        fn arb_sse_stream_with_splits(
+        ) -> impl Strategy<Value = (Vec<u8>, Vec<usize>)> {
+            prop::collection::vec(arb_sse_frame(), 1..6)
+                .prop_flat_map(|frames| {
+                    let stream: Vec<u8> =
+                        frames.into_iter().flatten().collect();
+                    let len = stream.len();
+                    let splits = prop::collection::vec(0..len, 1..8)
+                        .prop_map(|mut pts| {
+                            pts.sort_unstable();
+                            pts.dedup();
+                            pts
+                        });
+                    (Just(stream), splits)
+                })
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_agui_sse_chunk_independence(
+                (stream, splits) in arb_sse_stream_with_splits()
+            ) {
+                // Parse all-at-once
+                let mut one_shot = SseParser::new();
+                let one_shot_ok: Vec<_> = one_shot
+                    .feed(&stream)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .collect();
+
+                // Parse in chunks at split points
+                let mut chunked = SseParser::new();
+                let mut chunked_ok: Vec<_> = Vec::new();
+                let mut prev = 0;
+                for &split in &splits {
+                    if split > prev {
+                        chunked_ok.extend(
+                            chunked.feed(&stream[prev..split]).into_iter().filter_map(Result::ok),
+                        );
+                        prev = split;
+                    }
+                }
+                chunked_ok.extend(
+                    chunked.feed(&stream[prev..]).into_iter().filter_map(Result::ok),
+                );
+
+                prop_assert_eq!(one_shot_ok.len(), chunked_ok.len(),
+                    "chunk independence: one-shot={}, chunked={}",
+                    one_shot_ok.len(), chunked_ok.len());
+            }
+
+            #[test]
+            fn prop_agui_event_type_mapping_stable(
+                event_type in prop::sample::select(EVENT_TYPES)
+            ) {
+                // map_event_type is a fixed-point: applying it twice returns the
+                // same result as applying once (idempotent after first mapping)
+                let mapped = map_event_type(event_type);
+                let double_mapped = map_event_type(mapped);
+                prop_assert_eq!(mapped, double_mapped);
+            }
+
+            #[test]
+            fn prop_agui_custom_interrupt_detection(
+                is_interrupt in any::<bool>(),
+                custom_name in "[a-z_]{1,20}",
+            ) {
+                let mut parser = SseParser::new();
+                let name = if is_interrupt { "interrupt" } else { &custom_name };
+                let input = format!(
+                    "event: CUSTOM\ndata: {{\"name\":\"{name}\",\"value\":42}}\n\n"
+                );
+                let events = parser.feed(input.as_bytes());
+                prop_assert_eq!(events.len(), 1);
+                let evt = events[0].as_ref().unwrap();
+
+                if is_interrupt {
+                    prop_assert_eq!(&evt.event_type, "interrupt");
+                } else if name == "interrupt" {
+                    // custom_name happened to be "interrupt"
+                    prop_assert_eq!(&evt.event_type, "interrupt");
+                } else {
+                    prop_assert_eq!(&evt.event_type, "custom");
+                }
+            }
+        }
+    }
 }

@@ -779,6 +779,84 @@ mod tests {
         }
     }
 
+    // ---- SSE Parser Property Tests ----
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Generates a well-formed SSE frame with a JSON-RPC response as data.
+        fn arb_sse_frame() -> impl Strategy<Value = Vec<u8>> {
+            (1..=100_i64).prop_map(|id| {
+                format!(
+                    "data: {{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{}}}}\n\n"
+                )
+                .into_bytes()
+            })
+        }
+
+        /// Generates a valid SSE stream with split points.
+        fn arb_sse_stream_with_splits(
+        ) -> impl Strategy<Value = (Vec<u8>, Vec<usize>)> {
+            prop::collection::vec(arb_sse_frame(), 1..6)
+                .prop_flat_map(|frames| {
+                    let stream: Vec<u8> =
+                        frames.into_iter().flatten().collect();
+                    let len = stream.len();
+                    let splits = prop::collection::vec(0..len, 1..8)
+                        .prop_map(|mut pts| {
+                            pts.sort_unstable();
+                            pts.dedup();
+                            pts
+                        });
+                    (Just(stream), splits)
+                })
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_mcp_sse_chunk_independence(
+                (stream, splits) in arb_sse_stream_with_splits()
+            ) {
+                // Parse all-at-once
+                let mut one_shot = McpSseParser::new();
+                let one_shot_ok: Vec<_> = one_shot
+                    .feed(&stream)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .collect();
+
+                // Parse in chunks at split points
+                let mut chunked = McpSseParser::new();
+                let mut chunked_ok: Vec<_> = Vec::new();
+                let mut prev = 0;
+                for &split in &splits {
+                    if split > prev {
+                        chunked_ok.extend(
+                            chunked.feed(&stream[prev..split]).into_iter().filter_map(Result::ok),
+                        );
+                        prev = split;
+                    }
+                }
+                chunked_ok.extend(
+                    chunked.feed(&stream[prev..]).into_iter().filter_map(Result::ok),
+                );
+
+                prop_assert_eq!(one_shot_ok.len(), chunked_ok.len(),
+                    "chunk independence: one-shot={}, chunked={}",
+                    one_shot_ok.len(), chunked_ok.len());
+            }
+
+            #[test]
+            fn prop_mcp_sse_no_panic(data in prop::collection::vec(any::<u8>(), 0..512)) {
+                let mut parser = McpSseParser::new();
+                let _ = parser.feed(&data);
+            }
+        }
+    }
+
     // ---- Factory Function Tests ----
 
     #[test]

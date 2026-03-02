@@ -272,4 +272,60 @@ mod tests {
         let content = json!({"content": []});
         assert!(validate_synthesized_output("mcp", &content, None).is_ok());
     }
+
+    // ---- Property Tests ----
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_unknown_protocol_passes(
+                protocol in "[a-z]{1,15}".prop_filter(
+                    "must not be a known protocol",
+                    |s| s != "mcp" && s != "a2a" && s != "ag_ui",
+                ),
+                content in prop_oneof![
+                    Just(json!({})),
+                    Just(json!({"arbitrary": "data"})),
+                    Just(json!({"content": 42})),
+                    Just(json!(null)),
+                ],
+            ) {
+                prop_assert!(validate_synthesized_output(&protocol, &content, None).is_ok());
+            }
+
+            #[test]
+            fn prop_valid_mcp_content_passes(
+                n_items in 0..5_usize,
+                content_type in prop::sample::select(vec!["text", "image", "resource"]),
+            ) {
+                let items: Vec<serde_json::Value> = (0..n_items)
+                    .map(|_| json!({"type": content_type, "text": "data"}))
+                    .collect();
+                let content = json!({"content": items});
+                prop_assert!(validate_synthesized_output("mcp", &content, None).is_ok());
+            }
+
+            #[test]
+            fn prop_mcp_no_content_fails(
+                key in "[a-z]{1,10}".prop_filter(
+                    "must not be content or messages",
+                    |s| s != "content" && s != "messages",
+                ),
+                value in prop_oneof![
+                    Just(json!(42)),
+                    Just(json!("string")),
+                    Just(json!(true)),
+                    Just(json!(null)),
+                ],
+            ) {
+                let content = json!({key: value});
+                prop_assert!(validate_synthesized_output("mcp", &content, None).is_err());
+            }
+        }
+    }
 }
