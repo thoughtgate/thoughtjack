@@ -15,7 +15,9 @@ use thoughtjack::protocol::mcp_client::create_mcp_client_driver;
 
 /// Helper: load an oatf Document from inline YAML.
 fn load_doc(yaml: &str) -> oatf::Document {
-    oatf::load(yaml).expect("test YAML should be valid").document
+    oatf::load(yaml)
+        .expect("test YAML should be valid")
+        .document
 }
 
 /// Creates a temporary shell script that acts as a mock MCP server.
@@ -69,7 +71,7 @@ echo "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"tools\":[{\"name\":\"calcu
 
     let script_path = script.path().to_str().unwrap().to_string();
 
-    let driver = create_mcp_client_driver(&script_path, &[], None, false)
+    let driver = create_mcp_client_driver(Some(&script_path), &[], None, &[], false)
         .expect("failed to create MCP client driver");
 
     let doc = load_doc(
@@ -152,7 +154,7 @@ echo "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"content\":[{\"type\":\"tex
 
     let script_path = script.path().to_str().unwrap().to_string();
 
-    let driver = create_mcp_client_driver(&script_path, &[], None, false)
+    let driver = create_mcp_client_driver(Some(&script_path), &[], None, &[], false)
         .expect("failed to create MCP client driver");
 
     let doc = load_doc(
@@ -215,7 +217,7 @@ exit 0
 
     let script_path = script.path().to_str().unwrap().to_string();
 
-    let driver = create_mcp_client_driver(&script_path, &[], None, false)
+    let driver = create_mcp_client_driver(Some(&script_path), &[], None, &[], false)
         .expect("failed to create MCP client driver");
 
     let doc = load_doc(
@@ -285,7 +287,7 @@ done
 
     let script_path = script.path().to_str().unwrap().to_string();
 
-    let driver = create_mcp_client_driver(&script_path, &[], None, false)
+    let driver = create_mcp_client_driver(Some(&script_path), &[], None, &[], false)
         .expect("failed to create MCP client driver");
 
     let doc = load_doc(

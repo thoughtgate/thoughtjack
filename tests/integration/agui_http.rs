@@ -5,8 +5,8 @@
 //! verifies the resulting trace.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::Router;
 use axum::routing::post;
@@ -18,11 +18,13 @@ use thoughtjack::engine::{
 };
 use thoughtjack::protocol::agui::create_agui_driver;
 
-use crate::common::mock_server::{sse_data_line, sse_event, MockServer};
+use crate::common::mock_server::{MockServer, sse_data_line, sse_event};
 
 /// Helper: load an oatf Document from inline YAML.
 fn load_doc(yaml: &str) -> oatf::Document {
-    oatf::load(yaml).expect("test YAML should be valid").document
+    oatf::load(yaml)
+        .expect("test YAML should be valid")
+        .document
 }
 
 /// Helper: build a default `PhaseLoopConfig`.
@@ -291,7 +293,12 @@ attack:
 
     // Trace has the successful events
     let entries = trace.snapshot();
-    assert!(entries.iter().map(|e| e.method.as_str()).any(|x| x == "run_finished"));
+    assert!(
+        entries
+            .iter()
+            .map(|e| e.method.as_str())
+            .any(|x| x == "run_finished")
+    );
 }
 
 use axum::response::IntoResponse;
@@ -421,7 +428,9 @@ async fn agui_canonical_data_only_sse() {
     let sse_body = format!(
         "{}{}{}",
         sse_data_line(&json!({"type": "RUN_STARTED", "threadId": "t1"})),
-        sse_data_line(&json!({"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "role": "assistant", "delta": "Hi"})),
+        sse_data_line(
+            &json!({"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "role": "assistant", "delta": "Hi"})
+        ),
         sse_data_line(&json!({"type": "RUN_FINISHED", "threadId": "t1"})),
     );
 
@@ -607,18 +616,12 @@ async fn agui_reasoning_events() {
     let sse_body = format!(
         "{}{}{}{}{}",
         sse_event("RUN_STARTED", &json!({"threadId": "t1"})),
-        sse_event(
-            "REASONING_MESSAGE_START",
-            &json!({"messageId": "r1"})
-        ),
+        sse_event("REASONING_MESSAGE_START", &json!({"messageId": "r1"})),
         sse_event(
             "REASONING_MESSAGE_CONTENT",
             &json!({"messageId": "r1", "delta": "thinking about this..."})
         ),
-        sse_event(
-            "REASONING_MESSAGE_END",
-            &json!({"messageId": "r1"})
-        ),
+        sse_event("REASONING_MESSAGE_END", &json!({"messageId": "r1"})),
         sse_event("RUN_FINISHED", &json!({"threadId": "t1"})),
     );
 

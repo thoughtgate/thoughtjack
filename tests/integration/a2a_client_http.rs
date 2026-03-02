@@ -20,7 +20,9 @@ use crate::common::mock_server::MockServer;
 
 /// Helper: load an oatf Document from inline YAML.
 fn load_doc(yaml: &str) -> oatf::Document {
-    oatf::load(yaml).expect("test YAML should be valid").document
+    oatf::load(yaml)
+        .expect("test YAML should be valid")
+        .document
 }
 
 /// Helper: build a default `PhaseLoopConfig`.
@@ -495,18 +497,16 @@ attack:
 #[tokio::test]
 async fn a2a_client_auth_required_status() {
     // Mock returns SSE with auth-required status
-    let sse_body = [
-        format!(
-            "data: {}\n\n",
-            json!({
-                "kind": "status-update",
-                "taskId": "task-1",
-                "contextId": "ctx-1",
-                "status": {"state": "auth-required"},
-                "final": true
-            })
-        ),
-    ]
+    let sse_body = [format!(
+        "data: {}\n\n",
+        json!({
+            "kind": "status-update",
+            "taskId": "task-1",
+            "contextId": "ctx-1",
+            "status": {"state": "auth-required"},
+            "final": true
+        })
+    )]
     .join("");
 
     let agent_card = json!({

@@ -200,10 +200,7 @@ pub fn handle_resources_read(
 /// Handle `resources/templates/list` — return resource template definitions.
 ///
 /// Implements: TJ-SPEC-013 F-001
-pub fn handle_resources_templates_list(
-    request: &JsonRpcRequest,
-    state: &Value,
-) -> JsonRpcResponse {
+pub fn handle_resources_templates_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let templates = state
         .get("resource_templates")
         .and_then(Value::as_array)

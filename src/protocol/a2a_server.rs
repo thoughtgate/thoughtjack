@@ -308,7 +308,12 @@ async fn handle_message_send(
             INVALID_PARAMS,
             "Invalid params: missing required 'message' field",
         );
-        emit_outgoing(shared, "message/send", error.get("error").unwrap_or(&Value::Null)).await;
+        emit_outgoing(
+            shared,
+            "message/send",
+            error.get("error").unwrap_or(&Value::Null),
+        )
+        .await;
         return axum::Json(error).into_response();
     }
 
@@ -338,7 +343,12 @@ async fn handle_message_stream(
             INVALID_PARAMS,
             "Invalid params: missing required 'message' field",
         );
-        emit_outgoing(shared, "message/stream", error.get("error").unwrap_or(&Value::Null)).await;
+        emit_outgoing(
+            shared,
+            "message/stream",
+            error.get("error").unwrap_or(&Value::Null),
+        )
+        .await;
         return axum::Json(error).into_response();
     }
 

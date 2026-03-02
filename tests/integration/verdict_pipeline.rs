@@ -67,11 +67,7 @@ fn make_attack(indicators: Option<Vec<oatf::Indicator>>) -> oatf::Attack {
     }
 }
 
-fn make_pattern_indicator(
-    id: &str,
-    contains: &str,
-    protocol: Option<&str>,
-) -> oatf::Indicator {
+fn make_pattern_indicator(id: &str, contains: &str, protocol: Option<&str>) -> oatf::Indicator {
     oatf::Indicator {
         id: Some(id.to_string()),
         protocol: protocol.map(String::from),
@@ -127,14 +123,12 @@ fn verdict_pattern_exploited() {
     let indicator = make_pattern_indicator("ind-1", "/etc/passwd", None);
     let attack = make_attack(Some(vec![indicator]));
 
-    let trace = vec![
-        make_trace_entry(
-            "actor1",
-            "tools/call",
-            json!({"description": "Read file /etc/passwd"}),
-            Direction::Incoming,
-        ),
-    ];
+    let trace = vec![make_trace_entry(
+        "actor1",
+        "tools/call",
+        json!({"description": "Read file /etc/passwd"}),
+        Direction::Incoming,
+    )];
     let actors = vec![make_actor("actor1", "mcp_server")];
 
     let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");

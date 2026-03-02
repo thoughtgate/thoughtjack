@@ -15,7 +15,10 @@ use crate::error::EngineError;
 
 use super::handler::{normalize_action, server_request_handler};
 use super::multiplexer::MessageMultiplexer;
-use super::transport::{McpClientTransportReader, McpClientTransportWriter, spawn_stdio_transport};
+use super::transport::{
+    McpClientTransportReader, McpClientTransportWriter, create_http_transport,
+    spawn_stdio_transport,
+};
 use super::{
     CorrelatedResponse, DEFAULT_PHASE_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, HandlerState, INIT_TIMEOUT,
     NotificationMessage, PendingRequest, SERVER_REQUEST_BUFFER_SIZE,
@@ -95,12 +98,15 @@ impl McpClientDriver {
         let id_key = id.to_string();
 
         // Register pending request for correlation
-        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
-            id_key,
-            PendingRequest {
-                method: method.to_string(),
-            },
-        );
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                id_key,
+                PendingRequest {
+                    method: method.to_string(),
+                },
+            );
 
         // Register response channel BEFORE sending (prevents race)
         let mux = self
@@ -200,12 +206,15 @@ impl McpClientDriver {
         let id_key = id.to_string();
 
         // Register pending request
-        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
-            id_key,
-            PendingRequest {
-                method: "initialize".to_string(),
-            },
-        );
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                id_key,
+                PendingRequest {
+                    method: "initialize".to_string(),
+                },
+            );
 
         // Register response channel BEFORE sending
         let mux = self
@@ -522,28 +531,50 @@ pub(super) fn build_client_capabilities(state: &Value) -> Value {
 // Factory Function
 // ============================================================================
 
-/// Creates an `McpClientDriver` for stdio transport.
+/// Creates an `McpClientDriver` for stdio or HTTP transport.
 ///
-/// Spawns the server process and sets up split transport.
+/// Provide `command` for stdio transport (spawns a server process),
+/// or `endpoint` for MCP Streamable HTTP transport.
 ///
 /// # Errors
 ///
-/// Returns `EngineError::Driver` if the server process cannot be spawned.
+/// Returns `EngineError::Driver` if neither transport option is provided,
+/// or if process spawn / HTTP client creation fails.
 ///
 /// Implements: TJ-SPEC-018 F-001
 pub fn create_mcp_client_driver(
-    command: &str,
+    command: Option<&str>,
     args: &[String],
-    _endpoint: Option<&str>,
+    endpoint: Option<&str>,
+    headers: &[(String, String)],
     raw_synthesize: bool,
 ) -> Result<McpClientDriver, EngineError> {
-    // TODO: HTTP transport support (Streamable HTTP) — use endpoint when provided
-    let (reader, writer, child) = spawn_stdio_transport(command, args)?;
+    let (reader, writer, child): (
+        Box<dyn McpClientTransportReader>,
+        Box<dyn McpClientTransportWriter>,
+        Option<Child>,
+    ) = match (command, endpoint) {
+        (Some(cmd), _) => {
+            let (r, w, c) = spawn_stdio_transport(cmd, args)?;
+            (Box::new(r), Box::new(w), Some(c))
+        }
+        (None, Some(ep)) => {
+            let (r, w) = create_http_transport(ep, headers)?;
+            (Box::new(r), Box::new(w), None)
+        }
+        (None, None) => {
+            return Err(EngineError::Driver(
+                "mcp_client mode requires --mcp-client-command (stdio) \
+                 or --mcp-client-endpoint (HTTP)"
+                    .to_string(),
+            ));
+        }
+    };
 
     let transport_cancel = CancellationToken::new();
 
     Ok(McpClientDriver {
-        writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
+        writer: Arc::new(tokio::sync::Mutex::new(writer)),
         pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
         mux: None,
         notification_rx: None,
@@ -558,8 +589,8 @@ pub fn create_mcp_client_driver(
         initialized: false,
         next_request_id: 1,
         raw_synthesize,
-        reader: Some(Box::new(reader)),
+        reader: Some(reader),
         transport_cancel,
-        child: Some(child),
+        child,
     })
 }

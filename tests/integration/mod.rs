@@ -3,9 +3,9 @@
 //! Modules are ordered by implementation priority (largest coverage
 //! gap first).
 
-mod agui_http;
-mod orchestration;
-mod a2a_server_http;
 mod a2a_client_http;
-mod verdict_pipeline;
+mod a2a_server_http;
+mod agui_http;
 mod mcp_client_stdio;
+mod orchestration;
+mod verdict_pipeline;

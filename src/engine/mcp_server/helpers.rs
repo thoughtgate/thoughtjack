@@ -11,12 +11,7 @@ pub fn find_by_name(state: &Value, collection: &str, name: &str) -> Option<Value
 }
 
 /// Find an item by an arbitrary field in a state array.
-pub fn find_by_field(
-    state: &Value,
-    collection: &str,
-    field: &str,
-    value: &str,
-) -> Option<Value> {
+pub fn find_by_field(state: &Value, collection: &str, field: &str, value: &str) -> Option<Value> {
     state
         .get(collection)
         .and_then(Value::as_array)?

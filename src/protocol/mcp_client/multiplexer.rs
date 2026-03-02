@@ -120,7 +120,9 @@ impl MessageMultiplexer {
             };
 
             // Store close reason BEFORE dropping senders
-            *reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(exit_reason);
+            *reason
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(exit_reason);
             // Drop response_senders — all waiting receivers get RecvError
         });
 

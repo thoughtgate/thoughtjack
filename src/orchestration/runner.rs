@@ -559,19 +559,43 @@ async fn run_mcp_client_actor(
     events: &EventEmitter,
 ) -> Result<ActorResult, EngineError> {
     // Determine transport from CLI flags
-    let command = config.mcp_client_command.as_deref().ok_or_else(|| {
-        EngineError::Driver(
-            "mcp_client mode requires --mcp-client-command (stdio) \
-             or --mcp-client-endpoint (HTTP)"
-                .to_string(),
-        )
-    })?;
-
-    let args: Vec<String> = config
-        .mcp_client_args
-        .as_deref()
-        .map(|a| a.split_whitespace().map(String::from).collect())
-        .unwrap_or_default();
+    let (driver, bind_address) = match (
+        config.mcp_client_command.as_deref(),
+        config.mcp_client_endpoint.as_deref(),
+    ) {
+        (Some(command), _) => {
+            let args: Vec<String> = config
+                .mcp_client_args
+                .as_deref()
+                .map(|a| a.split_whitespace().map(String::from).collect())
+                .unwrap_or_default();
+            let driver = mcp_client::create_mcp_client_driver(
+                Some(command),
+                &args,
+                None,
+                &[],
+                config.raw_synthesize,
+            )?;
+            (driver, format!("stdio:{command}"))
+        }
+        (None, Some(endpoint)) => {
+            let driver = mcp_client::create_mcp_client_driver(
+                None,
+                &[],
+                Some(endpoint),
+                &config.headers,
+                config.raw_synthesize,
+            )?;
+            (driver, endpoint.to_string())
+        }
+        (None, None) => {
+            return Err(EngineError::Driver(
+                "mcp_client mode requires --mcp-client-command (stdio) \
+                 or --mcp-client-endpoint (HTTP)"
+                    .to_string(),
+            ));
+        }
+    };
 
     // Client actors signal readiness immediately (they don't bind a port)
     if let Some(tx) = ready_tx {
@@ -587,16 +611,8 @@ async fn run_mcp_client_actor(
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),
-        bind_address: format!("stdio:{command}"),
+        bind_address,
     });
-
-    // Create driver
-    let driver = mcp_client::create_mcp_client_driver(
-        command,
-        &args,
-        config.mcp_client_endpoint.as_deref(),
-        config.raw_synthesize,
-    )?;
 
     // Create phase engine
     let engine = PhaseEngine::new(document, actor_index);

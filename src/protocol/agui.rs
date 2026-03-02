@@ -375,7 +375,9 @@ impl MessageAccumulator {
     /// Process an SSE event and update accumulated state.
     fn process_event(&mut self, event: &AgUiEvent) {
         match event.event_type.as_str() {
-            "text_message_start" | "text_message_content" | "text_message_end"
+            "text_message_start"
+            | "text_message_content"
+            | "text_message_end"
             | "text_message_chunk" => {
                 self.process_text_event(event);
             }
@@ -1382,10 +1384,7 @@ mod tests {
             raw_type: "TOOL_CALL_RESULT".to_string(),
         });
 
-        assert_eq!(
-            acc.tool_calls.get("tc1").unwrap().result,
-            Some(json!("42"))
-        );
+        assert_eq!(acc.tool_calls.get("tc1").unwrap().result, Some(json!("42")));
     }
 
     #[test]

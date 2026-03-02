@@ -15,7 +15,7 @@ use thoughtjack::loader::load_document;
 use thoughtjack::observability::events::EventEmitter;
 use thoughtjack::orchestration::{ActorConfig, ActorOutcome, orchestrate};
 
-use crate::common::mock_server::{sse_event, MockServer};
+use crate::common::mock_server::{MockServer, sse_event};
 
 /// Builds a default `ActorConfig` with the given max session.
 const fn default_actor_config(max_session: Duration) -> ActorConfig {

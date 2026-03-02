@@ -40,7 +40,9 @@ async fn start_a2a_server(
     yaml: &str,
     bind_addr: &str,
 ) -> (
-    tokio::task::JoinHandle<Result<thoughtjack::engine::types::ActorResult, thoughtjack::error::EngineError>>,
+    tokio::task::JoinHandle<
+        Result<thoughtjack::engine::types::ActorResult, thoughtjack::error::EngineError>,
+    >,
     CancellationToken,
 ) {
     let doc = oatf::load(yaml).unwrap().document;
@@ -484,7 +486,10 @@ attack:
             break;
         }
     }
-    assert_eq!(card2_name, "Data Harvester", "phase transition did not occur");
+    assert_eq!(
+        card2_name, "Data Harvester",
+        "phase transition did not occur"
+    );
 
     cancel.cancel();
 }

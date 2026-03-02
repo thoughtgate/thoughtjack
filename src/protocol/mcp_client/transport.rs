@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::error::EngineError;
 use crate::transport::jsonrpc::{
@@ -308,4 +310,505 @@ pub(super) fn spawn_stdio_transport(
     let writer = StdioWriter { stdin };
 
     Ok((reader, writer, child))
+}
+
+// ============================================================================
+// HTTP (Streamable HTTP) Transport
+// ============================================================================
+
+/// HTTP writer for MCP Streamable HTTP transport.
+///
+/// POSTs JSON-RPC messages to the server endpoint. Responses (JSON or SSE)
+/// are parsed and pushed to an internal channel consumed by `HttpReader`.
+///
+/// Implements: TJ-SPEC-018 F-001
+pub(super) struct HttpWriter {
+    /// HTTP client.
+    client: reqwest::Client,
+    /// Server endpoint URL.
+    endpoint: String,
+    /// Session ID captured from `Mcp-Session-Id` response header.
+    session_id: Arc<Mutex<Option<String>>>,
+    /// Extra HTTP headers from CLI `--header` flags.
+    headers: Vec<(String, String)>,
+    /// Channel sender — parsed response messages pushed here for the reader.
+    message_tx: mpsc::UnboundedSender<JsonRpcMessage>,
+}
+
+/// HTTP reader for MCP Streamable HTTP transport.
+///
+/// Pops `JsonRpcMessage` values from the channel fed by `HttpWriter`.
+///
+/// Implements: TJ-SPEC-018 F-001
+pub(super) struct HttpReader {
+    /// Channel receiver — messages arrive from `HttpWriter` after each POST.
+    message_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
+}
+
+#[async_trait]
+impl McpClientTransportWriter for HttpWriter {
+    async fn send_request_with_id(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+        id: &Value,
+    ) -> Result<(), EngineError> {
+        let request = JsonRpcRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            method: method.to_string(),
+            params,
+            id: id.clone(),
+        };
+        let msg = JsonRpcMessage::Request(request);
+        self.post_and_collect(&msg).await
+    }
+
+    async fn send_response(&mut self, id: &Value, result: Value) -> Result<(), EngineError> {
+        let response = JsonRpcResponse::success(id.clone(), result);
+        let msg = JsonRpcMessage::Response(response);
+        self.post_and_collect(&msg).await
+    }
+
+    async fn send_error_response(
+        &mut self,
+        id: &Value,
+        code: i64,
+        message: &str,
+    ) -> Result<(), EngineError> {
+        let response = JsonRpcResponse::error(id.clone(), code, message);
+        let msg = JsonRpcMessage::Response(response);
+        self.post_and_collect(&msg).await
+    }
+
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<(), EngineError> {
+        let notification = JsonRpcNotification::new(method, params);
+        let msg = JsonRpcMessage::Notification(notification);
+        // Notifications don't expect a response body, but send anyway
+        self.post_and_collect(&msg).await
+    }
+
+    async fn close(&mut self) -> Result<(), EngineError> {
+        // HTTP is stateless — no-op
+        Ok(())
+    }
+}
+
+impl HttpWriter {
+    /// POST a JSON-RPC message to the endpoint and collect any response messages.
+    ///
+    /// Parses the HTTP response body based on Content-Type:
+    /// - `application/json` → single JSON-RPC message
+    /// - `text/event-stream` → SSE stream, each `data:` line is a JSON-RPC message
+    ///
+    /// Captures `Mcp-Session-Id` from response headers.
+    async fn post_and_collect(&self, msg: &JsonRpcMessage) -> Result<(), EngineError> {
+        let body = serde_json::to_vec(msg)
+            .map_err(|e| EngineError::Driver(format!("JSON serialization failed: {e}")))?;
+
+        let mut request = self
+            .client
+            .post(&self.endpoint)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+
+        // Include session ID if captured
+        if let Some(ref sid) = *self.session_id.lock().await {
+            request = request.header("Mcp-Session-Id", sid.as_str());
+        }
+
+        // Include user-specified headers
+        for (key, value) in &self.headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+
+        let response = request.body(body).send().await.map_err(|e| {
+            EngineError::Driver(format!("HTTP POST to {} failed: {e}", self.endpoint))
+        })?;
+
+        // Capture session ID from response
+        if let Some(sid) = response.headers().get("mcp-session-id")
+            && let Ok(sid_str) = sid.to_str()
+        {
+            *self.session_id.lock().await = Some(sid_str.to_string());
+        }
+
+        let status = response.status();
+        if !status.is_success() {
+            // Read error body for diagnostics
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            return Err(EngineError::Driver(format!(
+                "HTTP {status} from {}: {error_body}",
+                self.endpoint
+            )));
+        }
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        if content_type.contains("text/event-stream") {
+            self.collect_sse_response(response).await?;
+        } else {
+            // Default: application/json (single message)
+            self.collect_json_response(response).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Parse a single JSON response body as a `JsonRpcMessage` and push to channel.
+    async fn collect_json_response(&self, response: reqwest::Response) -> Result<(), EngineError> {
+        let text = response
+            .text()
+            .await
+            .map_err(|e| EngineError::Driver(format!("failed to read HTTP response body: {e}")))?;
+
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            // No response body (e.g. for notifications) — not an error
+            return Ok(());
+        }
+
+        let msg: JsonRpcMessage = serde_json::from_str(trimmed)
+            .map_err(|e| EngineError::Driver(format!("failed to parse JSON-RPC response: {e}")))?;
+
+        // Ignore send failure — reader may have been dropped (shutdown)
+        let _ = self.message_tx.send(msg);
+
+        Ok(())
+    }
+
+    /// Parse an SSE response body, extracting `data:` lines as `JsonRpcMessage` values.
+    async fn collect_sse_response(&self, response: reqwest::Response) -> Result<(), EngineError> {
+        use futures_util::StreamExt;
+
+        let mut stream = response.bytes_stream();
+        let mut parser = McpSseParser::new();
+
+        while let Some(chunk) = stream.next().await {
+            let bytes =
+                chunk.map_err(|e| EngineError::Driver(format!("SSE stream read error: {e}")))?;
+
+            for result in parser.feed(&bytes) {
+                match result {
+                    Ok(msg) => {
+                        let _ = self.message_tx.send(msg);
+                    }
+                    Err(e) => {
+                        tracing::warn!("skipping malformed SSE data in MCP response: {e}");
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl McpClientTransportReader for HttpReader {
+    async fn recv(
+        &mut self,
+        pending: &std::sync::Mutex<HashMap<String, PendingRequest>>,
+    ) -> Result<Option<McpClientMessage>, EngineError> {
+        self.message_rx
+            .recv()
+            .await
+            .map_or_else(|| Ok(None), |msg| Ok(Some(classify_message(msg, pending))))
+    }
+}
+
+/// Creates an HTTP transport pair for MCP Streamable HTTP.
+///
+/// # Errors
+///
+/// Returns `EngineError::Driver` if the HTTP client cannot be built.
+///
+/// Implements: TJ-SPEC-018 F-001
+pub(super) fn create_http_transport(
+    endpoint: &str,
+    headers: &[(String, String)],
+) -> Result<(HttpReader, HttpWriter), EngineError> {
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| EngineError::Driver(format!("failed to build HTTP client: {e}")))?;
+
+    let (message_tx, message_rx) = mpsc::unbounded_channel();
+    let session_id = Arc::new(Mutex::new(None));
+
+    let writer = HttpWriter {
+        client,
+        endpoint: endpoint.to_string(),
+        session_id,
+        headers: headers.to_vec(),
+        message_tx,
+    };
+
+    let reader = HttpReader { message_rx };
+
+    Ok((reader, writer))
+}
+
+// ============================================================================
+// MCP SSE Parser
+// ============================================================================
+
+/// Minimal SSE parser for MCP Streamable HTTP responses.
+///
+/// Parses `data:` lines as complete JSON-RPC messages. A blank line
+/// dispatches the accumulated data. Comments (`:` prefix) are ignored.
+///
+/// Implements: TJ-SPEC-018 F-001
+struct McpSseParser {
+    /// Line accumulation buffer.
+    buffer: String,
+    /// Accumulated `data:` field content.
+    current_data: String,
+}
+
+impl McpSseParser {
+    /// Creates a new SSE parser.
+    const fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            current_data: String::new(),
+        }
+    }
+
+    /// Feed raw bytes and extract any complete JSON-RPC messages.
+    fn feed(&mut self, bytes: &[u8]) -> Vec<Result<JsonRpcMessage, String>> {
+        let text = String::from_utf8_lossy(bytes);
+        self.buffer.push_str(&text);
+
+        let mut messages = Vec::new();
+
+        while let Some(newline_pos) = self.buffer.find('\n') {
+            let line = self.buffer[..newline_pos]
+                .trim_end_matches('\r')
+                .to_string();
+            self.buffer = self.buffer[newline_pos + 1..].to_string();
+
+            if line.is_empty() {
+                // Blank line = dispatch event
+                if let Some(result) = self.dispatch_event() {
+                    messages.push(result);
+                }
+            } else if let Some(value) = line.strip_prefix("data:") {
+                if !self.current_data.is_empty() {
+                    self.current_data.push('\n');
+                }
+                self.current_data.push_str(value.trim_start());
+            } else if line.starts_with(':') {
+                // SSE comment — ignore
+            }
+            // Other lines (e.g. `event:`, `id:`) are ignored for now
+        }
+
+        messages
+    }
+
+    /// Dispatch an accumulated data event as a `JsonRpcMessage`.
+    fn dispatch_event(&mut self) -> Option<Result<JsonRpcMessage, String>> {
+        let data_str = std::mem::take(&mut self.current_data);
+        if data_str.is_empty() {
+            return None;
+        }
+
+        match serde_json::from_str::<JsonRpcMessage>(&data_str) {
+            Ok(msg) => Some(Ok(msg)),
+            Err(e) => Some(Err(format!("malformed JSON in MCP SSE data: {e}"))),
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ---- SSE Parser Tests ----
+
+    #[test]
+    fn sse_parser_basic_response() {
+        let mut parser = McpSseParser::new();
+        let input = b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        let msg = events[0].as_ref().unwrap();
+        assert!(matches!(msg, JsonRpcMessage::Response(_)));
+    }
+
+    #[test]
+    fn sse_parser_notification() {
+        let mut parser = McpSseParser::new();
+        let input = b"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\",\"params\":{\"uri\":\"file:///a\"}}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        let msg = events[0].as_ref().unwrap();
+        assert!(matches!(msg, JsonRpcMessage::Notification(_)));
+    }
+
+    #[test]
+    fn sse_parser_malformed_json_returns_error() {
+        let mut parser = McpSseParser::new();
+        let input = b"data: not json\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].is_err());
+    }
+
+    #[test]
+    fn sse_parser_multiple_events() {
+        let mut parser = McpSseParser::new();
+        let input = b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 2);
+        assert!(events[0].is_ok());
+        assert!(events[1].is_ok());
+    }
+
+    #[test]
+    fn sse_parser_incremental_chunks() {
+        let mut parser = McpSseParser::new();
+
+        let events1 = parser.feed(b"data: {\"jsonrpc\":\"2");
+        assert!(events1.is_empty());
+
+        let events2 = parser.feed(b".0\",\"id\":1,\"result\":{}}\n\n");
+        assert_eq!(events2.len(), 1);
+        assert!(events2[0].is_ok());
+    }
+
+    #[test]
+    fn sse_parser_comments_ignored() {
+        let mut parser = McpSseParser::new();
+        let input = b": keepalive\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
+        let events = parser.feed(input);
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].is_ok());
+    }
+
+    #[test]
+    fn sse_parser_empty_lines_no_event() {
+        let mut parser = McpSseParser::new();
+        let input = b"\n\n";
+        let events = parser.feed(input);
+        assert!(events.is_empty());
+    }
+
+    // ---- HTTP Transport Creation Tests ----
+
+    #[test]
+    fn create_http_transport_succeeds() {
+        let result = create_http_transport("http://localhost:8080/mcp", &[]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn create_http_transport_with_headers() {
+        let headers = vec![
+            ("Authorization".to_string(), "Bearer tok".to_string()),
+            ("X-Custom".to_string(), "value".to_string()),
+        ];
+        let result = create_http_transport("http://localhost:8080/mcp", &headers);
+        assert!(result.is_ok());
+    }
+
+    // ---- HttpReader EOF Behavior ----
+
+    #[tokio::test]
+    async fn http_reader_returns_none_on_sender_drop() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut reader = HttpReader { message_rx: rx };
+        let pending = std::sync::Mutex::new(HashMap::new());
+
+        // Drop the sender
+        drop(tx);
+
+        let result = reader.recv(&pending).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn http_reader_receives_response() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut reader = HttpReader { message_rx: rx };
+        let pending = std::sync::Mutex::new(HashMap::new());
+
+        // Register a pending request for correlation
+        pending.lock().unwrap().insert(
+            "1".to_string(),
+            PendingRequest {
+                method: "tools/list".to_string(),
+            },
+        );
+
+        // Send a response message
+        let resp = JsonRpcResponse::success(json!(1), json!({"tools": []}));
+        tx.send(JsonRpcMessage::Response(resp)).unwrap();
+
+        let result = reader.recv(&pending).await.unwrap();
+        assert!(result.is_some());
+        match result.unwrap() {
+            McpClientMessage::Response {
+                method, is_error, ..
+            } => {
+                assert_eq!(method, "tools/list");
+                assert!(!is_error);
+            }
+            other => panic!("expected Response, got: {other:?}"),
+        }
+    }
+
+    // ---- Factory Function Tests ----
+
+    #[test]
+    fn create_driver_neither_command_nor_endpoint_errors() {
+        let result =
+            crate::protocol::mcp_client::create_mcp_client_driver(None, &[], None, &[], false);
+        match result {
+            Err(e) => {
+                let err = e.to_string();
+                assert!(
+                    err.contains("mcp_client mode requires"),
+                    "unexpected error: {err}"
+                );
+            }
+            Ok(_) => panic!("expected error when neither command nor endpoint provided"),
+        }
+    }
+
+    #[test]
+    fn create_driver_with_endpoint_succeeds() {
+        let result = crate::protocol::mcp_client::create_mcp_client_driver(
+            None,
+            &[],
+            Some("http://localhost:8080/mcp"),
+            &[],
+            false,
+        );
+        assert!(result.is_ok());
+        let driver = result.unwrap();
+        // HTTP transport → no child process
+        assert!(driver.child.is_none());
+    }
 }
