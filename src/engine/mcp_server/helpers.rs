@@ -56,6 +56,7 @@ pub fn matches_uri_template(template: &str, uri: &str) -> bool {
     literals.push(rest); // Trailing literal (may be empty)
 
     // Match literals against the URI in order
+    let last_nonempty = literals.iter().rposition(|l| !l.is_empty());
     let mut pos = 0;
     for (i, literal) in literals.iter().enumerate() {
         if literal.is_empty() {
@@ -64,22 +65,32 @@ pub fn matches_uri_template(template: &str, uri: &str) -> bool {
                 if pos >= uri.len() {
                     return false;
                 }
-                // No constraint — just need non-empty match for the variable
+                pos += 1;
             }
             continue;
         }
-        let Some(found) = uri[pos..].find(literal) else {
+        // After a variable (i > 0), skip at least 1 char so the variable is non-empty
+        let skip = usize::from(i > 0);
+        if pos + skip > uri.len() {
+            return false;
+        }
+        let search = &uri[pos + skip..];
+        // Use rfind for the last non-empty literal so preceding variables
+        // get maximum room (greedy find would match too early when the
+        // variable value contains characters that look like the suffix).
+        let found = if Some(i) == last_nonempty && i > 0 {
+            search.rfind(literal)
+        } else {
+            search.find(literal)
+        };
+        let Some(found) = found else {
             return false;
         };
         // For the first literal, it must start at position 0
         if i == 0 && found != 0 {
             return false;
         }
-        // Variable segments (between literals) must be non-empty
-        if i > 0 && found == 0 {
-            return false;
-        }
-        pos += found + literal.len();
+        pos += skip + found + literal.len();
     }
 
     // If the last literal is non-empty, we've already matched to the end of it.
@@ -130,12 +141,12 @@ mod tests {
 
         #[test]
         fn prop_variable_substitution(
-            prefix in "[a-e]{1,5}",
-            value in "[0-9]{1,5}",
-            suffix in "[v-z]{1,5}",
+            prefix in "[a-z]{1,5}",
+            value in "[a-z0-9]{1,5}",
+            suffix in "[a-z]{1,5}",
         ) {
-            // Use disjoint character sets so the greedy literal search
-            // never confuses variable content with the suffix.
+            // Character sets overlap — the matcher must correctly skip
+            // past the variable segment even when it contains suffix chars.
             let template = format!("{prefix}{{var}}{suffix}");
             let uri = format!("{prefix}{value}{suffix}");
             prop_assert!(matches_uri_template(&template, &uri));
