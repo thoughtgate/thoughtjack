@@ -194,6 +194,85 @@ pub async fn execute_entry_actions(
 mod tests {
     use super::*;
 
+    /// Mock sender that can be configured to succeed or fail.
+    struct MockSender {
+        fail_notifications: bool,
+        fail_elicitations: bool,
+        /// Tracks calls for assertion.
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl MockSender {
+        fn succeeding() -> Self {
+            Self {
+                fail_notifications: false,
+                fail_elicitations: false,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn failing_notifications() -> Self {
+            Self {
+                fail_notifications: true,
+                fail_elicitations: false,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn failing_elicitations() -> Self {
+            Self {
+                fail_notifications: false,
+                fail_elicitations: true,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn call_log(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl EntryActionSender for MockSender {
+        async fn send_notification(
+            &self,
+            method: &str,
+            _params: Option<&serde_json::Value>,
+        ) -> Result<(), EngineError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("notification:{method}"));
+            if self.fail_notifications {
+                Err(EngineError::EntryAction("transport closed".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn send_elicitation(
+            &self,
+            message: &str,
+            _mode: Option<&ElicitationMode>,
+            _requested_schema: Option<&serde_json::Value>,
+            _url: Option<&str>,
+            elicitation_id: Option<&str>,
+        ) -> Result<(), EngineError> {
+            let id_info = elicitation_id.unwrap_or("none");
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("elicitation:{message}:id={id_info}"));
+            if self.fail_elicitations {
+                Err(EngineError::EntryAction(
+                    "elicitation send failed".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     #[tokio::test]
     async fn log_action_executes_without_panic() {
         let actions = vec![oatf::Action::Log {
@@ -278,5 +357,184 @@ mod tests {
 
         let extractors = HashMap::new();
         execute_entry_actions(&actions, &extractors, None).await;
+    }
+
+    // ---- Error path tests ----
+
+    #[tokio::test]
+    async fn notification_sender_error_continues_to_next_action() {
+        // When send_notification fails, the error is logged but execution
+        // continues to the next action in the list.
+        let sender = MockSender::failing_notifications();
+        let actions = vec![
+            oatf::Action::SendNotification {
+                method: "notifications/tools/list_changed".to_string(),
+                params: None,
+                extensions: HashMap::new(),
+                non_ext_key_count: 1,
+            },
+            oatf::Action::Log {
+                message: "after notification".to_string(),
+                level: None,
+                extensions: HashMap::new(),
+                non_ext_key_count: 1,
+            },
+        ];
+
+        let extractors = HashMap::new();
+        // Should not panic despite send_notification returning Err
+        execute_entry_actions(&actions, &extractors, Some(&sender)).await;
+
+        // The notification was attempted (call recorded)
+        let calls = sender.call_log();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "notification:notifications/tools/list_changed");
+    }
+
+    #[tokio::test]
+    async fn elicitation_sender_error_continues_to_next_action() {
+        let sender = MockSender::failing_elicitations();
+        let actions = vec![
+            oatf::Action::SendElicitation {
+                message: "Enter credentials".to_string(),
+                mode: Some(ElicitationMode::Form),
+                requested_schema: None,
+                url: None,
+                extensions: HashMap::new(),
+                non_ext_key_count: 1,
+            },
+            oatf::Action::Log {
+                message: "after elicitation".to_string(),
+                level: None,
+                extensions: HashMap::new(),
+                non_ext_key_count: 1,
+            },
+        ];
+
+        let extractors = HashMap::new();
+        execute_entry_actions(&actions, &extractors, Some(&sender)).await;
+
+        let calls = sender.call_log();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].starts_with("elicitation:Enter credentials"));
+    }
+
+    #[tokio::test]
+    async fn notification_with_interpolated_params() {
+        let sender = MockSender::succeeding();
+        let actions = vec![oatf::Action::SendNotification {
+            method: "notifications/resources/updated".to_string(),
+            params: Some(serde_json::json!({"uri": "file:///{{path}}"})),
+            extensions: HashMap::new(),
+            non_ext_key_count: 2,
+        }];
+
+        let mut extractors = HashMap::new();
+        extractors.insert("path".to_string(), "secret.txt".to_string());
+
+        execute_entry_actions(&actions, &extractors, Some(&sender)).await;
+
+        let calls = sender.call_log();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "notification:notifications/resources/updated");
+    }
+
+    #[tokio::test]
+    async fn elicitation_url_mode_auto_generates_id() {
+        let sender = MockSender::succeeding();
+        let actions = vec![oatf::Action::SendElicitation {
+            message: "Visit this URL".to_string(),
+            mode: Some(ElicitationMode::Url),
+            requested_schema: None,
+            url: Some("https://example.com/auth".to_string()),
+            extensions: HashMap::new(), // No elicitationId → auto-generate
+            non_ext_key_count: 3,
+        }];
+
+        let extractors = HashMap::new();
+        execute_entry_actions(&actions, &extractors, Some(&sender)).await;
+
+        let calls = sender.call_log();
+        assert_eq!(calls.len(), 1);
+        // Should have auto-generated a UUID, not "none"
+        assert!(
+            !calls[0].ends_with("id=none"),
+            "url-mode elicitation should auto-generate an elicitation_id, got: {}",
+            calls[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn elicitation_explicit_id_from_extensions() {
+        let sender = MockSender::succeeding();
+        let mut extensions = HashMap::new();
+        extensions.insert(
+            "elicitationId".to_string(),
+            serde_json::json!("custom-id-123"),
+        );
+
+        let actions = vec![oatf::Action::SendElicitation {
+            message: "Enter password".to_string(),
+            mode: Some(ElicitationMode::Form),
+            requested_schema: None,
+            url: None,
+            extensions,
+            non_ext_key_count: 1,
+        }];
+
+        let extractors = HashMap::new();
+        execute_entry_actions(&actions, &extractors, Some(&sender)).await;
+
+        let calls = sender.call_log();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].contains("id=custom-id-123"),
+            "should use explicit elicitationId from extensions, got: {}",
+            calls[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn all_sender_errors_logged_but_execution_completes() {
+        // All three transport-dependent actions fail, but the function
+        // processes all of them without panicking or short-circuiting.
+        let sender = MockSender {
+            fail_notifications: true,
+            fail_elicitations: true,
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+
+        let actions = vec![
+            oatf::Action::SendNotification {
+                method: "notify1".to_string(),
+                params: None,
+                extensions: HashMap::new(),
+                non_ext_key_count: 1,
+            },
+            oatf::Action::SendElicitation {
+                message: "elicit1".to_string(),
+                mode: None,
+                requested_schema: None,
+                url: None,
+                extensions: HashMap::new(),
+                non_ext_key_count: 1,
+            },
+            oatf::Action::SendNotification {
+                method: "notify2".to_string(),
+                params: None,
+                extensions: HashMap::new(),
+                non_ext_key_count: 1,
+            },
+        ];
+
+        let extractors = HashMap::new();
+        execute_entry_actions(&actions, &extractors, Some(&sender)).await;
+
+        // All three were attempted despite errors
+        let calls = sender.call_log();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0], "notification:notify1");
+        assert!(calls[1].starts_with("elicitation:elicit1"));
+        assert_eq!(calls[2], "notification:notify2");
     }
 }

@@ -849,4 +849,132 @@ mod tests {
         use crate::observability::metrics::record_request;
         record_request("tools/call");
     }
+
+    #[test]
+    fn concurrent_emit_from_multiple_threads() {
+        let tw = TestWriter::new();
+        let emitter = Arc::new(EventEmitter::new(Box::new(tw.clone())));
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let emitter = Arc::clone(&emitter);
+                std::thread::spawn(move || {
+                    for j in 0..10 {
+                        emitter.emit(ThoughtJackEvent::PhaseEntered {
+                            actor: format!("thread-{i}"),
+                            phase_name: format!("phase-{j}"),
+                            phase_index: j,
+                        });
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        // 8 threads × 10 events = 80 total
+        assert_eq!(emitter.event_count(), 80);
+
+        // All 80 lines should be valid JSONL with unique sequence numbers
+        let contents = tw.contents();
+        let lines: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 80);
+
+        // Sequence numbers should be unique (no duplicates)
+        let mut seqs: Vec<u64> = lines
+            .iter()
+            .map(|l| l["sequence"].as_u64().unwrap())
+            .collect();
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(seqs.len(), 80, "all sequence numbers must be unique");
+    }
+
+    #[test]
+    fn flush_is_idempotent_and_safe() {
+        let tw = TestWriter::new();
+        let emitter = EventEmitter::new(Box::new(tw.clone()));
+
+        emitter.emit(sample_event());
+        emitter.flush();
+        emitter.flush(); // Double flush should be fine
+
+        let contents = tw.contents();
+        assert_eq!(
+            contents.lines().count(),
+            1,
+            "flush should not duplicate output"
+        );
+    }
+
+    #[test]
+    fn emit_survives_writer_error() {
+        /// Writer that fails every write operation.
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk full"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("disk full"))
+            }
+        }
+
+        let emitter = EventEmitter::new(Box::new(FailingWriter));
+
+        // Should not panic even though every write fails
+        emitter.emit(sample_event());
+        emitter.emit(sample_event());
+        emitter.flush();
+
+        // Sequence counter still incremented (events were "attempted")
+        assert_eq!(emitter.event_count(), 2);
+    }
+
+    #[test]
+    fn from_file_appends_to_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("append.jsonl");
+
+        // First emitter writes one event
+        {
+            let emitter = EventEmitter::from_file(&path).unwrap();
+            emitter.emit(sample_event());
+        }
+
+        // Second emitter appends another event
+        {
+            let emitter = EventEmitter::from_file(&path).unwrap();
+            emitter.emit(ThoughtJackEvent::ServerStopped {
+                reason: "done".to_owned(),
+                uptime_seconds: 5,
+            });
+        }
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<serde_json::Value> = content
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["type"], "ServerStarted");
+        assert_eq!(lines[1]["type"], "ServerStopped");
+    }
+
+    #[test]
+    fn noop_emitter_discards_all_events() {
+        let emitter = EventEmitter::noop();
+        emitter.emit(sample_event());
+        emitter.emit(sample_event());
+        emitter.emit(sample_event());
+
+        // Counter increments but nothing is written anywhere
+        assert_eq!(emitter.event_count(), 3);
+    }
 }
