@@ -21,8 +21,11 @@ fn load_doc(yaml: &str) -> oatf::Document {
 }
 
 /// Creates a temporary shell script that acts as a mock MCP server.
-/// Returns the path to the script.
-fn create_mock_mcp_script(script_body: &str) -> tempfile::NamedTempFile {
+///
+/// Returns a `TempPath` (auto-deletes on drop) with the write handle
+/// **closed**. This prevents `ETXTBSY` on Linux, where `exec` fails
+/// if the file still has an open write descriptor.
+fn create_mock_mcp_script(script_body: &str) -> tempfile::TempPath {
     let mut file = tempfile::Builder::new()
         .suffix(".sh")
         .tempfile()
@@ -39,7 +42,8 @@ fn create_mock_mcp_script(script_body: &str) -> tempfile::NamedTempFile {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    file
+    // Close the write fd to avoid ETXTBSY on Linux
+    file.into_temp_path()
 }
 
 // ============================================================================
@@ -69,7 +73,7 @@ echo "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"tools\":[{\"name\":\"calcu
 "#,
     );
 
-    let script_path = script.path().to_str().unwrap().to_string();
+    let script_path = script.to_str().unwrap().to_string();
 
     let driver = create_mcp_client_driver(Some(&script_path), &[], None, &[], false)
         .expect("failed to create MCP client driver");
@@ -152,7 +156,7 @@ echo "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"content\":[{\"type\":\"tex
 "#,
     );
 
-    let script_path = script.path().to_str().unwrap().to_string();
+    let script_path = script.to_str().unwrap().to_string();
 
     let driver = create_mcp_client_driver(Some(&script_path), &[], None, &[], false)
         .expect("failed to create MCP client driver");
@@ -215,7 +219,7 @@ exit 0
 "#,
     );
 
-    let script_path = script.path().to_str().unwrap().to_string();
+    let script_path = script.to_str().unwrap().to_string();
 
     let driver = create_mcp_client_driver(Some(&script_path), &[], None, &[], false)
         .expect("failed to create MCP client driver");
@@ -285,7 +289,7 @@ done
 "#,
     );
 
-    let script_path = script.path().to_str().unwrap().to_string();
+    let script_path = script.to_str().unwrap().to_string();
 
     let driver = create_mcp_client_driver(Some(&script_path), &[], None, &[], false)
         .expect("failed to create MCP client driver");

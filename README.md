@@ -2,17 +2,15 @@
 
 **Adversarial MCP Server for Security Testing**
 
-[![crates.io](https://img.shields.io/crates/v/thoughtjack.svg)](https://crates.io/crates/thoughtjack)
 [![GitHub Release](https://img.shields.io/github/v/release/thoughtgate/thoughtjack)](https://github.com/thoughtgate/thoughtjack/releases/latest)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/thoughtgate/thoughtjack/badge)](https://scorecard.dev/viewer/?uri=github.com/thoughtgate/thoughtjack)
 [![CodeQL](https://github.com/thoughtgate/thoughtjack/actions/workflows/codeql.yml/badge.svg)](https://github.com/thoughtgate/thoughtjack/security/code-scanning)
 [![codecov](https://codecov.io/gh/thoughtgate/thoughtjack/graph/badge.svg)](https://codecov.io/gh/thoughtgate/thoughtjack)
-[![Fuzzing](https://img.shields.io/badge/fuzzing-cargo--fuzz-brightgreen)](https://github.com/thoughtgate/thoughtjack/blob/main/docs/SECURITY.md#continuous-fuzzing)
-[![Sigstore Signed](https://img.shields.io/badge/sigstore-signed-blue)](https://github.com/thoughtgate/thoughtjack/blob/main/docs/SECURITY.md#release-artifact-signing)
+[![Fuzzing](https://img.shields.io/badge/fuzzing-cargo--fuzz-brightgreen)](https://github.com/thoughtgate/thoughtjack/actions/workflows/security.yml)
+[![MCP Conformance](https://img.shields.io/badge/MCP-conformance_tested-blue)](https://github.com/thoughtgate/thoughtjack/actions/workflows/ci.yml)
 [![Rust 2024](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
-[![MSRV 1.85](https://img.shields.io/badge/msrv-1.85-blue.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+[![MSRV 1.88](https://img.shields.io/badge/msrv-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0.html)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
-[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-red.svg)](https://doc.rust-lang.org/nomicon/)
 
 ThoughtJack is a configurable adversarial MCP (Model Context Protocol) server designed to test AI agent security. It simulates malicious tool servers that execute temporal attacks (rug pulls, sleeper agents), deliver malformed payloads, and test client resilience to protocol-level attacks. Attack scenarios are defined declaratively in YAML configuration files with multi-phase state machines, composable behaviors, and payload generators. ThoughtJack is the offensive counterpart to ThoughtGate, a defensive MCP proxy.
 
