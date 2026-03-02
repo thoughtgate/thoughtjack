@@ -14,7 +14,7 @@ use tokio::task::{Id as TaskId, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::engine::trace::SharedTrace;
-use crate::engine::types::{ActorResult, AwaitExtractor};
+use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
 use crate::error::EngineError;
 use crate::loader::{LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
@@ -127,7 +127,7 @@ pub async fn orchestrate(
     let mut server_names = Vec::new();
 
     for actor in actors {
-        if actor.mode.contains("server") {
+        if actor.mode.ends_with("_server") {
             server_count += 1;
             server_names.push(actor.name.clone());
         } else {
@@ -223,7 +223,7 @@ fn spawn_actor_tasks(
     let mut task_meta = TaskMetaMap::new();
 
     for (i, actor) in actors.iter().enumerate() {
-        let is_server = actor.mode.contains("server");
+        let is_server = actor.mode.ends_with("_server");
         let actor_name = actor.name.clone();
 
         let await_cfg: HashMap<usize, Vec<AwaitExtractor>> = loaded
@@ -292,7 +292,13 @@ async fn wait_for_completion(
     let mut outcomes: Vec<ActorOutcome> = Vec::with_capacity(join_set.len());
     let mut clients_done = 0;
     let mut grace_started = false;
-    let max_session_deadline = tokio::time::Instant::now() + config.max_session;
+    let max_session_sleep = tokio::time::sleep_until(
+        tokio::time::Instant::now() + config.max_session,
+    );
+    tokio::pin!(max_session_sleep);
+
+    let cancelled = cancel.cancelled();
+    tokio::pin!(cancelled);
 
     loop {
         if join_set.is_empty() {
@@ -310,9 +316,7 @@ async fn wait_for_completion(
                 outcomes.push(outcome);
 
                 // Check shutdown conditions (grace period fires at most once)
-                let should_grace =
-                    (total_clients > 0 && clients_done >= total_clients)
-                    || (total_clients == 0 && join_set.is_empty());
+                let should_grace = total_clients > 0 && clients_done >= total_clients;
 
                 if should_grace && !grace_started {
                     grace_started = true;
@@ -320,14 +324,14 @@ async fn wait_for_completion(
                     spawn_grace_task(config, cancel, events);
                 }
             }
-            () = tokio::time::sleep_until(max_session_deadline) => {
+            () = &mut max_session_sleep => {
                 tracing::warn!("max session expired, cancelling all actors");
                 events.emit(ThoughtJackEvent::OrchestratorShutdown {
                     reason: "max_session_expired".to_string(),
                 });
                 cancel.cancel();
             }
-            () = cancel.cancelled() => {
+            () = &mut cancelled => {
                 tracing::info!("orchestrator cancelled");
                 break;
             }
@@ -384,16 +388,26 @@ fn unpack_join_result(
                     || ("(unknown)".to_string(), None),
                     |(name, server)| (name.clone(), Some(*server)),
                 );
-            let msg = if join_err.is_panic() {
-                "task panicked"
+
+            if join_err.is_cancelled() {
+                // Task was aborted (e.g., after max_session or grace period).
+                // This is expected lifecycle, not a failure.
+                let outcome = ActorOutcome::Success(ActorResult {
+                    actor_name,
+                    termination: TerminationReason::Cancelled,
+                    phases_completed: 0,
+                    total_phases: 0,
+                    final_phase: None,
+                });
+                (outcome, is_server)
             } else {
-                "task cancelled"
-            };
-            events.emit(ThoughtJackEvent::ActorError {
-                actor_name: actor_name.clone(),
-                error: msg.to_string(),
-            });
-            (ActorOutcome::Panic { actor_name }, is_server)
+                // Task panicked — genuine failure.
+                events.emit(ThoughtJackEvent::ActorError {
+                    actor_name: actor_name.clone(),
+                    error: "task panicked".to_string(),
+                });
+                (ActorOutcome::Panic { actor_name }, is_server)
+            }
         }
     }
 }
