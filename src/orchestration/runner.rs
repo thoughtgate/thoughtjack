@@ -1012,32 +1012,37 @@ attack:
             headers: vec![],
             raw_synthesize: false,
             grace_period: None,
-            max_session: Duration::from_secs(300),
-            readiness_timeout: Duration::from_secs(30),
+            max_session: Duration::from_secs(5),
+            readiness_timeout: Duration::from_secs(5),
         };
 
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        // Cancel after short delay to avoid blocking on stdin
+        // Cancel after short delay to avoid blocking on stdin.
+        // 200ms gives the actor enough time to start before cancel fires.
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
             cancel_clone.cancel();
         });
 
-        let result = run_actor(
-            0,
-            doc,
-            &config,
-            SharedTrace::new(),
-            ExtractorStore::new(),
-            HashMap::new(),
-            cancel,
-            None,
-            None,
-            &EventEmitter::noop(),
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_actor(
+                0,
+                doc,
+                &config,
+                SharedTrace::new(),
+                ExtractorStore::new(),
+                HashMap::new(),
+                cancel,
+                None,
+                None,
+                &EventEmitter::noop(),
+            ),
         )
-        .await;
+        .await
+        .expect("test timed out — stdio actor did not respond to cancellation within 10s");
 
         assert!(result.is_ok(), "Expected Ok, got: {result:?}");
         let actor_result = result.unwrap();

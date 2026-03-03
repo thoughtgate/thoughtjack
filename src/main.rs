@@ -31,36 +31,49 @@ async fn main() {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("failed to register SIGTERM handler");
+            let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
 
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = sigterm.recv() => {}
-            }
+            match sigterm {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = sigterm.recv() => {}
+                    }
 
-            cancel_for_signal.cancel();
-            eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
+                    cancel_for_signal.cancel();
+                    eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
 
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => std::process::exit(ExitCode::INTERRUPTED),
-                _ = sigterm.recv() => std::process::exit(ExitCode::TERMINATED),
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => std::process::exit(ExitCode::INTERRUPTED),
+                        _ = sigterm.recv() => std::process::exit(ExitCode::TERMINATED),
+                    }
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to register SIGTERM handler: {e}");
+                    // Fall back to Ctrl+C only
+                    if tokio::signal::ctrl_c().await.is_ok() {
+                        cancel_for_signal.cancel();
+                        eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
+                        if tokio::signal::ctrl_c().await.is_ok() {
+                            std::process::exit(ExitCode::INTERRUPTED);
+                        }
+                    }
+                }
             }
         }
 
         #[cfg(not(unix))]
         {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to register Ctrl+C handler");
+            if tokio::signal::ctrl_c().await.is_err() {
+                eprintln!("warning: failed to register signal handler");
+                return;
+            }
             cancel_for_signal.cancel();
             eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
 
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to register Ctrl+C handler");
-            std::process::exit(ExitCode::INTERRUPTED);
+            if tokio::signal::ctrl_c().await.is_ok() {
+                std::process::exit(ExitCode::INTERRUPTED);
+            }
         }
     });
 
