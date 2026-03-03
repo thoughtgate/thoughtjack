@@ -28,6 +28,36 @@ use crate::transport::http::HttpConfig;
 use crate::transport::{HttpTransport, StdioTransport};
 
 // ============================================================================
+// TransportFactory (test-only)
+// ============================================================================
+
+/// Wrapper around a transport factory closure for test injection.
+///
+/// Allows tests to inject a `NullTransport` (or other mock) instead of
+/// real stdio, preventing hangs from uncancellable blocking reads.
+///
+/// Implements: TJ-SPEC-015 F-003
+#[cfg(test)]
+#[derive(Clone)]
+pub struct TransportFactory(
+    pub Arc<dyn Fn() -> Arc<dyn crate::transport::Transport> + Send + Sync>,
+);
+
+#[cfg(test)]
+impl std::fmt::Debug for TransportFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TransportFactory(<fn>)")
+    }
+}
+
+/// Creates a `TransportFactory` that produces `NullTransport` instances.
+#[cfg(test)]
+#[must_use]
+pub fn null_transport_factory() -> TransportFactory {
+    TransportFactory(Arc::new(|| Arc::new(crate::transport::NullTransport)))
+}
+
+// ============================================================================
 // ActorConfig
 // ============================================================================
 
@@ -60,6 +90,9 @@ pub struct ActorConfig {
     pub max_session: Duration,
     /// Timeout for server readiness gate.
     pub readiness_timeout: Duration,
+    /// Test-only transport factory to inject `NullTransport` instead of real stdio.
+    #[cfg(test)]
+    pub transport_factory: Option<TransportFactory>,
 }
 
 /// Builds an `ActorConfig` from CLI `RunArgs`.
@@ -91,6 +124,8 @@ pub fn build_actor_config(args: &RunArgs) -> ActorConfig {
         grace_period: args.grace_period.map(Into::into),
         max_session: args.max_session.into(),
         readiness_timeout: args.readiness_timeout.into(),
+        #[cfg(test)]
+        transport_factory: None,
     }
 }
 
@@ -292,7 +327,7 @@ async fn run_mcp_server_actor(
         gate_rx: _gate_rx,
         events,
     } = ctx;
-    // Create transport based on CLI flags
+    // Create transport based on CLI flags (or test-injected factory)
     let transport: Arc<dyn crate::transport::Transport> =
         if let Some(ref bind_addr) = config.mcp_server_bind {
             let http_config = HttpConfig {
@@ -315,8 +350,15 @@ async fn run_mcp_server_actor(
 
             Arc::new(transport)
         } else {
-            // stdio transport — ready immediately
-            let transport = StdioTransport::new();
+            // stdio (or test-injected null) transport — ready immediately
+            #[cfg(test)]
+            let transport: Arc<dyn crate::transport::Transport> = config
+                .transport_factory
+                .as_ref()
+                .map_or_else(|| Arc::new(StdioTransport::new()) as _, |f| (f.0)());
+
+            #[cfg(not(test))]
+            let transport: Arc<dyn crate::transport::Transport> = Arc::new(StdioTransport::new());
 
             events.emit(ThoughtJackEvent::ActorReady {
                 actor_name: actor_name.to_string(),
@@ -327,7 +369,7 @@ async fn run_mcp_server_actor(
                 let _ = tx.send(());
             }
 
-            Arc::new(transport)
+            transport
         };
 
     // Note: server-mode actors don't wait on gate_rx — they signal it.
@@ -781,6 +823,7 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
         };
 
         let result = run_actor(
@@ -837,6 +880,7 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
         };
 
         let result = run_actor(
@@ -894,6 +938,7 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
         };
 
         let cancel = CancellationToken::new();
@@ -959,6 +1004,7 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
         };
 
         let result = run_actor(
@@ -983,7 +1029,7 @@ attack:
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn mcp_server_stdio_runs_to_completion() {
         // mcp_server actor with terminal phase, no bind address (stdio mode).
         // Cancel after short delay → Result::Ok with Cancelled termination.
@@ -1014,13 +1060,13 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(5),
             readiness_timeout: Duration::from_secs(5),
+            transport_factory: Some(null_transport_factory()),
         };
 
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        // Cancel after short delay to avoid blocking on stdin.
-        // 200ms gives the actor enough time to start before cancel fires.
+        // Cancel after short delay — NullTransport returns EOF immediately.
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(200)).await;
             cancel_clone.cancel();
@@ -1182,6 +1228,7 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
         };
 
         let result = run_actor(

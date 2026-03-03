@@ -558,7 +558,9 @@ attack:
 "#;
 
         let loaded = load_document(yaml).unwrap();
-        let config = default_actor_config(Duration::from_millis(200));
+        let mut config = default_actor_config(Duration::from_millis(200));
+        // Use HTTP transport to avoid stdio hang (blocking reads are uncancellable)
+        config.mcp_server_bind = Some("127.0.0.1:0".to_string());
         let events = Arc::new(EventEmitter::noop());
         let cancel = CancellationToken::new();
 
