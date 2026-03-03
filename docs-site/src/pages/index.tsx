@@ -17,9 +17,6 @@ function Hero(): React.ReactElement {
           <Link className="button button--secondary button--lg" to="/docs/tutorials">
             Get Started
           </Link>
-          <Link className="button button--secondary button--lg" to="/docs/scenarios">
-            Attack Catalog
-          </Link>
         </div>
       </div>
     </header>
@@ -63,11 +60,6 @@ const quickLinks: QuickLinkProps[] = [
     title: 'Explanation',
     description: 'Architecture, phase engine, and attack surface concepts.',
     to: '/docs/explanation',
-  },
-  {
-    title: 'Attack Catalog',
-    description: 'Browse all attack scenarios with diagrams and mappings.',
-    to: '/docs/scenarios',
   },
   {
     title: 'Coverage Matrices',

@@ -29,10 +29,10 @@ This means nobody can evaluate ThoughtJack without first learning the config for
 ```bash
 # Today (requires library checkout)
 git clone https://github.com/thoughtgate/thoughtjack-library
-thoughtjack server run --config thoughtjack-library/scenarios/rug-pull.yaml --library thoughtjack-library
+thoughtjack run --config thoughtjack-library/scenarios/rug-pull.yaml --library thoughtjack-library
 
 # With built-in scenarios
-thoughtjack server run --scenario rug-pull
+thoughtjack run --scenario rug-pull
 ```
 
 ### 1.2 Design Principles
@@ -52,7 +52,7 @@ thoughtjack server run --scenario rug-pull
 |------|--------------|
 | TJ-SPEC-001 (Config Schema) | Built-in scenarios are valid TJ-SPEC-001 configurations |
 | TJ-SPEC-006 (Config Loader) | Embedded YAML is parsed through the same loader pipeline |
-| TJ-SPEC-007 (CLI Interface) | Adds `--scenario` flag to `server run` and new `scenarios` subcommand |
+| TJ-SPEC-007 (CLI Interface) | Adds `--scenario` flag to `run` and new `scenarios` subcommand |
 | TJ-SPEC-009 (Dynamic Responses) | Some built-in scenarios use dynamic response features |
 
 ### 1.4 Scope Boundaries
@@ -61,7 +61,7 @@ thoughtjack server run --scenario rug-pull
 - Compile-time embedding of YAML scenarios into the binary
 - Scenario metadata (name, description, category, tags, taxonomy IDs)
 - CLI commands for listing and inspecting built-in scenarios
-- Integration with `server run` via `--scenario` flag
+- Integration with `run` via `--scenario` flag
 - Composability with all existing CLI flags
 
 **Out of scope:**
@@ -200,12 +200,12 @@ Each built-in scenario must:
 
 ### F-003: Server Run Integration
 
-The system SHALL support running built-in scenarios via a `--scenario` flag on `server run`.
+The system SHALL support running built-in scenarios via a `--scenario` flag on `run`.
 
 **Acceptance Criteria:**
 - `--scenario <name>` loads the embedded YAML directly
 - Mutually exclusive with `--config` and `--tool` (same source group)
-- All other `server run` flags work normally (`--http`, `--behavior`, `--capture-dir`, etc.)
+- All other `run` flags work normally (`--http`, `--behavior`, `--capture-dir`, etc.)
 - Invalid scenario name produces error listing available scenarios
 - Embedded YAML is parsed through the standard config loader (with `$include` / `$file` resolution disabled)
 
@@ -213,19 +213,19 @@ The system SHALL support running built-in scenarios via a `--scenario` flag on `
 
 ```bash
 # Run a built-in scenario
-thoughtjack server run --scenario rug-pull
+thoughtjack run --scenario rug-pull
 
 # Combine with HTTP transport
-thoughtjack server run --scenario prompt-injection --http :8080
+thoughtjack run --scenario prompt-injection --http :8080
 
 # Override delivery behavior
-thoughtjack server run --scenario prompt-injection --behavior slow_loris
+thoughtjack run --scenario prompt-injection --behavior slow_loris
 
 # Capture traffic for analysis
-thoughtjack server run --scenario rug-pull --capture-dir ./captures
+thoughtjack run --scenario rug-pull --capture-dir ./captures
 
 # Global state scope for HTTP
-thoughtjack server run --scenario response-sequence --http :8080 --state-scope global
+thoughtjack run --scenario response-sequence --http :8080 --state-scope global
 ```
 
 **Error on Invalid Scenario:**
@@ -352,7 +352,7 @@ Built-in Scenarios (10 available)
     resource-exfiltration Fake credentials for sensitive file paths                 [RSC-001, RSC-002]
     resource-rug-pull     Benign content then malicious after subscription          [RSC-006]
 
-Run a scenario: thoughtjack server run --scenario <name>
+Run a scenario: thoughtjack run --scenario <name>
 View YAML:      thoughtjack scenarios show <name>
 ```
 
@@ -435,7 +435,7 @@ Examples:
   thoughtjack scenarios show rug-pull > my-attack.yaml
 
   # Validate the embedded config
-  thoughtjack scenarios show rug-pull | thoughtjack server validate -
+  thoughtjack scenarios show rug-pull | thoughtjack validate -
 ```
 
 **Implementation:**
@@ -667,27 +667,27 @@ When `embedded: true` in `LoaderOptions`:
 
 ### EC-SCN-001: Unknown Scenario Name
 
-**Scenario:** `thoughtjack server run --scenario nonexistent`
+**Scenario:** `thoughtjack run --scenario nonexistent`
 **Expected:** Error listing available scenarios. If edit distance ≤ 3 from an existing name, include "Did you mean ...?" suggestion.
 
 ### EC-SCN-002: Scenario With Config Flag
 
-**Scenario:** `thoughtjack server run --scenario rug-pull --config attack.yaml`
+**Scenario:** `thoughtjack run --scenario rug-pull --config attack.yaml`
 **Expected:** Clap argument group error: `--scenario` and `--config` are mutually exclusive.
 
 ### EC-SCN-003: Scenario With Tool Flag
 
-**Scenario:** `thoughtjack server run --scenario rug-pull --tool calc.yaml`
+**Scenario:** `thoughtjack run --scenario rug-pull --tool calc.yaml`
 **Expected:** Clap argument group error: `--scenario` and `--tool` are mutually exclusive.
 
 ### EC-SCN-004: Scenario With Behavior Override
 
-**Scenario:** `thoughtjack server run --scenario prompt-injection --behavior slow_loris`
+**Scenario:** `thoughtjack run --scenario prompt-injection --behavior slow_loris`
 **Expected:** Works. Built-in config loads normally, CLI behavior override applies per existing precedence rules.
 
 ### EC-SCN-005: Scenario With HTTP Transport
 
-**Scenario:** `thoughtjack server run --scenario rug-pull --http :8080`
+**Scenario:** `thoughtjack run --scenario rug-pull --http :8080`
 **Expected:** Works. Built-in config loads, server binds to HTTP instead of stdio.
 
 ### EC-SCN-006: Scenario With External Handler
@@ -722,12 +722,12 @@ When `embedded: true` in `LoaderOptions`:
 
 ### EC-SCN-012: Scenario With Capture Dir
 
-**Scenario:** `thoughtjack server run --scenario prompt-injection --capture-dir ./caps`
+**Scenario:** `thoughtjack run --scenario prompt-injection --capture-dir ./caps`
 **Expected:** Works. Capture system operates normally on the loaded config.
 
 ### EC-SCN-013: Scenario Name Case Sensitivity
 
-**Scenario:** `thoughtjack server run --scenario Rug-Pull`
+**Scenario:** `thoughtjack run --scenario Rug-Pull`
 **Expected:** No match (names are lowercase kebab-case). Suggestion offered: "Did you mean 'rug-pull'?"
 
 ---
@@ -750,7 +750,7 @@ When `embedded: true` in `LoaderOptions`:
 
 - Adding a new scenario requires only: (1) YAML file in `scenarios/`, (2) registry entry in Rust source
 - No code generation or build scripts required
-- Scenarios validated in CI via `thoughtjack server validate` on each embedded YAML
+- Scenarios validated in CI via `thoughtjack validate` on each embedded YAML
 
 ---
 
@@ -764,7 +764,7 @@ Built-in scenarios SHALL be validated as part of CI to prevent shipping broken c
 # Extract and validate each embedded scenario
 for scenario in $(thoughtjack scenarios list --format json | jq -r '.[].name'); do
   echo "Validating: $scenario"
-  thoughtjack scenarios show "$scenario" | thoughtjack server validate --strict -
+  thoughtjack scenarios show "$scenario" | thoughtjack validate --strict -
 done
 ```
 
@@ -873,13 +873,13 @@ Options:
 
 Quick Start:
   # Run a built-in attack scenario
-  thoughtjack server run --scenario rug-pull
+  thoughtjack run --scenario rug-pull
 
   # List available scenarios
   thoughtjack scenarios list
 
   # Run with custom configuration
-  thoughtjack server run --config attacks/my-attack.yaml
+  thoughtjack run --config attacks/my-attack.yaml
 
 Documentation: https://github.com/thoughtgate/thoughtjack
 ```
@@ -906,7 +906,7 @@ Examples:
   thoughtjack scenarios show rug-pull
 
   # Run a scenario directly
-  thoughtjack server run --scenario rug-pull
+  thoughtjack run --scenario rug-pull
 ```
 
 ---
@@ -914,7 +914,7 @@ Examples:
 ## 7. Definition of Done
 
 - [ ] Scenario embedding via `include_str!` compiles and works
-- [ ] `--scenario` flag on `server run` loads embedded configs
+- [ ] `--scenario` flag on `run` loads embedded configs
 - [ ] `--scenario` is mutually exclusive with `--config` and `--tool`
 - [ ] All CLI flags compose correctly with `--scenario`
 - [ ] `thoughtjack scenarios list` displays all scenarios grouped by category

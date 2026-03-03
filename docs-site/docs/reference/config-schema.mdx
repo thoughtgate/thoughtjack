@@ -6,7 +6,11 @@ description: Complete YAML configuration format for ThoughtJack scenarios
 
 # Configuration Schema
 
-Complete reference for ThoughtJack's YAML configuration format. See [TJ-SPEC-001](https://github.com/thoughtgate/thoughtjack/blob/main/specs/TJ-SPEC-001_Configuration_Schema.md) for the formal specification.
+Complete reference for ThoughtJack's YAML scenario configuration format. This documents the per-actor configuration used by built-in scenarios.
+
+:::note Multi-actor documents
+Multi-actor OATF documents wrap this per-actor config in an `oatf:` / `attack:` / `execution:` / `actors:` structure. Each actor's `config:` block uses the schema described here.
+:::
 
 ## Root structure
 

@@ -500,26 +500,6 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use crate::config::loader::{ConfigLoader, LoaderOptions};
-
-    #[test]
-    fn all_builtin_scenarios_parse_successfully() {
-        for scenario in list_scenarios(None, None) {
-            let options = LoaderOptions {
-                embedded: true,
-                ..LoaderOptions::default()
-            };
-            let mut loader = ConfigLoader::new(options);
-            let result = loader.load_from_str(scenario.yaml);
-            assert!(
-                result.is_ok(),
-                "Built-in scenario '{}' failed to parse: {:?}",
-                scenario.name,
-                result.err()
-            );
-        }
-    }
-
     #[test]
     fn no_duplicate_scenario_names() {
         let names: Vec<&str> = list_scenarios(None, None).iter().map(|s| s.name).collect();
@@ -696,64 +676,6 @@ mod tests {
                 !scenario.yaml.is_empty(),
                 "Scenario '{}' has empty YAML",
                 scenario.name
-            );
-        }
-    }
-
-    // TJ-SPEC-010 F-005: All built-in scenarios validate semantically
-    #[test]
-    fn all_builtin_scenarios_validate_semantically() {
-        for scenario in list_scenarios(None, None) {
-            let options = LoaderOptions {
-                embedded: true,
-                ..LoaderOptions::default()
-            };
-            let mut loader = ConfigLoader::new(options);
-            let load_result = loader
-                .load_from_str(scenario.yaml)
-                .unwrap_or_else(|e| panic!("Scenario '{}' failed to parse: {e}", scenario.name));
-
-            let config = &load_result.config;
-
-            // Verify server metadata
-            assert!(
-                !config.server.name.is_empty(),
-                "Scenario '{}' has empty server name",
-                scenario.name
-            );
-
-            // If tools are defined, verify they have non-empty names
-            if let Some(ref tools) = config.tools {
-                for tool in tools {
-                    assert!(
-                        !tool.tool.name.is_empty(),
-                        "Scenario '{}' has tool with empty name",
-                        scenario.name
-                    );
-                }
-            }
-
-            // If phases are defined, verify they have names and valid structure
-            if let Some(ref phases) = config.phases {
-                for phase in phases {
-                    assert!(
-                        !phase.name.is_empty(),
-                        "Scenario '{}' has phase with empty name",
-                        scenario.name
-                    );
-                }
-            }
-
-            // No warnings should be emitted for built-in scenarios
-            assert!(
-                load_result.warnings.is_empty(),
-                "Scenario '{}' produced warnings: {:?}",
-                scenario.name,
-                load_result
-                    .warnings
-                    .iter()
-                    .map(|w| &w.message)
-                    .collect::<Vec<_>>()
             );
         }
     }

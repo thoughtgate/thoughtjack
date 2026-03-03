@@ -1,6 +1,6 @@
 //! Structured event stream for `ThoughtJack` (TJ-SPEC-008 F-011 / F-012).
 //!
-//! Discrete, typed events emitted during server operation.  Events are
+//! Discrete, typed events emitted during scenario execution. Events are
 //! serialized as newline-delimited JSON (JSONL) and include a monotonically
 //! increasing sequence number for ordering guarantees.
 
@@ -13,75 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
-// Supporting types
-// ---------------------------------------------------------------------------
-
-/// Why the server stopped.
-///
-/// Implements: TJ-SPEC-008 F-011
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StopReason {
-    /// Normal shutdown (completed, no more work).
-    Completed,
-    /// Interrupted by SIGINT.
-    Interrupted,
-    /// Terminated by SIGTERM.
-    Terminated,
-    /// Terminal phase reached.
-    TerminalPhase,
-    /// Unrecoverable error.
-    Error,
-}
-
-/// Summary statistics emitted when the server stops.
-///
-/// Implements: TJ-SPEC-008 F-011
-#[derive(Debug, Clone, Serialize)]
-pub struct RunSummary {
-    /// Total requests processed.
-    pub requests_handled: u64,
-    /// Total responses sent.
-    pub responses_sent: u64,
-    /// Number of phase transitions.
-    pub phase_transitions: u64,
-    /// Number of attacks triggered.
-    pub attacks_triggered: u64,
-    /// Uptime in seconds.
-    pub uptime_secs: f64,
-}
-
-impl std::fmt::Display for RunSummary {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "requests={} responses={} transitions={} attacks={} uptime={:.1}s",
-            self.requests_handled,
-            self.responses_sent,
-            self.phase_transitions,
-            self.attacks_triggered,
-            self.uptime_secs,
-        )
-    }
-}
-
-/// Information about the trigger that caused a phase transition.
-///
-/// Implements: TJ-SPEC-008 F-006
-#[derive(Debug, Clone, Serialize)]
-pub struct TriggerInfo {
-    /// Trigger kind (e.g. `"event"`, `"timer"`, `"timeout"`).
-    pub kind: String,
-    /// The event or timer that matched, if applicable.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event: Option<String>,
-    /// Event count at the time of the trigger.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub count: Option<u64>,
-}
-
-// ---------------------------------------------------------------------------
-// Event variants
+// Event variants (TJ-SPEC-008 Appendix A)
 // ---------------------------------------------------------------------------
 
 /// A discrete event emitted during `ThoughtJack` operation.
@@ -92,98 +24,343 @@ pub struct TriggerInfo {
 /// Implements: TJ-SPEC-008 F-011
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
-pub enum Event {
-    /// The server has started and is ready to accept connections.
-    ServerStarted {
-        /// When the server started.
-        timestamp: DateTime<Utc>,
-        /// Configured server name.
-        server_name: String,
-        /// Transport type (e.g. `"stdio"`, `"http"`).
-        transport: String,
-    },
-
-    /// The server has stopped.
-    ServerStopped {
-        /// When the server stopped.
-        timestamp: DateTime<Utc>,
-        /// Why the server stopped.
-        reason: StopReason,
-        /// Run summary statistics.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        summary: Option<RunSummary>,
-    },
-
+pub enum ThoughtJackEvent {
+    // --- Engine (TJ-SPEC-013) ---
     /// A new phase has been entered.
     PhaseEntered {
-        /// When the transition occurred.
-        timestamp: DateTime<Utc>,
+        /// Actor name.
+        actor: String,
         /// Name of the phase that was entered.
         phase_name: String,
         /// Zero-based index of the phase.
         phase_index: usize,
-        /// What caused the transition.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trigger: Option<TriggerInfo>,
     },
 
-    /// An attack behavior was triggered (delivery or side effect).
-    AttackTriggered {
-        /// When the attack was triggered.
-        timestamp: DateTime<Utc>,
-        /// Attack type (e.g. `"prompt_injection"`, `"rug_pull"`, `"slow_loris"`).
-        attack_type: String,
-        /// Additional context about the attack.
-        details: String,
-        /// Phase during which the attack was triggered.
-        phase: String,
+    /// A phase transition occurred.
+    PhaseAdvanced {
+        /// Actor name.
+        actor: String,
+        /// Source phase name.
+        from: String,
+        /// Destination phase name.
+        to: String,
+        /// Trigger description.
+        trigger: String,
     },
 
-    /// An MCP request was received.
-    RequestReceived {
-        /// When the request arrived.
-        timestamp: DateTime<Utc>,
-        /// JSON-RPC request id (may be number, string, or null).
-        request_id: serde_json::Value,
-        /// MCP method name.
+    /// Terminal phase reached for an actor.
+    PhaseTerminal {
+        /// Actor name.
+        actor: String,
+        /// Name of the terminal phase.
+        phase_name: String,
+    },
+
+    /// An extractor captured a value from a protocol event.
+    ExtractorCaptured {
+        /// Actor name.
+        actor: String,
+        /// Extractor name.
+        name: String,
+        /// Preview of the captured value (truncated).
+        value_preview: String,
+    },
+
+    /// A synthesize (LLM generation) call completed.
+    SynthesizeGenerated {
+        /// Actor name.
+        actor: String,
+        /// Protocol for which the response was generated.
+        protocol: String,
+    },
+
+    /// Synthesize validation was bypassed (`--raw-synthesize`).
+    SynthesizeValidationBypassed {
+        /// Actor name.
+        actor: String,
+    },
+
+    /// An entry action was executed on phase entry.
+    EntryActionExecuted {
+        /// Actor name.
+        actor: String,
+        /// Type of entry action.
+        action_type: String,
+    },
+
+    // --- Orchestration (TJ-SPEC-015) ---
+    /// The orchestrator started.
+    OrchestratorStarted {
+        /// Total number of actors.
+        actor_count: usize,
+        /// Number of server-mode actors.
+        server_count: usize,
+        /// Number of client-mode actors.
+        client_count: usize,
+    },
+
+    /// An actor was initialized.
+    ActorInit {
+        /// Actor name.
+        actor_name: String,
+        /// Actor mode (e.g., `mcp_server`, `a2a_client`).
+        mode: String,
+    },
+
+    /// A server-mode actor is ready to accept connections.
+    ActorReady {
+        /// Actor name.
+        actor_name: String,
+        /// Bind address (for server-mode actors).
+        bind_address: String,
+    },
+
+    /// All server actors are ready; client actors may start.
+    ReadinessGateOpen {
+        /// Number of server actors that became ready.
+        server_count: usize,
+        /// Time elapsed waiting for readiness in milliseconds.
+        elapsed_ms: u64,
+    },
+
+    /// Readiness gate timed out; some servers not ready.
+    ReadinessGateTimeout {
+        /// Actors that did not become ready.
+        not_ready: Vec<String>,
+    },
+
+    /// An actor started executing its phase loop.
+    ActorStarted {
+        /// Actor name.
+        actor_name: String,
+        /// Number of phases in this actor.
+        phase_count: usize,
+    },
+
+    /// An actor completed execution.
+    ActorCompleted {
+        /// Actor name.
+        actor_name: String,
+        /// Completion reason.
+        reason: String,
+        /// Number of phases completed.
+        phases_completed: usize,
+    },
+
+    /// An actor encountered an error.
+    ActorError {
+        /// Actor name.
+        actor_name: String,
+        /// Error description.
+        error: String,
+    },
+
+    /// An actor is waiting for cross-actor extractors.
+    AwaitExtractorsWaiting {
+        /// Actor name.
+        actor: String,
+        /// Current phase index.
+        phase_index: usize,
+        /// Extractor names being awaited.
+        awaiting: Vec<String>,
+    },
+
+    /// Cross-actor extractors resolved.
+    AwaitExtractorsResolved {
+        /// Actor name.
+        actor: String,
+        /// Phase index where resolution occurred.
+        phase_index: usize,
+    },
+
+    /// Timed out waiting for cross-actor extractors.
+    AwaitExtractorsTimeout {
+        /// Actor name.
+        actor: String,
+        /// Phase index.
+        phase_index: usize,
+        /// Extractor names still missing.
+        missing: Vec<String>,
+    },
+
+    /// The orchestrator is shutting down.
+    OrchestratorShutdown {
+        /// Shutdown reason.
+        reason: String,
+    },
+
+    /// The orchestrator completed all actors.
+    OrchestratorCompleted {
+        /// Summary description.
+        summary: String,
+    },
+
+    // --- Verdict (TJ-SPEC-014) ---
+    /// Grace period started after final phase.
+    GracePeriodStarted {
+        /// Duration in seconds.
+        duration_seconds: u64,
+    },
+
+    /// Grace period expired normally.
+    GracePeriodExpired {
+        /// Messages captured during grace period.
+        messages_captured: usize,
+    },
+
+    /// Grace period terminated early.
+    GracePeriodEarlyTermination {
+        /// Reason for early termination.
+        reason: String,
+    },
+
+    /// An indicator was evaluated.
+    IndicatorEvaluated {
+        /// Indicator ID.
+        indicator_id: String,
+        /// Evaluation method (cel, pattern, semantic).
         method: String,
-    },
-
-    /// An MCP response was sent.
-    ResponseSent {
-        /// When the response was sent.
-        timestamp: DateTime<Utc>,
-        /// Matching request id.
-        request_id: serde_json::Value,
-        /// Whether the response indicates success.
-        success: bool,
-        /// Processing time in milliseconds.
+        /// Evaluation result.
+        result: String,
+        /// Evaluation duration in milliseconds.
         duration_ms: u64,
     },
 
-    /// A side-effect action was triggered.
-    SideEffectTriggered {
-        /// When the side effect fired.
-        timestamp: DateTime<Utc>,
-        /// Kind of side effect (e.g. `"notification_flood"`).
-        effect_type: String,
-        /// Phase during which the side effect was triggered.
-        phase: String,
+    /// An indicator was skipped.
+    IndicatorSkipped {
+        /// Indicator ID.
+        indicator_id: String,
+        /// Reason for skipping.
+        reason: String,
+    },
+
+    /// An LLM call was made for semantic evaluation.
+    SemanticLlmCall {
+        /// Model name.
+        model: String,
+        /// Indicator ID being evaluated.
+        indicator_id: String,
+        /// LLM call latency in milliseconds.
+        latency_ms: u64,
+    },
+
+    /// Verdict was computed.
+    VerdictComputed {
+        /// Verdict result (exploited, `not_exploited`, partial, error).
+        result: String,
+        /// Number of indicators that matched.
+        matched: usize,
+        /// Total number of indicators evaluated.
+        total: usize,
+    },
+
+    // --- Protocol (TJ-SPEC-013, 016, 017, 018) ---
+    /// A protocol message was received from the agent.
+    ProtocolMessageReceived {
+        /// Actor name.
+        actor: String,
+        /// Method or event name.
+        method: String,
+        /// Protocol identifier (mcp, a2a, `ag_ui`).
+        protocol: String,
+    },
+
+    /// A protocol message was sent to the agent.
+    ProtocolMessageSent {
+        /// Actor name.
+        actor: String,
+        /// Method or event name.
+        method: String,
+        /// Protocol identifier.
+        protocol: String,
+        /// Send duration in milliseconds.
+        duration_ms: u64,
+    },
+
+    /// A protocol notification (non-request message).
+    ProtocolNotification {
+        /// Actor name.
+        actor: String,
+        /// Method name.
+        method: String,
+        /// Direction (incoming/outgoing).
+        direction: String,
+    },
+
+    /// A transport-level error occurred.
+    ProtocolTransportError {
+        /// Actor name.
+        actor: String,
+        /// Error description.
+        error: String,
+    },
+
+    /// A server-mode driver handled an interleaved server request.
+    ProtocolInterleave {
+        /// Actor name.
+        actor: String,
+        /// Server request method that was interleaved.
+        server_method: String,
+    },
+
+    // --- Legacy (v0.2 compatibility) ---
+    /// The server has started (v0.2 mode).
+    ServerStarted {
+        /// Configured server name.
+        server_name: String,
+        /// Transport type (e.g., "stdio", "http").
+        transport: String,
+    },
+
+    /// The server has stopped (v0.2 mode).
+    ServerStopped {
+        /// Why the server stopped.
+        reason: String,
+        /// Uptime in seconds.
+        uptime_seconds: u64,
+    },
+
+    /// A transport connection was established.
+    TransportConnected {
+        /// Connection identifier.
+        connection_id: String,
+    },
+
+    /// A transport connection was disconnected.
+    TransportDisconnected {
+        /// Connection identifier.
+        connection_id: String,
+        /// Disconnection reason.
+        reason: String,
+    },
+
+    // --- General ---
+    /// A general error event.
+    Error {
+        /// Error type/category.
+        error_type: String,
+        /// Error message.
+        message: String,
+        /// Error context.
+        context: String,
     },
 }
 
 // ---------------------------------------------------------------------------
-// Envelope (adds sequence number via serde flatten)
+// Envelope (adds sequence number + timestamp via serde flatten)
 // ---------------------------------------------------------------------------
 
-/// Wraps an [`Event`] with a monotonically increasing sequence number.
+/// Wraps a [`ThoughtJackEvent`] with a monotonically increasing sequence number
+/// and a UTC timestamp.
 #[derive(Debug, Serialize)]
 struct EventEnvelope {
     /// Zero-based, monotonically increasing sequence counter.
     sequence: u64,
+    /// When the event was emitted.
+    timestamp: DateTime<Utc>,
     /// The wrapped event (flattened into the same JSON object).
     #[serde(flatten)]
-    event: Event,
+    event: ThoughtJackEvent,
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +371,7 @@ struct EventEnvelope {
 ///
 /// Each call to [`emit`](Self::emit) atomically increments the sequence
 /// counter, serializes the event as a single JSON line, and flushes the
-/// underlying writer.  Serialization or I/O failures are silently dropped
+/// underlying writer. Serialization or I/O failures are silently dropped
 /// because observability must never crash the server.
 ///
 /// Implements: TJ-SPEC-008 F-012
@@ -273,18 +450,19 @@ impl EventEmitter {
     /// Failures are silently dropped — observability must not crash the server.
     ///
     /// Implements: TJ-SPEC-008 F-012, NFR-004
-    pub fn emit(&self, event: Event) {
+    pub fn emit(&self, event: ThoughtJackEvent) {
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
         let envelope = EventEnvelope {
             sequence: seq,
+            timestamp: Utc::now(),
             event,
         };
 
-        if let Ok(mut w) = self.writer.lock() {
-            if let Ok(line) = serde_json::to_string(&envelope) {
-                let _ = writeln!(w, "{line}");
-                let _ = w.flush();
-            }
+        if let Ok(mut w) = self.writer.lock()
+            && let Ok(line) = serde_json::to_string(&envelope)
+        {
+            let _ = writeln!(w, "{line}");
+            let _ = w.flush();
         }
     }
 
@@ -345,11 +523,8 @@ mod tests {
         }
     }
 
-    fn sample_event() -> Event {
-        Event::ServerStarted {
-            timestamp: DateTime::parse_from_rfc3339("2025-02-04T10:15:30Z")
-                .unwrap()
-                .with_timezone(&Utc),
+    fn sample_event() -> ThoughtJackEvent {
+        ThoughtJackEvent::ServerStarted {
             server_name: "test-server".to_owned(),
             transport: "stdio".to_owned(),
         }
@@ -382,10 +557,9 @@ mod tests {
         let tw = TestWriter::new();
         let emitter = EventEmitter::new(Box::new(tw.clone()));
         emitter.emit(sample_event());
-        emitter.emit(Event::ServerStopped {
-            timestamp: Utc::now(),
-            reason: StopReason::Completed,
-            summary: None,
+        emitter.emit(ThoughtJackEvent::ServerStopped {
+            reason: "completed".to_owned(),
+            uptime_seconds: 42,
         });
 
         assert_eq!(emitter.event_count(), 2);
@@ -400,56 +574,171 @@ mod tests {
     }
 
     #[test]
-    fn all_event_variants_serialize_to_valid_json() {
-        let now = Utc::now();
-        let variants: Vec<Event> = vec![
-            Event::ServerStarted {
-                timestamp: now,
+    #[allow(clippy::too_many_lines)]
+    fn all_event_categories_serialize_to_valid_json() {
+        let variants: Vec<ThoughtJackEvent> = vec![
+            // Engine
+            ThoughtJackEvent::PhaseEntered {
+                actor: "a".to_owned(),
+                phase_name: "p".to_owned(),
+                phase_index: 0,
+            },
+            ThoughtJackEvent::PhaseAdvanced {
+                actor: "a".to_owned(),
+                from: "p1".to_owned(),
+                to: "p2".to_owned(),
+                trigger: "t".to_owned(),
+            },
+            ThoughtJackEvent::PhaseTerminal {
+                actor: "a".to_owned(),
+                phase_name: "p".to_owned(),
+            },
+            ThoughtJackEvent::ExtractorCaptured {
+                actor: "a".to_owned(),
+                name: "x".to_owned(),
+                value_preview: "v".to_owned(),
+            },
+            ThoughtJackEvent::SynthesizeGenerated {
+                actor: "a".to_owned(),
+                protocol: "mcp".to_owned(),
+            },
+            ThoughtJackEvent::SynthesizeValidationBypassed {
+                actor: "a".to_owned(),
+            },
+            ThoughtJackEvent::EntryActionExecuted {
+                actor: "a".to_owned(),
+                action_type: "notification".to_owned(),
+            },
+            // Orchestration
+            ThoughtJackEvent::OrchestratorStarted {
+                actor_count: 2,
+                server_count: 1,
+                client_count: 1,
+            },
+            ThoughtJackEvent::ActorInit {
+                actor_name: "a".to_owned(),
+                mode: "mcp_server".to_owned(),
+            },
+            ThoughtJackEvent::ActorReady {
+                actor_name: "a".to_owned(),
+                bind_address: ":3000".to_owned(),
+            },
+            ThoughtJackEvent::ReadinessGateOpen {
+                server_count: 1,
+                elapsed_ms: 100,
+            },
+            ThoughtJackEvent::ReadinessGateTimeout {
+                not_ready: vec!["a".to_owned()],
+            },
+            ThoughtJackEvent::ActorStarted {
+                actor_name: "a".to_owned(),
+                phase_count: 3,
+            },
+            ThoughtJackEvent::ActorCompleted {
+                actor_name: "a".to_owned(),
+                reason: "terminal".to_owned(),
+                phases_completed: 3,
+            },
+            ThoughtJackEvent::ActorError {
+                actor_name: "a".to_owned(),
+                error: "boom".to_owned(),
+            },
+            ThoughtJackEvent::AwaitExtractorsWaiting {
+                actor: "a".to_owned(),
+                phase_index: 1,
+                awaiting: vec!["x".to_owned()],
+            },
+            ThoughtJackEvent::AwaitExtractorsResolved {
+                actor: "a".to_owned(),
+                phase_index: 1,
+            },
+            ThoughtJackEvent::AwaitExtractorsTimeout {
+                actor: "a".to_owned(),
+                phase_index: 1,
+                missing: vec!["x".to_owned()],
+            },
+            ThoughtJackEvent::OrchestratorShutdown {
+                reason: "cancel".to_owned(),
+            },
+            ThoughtJackEvent::OrchestratorCompleted {
+                summary: "done".to_owned(),
+            },
+            // Verdict
+            ThoughtJackEvent::GracePeriodStarted {
+                duration_seconds: 30,
+            },
+            ThoughtJackEvent::GracePeriodExpired {
+                messages_captured: 5,
+            },
+            ThoughtJackEvent::GracePeriodEarlyTermination {
+                reason: "eof".to_owned(),
+            },
+            ThoughtJackEvent::IndicatorEvaluated {
+                indicator_id: "i1".to_owned(),
+                method: "cel".to_owned(),
+                result: "matched".to_owned(),
+                duration_ms: 10,
+            },
+            ThoughtJackEvent::IndicatorSkipped {
+                indicator_id: "i2".to_owned(),
+                reason: "no trace".to_owned(),
+            },
+            ThoughtJackEvent::SemanticLlmCall {
+                model: "gpt-4".to_owned(),
+                indicator_id: "i3".to_owned(),
+                latency_ms: 500,
+            },
+            ThoughtJackEvent::VerdictComputed {
+                result: "exploited".to_owned(),
+                matched: 2,
+                total: 3,
+            },
+            // Protocol
+            ThoughtJackEvent::ProtocolMessageReceived {
+                actor: "a".to_owned(),
+                method: "tools/call".to_owned(),
+                protocol: "mcp".to_owned(),
+            },
+            ThoughtJackEvent::ProtocolMessageSent {
+                actor: "a".to_owned(),
+                method: "tools/call".to_owned(),
+                protocol: "mcp".to_owned(),
+                duration_ms: 5,
+            },
+            ThoughtJackEvent::ProtocolNotification {
+                actor: "a".to_owned(),
+                method: "notify".to_owned(),
+                direction: "outgoing".to_owned(),
+            },
+            ThoughtJackEvent::ProtocolTransportError {
+                actor: "a".to_owned(),
+                error: "timeout".to_owned(),
+            },
+            ThoughtJackEvent::ProtocolInterleave {
+                actor: "a".to_owned(),
+                server_method: "sampling/createMessage".to_owned(),
+            },
+            // Legacy
+            ThoughtJackEvent::ServerStarted {
                 server_name: "s".to_owned(),
                 transport: "stdio".to_owned(),
             },
-            Event::ServerStopped {
-                timestamp: now,
-                reason: StopReason::Interrupted,
-                summary: Some(RunSummary {
-                    requests_handled: 10,
-                    responses_sent: 10,
-                    phase_transitions: 2,
-                    attacks_triggered: 1,
-                    uptime_secs: 5.5,
-                }),
+            ThoughtJackEvent::ServerStopped {
+                reason: "completed".to_owned(),
+                uptime_seconds: 60,
             },
-            Event::PhaseEntered {
-                timestamp: now,
-                phase_name: "exploit".to_owned(),
-                phase_index: 2,
-                trigger: Some(TriggerInfo {
-                    kind: "event".to_owned(),
-                    event: Some("tools/call".to_owned()),
-                    count: Some(5),
-                }),
+            ThoughtJackEvent::TransportConnected {
+                connection_id: "1".to_owned(),
             },
-            Event::AttackTriggered {
-                timestamp: now,
-                attack_type: "prompt_injection".to_owned(),
-                details: "Injected instructions in search results".to_owned(),
-                phase: "exploit".to_owned(),
+            ThoughtJackEvent::TransportDisconnected {
+                connection_id: "1".to_owned(),
+                reason: "eof".to_owned(),
             },
-            Event::RequestReceived {
-                timestamp: now,
-                request_id: serde_json::json!(1),
-                method: "tools/call".to_owned(),
-            },
-            Event::ResponseSent {
-                timestamp: now,
-                request_id: serde_json::json!("abc"),
-                success: true,
-                duration_ms: 42,
-            },
-            Event::SideEffectTriggered {
-                timestamp: now,
-                effect_type: "notification_flood".to_owned(),
-                phase: "exploit".to_owned(),
+            // General
+            ThoughtJackEvent::Error {
+                error_type: "io".to_owned(),
+                message: "disk full".to_owned(),
+                context: "writing trace".to_owned(),
             },
         ];
 
@@ -464,12 +753,15 @@ mod tests {
     fn envelope_flattens_event_fields() {
         let envelope = EventEnvelope {
             sequence: 7,
+            timestamp: DateTime::parse_from_rfc3339("2025-02-04T10:15:30Z")
+                .unwrap()
+                .with_timezone(&Utc),
             event: sample_event(),
         };
         let json = serde_json::to_string(&envelope).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
-        // Flat structure — sequence, type, and event fields at the same level
+        // Flat structure — sequence, timestamp, type, and event fields at the same level
         assert_eq!(parsed["sequence"], 7);
         assert_eq!(parsed["type"], "ServerStarted");
         assert_eq!(parsed["server_name"], "test-server");
@@ -485,10 +777,9 @@ mod tests {
         let path = dir.path().join("events.jsonl");
         let emitter = EventEmitter::from_file(&path).unwrap();
         emitter.emit(sample_event());
-        emitter.emit(Event::ServerStopped {
-            timestamp: Utc::now(),
-            reason: StopReason::Completed,
-            summary: None,
+        emitter.emit(ThoughtJackEvent::ServerStopped {
+            reason: "completed".to_owned(),
+            uptime_seconds: 10,
         });
 
         assert_eq!(emitter.event_count(), 2);
@@ -511,141 +802,34 @@ mod tests {
     }
 
     #[test]
-    fn test_run_summary_display() {
-        let summary = RunSummary {
-            requests_handled: 42,
-            responses_sent: 40,
-            phase_transitions: 3,
-            attacks_triggered: 2,
-            uptime_secs: 12.5,
-        };
-        let display = format!("{summary}");
-        assert_eq!(
-            display,
-            "requests=42 responses=40 transitions=3 attacks=2 uptime=12.5s"
-        );
-    }
+    fn test_timestamp_is_utc() {
+        let tw = TestWriter::new();
+        let emitter = EventEmitter::new(Box::new(tw.clone()));
+        emitter.emit(sample_event());
 
-    #[test]
-    fn test_run_summary_display_zero_values() {
-        let summary = RunSummary {
-            requests_handled: 0,
-            responses_sent: 0,
-            phase_transitions: 0,
-            attacks_triggered: 0,
-            uptime_secs: 0.0,
-        };
-        let display = format!("{summary}");
-        assert_eq!(
-            display,
-            "requests=0 responses=0 transitions=0 attacks=0 uptime=0.0s"
-        );
-    }
-
-    #[test]
-    fn test_run_summary_serialize() {
-        let summary = RunSummary {
-            requests_handled: 10,
-            responses_sent: 8,
-            phase_transitions: 2,
-            attacks_triggered: 1,
-            uptime_secs: 5.5,
-        };
-        let json = serde_json::to_value(&summary).unwrap();
-        assert_eq!(json["requests_handled"], 10);
-        assert_eq!(json["responses_sent"], 8);
-        assert_eq!(json["phase_transitions"], 2);
-        assert_eq!(json["attacks_triggered"], 1);
-        assert_eq!(json["uptime_secs"], 5.5);
-    }
-
-    #[test]
-    fn test_event_serialize_server_started() {
-        let event = sample_event();
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["type"], "ServerStarted");
-        assert_eq!(json["server_name"], "test-server");
-        assert_eq!(json["transport"], "stdio");
-    }
-
-    #[test]
-    fn test_event_serialize_attack_triggered() {
-        let event = Event::AttackTriggered {
-            timestamp: DateTime::parse_from_rfc3339("2025-02-04T10:15:30Z")
-                .unwrap()
-                .with_timezone(&Utc),
-            attack_type: "rug_pull".to_owned(),
-            details: "Tool description changed".to_owned(),
-            phase: "exploit".to_owned(),
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["type"], "AttackTriggered");
-        assert_eq!(json["attack_type"], "rug_pull");
-        assert_eq!(json["details"], "Tool description changed");
-        assert_eq!(json["phase"], "exploit");
-    }
-
-    #[test]
-    fn test_stop_reason_debug() {
-        // All StopReason variants have Debug
-        let variants = [
-            StopReason::Completed,
-            StopReason::Interrupted,
-            StopReason::Terminated,
-            StopReason::TerminalPhase,
-            StopReason::Error,
-        ];
-        for variant in &variants {
-            let debug_str = format!("{variant:?}");
-            assert!(!debug_str.is_empty(), "Debug output should not be empty");
-        }
-    }
-
-    #[test]
-    fn test_trigger_info_serialize() {
-        let trigger = TriggerInfo {
-            kind: "event".to_owned(),
-            event: Some("tools/call".to_owned()),
-            count: Some(5),
-        };
-        let json = serde_json::to_value(&trigger).unwrap();
-        assert_eq!(json["kind"], "event");
-        assert_eq!(json["event"], "tools/call");
-        assert_eq!(json["count"], 5);
-
-        // Also verify skip_serializing_if works for None fields
-        let trigger_minimal = TriggerInfo {
-            kind: "timer".to_owned(),
-            event: None,
-            count: None,
-        };
-        let json_minimal = serde_json::to_value(&trigger_minimal).unwrap();
-        assert_eq!(json_minimal["kind"], "timer");
+        let contents = tw.contents();
+        let parsed: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        let ts = parsed["timestamp"]
+            .as_str()
+            .expect("timestamp field should be a string");
         assert!(
-            json_minimal.get("event").is_none(),
-            "None event should be skipped"
-        );
-        assert!(
-            json_minimal.get("count").is_none(),
-            "None count should be skipped"
+            ts.ends_with('Z') || ts.contains("+00:00"),
+            "timestamp should be in UTC (ends with Z or +00:00), got: {ts}"
         );
     }
 
     #[test]
     fn test_empty_server_lifecycle_events() {
-        // EC-OBS-011: emit ServerStarted and ServerStopped, verify 2 JSONL entries.
         let tw = TestWriter::new();
         let emitter = EventEmitter::new(Box::new(tw.clone()));
 
-        emitter.emit(Event::ServerStarted {
-            timestamp: Utc::now(),
+        emitter.emit(ThoughtJackEvent::ServerStarted {
             server_name: "lifecycle-test".to_owned(),
             transport: "stdio".to_owned(),
         });
-        emitter.emit(Event::ServerStopped {
-            timestamp: Utc::now(),
-            reason: StopReason::Completed,
-            summary: None,
+        emitter.emit(ThoughtJackEvent::ServerStopped {
+            reason: "completed".to_owned(),
+            uptime_seconds: 0,
         });
 
         let contents = tw.contents();
@@ -660,32 +844,137 @@ mod tests {
     }
 
     #[test]
-    fn test_timestamp_is_utc() {
-        // EC-OBS-018: verify that emitted event timestamps are in UTC.
-        let tw = TestWriter::new();
-        let emitter = EventEmitter::new(Box::new(tw.clone()));
-
-        emitter.emit(Event::ServerStarted {
-            timestamp: Utc::now(),
-            server_name: "utc-test".to_owned(),
-            transport: "stdio".to_owned(),
-        });
-
-        let contents = tw.contents();
-        let parsed: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
-        let ts = parsed["timestamp"]
-            .as_str()
-            .expect("timestamp field should be a string");
-        assert!(
-            ts.ends_with('Z') || ts.contains("+00:00"),
-            "timestamp should be in UTC (ends with Z or +00:00), got: {ts}"
-        );
-    }
-
-    #[test]
     fn test_metrics_with_no_requests() {
         // EC-OBS-019: recording metrics with zero/no-op values should not panic.
         use crate::observability::metrics::record_request;
         record_request("tools/call");
+    }
+
+    #[test]
+    fn concurrent_emit_from_multiple_threads() {
+        let tw = TestWriter::new();
+        let emitter = Arc::new(EventEmitter::new(Box::new(tw.clone())));
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let emitter = Arc::clone(&emitter);
+                std::thread::spawn(move || {
+                    for j in 0..10 {
+                        emitter.emit(ThoughtJackEvent::PhaseEntered {
+                            actor: format!("thread-{i}"),
+                            phase_name: format!("phase-{j}"),
+                            phase_index: j,
+                        });
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        // 8 threads × 10 events = 80 total
+        assert_eq!(emitter.event_count(), 80);
+
+        // All 80 lines should be valid JSONL with unique sequence numbers
+        let contents = tw.contents();
+        let lines: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 80);
+
+        // Sequence numbers should be unique (no duplicates)
+        let mut seqs: Vec<u64> = lines
+            .iter()
+            .map(|l| l["sequence"].as_u64().unwrap())
+            .collect();
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(seqs.len(), 80, "all sequence numbers must be unique");
+    }
+
+    #[test]
+    fn flush_is_idempotent_and_safe() {
+        let tw = TestWriter::new();
+        let emitter = EventEmitter::new(Box::new(tw.clone()));
+
+        emitter.emit(sample_event());
+        emitter.flush();
+        emitter.flush(); // Double flush should be fine
+
+        let contents = tw.contents();
+        assert_eq!(
+            contents.lines().count(),
+            1,
+            "flush should not duplicate output"
+        );
+    }
+
+    #[test]
+    fn emit_survives_writer_error() {
+        /// Writer that fails every write operation.
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk full"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("disk full"))
+            }
+        }
+
+        let emitter = EventEmitter::new(Box::new(FailingWriter));
+
+        // Should not panic even though every write fails
+        emitter.emit(sample_event());
+        emitter.emit(sample_event());
+        emitter.flush();
+
+        // Sequence counter still incremented (events were "attempted")
+        assert_eq!(emitter.event_count(), 2);
+    }
+
+    #[test]
+    fn from_file_appends_to_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("append.jsonl");
+
+        // First emitter writes one event
+        {
+            let emitter = EventEmitter::from_file(&path).unwrap();
+            emitter.emit(sample_event());
+        }
+
+        // Second emitter appends another event
+        {
+            let emitter = EventEmitter::from_file(&path).unwrap();
+            emitter.emit(ThoughtJackEvent::ServerStopped {
+                reason: "done".to_owned(),
+                uptime_seconds: 5,
+            });
+        }
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<serde_json::Value> = content
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["type"], "ServerStarted");
+        assert_eq!(lines[1]["type"], "ServerStopped");
+    }
+
+    #[test]
+    fn noop_emitter_discards_all_events() {
+        let emitter = EventEmitter::noop();
+        emitter.emit(sample_event());
+        emitter.emit(sample_event());
+        emitter.emit(sample_event());
+
+        // Counter increments but nothing is written anywhere
+        assert_eq!(emitter.event_count(), 3);
     }
 }

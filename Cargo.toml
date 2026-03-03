@@ -3,17 +3,20 @@ members = [".", "fuzz"]
 
 [package]
 name = "thoughtjack"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
-rust-version = "1.85"
-description = "Adversarial MCP server for security testing"
+rust-version = "1.88"
+description = "Adversarial agent security testing tool"
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/thoughtgate/thoughtjack"
 homepage = "https://github.com/thoughtgate/thoughtjack"
 publish = true
-keywords = ["mcp", "security", "testing", "adversarial"]
+keywords = ["mcp", "security", "testing", "adversarial", "a2a"]
 categories = ["development-tools::testing"]
+
+[features]
+default = []
 
 [dependencies]
 tokio = { version = "1.49", features = ["full"] }
@@ -21,7 +24,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 clap = { version = "4.5", features = ["derive", "env"] }
-clap_complete = "4.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 thiserror = "2.0"
@@ -29,20 +31,17 @@ async-trait = "0.1"
 dashmap = "6.1"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
-base64 = "0.22"
-rand = "0.10"
-regex = "1.12"
-indexmap = { version = "2.13", features = ["serde"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 chrono = { version = "0.4", features = ["serde"] }
 axum = "0.8"
 bytes = "1.11"
-futures = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
-glob = "0.3"
-uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.13", features = ["json"] }
 strsim = "0.11"
+humantime = "2"
+oatf = "0.2"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+uuid = { version = "1", features = ["v4"] }
+futures-util = "0.3"
 
 [build-dependencies]
 built = { version = "0.8", features = ["git2", "chrono"] }
@@ -51,6 +50,7 @@ built = { version = "0.8", features = ["git2", "chrono"] }
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3.24"
+proptest = "1.10"
 
 [[bin]]
 name = "thoughtjack"
@@ -65,6 +65,7 @@ dist = true
 
 [lints.rust]
 unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [lints.clippy]
 all = "warn"

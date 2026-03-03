@@ -254,13 +254,10 @@ phases:
 
 ```bash
 # Validate
-thoughtjack server validate phased_attack.yaml
-
-# Generate state machine diagram
-thoughtjack diagram phased_attack.yaml
+thoughtjack validate phased_attack.yaml
 ```
 
-The diagram shows four states with labeled transitions:
+The phase state machine has four states with labeled transitions:
 
 ```mermaid
 stateDiagram-v2
@@ -275,7 +272,7 @@ stateDiagram-v2
 Run with event logging to capture phase transitions:
 
 ```bash
-thoughtjack server run \
+thoughtjack run \
   --config phased_attack.yaml \
   -vv \
   --events-file events.jsonl

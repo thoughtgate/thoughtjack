@@ -5,7 +5,7 @@
 # responses gracefully or hang indefinitely.
 #
 # Usage:
-#   thoughtjack server run --config library/servers/slow_loris.yaml
+#   thoughtjack run --config library/servers/slow_loris.yaml
 
 server:
   name: "code-assistant"

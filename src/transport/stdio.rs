@@ -8,8 +8,6 @@ use super::{
     ConnectionContext, DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_STDIO_BUFFER_SIZE, JsonRpcMessage, Result,
     Transport, TransportType,
 };
-use crate::config::schema::DeliveryConfig;
-
 use std::str::FromStr;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::Mutex;
@@ -259,11 +257,6 @@ impl Transport for StdioTransport {
         }
     }
 
-    fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
-        // stdio supports all delivery behaviors
-        true
-    }
-
     fn transport_type(&self) -> TransportType {
         TransportType::Stdio
     }
@@ -346,28 +339,55 @@ mod tests {
     }
 
     #[test]
-    fn test_stdio_supports_all_behaviors() {
-        let transport = StdioTransport::new();
-        assert!(transport.supports_behavior(&DeliveryConfig::Normal));
-        assert!(transport.supports_behavior(&DeliveryConfig::SlowLoris {
-            byte_delay_ms: Some(100),
-            chunk_size: Some(1),
-        }));
-        assert!(transport.supports_behavior(&DeliveryConfig::UnboundedLine {
-            target_bytes: Some(1000),
-            padding_char: None,
-        }));
-        assert!(transport.supports_behavior(&DeliveryConfig::NestedJson {
-            depth: 100,
-            key: None,
-        }));
-        assert!(transport.supports_behavior(&DeliveryConfig::ResponseDelay { delay_ms: 1000 }));
-    }
-
-    #[test]
     fn test_stdio_context() {
         let transport = StdioTransport::new();
         let ctx = transport.context();
+        assert_eq!(ctx.connection_id, 0);
+        assert!(ctx.remote_addr.is_none());
+        assert!(ctx.is_exclusive);
+    }
+
+    // ---- New tests ----
+
+    #[test]
+    fn sanitize_for_log_truncates_long_input() {
+        let long_input = "a".repeat(500);
+        let sanitized = sanitize_for_log(&long_input, 200);
+        assert_eq!(sanitized.len(), 200);
+        assert!(sanitized.chars().all(|c| c == 'a'));
+    }
+
+    #[test]
+    fn sanitize_for_log_replaces_control_chars() {
+        let input = "hello\x00world\x0Bfoo\tbar";
+        let sanitized = sanitize_for_log(input, 200);
+        // \x00 and \x0B are control chars (replaced), \t is preserved
+        assert!(sanitized.contains('\u{FFFD}'));
+        assert!(sanitized.contains('\t'));
+        assert!(sanitized.contains("hello"));
+    }
+
+    #[test]
+    fn sanitize_for_log_empty_input() {
+        let sanitized = sanitize_for_log("", 200);
+        assert!(sanitized.is_empty());
+    }
+
+    #[test]
+    fn with_config_applies_custom_values() {
+        let config = StdioConfig {
+            max_message_size: 1024,
+            buffer_size: 512,
+        };
+        let transport = StdioTransport::with_config(config);
+        assert_eq!(transport.config.max_message_size, 1024);
+        assert_eq!(transport.config.buffer_size, 512);
+    }
+
+    #[test]
+    fn connection_context_returns_stdio_context() {
+        let transport = StdioTransport::new();
+        let ctx = transport.connection_context();
         assert_eq!(ctx.connection_id, 0);
         assert!(ctx.remote_addr.is_none());
         assert!(ctx.is_exclusive);

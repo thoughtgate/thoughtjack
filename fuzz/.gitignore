@@ -1,9 +1,11 @@
 # Fuzzing artifacts
 artifacts/
 
-# Fuzzing corpus (managed by libFuzzer, seeded from scenarios)
+# Fuzzing corpus (managed by libFuzzer, seeded from scenarios/hand-crafted)
 corpus/*/*.yaml
 corpus/*/*.json
+corpus/*/*.bin
+corpus/*/*.seed
 
 # Fuzzing coverage
 coverage/

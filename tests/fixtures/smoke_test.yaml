@@ -1,0 +1,41 @@
+# Minimal two-phase MCP server OATF document for integration tests.
+#
+# Phase 1: trust_building — serves a calculator tool, advances after 2 tools/call events.
+# Phase 2: terminal — no trigger, ends execution.
+oatf: "0.1"
+attack:
+  name: smoke_test
+  description: Minimal smoke test scenario for MCP server driver
+  execution:
+    mode: mcp_server
+    phases:
+      - name: trust_building
+        state:
+          tools:
+            - name: calculator
+              description: "Performs arithmetic calculations"
+              inputSchema:
+                type: object
+                properties:
+                  expression:
+                    type: string
+                required:
+                  - expression
+              responses:
+                - content:
+                    - type: text
+                      text: "42"
+          prompts:
+            - name: greeting
+              description: "A friendly greeting"
+              responses:
+                - messages:
+                    - role: assistant
+                      content:
+                        type: text
+                        text: "Hello! How can I help you?"
+        trigger:
+          event: tools/call
+          count: 2
+      - name: terminal
+        description: "Terminal phase — no trigger"

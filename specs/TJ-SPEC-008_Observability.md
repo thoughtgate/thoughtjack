@@ -7,12 +7,13 @@
 | **Type** | Core Specification |
 | **Status** | Draft |
 | **Priority** | **Medium** |
-| **Version** | v1.0.0 |
-| **Tags** | `#logging` `#metrics` `#tracing` `#events` `#debugging` `#reporting` |
+| **Version** | v2.0.0 |
+| **Tags** | `#logging` `#metrics` `#events` `#debugging` `#reporting` |
+| **Supersedes** | TJ-SPEC-008 v1.0.0 |
 
 ## 1. Context & Decision Rationale
 
-This specification defines ThoughtJack's observability system — the logging, metrics, events, and debugging capabilities that enable security researchers to understand attack execution, validate test results, and diagnose issues.
+This specification defines ThoughtJack's observability system — the logging, metrics, and events that enable security researchers to understand attack execution, validate results, and diagnose issues.
 
 ### 1.1 Motivation
 
@@ -21,20 +22,18 @@ ThoughtJack is a testing tool. Observability is critical for:
 | Use Case | Requirement |
 |----------|-------------|
 | **Test validation** | Did the attack execute as expected? |
-| **Result capture** | What did the client do? What payloads were delivered? |
-| **Debugging** | Why didn't the phase transition fire? |
-| **Reporting** | Generate test reports for security assessments |
-| **Integration** | Feed data into security tooling pipelines |
+| **Result capture** | What did the agent do? What payloads were delivered? |
+| **Debugging** | Why didn't the phase transition fire? Why did extractors not capture? |
+| **CI integration** | Machine-readable output for automated pipelines |
+| **Multi-actor coordination** | Which actor advanced when? What cross-actor extractors propagated? |
 
 ### 1.2 Observability Pillars
-
-ThoughtJack implements three observability pillars:
 
 | Pillar | Purpose | Implementation |
 |--------|---------|----------------|
 | **Logging** | Human-readable event stream | Structured logs via `tracing` |
 | **Metrics** | Quantitative measurements | Counters, histograms, gauges |
-| **Events** | Discrete state changes | Phase transitions, attack triggers |
+| **Events** | Discrete state changes | Phase transitions, attack triggers, verdict |
 
 ### 1.3 Design Principles
 
@@ -43,7 +42,7 @@ ThoughtJack implements three observability pillars:
 | **Structured by default** | Machine-parseable logs for tooling integration |
 | **Verbosity levels** | From quiet (errors only) to trace (everything) |
 | **Zero-cost when disabled** | No overhead when not observing |
-| **Test-friendly output** | Easy to assert on in integration tests |
+| **Actor-scoped context** | Multi-actor logging with actor name in every span |
 | **Privacy-aware** | Option to redact sensitive payloads |
 
 ### 1.4 Scope Boundaries
@@ -52,20 +51,19 @@ ThoughtJack implements three observability pillars:
 - Logging format and levels
 - Structured log fields
 - Metrics definitions
-- Event types and payloads
+- Event types and payloads (engine, orchestration, verdict, protocol)
 - Output destinations (stderr, file, JSON)
-- Test result reporting
 - Debug mode features
 
 **Out of scope:**
 - Metrics aggregation/storage (external systems)
 - Log shipping (external systems)
-- Alerting (external systems)
+- Verdict output format (TJ-SPEC-014)
 - CLI flag handling (TJ-SPEC-007)
 
 ---
 
-## 2. Functional Requirements
+## 2. Logging
 
 ### F-001: Logging Framework
 
@@ -76,29 +74,23 @@ The system SHALL use structured logging with configurable verbosity.
 - Supports log levels: trace, debug, info, warn, error
 - Log messages include timestamp, level, target, message
 - Structured fields attached to log events
-- Configurable via `--log-level` and `THOUGHTJACK_LOG_LEVEL`
+- Configurable via `-v` flags and `THOUGHTJACK_LOG_LEVEL`
 
 **Log Levels:**
 
 | Level | Use For | Example |
 |-------|---------|---------|
-| `error` | Failures requiring attention | Config validation failed |
-| `warn` | Unexpected but recoverable | Unknown field in config |
-| `info` | Normal operation milestones | Phase transition, server started |
-| `debug` | Detailed operation flow | Request received, response sent |
-| `trace` | Everything, including data | Full message payloads |
+| `error` | Failures requiring attention | Document validation failed, transport error |
+| `warn` | Unexpected but recoverable | `--raw-synthesize` active, extractor pattern didn't match |
+| `info` | Normal operation milestones | Phase transition, actor started, verdict computed |
+| `debug` | Detailed operation flow | Request received, response dispatched, extractor captured |
+| `trace` | Everything, including data | Full message payloads, interpolation results |
 
 **Implementation:**
 ```rust
-use tracing::{info, debug, trace, warn, error, instrument, Span};
+use tracing::{info, debug, trace, warn, error};
 use tracing_subscriber::{fmt, EnvFilter};
 
-/// Maps a verbosity level to a tracing directive string.
-///
-/// - 0 → `"warn"`
-/// - 1 → `"info"`
-/// - 2 → `"debug"`
-/// - 3+ → `"trace"` (saturates)
 pub const fn verbosity_to_directive(verbosity: u8) -> &'static str {
     match verbosity {
         0 => "warn",
@@ -110,11 +102,8 @@ pub const fn verbosity_to_directive(verbosity: u8) -> &'static str {
 
 pub fn init_logging(format: LogFormat, verbosity: u8, color: ColorChoice) {
     let default_directive = verbosity_to_directive(verbosity);
-
     let filter = EnvFilter::try_from_env("THOUGHTJACK_LOG_LEVEL")
         .unwrap_or_else(|_| EnvFilter::new(default_directive));
-
-    let show_target = verbosity >= 2;
 
     let use_ansi = match color {
         ColorChoice::Auto => std::io::stderr().is_terminal(),
@@ -124,20 +113,22 @@ pub fn init_logging(format: LogFormat, verbosity: u8, color: ColorChoice) {
 
     match format {
         LogFormat::Human => {
-            let _ = tracing_subscriber::fmt()
+            tracing_subscriber::fmt()
                 .with_env_filter(filter)
                 .with_ansi(use_ansi)
-                .with_target(show_target)
+                .with_target(verbosity >= 2)
                 .with_writer(std::io::stderr)
-                .try_init();
+                .try_init()
+                .ok();
         }
         LogFormat::Json => {
-            let _ = tracing_subscriber::fmt()
+            tracing_subscriber::fmt()
                 .with_env_filter(filter)
                 .json()
-                .with_target(show_target)
+                .with_target(verbosity >= 2)
                 .with_writer(std::io::stderr)
-                .try_init();
+                .try_init()
+                .ok();
         }
     }
 }
@@ -145,1030 +136,63 @@ pub fn init_logging(format: LogFormat, verbosity: u8, color: ColorChoice) {
 
 ### F-002: Log Format (Human-Readable)
 
-The system SHALL support human-readable log output.
-
-**Acceptance Criteria:**
-- Default format for terminal output
-- Colorized when stderr is TTY
-- Timestamps in local timezone
-- Concise, scannable format
+Default format for terminal output. Colorized when stderr is TTY.
 
 **Format:**
 ```
-2025-02-04T10:15:30.123Z INFO  thoughtjack::server > Server started
-2025-02-04T10:15:30.125Z INFO  thoughtjack::server > name="rug-pull-test" transport="stdio"
-2025-02-04T10:15:31.456Z DEBUG thoughtjack::phase  > Event recorded event="tools/call" count=1
-2025-02-04T10:15:31.789Z INFO  thoughtjack::phase  > Phase transition from="trust_building" to="trigger_swap"
-```
-
-**With colors (TTY):**
-```
-10:15:30 INFO  server     Server started
-10:15:30 INFO  server     name="rug-pull-test" transport="stdio"
-10:15:31 DEBUG phase      Event recorded event="tools/call" count=1
-10:15:31 INFO  phase      Phase transition from="trust_building" to="trigger_swap"
+2025-02-25T10:15:30.123Z INFO  thoughtjack::engine > [mcp_server] Phase transition from="trust_building" to="trigger_swap"
+2025-02-25T10:15:31.456Z DEBUG thoughtjack::engine > [mcp_server] Extractor captured name="secret_key" value="abc..."
+2025-02-25T10:15:32.789Z INFO  thoughtjack::verdict > Verdict: exploited (2/3 indicators matched)
 ```
 
 ### F-003: Log Format (JSON)
 
-The system SHALL support JSON log output for machine consumption.
-
-**Acceptance Criteria:**
-- One JSON object per line (JSONL/NDJSON)
-- Includes all structured fields
-- Timestamp in ISO 8601 format
-- Suitable for log aggregation systems
+One JSON object per line (JSONL/NDJSON) for machine consumption.
 
 **Format:**
 ```json
-{"timestamp":"2025-02-04T10:15:30.123456Z","level":"INFO","target":"thoughtjack::server","message":"Server started"}
-{"timestamp":"2025-02-04T10:15:30.125Z","level":"INFO","target":"thoughtjack::server","message":"Server ready","fields":{"name":"rug-pull-test","transport":"stdio"}}
-{"timestamp":"2025-02-04T10:15:31.456Z","level":"DEBUG","target":"thoughtjack::phase","message":"Event recorded","fields":{"event":"tools/call","count":1}}
-{"timestamp":"2025-02-04T10:15:31.789Z","level":"INFO","target":"thoughtjack::phase","message":"Phase transition","fields":{"from":"trust_building","to":"trigger_swap","trigger":"event_count"}}
+{"timestamp":"2025-02-25T10:15:30.123Z","level":"INFO","target":"thoughtjack::engine","fields":{"actor":"mcp_server","from":"trust_building","to":"trigger_swap"},"message":"Phase transition"}
 ```
 
 ### F-004: Contextual Logging
 
-The system SHALL attach context to log spans.
+The system SHALL attach context to log spans using tracing spans.
 
 **Acceptance Criteria:**
-- Request ID attached to all logs for a request
+- Actor name attached to all engine logs
 - Phase name attached during phase execution
-- Tool name attached during tool call handling
-- Connection ID for HTTP transport
-
-> **Status: Future scope.** The `#[instrument]` attribute is not yet applied to request handlers in the current implementation. Contextual fields are added manually via `tracing` macros. The examples below show the target design.
+- Protocol type included in driver logs
+- Request ID for request-scoped operations (where applicable)
 
 **Implementation:**
 ```rust
-// Future: #[instrument(skip(self, transport), fields(request_id = %request.id))]
-async fn handle_request(&self, request: JsonRpcRequest, transport: &dyn Transport) {
-    debug!("Request received");
+// Actor-scoped span — all logs within an actor carry its name
+let _span = tracing::info_span!("actor", name = %actor_name, protocol = %protocol).entered();
 
-    // All logs within this function include request_id
-    let result = self.process_request(request).await;
+// Phase-scoped span — nested within actor span
+let _phase_span = tracing::info_span!("phase", name = %phase_name, index = phase_index).entered();
 
-    debug!(response_size = result.len(), "Response prepared");
-}
-
-// Future: #[instrument(skip(self), fields(phase = %self.current_phase_name()))]
-async fn evaluate_trigger(&self, event: &Event) {
-    debug!(event_type = %event.event_type, "Evaluating trigger");
-
-    if self.should_advance(event) {
-        info!("Trigger fired, advancing phase");
-    }
-}
+// Request-scoped span — nested within phase span (server-mode drivers)
+let _req_span = tracing::debug_span!("request", method = %method).entered();
 ```
 
-### F-005: Server Lifecycle Events
+---
 
-The system SHALL log server lifecycle events.
+## 3. Events
 
-**Acceptance Criteria:**
-- Server start with configuration summary
-- Transport binding
-- Client connection/disconnection
-- Graceful shutdown initiation
-- Server stop with summary
+Events are discrete, typed state changes emitted during execution. They serve two purposes: observability (understanding what happened) and test assertions (verifying expected behavior).
 
-**Events:**
+### F-005: Event Emitter
 
-| Event | Level | Fields |
-|-------|-------|--------|
-| `server.started` | INFO | name, version, transport |
-| `server.config_loaded` | INFO | phases_count, tools_count |
-| `transport.listening` | INFO | transport_type, address |
-| `transport.connected` | INFO | client_info, connection_id |
-| `transport.disconnected` | INFO | connection_id, reason |
-| `server.shutdown_started` | INFO | reason |
-| `server.stopped` | INFO | uptime, requests_handled |
-
-**Example:**
-```rust
-info!(
-    name = %config.server.name,
-    version = %config.server.version.as_deref().unwrap_or("unset"),
-    transport = %transport_type,
-    "Server started"
-);
-
-info!(
-    phases = config.phases.len(),
-    tools = config.baseline.tools.len(),
-    resources = config.baseline.resources.len(),
-    "Configuration loaded"
-);
-```
-
-### F-006: Phase Transition Events
-
-The system SHALL log phase transitions with full context.
-
-**Acceptance Criteria:**
-- Log when entering each phase
-- Log trigger that caused transition
-- Log entry actions executed
-- Log effective state changes
-
-**Events:**
-
-| Event | Level | Fields |
-|-------|-------|--------|
-| `phase.entered` | INFO | phase_name, phase_index, trigger_type |
-| `phase.trigger_evaluated` | DEBUG | event, count, threshold, fired |
-| `phase.entry_action` | DEBUG | action_type, action_details |
-| `phase.state_changed` | DEBUG | tools_added, tools_removed, tools_replaced |
-| `phase.terminal` | INFO | phase_name |
-
-**Example:**
-```rust
-info!(
-    phase = %phase.name,
-    index = phase_index,
-    trigger = %trigger_description,
-    "Phase transition"
-);
-
-debug!(
-    added = ?diff.add_tools.iter().map(|t| &t.name).collect::<Vec<_>>(),
-    removed = ?diff.remove_tools,
-    replaced = ?diff.replace_tools.keys().collect::<Vec<_>>(),
-    "Effective state updated"
-);
-```
-
-### F-007: Request/Response Logging
-
-The system SHALL log MCP request/response activity.
-
-**Acceptance Criteria:**
-- Log method and ID for each request
-- Log response status (success/error)
-- Log timing information
-- Optionally log full payloads (trace level)
-
-**Events:**
-
-| Event | Level | Fields |
-|-------|-------|--------|
-| `request.received` | DEBUG | method, id, params_size |
-| `request.payload` | TRACE | full_params |
-| `response.sent` | DEBUG | id, success, duration_ms |
-| `response.payload` | TRACE | full_result |
-| `response.error` | WARN | id, error_code, error_message |
-
-**Example:**
-```rust
-debug!(
-    method = %request.method,
-    id = ?request.id,
-    params_bytes = request.params.as_ref().map(|p| p.to_string().len()).unwrap_or(0),
-    "Request received"
-);
-
-trace!(params = ?request.params, "Request payload");
-
-debug!(
-    id = ?request.id,
-    success = result.is_ok(),
-    duration_ms = start.elapsed().as_millis(),
-    "Response sent"
-);
-```
-
-### F-008: Behavioral Mode Logging
-
-The system SHALL log behavioral mode activity.
-
-**Acceptance Criteria:**
-- Log when delivery behavior activates
-- Log progress for slow behaviors
-- Log side effect execution
-- Log behavior completion
-
-**Events:**
-
-| Event | Level | Fields |
-|-------|-------|--------|
-| `behavior.delivery_start` | DEBUG | behavior_type, message_size |
-| `behavior.delivery_progress` | TRACE | bytes_sent, total_bytes |
-| `behavior.delivery_complete` | DEBUG | behavior_type, duration_ms |
-| `behavior.side_effect_start` | DEBUG | effect_type, trigger |
-| `behavior.side_effect_complete` | DEBUG | effect_type, messages_sent |
-
-**Example:**
-```rust
-debug!(
-    behavior = "slow_loris",
-    message_bytes = message.len(),
-    chunk_size = self.chunk_size,
-    delay_ms = self.byte_delay.as_millis(),
-    "Starting slow delivery"
-);
-
-trace!(
-    bytes_sent = bytes_sent,
-    total = total_bytes,
-    progress_pct = (bytes_sent * 100) / total_bytes,
-    "Delivery progress"
-);
-```
-
-### F-009: Metrics Collection
-
-The system SHALL collect quantitative metrics.
-
-**Acceptance Criteria:**
-- Counter metrics for events
-- Histogram metrics for durations
-- Gauge metrics for current state
-- Metrics exposed via configurable sink
-- **Label cardinality MUST be bounded to prevent memory exhaustion**
-
-**Metrics:**
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `thoughtjack_requests_total` | Counter | method | Total requests received |
-| `thoughtjack_responses_total` | Counter | method, status, error_code | Total responses sent |
-| `thoughtjack_request_duration_ms` | Histogram | method | Request processing time |
-| `thoughtjack_delivery_duration_ms` | Histogram | — | Delivery duration |
-| `thoughtjack_phase_transitions_total` | Counter | from, to | Phase transitions |
-| `thoughtjack_current_phase` | Gauge | phase_name | Current phase (1 = active) |
-| `thoughtjack_connections_active` | Gauge | — | Active connections |
-| `thoughtjack_delivery_bytes_total` | Counter | — | Bytes delivered |
-| `thoughtjack_side_effects_total` | Counter | effect_type, messages_sent, bytes_sent | Side effects executed |
-| `thoughtjack_side_effect_duration_ms` | Histogram | effect_type | Side effect duration |
-| `thoughtjack_event_counts` | Gauge | event | Current event counts |
-
-**Label Cardinality Protection:**
-
-To prevent memory exhaustion from attacker-controlled label values, all metrics with `method` labels MUST normalize unknown methods:
-
-```rust
-const KNOWN_METHODS: &[&str] = &[
-    "initialize", "ping",
-    "tools/list", "tools/call",
-    "resources/list", "resources/read", "resources/subscribe", "resources/unsubscribe",
-    "prompts/list", "prompts/get",
-    "logging/setLevel",
-    "completion/complete",
-];
-
-fn sanitize_method_label(method: &str) -> &str {
-    if KNOWN_METHODS.contains(&method) {
-        method
-    } else {
-        "__unknown__"
-    }
-}
-```
-
-Unknown methods are bucketed as `method="__unknown__"` to limit cardinality.
-
-**Warning: Config-Derived Cardinality:**
-Labels derived from configuration (e.g., `phase_name`, `from`, `to`) are NOT sanitized because they are user-controlled, not attacker-controlled. However, configurations with an excessive number of phases (100+) will increase metric memory usage proportionally. This is a self-DoS scenario via config, not an attack vector.
-
-**Phase Label Sanitization:**
-Phase name labels are sanitized before use to prevent label cardinality issues:
-- Truncated to 64 characters maximum
-- Characters not matching `[a-zA-Z0-9_-]` are replaced with `_`
-
-This ensures that even unusual phase names in configuration files won't cause Prometheus label errors.
-
-**Recommendation:** Keep phase counts reasonable (<50) or disable phase-level metrics for large configurations.
-
-**Implementation:**
-```rust
-use metrics::{counter, histogram, gauge};
-
-// Request handling - use sanitized method label
-let method_label = sanitize_method_label(&method);
-counter!("thoughtjack_requests_total", "method" => method_label).increment(1);
-let start = Instant::now();
-
-// ... process request ...
-
-histogram!("thoughtjack_request_duration_ms", "method" => method_label)
-    .record(start.elapsed().as_millis() as f64);
-counter!("thoughtjack_responses_total", "method" => method_label, "status" => "success")
-    .increment(1);
-
-// Phase transition
-counter!("thoughtjack_phase_transitions_total", 
-    "from" => from_phase.to_string(), 
-    "to" => to_phase.to_string()
-).increment(1);
-
-gauge!("thoughtjack_current_phase", "phase_name" => phase_name).set(1.0);
-```
-
-### F-010: Metrics Export
-
-The system SHALL support metrics export to external systems.
-
-**Acceptance Criteria:**
-- Prometheus exposition format (pull) via `metrics-exporter-prometheus`
-- Optional metrics endpoint for HTTP transport
-- Metrics disabled by default (zero overhead)
-
-**Configuration:**
-```yaml
-# In server configuration
-observability:
-  metrics:
-    enabled: true
-    endpoint: /metrics        # For HTTP transport
-    format: prometheus
-```
-
-**CLI:**
-```bash
-# Enable metrics endpoint on HTTP transport
-thoughtjack server --config attack.yaml --http :8080 --metrics
-
-# Metrics available at http://localhost:8080/metrics
-```
-
-**Prometheus Output:**
-```
-# HELP thoughtjack_requests_total Total requests received
-# TYPE thoughtjack_requests_total counter
-thoughtjack_requests_total{method="tools/call"} 15
-thoughtjack_requests_total{method="tools/list"} 3
-
-# HELP thoughtjack_request_duration_ms Request processing time
-# TYPE thoughtjack_request_duration_ms histogram
-thoughtjack_request_duration_ms_bucket{method="tools/call",le="1"} 10
-thoughtjack_request_duration_ms_bucket{method="tools/call",le="5"} 14
-thoughtjack_request_duration_ms_bucket{method="tools/call",le="10"} 15
-thoughtjack_request_duration_ms_bucket{method="tools/call",le="+Inf"} 15
-thoughtjack_request_duration_ms_sum{method="tools/call"} 23.5
-thoughtjack_request_duration_ms_count{method="tools/call"} 15
-```
-
-### F-011: Event Stream
-
-The system SHALL emit discrete events for significant state changes.
+The system SHALL emit structured events with timestamps and sequence numbers.
 
 **Acceptance Criteria:**
 - Events are structured, typed objects
 - Events include timestamp and sequence number
-- Events can be streamed to file
+- Events can be streamed to file (JSONL)
 - Events enable test assertions
 
-**Event Types:**
-```rust
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type")]
-pub enum ThoughtJackEvent {
-    ServerStarted {
-        timestamp: DateTime<Utc>,
-        server_name: String,
-        transport: String,
-    },
-    
-    PhaseEntered {
-        timestamp: DateTime<Utc>,
-        phase_name: String,
-        phase_index: usize,
-        trigger: TriggerInfo,
-    },
-    
-    RequestReceived {
-        timestamp: DateTime<Utc>,
-        request_id: JsonRpcId,
-        method: String,
-    },
-    
-    ResponseSent {
-        timestamp: DateTime<Utc>,
-        request_id: JsonRpcId,
-        success: bool,
-        duration_ms: u64,
-    },
-    
-    AttackTriggered {
-        timestamp: DateTime<Utc>,
-        attack_type: String,
-        details: String,
-        phase: String,
-    },
-    
-    ServerStopped {
-        timestamp: DateTime<Utc>,
-        reason: StopReason,
-        summary: RunSummary,
-    },
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RunSummary {
-    pub uptime_seconds: u64,
-    pub requests_received: u64,
-    pub responses_sent: u64,
-    pub phases_entered: Vec<String>,
-    pub final_phase: String,
-    pub attacks_triggered: Vec<String>,
-}
-```
-
-### F-012: Event File Output
-
-The system SHALL support writing events to a file.
-
-**Acceptance Criteria:**
-- Events written as JSONL
-- File path configurable
-- Atomic writes (no partial events)
-- File rotation not required (test tool)
-
-**Warning: Parallel Test Runners:**
-When running multiple ThoughtJack instances in parallel (e.g., in a test suite), each instance SHOULD write to a unique event file. While individual writes are atomic, concurrent appends from multiple processes may interleave on some operating systems without explicit file locking.
-
-**Recommendation:** Use unique file names per instance:
-```bash
-thoughtjack server --config a.yaml --events-file events-$$-a.jsonl &
-thoughtjack server --config b.yaml --events-file events-$$-b.jsonl &
-```
-
-**Configuration:**
-```bash
-# Write events to file
-thoughtjack server --config attack.yaml --events-file events.jsonl
-
-# Or via environment
-THOUGHTJACK_EVENTS_FILE=events.jsonl thoughtjack server --config attack.yaml
-```
-
-**Output (events.jsonl):**
-```json
-{"type":"ServerStarted","timestamp":"2025-02-04T10:15:30Z","server_name":"rug-pull","transport":"stdio"}
-{"type":"RequestReceived","timestamp":"2025-02-04T10:15:31Z","request_id":1,"method":"initialize"}
-{"type":"ResponseSent","timestamp":"2025-02-04T10:15:31Z","request_id":1,"success":true,"duration_ms":2}
-{"type":"PhaseEntered","timestamp":"2025-02-04T10:15:35Z","phase_name":"trigger_swap","phase_index":1,"trigger":{"type":"event_count","event":"tools/call","count":3}}
-{"type":"AttackTriggered","timestamp":"2025-02-04T10:15:35Z","attack_type":"tool_swap","details":{"tool":"calculator","old":"benign","new":"injection"}}
-{"type":"ServerStopped","timestamp":"2025-02-04T10:15:40Z","reason":"client_disconnected","summary":{"uptime_seconds":10,"requests_received":8,"responses_sent":8,"phases_entered":["trust_building","trigger_swap","exploit"],"final_phase":"exploit","attacks_triggered":["tool_swap"]}}
-```
-
-### F-013: Verbose Logging Levels
-
-The system SHALL support multiple verbosity levels via `-v` flags.
-
-**Acceptance Criteria:**
-- `-v` enables info-level logging (default)
-- `-vv` enables debug-level logging (full payloads)
-- `-vvv` enables trace-level logging (maximum detail)
-- Verbosity levels control what gets logged to tracing output
-
-**Verbosity Levels:**
-
-| Flag | Level | Content |
-|------|-------|---------|
-| (none) | warn | Warnings and errors only |
-| `-v` | info | Lifecycle events, phase transitions |
-| `-vv` | debug | Full request/response payloads |
-| `-vvv` | trace | Per-operation timing, internal state |
-
-**Usage:**
-```bash
-# Normal operation (info level)
-thoughtjack server run -c config.yaml -v
-
-# Debug payloads (debug level)
-thoughtjack server run -c config.yaml -vv
-
-# Maximum verbosity (trace level)
-thoughtjack server run -c config.yaml -vvv
-```
-
 **Implementation:**
-```rust
-// Future: #[instrument(skip_all, fields(request_id = %request.id))]
-async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
-    // At debug level (-vv), log full payloads
-    debug!(payload = ?request, "Full request payload");
-
-    let response = self.process(request).await;
-
-    debug!(payload = ?response, "Full response payload");
-
-    // At trace level (-vvv), log internal state
-    trace!(
-        phase_state = ?self.phase_engine.debug_state(),
-        "Current phase state"
-    );
-
-    response
-}
-```
-
-### F-014: Test Report Generation
-
-The system SHALL generate test reports on completion.
-
-> **Status: Partially implemented.** `RunSummary` struct exists but detailed report generation to file is not yet implemented.
-
-**Acceptance Criteria:**
-- Summary printed to stderr on exit
-- Detailed report to file (optional)
-- Includes attack success/failure
-- Includes timing and phase progression
-
-**Summary Output:**
-```
-═══════════════════════════════════════════════════════════════════════
-                         ThoughtJack Test Summary
-═══════════════════════════════════════════════════════════════════════
-
-Server: rug-pull-test
-Duration: 45.3s
-Transport: stdio
-
-PHASE PROGRESSION
-  [✓] trust_building     (0:00 - 0:15)  3 requests
-  [✓] trigger_swap       (0:15 - 0:18)  1 request
-  [✓] exploit            (0:18 - 0:45)  4 requests  [TERMINAL]
-
-ATTACKS TRIGGERED
-  [✓] Tool swap: calculator (benign → injection)
-  [✓] Notification sent: tools/list_changed
-
-REQUEST SUMMARY
-  Total: 8 requests
-  tools/call: 5
-  tools/list: 2
-  initialize: 1
-
-BEHAVIORAL MODES
-  Delivery: slow_loris (3 responses)
-  Side effects: notification_flood (1 execution, 1000 notifications)
-
-═══════════════════════════════════════════════════════════════════════
-```
-
-**Detailed Report (JSON):**
-```json
-{
-  "server": {
-    "name": "rug-pull-test",
-    "version": "1.0.0"
-  },
-  "run": {
-    "start_time": "2025-02-04T10:15:30Z",
-    "end_time": "2025-02-04T10:16:15Z",
-    "duration_seconds": 45.3,
-    "transport": "stdio",
-    "stop_reason": "client_disconnected"
-  },
-  "phases": [
-    {
-      "name": "trust_building",
-      "index": 0,
-      "entered_at": "2025-02-04T10:15:30Z",
-      "exited_at": "2025-02-04T10:15:45Z",
-      "duration_seconds": 15.0,
-      "requests_handled": 3,
-      "trigger": {"type": "event_count", "event": "tools/call", "count": 3}
-    }
-  ],
-  "requests": {
-    "total": 8,
-    "by_method": {
-      "initialize": 1,
-      "tools/list": 2,
-      "tools/call": 5
-    },
-    "errors": 0
-  },
-  "attacks": [
-    {
-      "type": "tool_swap",
-      "triggered_at": "2025-02-04T10:15:45Z",
-      "phase": "trigger_swap",
-      "details": {
-        "tool": "calculator",
-        "from": "benign",
-        "to": "injection"
-      }
-    }
-  ],
-  "behaviors": {
-    "deliveries": {
-      "slow_loris": {"count": 3, "total_bytes": 15000, "total_duration_ms": 45000}
-    },
-    "side_effects": {
-      "notification_flood": {"executions": 1, "messages_sent": 1000}
-    }
-  }
-}
-```
-
-### F-015: Payload Redaction
-
-The system SHALL support redacting sensitive data from logs.
-
-**Acceptance Criteria:**
-- Redaction enabled by default at info level and below
-- Full payloads only at trace level
-- Configurable redaction patterns
-- Redaction applies to logs and events
-
-**Redaction Levels:**
-
-| Log Level | Payload Visibility |
-|-----------|-------------------|
-| error | Method only |
-| warn | Method only |
-| info | Method + size |
-| debug | Method + truncated (100 chars) |
-| trace | Full payload |
-
-**Implementation:**
-```rust
-fn format_payload(payload: &serde_json::Value, level: Level) -> String {
-    match level {
-        Level::TRACE => serde_json::to_string(payload).unwrap(),
-        Level::DEBUG => {
-            let s = serde_json::to_string(payload).unwrap();
-            if s.len() > 100 {
-                format!("{}... ({} bytes)", &s[..100], s.len())
-            } else {
-                s
-            }
-        }
-        _ => format!("({} bytes)", serde_json::to_string(payload).unwrap().len()),
-    }
-}
-```
-
-### F-016: Log Targets
-
-The system SHALL support multiple log output targets.
-
-**Acceptance Criteria:**
-- Default: stderr
-- File output via `--log-file`
-- Both stderr and file simultaneously
-- JSON format independent per target
-
-**Configuration:**
-```bash
-# Log to stderr (default)
-thoughtjack server --config attack.yaml
-
-# Log to file only
-thoughtjack server --config attack.yaml --log-file server.log --quiet
-
-# Log to both
-thoughtjack server --config attack.yaml --log-file server.log
-
-# JSON to file, human to stderr
-thoughtjack server --config attack.yaml --log-file server.json --log-file-format json
-```
-
-### F-017: Request/Response Capture
-
-The system SHALL support capturing full request/response pairs for debugging and replay.
-
-**Acceptance Criteria:**
-- `--capture-dir` enables capture to specified directory
-- Creates one NDJSON file per session: `capture-{timestamp}-{pid}.ndjson`
-- Each line contains request OR response with timing and phase context
-- `--capture-redact` removes sensitive fields (arguments, response content)
-- Distinct from event logging (which captures lifecycle events, not full payloads)
-
-**Relationship to Other Features:**
-
-| Feature | Purpose | Content |
-|---------|---------|---------|
-| Event Logging (`--events-file`) | Lifecycle events | Phase transitions, attack triggers |
-| Verbose Logging (`-vv` / `-vvv`) | Live debugging | Full payloads to tracing log |
-| **Capture (`--capture-dir`)** | **Replay/Analysis** | **Full request/response pairs to file** |
-
-**Use Cases:**
-1. Reproduce client bugs by replaying captured requests
-2. Analyze agent behavior across sessions
-3. Build test fixtures from real interactions
-4. Share attack sequences with team members
-
-**Configuration:**
-```bash
-# Capture all traffic
-thoughtjack server --config attack.yaml --capture-dir ./captures
-
-# Capture with redaction (for sharing)
-thoughtjack server --config attack.yaml --capture-dir ./captures --capture-redact
-```
-
-**Output Format:** See TJ-SPEC-007 F-013 for detailed capture format specification.
-
----
-
-## 3. Edge Cases
-
-### EC-OBS-001: High-Volume Logging
-
-**Scenario:** 10,000 requests/second with debug logging  
-**Expected:** Logging does not significantly impact throughput; consider async logging
-
-### EC-OBS-002: Log File Full
-
-**Scenario:** Disk full while writing to log file  
-**Expected:** Warning to stderr, continue without file logging
-
-### EC-OBS-003: Invalid Log Level
-
-**Scenario:** `--log-level invalid`  
-**Expected:** Error message listing valid levels, exit 64
-
-### EC-OBS-004: Metrics Endpoint Conflict
-
-**Scenario:** `--metrics` but not using HTTP transport  
-**Expected:** Warning: "Metrics endpoint requires HTTP transport"
-
-### EC-OBS-005: Event File Not Writable
-
-**Scenario:** `--events-file /root/events.json` without permission  
-**Expected:** Error: "Cannot write to events file", exit 3
-
-### EC-OBS-006: Very Long Log Message
-
-**Scenario:** Log message with 1MB payload at trace level  
-**Expected:** Logged correctly (no truncation at trace)
-
-### EC-OBS-007: Unicode in Log Messages
-
-**Scenario:** Tool name contains emoji or CJK characters  
-**Expected:** Logged correctly in both human and JSON format
-
-### EC-OBS-008: Concurrent Log Writes
-
-**Scenario:** Multiple async tasks logging simultaneously  
-**Expected:** No interleaved lines; each log entry is atomic
-
-### EC-OBS-009: Metrics Overflow
-
-**Scenario:** Counter exceeds u64::MAX  
-**Expected:** Saturate at max value, no wrap-around
-
-### EC-OBS-010: Phase Transition During Debug Dump
-
-**Scenario:** Phase transitions while debug state dump is being generated  
-**Expected:** Consistent snapshot (locked during dump)
-
-### EC-OBS-011: Empty Event Stream
-
-**Scenario:** Server starts and stops immediately  
-**Expected:** ServerStarted and ServerStopped events still emitted
-
-### EC-OBS-012: Report Generation Timeout
-
-**Scenario:** Report generation takes > 5s  
-**Expected:** Timeout and emit partial report with warning
-
-### EC-OBS-013: JSON Log With Binary Data
-
-**Scenario:** Payload contains non-UTF8 bytes  
-**Expected:** Escaped or base64 encoded in JSON output
-
-### EC-OBS-014: Logging Before Init
-
-**Scenario:** Error occurs before logging is initialized  
-**Expected:** Falls back to eprintln!
-
-### EC-OBS-015: Multiple Verbosity Flags
-
-**Scenario:** `-v -v -v` (triple verbose)  
-**Expected:** Each -v increases level (info → debug → trace)
-
-### EC-OBS-016: Quiet and Verbose Together
-
-**Scenario:** `--quiet -v`  
-**Expected:** Error: "Cannot use --quiet with --verbose", exit 64
-
-### EC-OBS-017: Log Rotation
-
-**Scenario:** Log file grows to 10GB  
-**Expected:** No rotation (out of scope), document in help
-
-### EC-OBS-018: Timestamp Timezone
-
-**Scenario:** Server runs across timezone change (DST)  
-**Expected:** UTC timestamps throughout (no local time confusion)
-
-### EC-OBS-019: Metrics With No Requests
-
-**Scenario:** Metrics endpoint queried before any requests  
-**Expected:** All counters at 0, gauges at initial state
-
-### EC-OBS-020: Report After Crash
-
-**Scenario:** Server crashes (panic) mid-operation  
-**Expected:** Panic handler emits partial summary to stderr
-
-### EC-OBS-021: Unknown Method Metric Bucketing
-
-**Scenario:** Client sends requests with unknown method names like "random_xyz_123"  
-**Expected:** Metric recorded as `thoughtjack_requests_total{method="__unknown__"}`, not `method="random_xyz_123"`. This prevents cardinality explosion from attacker-controlled method names.
-
-### EC-OBS-022: High Cardinality Label Attack
-
-**Scenario:** Attacker sends 10,000 requests with unique random method names  
-**Expected:** All bucketed to single `method="__unknown__"` label. Metrics memory usage remains bounded.
-
----
-
-## 4. Non-Functional Requirements
-
-### NFR-001: Logging Overhead
-
-- Logging at info level SHALL add < 1% overhead
-- Logging at trace level SHALL add < 10% overhead
-- Disabled logging SHALL have zero overhead (compile-time)
-
-### NFR-002: Memory Usage
-
-- Log buffer SHALL not exceed 10MB
-- Event buffer SHALL not exceed 1MB
-- Metrics collection SHALL use < 1MB
-
-### NFR-003: Latency Impact
-
-- Synchronous log writes SHALL not block request handling
-- Async log flushing within 100ms
-
-### NFR-004: Reliability
-
-- Log file writes SHALL be atomic (no partial lines)
-- Metrics SHALL be accurate (no lost increments)
-- Events SHALL be ordered (sequence numbers)
-
----
-
-## 5. Observability Configuration
-
-### 5.1 CLI Flags
-
-| Flag | Environment | Default | Description |
-|------|-------------|---------|-------------|
-| `-v` / `-vv` / `-vvv` | `THOUGHTJACK_LOG_LEVEL` | warn | Verbosity level (info/debug/trace) |
-| `--log-format` | `THOUGHTJACK_LOG_FORMAT` | `human` | Log format (human/json) |
-| `--log-file` | `THOUGHTJACK_LOG_FILE` | — | Log file path |
-| `--log-file-format` | — | (same as --log-format) | Log file format |
-| `-q` / `--quiet` | — | false | Skips all logging output (no tracing subscriber) |
-| `--metrics` | — | false | Enable metrics endpoint |
-| `--events-file` | `THOUGHTJACK_EVENTS_FILE` | — | Events output file |
-| `--report` | — | false | Print summary on exit |
-| `--report-file` | `THOUGHTJACK_REPORT_FILE` | — | Detailed report file |
-
-### 5.2 Configuration File
-
-```yaml
-observability:
-  logging:
-    level: info                    # trace | debug | info | warn | error
-    format: human                  # human | json
-    file: /var/log/thoughtjack.log # Optional file output
-    redact_payloads: true         # Redact at info and below
-    
-  metrics:
-    enabled: false
-    endpoint: /metrics            # Path for HTTP transport
-    format: prometheus
-    
-  events:
-    enabled: false
-    file: events.jsonl
-    
-  reports:
-    summary_on_exit: true
-    detailed_file: report.json
-    
-  debug:
-    enabled: false
-    state_dumps: true
-    full_payloads: true
-    timing: true
-```
-
----
-
-## 6. Implementation Notes
-
-### 6.1 Recommended Libraries
-
-| Library | Purpose |
-|---------|---------|
-| `tracing` | Structured logging framework |
-| `tracing-subscriber` | Log formatting and filtering |
-| `tracing-appender` | File output with rotation |
-| `metrics` | Metrics facade |
-| `metrics-exporter-prometheus` | Prometheus exposition |
-| `serde_json` | JSON serialization |
-| `chrono` | Timestamps |
-
-### 6.2 Logging Setup
-
-```rust
-use tracing_subscriber::{
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter,
-    Layer,
-};
-
-pub fn init_observability(config: &ObservabilityConfig) -> Result<(), Error> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
-    
-    // Stderr layer
-    let stderr_layer = fmt::layer()
-        .with_target(true)
-        .with_ansi(atty::is(atty::Stream::Stderr));
-    
-    let stderr_layer = if config.logging.format == LogFormat::Json {
-        stderr_layer.json().boxed()
-    } else {
-        stderr_layer.boxed()
-    };
-    
-    // File layer (optional)
-    let file_layer = config.logging.file.as_ref().map(|path| {
-        let file = std::fs::File::create(path)?;
-        let layer = fmt::layer()
-            .with_writer(file)
-            .with_ansi(false);
-        
-        if config.logging.format == LogFormat::Json {
-            Ok(layer.json().boxed())
-        } else {
-            Ok(layer.boxed())
-        }
-    }).transpose()?;
-    
-    // Combine layers
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(stderr_layer)
-        .with(file_layer)
-        .init();
-    
-    Ok(())
-}
-```
-
-### 6.3 Metrics Setup
-
-```rust
-use metrics_exporter_prometheus::PrometheusBuilder;
-use crate::error::ThoughtJackError;
-
-/// Initializes the global metrics recorder.
-///
-/// When `port` is `Some`, a Prometheus HTTP listener is started on
-/// `127.0.0.1:<port>`.  When `None`, the recorder is installed without
-/// an HTTP endpoint (metrics are recorded internally and can be read
-/// programmatically).
-///
-/// # Errors
-///
-/// Returns `ThoughtJackError::Io` if the recorder or HTTP listener
-/// cannot be installed (e.g. port already in use).
-pub fn init_metrics(port: Option<u16>) -> Result<(), ThoughtJackError> {
-    port.map_or_else(
-        || PrometheusBuilder::new().install_recorder().map(|_| ()),
-        |p| {
-            PrometheusBuilder::new()
-                .with_http_listener(([127, 0, 0, 1], p))
-                .install()
-        },
-    )
-    .map_err(|e| ThoughtJackError::Io(std::io::Error::other(e.to_string())))?;
-
-    describe_metrics();
-    Ok(())
-}
-
-/// Registers metric descriptions with the global recorder.
-fn describe_metrics() {
-    metrics::describe_counter!(
-        "thoughtjack_requests_total",
-        "Total number of MCP requests received"
-    );
-    metrics::describe_histogram!(
-        "thoughtjack_request_duration_ms",
-        "Request processing duration in milliseconds"
-    );
-    
-    Ok(handle)
-}
-```
-
-### 6.4 Event Emitter
-
 ```rust
 pub struct EventEmitter {
     file: Option<BufWriter<File>>,
@@ -1178,25 +202,343 @@ pub struct EventEmitter {
 impl EventEmitter {
     pub fn emit(&self, event: ThoughtJackEvent) {
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
-        
-        let envelope = EventEnvelope {
-            sequence: seq,
-            event,
-        };
-        
+        let envelope = EventEnvelope { sequence: seq, event };
+
         if let Some(file) = &self.file {
             let line = serde_json::to_string(&envelope).unwrap();
             writeln!(file, "{}", line).ok();
             file.flush().ok();
         }
-        
-        // Also emit as tracing event for log correlation
+
         tracing::info!(event = ?envelope.event, "Event emitted");
     }
 }
 ```
 
-### 6.5 Anti-Patterns
+### F-006: Engine Events
+
+Events emitted by the PhaseLoop and PhaseEngine (TJ-SPEC-013).
+
+| Event | Level | Fields | When |
+|-------|-------|--------|------|
+| `phase.entered` | INFO | actor, phase_name, phase_index | Phase activated |
+| `phase.advanced` | INFO | actor, from_phase, to_phase, trigger | Trigger fired, phase advanced |
+| `phase.terminal` | INFO | actor, phase_name | Terminal phase reached |
+| `extractor.captured` | DEBUG | actor, extractor_name, value_preview | Extractor matched and captured value |
+| `extractor.published` | DEBUG | actor, extractor_name | Value published to ExtractorStore |
+| `trigger.evaluated` | TRACE | actor, event_type, count, threshold, fired | Trigger condition checked |
+| `synthesize.generated` | DEBUG | actor, protocol, prompt_preview | LLM generated response content |
+| `synthesize.validation_bypassed` | WARN | actor | `--raw-synthesize` active, output sent without validation |
+| `entry_action.executed` | DEBUG | actor, action_type | on_enter action completed |
+
+### F-007: Orchestration Events
+
+Events emitted by the Orchestrator and ActorRunners (TJ-SPEC-015).
+
+| Event | Level | Fields | When |
+|-------|-------|--------|------|
+| `orchestrator.started` | INFO | actor_count, server_count, client_count | After document parsed, actors classified |
+| `actor.init` | INFO | actor_name, mode | Actor runner initialized |
+| `actor.ready` | INFO | actor_name, bind_address | Server actor signals readiness |
+| `readiness_gate.open` | INFO | server_count, elapsed_ms | All server actors ready |
+| `readiness_gate.timeout` | WARN | not_ready_actors | Server readiness timed out |
+| `actor.started` | INFO | actor_name, phase_count | Actor begins phase execution |
+| `actor.completed` | INFO | actor_name, reason, phases_completed | Actor finishes execution |
+| `actor.error` | ERROR | actor_name, error_message | Actor fails |
+| `await_extractors.waiting` | DEBUG | actor, phase_index, awaiting | Waiting for cross-actor extractors |
+| `await_extractors.resolved` | DEBUG | actor, phase_index, values | All awaited extractors available |
+| `await_extractors.timeout` | WARN | actor, phase_index, missing | Timeout waiting for extractors |
+| `orchestrator.shutdown` | INFO | reason | Shutdown initiated (grace expired, timeout, signal) |
+| `orchestrator.completed` | INFO | actor_results_summary | All actors collected, ready for verdict |
+
+### F-008: Verdict Events
+
+Events emitted by the verdict pipeline (TJ-SPEC-014).
+
+| Event | Level | Fields | When |
+|-------|-------|--------|------|
+| `grace_period.started` | INFO | duration | Grace period timer begins |
+| `grace_period.expired` | INFO | messages_captured | Grace period timer fires |
+| `grace_period.early_termination` | INFO | reason | Grace period ends early |
+| `indicator.evaluated` | INFO | indicator_id, method, result, duration_ms | Indicator evaluation complete |
+| `indicator.skipped` | WARN | indicator_id, reason | Indicator skipped (no LLM, etc.) |
+| `semantic.llm_call` | DEBUG | model, indicator_id, latency_ms | LLM invoked for semantic eval |
+| `semantic.calibration_warning` | WARN | indicator_id, example, score, threshold | Example calibration failed |
+| `verdict.computed` | INFO | result, matched_count, total_count | Final verdict computed |
+
+### F-009: Protocol Events
+
+Events emitted by protocol drivers (TJ-SPEC-013, 016, 017, 018). These are the protocol-level messages exchanged with the agent.
+
+| Event | Level | Fields | When |
+|-------|-------|--------|------|
+| `protocol.request_received` | DEBUG | actor, method, protocol | Incoming request from agent |
+| `protocol.request_payload` | TRACE | actor, full_params | Full request content |
+| `protocol.response_sent` | DEBUG | actor, method, protocol, duration_ms | Response dispatched to agent |
+| `protocol.response_payload` | TRACE | actor, full_result | Full response content |
+| `protocol.request_sent` | DEBUG | actor, method, protocol | Outgoing request to agent (client mode) |
+| `protocol.response_received` | DEBUG | actor, method, protocol, duration_ms | Response received from agent (client mode) |
+| `protocol.notification` | DEBUG | actor, method, direction | Notification sent or received |
+| `protocol.transport_error` | WARN | actor, error | Transport-level failure |
+| `protocol.interleave` | DEBUG | actor, server_method | Server-initiated request during dispatch (elicitation/sampling) |
+
+### F-010: Legacy Server Events
+
+Events from v0.2 modules that remain operational (transport, behavior, generators). Retained for backward compatibility.
+
+| Event | Level | Fields | When |
+|-------|-------|--------|------|
+| `server.started` | INFO | name, transport | Server started (v0.2 mode) |
+| `server.stopped` | INFO | reason, uptime | Server stopped (v0.2 mode) |
+| `transport.listening` | INFO | transport_type, address | Transport bound |
+| `transport.connected` | INFO | connection_id | Client connected |
+| `transport.disconnected` | INFO | connection_id, reason | Client disconnected |
+| `behavior.delivery_start` | DEBUG | behavior_type, message_size | Delivery behavior activates |
+| `behavior.delivery_complete` | DEBUG | behavior_type, duration_ms | Delivery completes |
+| `behavior.side_effect_start` | DEBUG | effect_type | Side effect execution |
+| `behavior.side_effect_complete` | DEBUG | effect_type, messages_sent | Side effect completes |
+
+---
+
+## 4. Metrics
+
+### F-011: Metrics Collection
+
+The system SHALL collect quantitative metrics. Metrics are exposed via Prometheus format.
+
+**Label cardinality MUST be bounded to prevent memory exhaustion** (see §4.1).
+
+#### Core Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `tj_scenarios_total` | Counter | result | Scenarios executed, labeled by verdict result |
+| `tj_scenario_duration_seconds` | Histogram | — | Total scenario execution time |
+| `tj_actors_total` | Counter | mode, status | Actors executed, labeled by mode and completion status |
+
+#### Engine Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `tj_phase_transitions_total` | Counter | actor, from, to | Phase transitions |
+| `tj_extractors_captured_total` | Counter | actor | Extractor values captured |
+| `tj_synthesize_calls_total` | Counter | actor, protocol | LLM generation calls |
+| `tj_synthesize_duration_seconds` | Histogram | protocol | LLM generation latency |
+
+#### Protocol Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `tj_protocol_messages_total` | Counter | actor, direction, method | Protocol messages (in/out) |
+| `tj_protocol_message_duration_seconds` | Histogram | actor, direction, method | Message handling latency |
+| `tj_transport_errors_total` | Counter | actor, protocol | Transport-level failures |
+
+#### Verdict Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `tj_verdicts_total` | Counter | result | Verdicts produced by result type |
+| `tj_indicators_evaluated_total` | Counter | method, result | Indicator evaluations by method (cel/pattern/semantic) and result |
+| `tj_indicator_evaluation_duration_seconds` | Histogram | method | Indicator evaluation latency |
+| `tj_semantic_llm_calls_total` | Counter | — | LLM calls for semantic evaluation |
+| `tj_semantic_llm_latency_seconds` | Histogram | — | Semantic LLM call latency |
+| `tj_grace_period_messages_captured` | Histogram | — | Messages captured during grace period |
+
+#### Legacy Metrics (v0.2)
+
+These metrics are retained for backward compatibility when running in v0.2 server mode.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `thoughtjack_requests_total` | Counter | method | Requests received |
+| `thoughtjack_responses_total` | Counter | method, status | Responses sent |
+| `thoughtjack_request_duration_ms` | Histogram | method | Request latency |
+| `thoughtjack_delivery_bytes_total` | Counter | — | Bytes delivered |
+| `thoughtjack_side_effects_total` | Counter | effect_type | Side effects run |
+| `thoughtjack_current_phase` | Gauge | phase_name | Current phase |
+| `thoughtjack_connections_active` | Gauge | — | Open connections |
+
+### 4.1 Label Cardinality Protection
+
+To prevent memory exhaustion from attacker-controlled label values, all metrics with `method` labels MUST normalize unknown methods:
+
+```rust
+const KNOWN_MCP_METHODS: &[&str] = &[
+    "initialize", "ping",
+    "tools/list", "tools/call",
+    "resources/list", "resources/read", "resources/subscribe",
+    "prompts/list", "prompts/get",
+    "elicitation/create", "sampling/createMessage",
+    "logging/setLevel", "completion/complete",
+];
+
+const KNOWN_A2A_METHODS: &[&str] = &[
+    "message/send", "message/stream",
+    "tasks/get", "tasks/cancel",
+    "agent_card/get",
+];
+
+const KNOWN_AGUI_EVENTS: &[&str] = &[
+    "RUN_STARTED", "RUN_FINISHED", "RUN_ERROR",
+    "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
+    "TOOL_CALL_START", "TOOL_CALL_END",
+    "AGENT_ERROR",
+];
+
+fn sanitize_method_label(method: &str) -> &str {
+    if KNOWN_MCP_METHODS.contains(&method)
+        || KNOWN_A2A_METHODS.contains(&method)
+        || KNOWN_AGUI_EVENTS.contains(&method)
+    {
+        method
+    } else {
+        "__unknown__"
+    }
+}
+```
+
+Phase name labels are sanitized: truncated to 64 characters, non-`[a-zA-Z0-9_-]` replaced with `_`.
+
+### F-012: Metrics Export
+
+The system SHALL support Prometheus exposition format via `metrics-exporter-prometheus`.
+
+**Acceptance Criteria:**
+- Metrics endpoint available when enabled
+- Disabled by default (zero overhead)
+- Configurable via `--metrics-port`
+
+```bash
+# Enable metrics endpoint
+thoughtjack run --config attack.yaml --metrics-port 9090
+# Metrics at http://localhost:9090/metrics
+```
+
+---
+
+## 5. Debug Mode
+
+### F-013: Verbose Logging Levels
+
+The system SHALL support multiple verbosity levels via `-v` flags.
+
+| Flag | Level | Content |
+|------|-------|---------|
+| (none) | warn | Warnings and errors only |
+| `-v` | info | Lifecycle events, phase transitions, verdict |
+| `-vv` | debug | Full request/response payloads, extractor captures |
+| `-vvv` | trace | Per-operation timing, internal state, interpolation results |
+
+### F-014: Event File Output
+
+The system SHALL support writing events to a JSONL file.
+
+**Acceptance Criteria:**
+- Events written as JSONL (one JSON object per line)
+- Atomic writes (no partial events)
+- File rotation not required (test tool, bounded execution)
+
+**Warning:** When running multiple instances in parallel, each instance SHOULD write to a unique event file.
+
+---
+
+## 6. Edge Cases
+
+### EC-OBS-001: High-Volume Logging
+
+**Trigger:** Trace-level logging with high request rate.
+**Expected:** Async buffered writes. No request blocking. Backpressure drops log entries rather than blocking.
+
+### EC-OBS-002: Log File Full
+
+**Trigger:** Disk full during event file write.
+**Expected:** Log warning, continue execution without event file. Do not crash.
+
+### EC-OBS-003: Invalid Log Level
+
+**Trigger:** `THOUGHTJACK_LOG_LEVEL=invalid`.
+**Expected:** Fall back to verbosity-derived level. Log warning about invalid env var.
+
+### EC-OBS-004: Metrics Endpoint Conflict
+
+**Trigger:** `--metrics-port` specifies a port already in use.
+**Expected:** Exit with error. Do not start execution.
+
+### EC-OBS-005: Event File Not Writable
+
+**Trigger:** Event file path not writable (permissions, directory doesn't exist).
+**Expected:** Exit with error at startup. Do not start execution.
+
+### EC-OBS-006: Unicode in Log Messages
+
+**Trigger:** Protocol messages contain multi-byte UTF-8 (emoji, CJK, etc.).
+**Expected:** Log correctly in both human and JSON format. No truncation or corruption.
+
+### EC-OBS-007: Concurrent Log Writes
+
+**Trigger:** Multiple actors logging simultaneously in multi-actor execution.
+**Expected:** No interleaving within a single log line. Actor name in context disambiguates.
+
+### EC-OBS-008: Metrics Overflow
+
+**Trigger:** Counter exceeds u64 max.
+**Expected:** Counter wraps. No crash. (Practically unreachable.)
+
+### EC-OBS-009: Multi-Actor Event Ordering
+
+**Trigger:** Events from different actors arrive near-simultaneously.
+**Expected:** Sequence numbers are globally ordered (AtomicU64). Timestamps reflect wall clock, not causal order.
+
+### EC-OBS-010: Quiet Mode With Verdict
+
+**Trigger:** `--quiet` flag with `--output verdict.json`.
+**Expected:** No stderr output. JSON verdict still written to file. Exit code still reflects verdict.
+
+### EC-OBS-011: Unknown Method Metric Bucketing
+
+**Trigger:** Agent sends request with non-standard MCP method (e.g., `custom/foo`).
+**Expected:** Method label normalized to `__unknown__`. Single metric bucket, not per-unknown-method.
+
+### EC-OBS-012: High Cardinality Label Attack
+
+**Trigger:** Agent sends thousands of requests with unique method names.
+**Expected:** All bucketed as `__unknown__`. Metric memory bounded.
+
+---
+
+## 7. Non-Functional Requirements
+
+### NFR-001: Logging Overhead
+
+Logging at info level SHALL add less than 1% overhead to request processing latency.
+
+### NFR-002: Memory Usage
+
+Event buffer and metrics storage SHALL not exceed 10 MB for scenarios with fewer than 10,000 protocol messages.
+
+### NFR-003: Non-Blocking
+
+Async logging and event emission SHALL NOT block protocol message handling.
+
+### NFR-004: Atomic Writes
+
+Individual log lines and event file entries SHALL be written atomically (no partial lines in output).
+
+---
+
+## 8. Implementation
+
+### 8.1 Module Structure
+
+```
+src/observability/
+├── mod.rs          # Re-exports, init functions
+├── logging.rs      # init_logging, format configuration
+├── metrics.rs      # init_metrics, describe_metrics, sanitize_method_label
+└── events.rs       # EventEmitter, ThoughtJackEvent, EventEnvelope
+```
+
+### 8.2 Anti-Patterns
 
 | Anti-Pattern | Why | Correct Approach |
 |--------------|-----|------------------|
@@ -1206,49 +548,41 @@ impl EventEmitter {
 | Logging passwords/secrets | Security risk | Redact sensitive fields |
 | Timestamps in local time | Confusing across timezones | Always use UTC |
 | Unbounded log buffers | Memory exhaustion | Bounded buffers with backpressure |
-| Metrics without labels | Can't filter/aggregate | Use appropriate labels |
-| Too many unique label values | Cardinality explosion | Limit label cardinality |
+| Too many unique label values | Cardinality explosion | Sanitize method labels (§4.1) |
 
-### 6.6 Testing Strategy
+### 8.3 Testing Strategy
 
 **Unit Tests:**
 - Log level filtering
 - JSON format correctness
 - Metrics increment accuracy
 - Event serialization
+- Method label sanitization
 
 **Integration Tests:**
 - End-to-end with log capture
 - Metrics endpoint scraping
 - Event file verification
-- Report generation
-
-**Performance Tests:**
-- Logging overhead at each level
-- Metrics collection overhead
-- High-throughput scenarios
+- Multi-actor event ordering
 
 ---
 
-## 7. Definition of Done
+## 9. Definition of Done
 
 - [ ] Tracing-based logging framework initialized
-- [ ] Human-readable log format implemented
-- [ ] JSON log format implemented
+- [ ] Human-readable and JSON log formats implemented
 - [ ] Log levels (trace through error) work correctly
-- [ ] Contextual logging with spans/fields
-- [ ] Server lifecycle events logged
-- [ ] Phase transition events logged
-- [ ] Request/response logging at appropriate levels
-- [ ] Behavioral mode logging implemented
-- [ ] Metrics collection implemented
-- [ ] Prometheus metrics export works
-- [ ] Event stream to file works
-- [ ] Debug mode with enhanced output
-- [ ] Test report generation on exit
-- [ ] Payload redaction at non-trace levels
-- [ ] Multiple log targets (stderr + file)
-- [ ] All 22 edge cases (EC-OBS-001 through EC-OBS-022) have tests
+- [ ] Contextual logging with actor/phase spans
+- [ ] Engine events emitted (F-006)
+- [ ] Orchestration events emitted (F-007)
+- [ ] Verdict events emitted (F-008)
+- [ ] Protocol events emitted (F-009)
+- [ ] Legacy server events retained (F-010)
+- [ ] Metrics collection with cardinality protection (F-011, §4.1)
+- [ ] Prometheus metrics export (F-012)
+- [ ] Verbosity levels via `-v` flags (F-013)
+- [ ] Event file output as JSONL (F-014)
+- [ ] All 12 edge cases (EC-OBS-001 through EC-OBS-012) have tests
 - [ ] Logging overhead < 1% at info level (NFR-001)
 - [ ] Memory usage within limits (NFR-002)
 - [ ] Async logging doesn't block requests (NFR-003)
@@ -1258,119 +592,71 @@ impl EventEmitter {
 
 ---
 
-## 8. References
+## 10. References
 
-- [TJ-SPEC-003: Phase Engine](./TJ-SPEC-003_Phase_Engine.md)
-- [TJ-SPEC-004: Behavioral Modes](./TJ-SPEC-004_Behavioral_Modes.md)
-- [TJ-SPEC-007: CLI Interface](./TJ-SPEC-007_CLI_Interface.md)
+- [TJ-SPEC-013: OATF Integration](./TJ-SPEC-013_OATF_Integration.md) — Engine events
+- [TJ-SPEC-014: Verdict Evaluation Output](./TJ-SPEC-014_Verdict_Evaluation_Output.md) — Verdict events, §8
+- [TJ-SPEC-015: Multi-Actor Orchestration](./TJ-SPEC-015_Multi_Actor_Orchestration.md) — Orchestration events
+- [TJ-SPEC-007: CLI Interface](./TJ-SPEC-007_CLI_Interface.md) — Verbosity flags
 - [Tracing Crate](https://docs.rs/tracing/latest/tracing/)
 - [Metrics Crate](https://docs.rs/metrics/latest/metrics/)
 - [Prometheus Exposition Format](https://prometheus.io/docs/instrumenting/exposition_formats/)
-- [NDJSON Specification](http://ndjson.org/)
 
 ---
 
-## Appendix A: Log Message Catalog
+## Appendix A: Full Event Type Enum
 
-### A.1 Server Lifecycle
+```rust
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum ThoughtJackEvent {
+    // --- Engine (TJ-SPEC-013) ---
+    PhaseEntered { actor: String, phase_name: String, phase_index: usize },
+    PhaseAdvanced { actor: String, from: String, to: String, trigger: String },
+    PhaseTerminal { actor: String, phase_name: String },
+    ExtractorCaptured { actor: String, name: String, value_preview: String },
+    SynthesizeGenerated { actor: String, protocol: String },
+    SynthesizeValidationBypassed { actor: String },
+    EntryActionExecuted { actor: String, action_type: String },
 
-| Message | Level | When |
-|---------|-------|------|
-| "Server started" | INFO | After config loaded, before accepting connections |
-| "Configuration loaded" | INFO | After successful config parsing |
-| "Transport ready" | INFO | Transport bound and listening |
-| "Client connected" | INFO | New connection established |
-| "Client disconnected" | INFO | Connection closed |
-| "Shutdown initiated" | INFO | Signal received or shutdown requested |
-| "Server stopped" | INFO | Clean shutdown complete |
+    // --- Orchestration (TJ-SPEC-015) ---
+    OrchestratorStarted { actor_count: usize, server_count: usize, client_count: usize },
+    ActorInit { actor_name: String, mode: String },
+    ActorReady { actor_name: String, bind_address: String },
+    ReadinessGateOpen { server_count: usize, elapsed_ms: u64 },
+    ReadinessGateTimeout { not_ready: Vec<String> },
+    ActorStarted { actor_name: String, phase_count: usize },
+    ActorCompleted { actor_name: String, reason: String, phases_completed: usize },
+    ActorError { actor_name: String, error: String },
+    AwaitExtractorsWaiting { actor: String, phase_index: usize, awaiting: Vec<String> },
+    AwaitExtractorsResolved { actor: String, phase_index: usize },
+    AwaitExtractorsTimeout { actor: String, phase_index: usize, missing: Vec<String> },
+    OrchestratorShutdown { reason: String },
+    OrchestratorCompleted { summary: String },
 
-### A.2 Phase Engine
+    // --- Verdict (TJ-SPEC-014) ---
+    GracePeriodStarted { duration_seconds: u64 },
+    GracePeriodExpired { messages_captured: usize },
+    GracePeriodEarlyTermination { reason: String },
+    IndicatorEvaluated { indicator_id: String, method: String, result: String, duration_ms: u64 },
+    IndicatorSkipped { indicator_id: String, reason: String },
+    SemanticLlmCall { model: String, indicator_id: String, latency_ms: u64 },
+    VerdictComputed { result: String, matched: usize, total: usize },
 
-| Message | Level | When |
-|---------|-------|------|
-| "Phase entered" | INFO | New phase activated |
-| "Event recorded" | DEBUG | Event counter incremented |
-| "Trigger evaluated" | DEBUG | Trigger condition checked |
-| "Trigger fired" | DEBUG | Trigger condition met |
-| "Entry action executed" | DEBUG | Phase entry action completed |
-| "Terminal phase reached" | INFO | No more transitions possible |
+    // --- Protocol (TJ-SPEC-013, 016, 017, 018) ---
+    ProtocolMessageReceived { actor: String, method: String, protocol: String },
+    ProtocolMessageSent { actor: String, method: String, protocol: String, duration_ms: u64 },
+    ProtocolNotification { actor: String, method: String, direction: String },
+    ProtocolTransportError { actor: String, error: String },
+    ProtocolInterleave { actor: String, server_method: String },
 
-### A.3 Request Handling
+    // --- Legacy (v0.2) ---
+    ServerStarted { server_name: String, transport: String },
+    ServerStopped { reason: String, uptime_seconds: u64 },
+    TransportConnected { connection_id: String },
+    TransportDisconnected { connection_id: String, reason: String },
 
-| Message | Level | When |
-|---------|-------|------|
-| "Request received" | DEBUG | MCP request parsed |
-| "Request payload" | TRACE | Full request JSON |
-| "Processing request" | DEBUG | Handler invoked |
-| "Response prepared" | DEBUG | Response ready to send |
-| "Response payload" | TRACE | Full response JSON |
-| "Response sent" | DEBUG | Response transmitted |
-| "Request error" | WARN | Error processing request |
-
-### A.4 Behavioral Modes
-
-| Message | Level | When |
-|---------|-------|------|
-| "Delivery started" | DEBUG | Behavioral delivery beginning |
-| "Delivery progress" | TRACE | Periodic progress update |
-| "Delivery complete" | DEBUG | Behavioral delivery finished |
-| "Side effect triggered" | DEBUG | Side effect execution starting |
-| "Side effect complete" | DEBUG | Side effect execution finished |
-
----
-
-## Appendix B: Metrics Reference
-
-### B.1 Counters
-
-| Name | Labels | Description |
-|------|--------|-------------|
-| `thoughtjack_requests_total` | method | Requests received |
-| `thoughtjack_responses_total` | method, status, error_code | Responses sent (error_code is string, e.g., "-32600" for invalid request) |
-| `thoughtjack_phase_transitions_total` | from, to | Phase changes |
-| `thoughtjack_delivery_bytes_total` | — | Bytes delivered |
-| `thoughtjack_side_effects_total` | effect_type, messages_sent, bytes_sent | Side effects run |
-
-### B.2 Histograms
-
-| Name | Labels | Description |
-|------|--------|-------------|
-| `thoughtjack_request_duration_ms` | method | Request latency |
-| `thoughtjack_delivery_duration_ms` | — | Delivery time |
-| `thoughtjack_side_effect_duration_ms` | effect_type | Side effect duration |
-
-### B.3 Gauges
-
-| Name | Labels | Description |
-|------|--------|-------------|
-| `thoughtjack_current_phase` | phase_name | Active phase (1=active) |
-| `thoughtjack_connections_active` | — | Open connections |
-| `thoughtjack_event_counts` | event | Current event counts |
-
----
-
-## Appendix C: Event Schema
-
-### C.1 Event Envelope
-
-```json
-{
-  "sequence": 42,
-  "timestamp": "2025-02-04T10:15:30.123456Z",
-  "type": "PhaseEntered",
-  "...event-specific fields..."
+    // --- General ---
+    Error { error_type: String, message: String, context: String },
 }
 ```
-
-### C.2 Event Types
-
-| Type | Fields |
-|------|--------|
-| `ServerStarted` | server_name, transport, config_path |
-| `ServerStopped` | reason, summary |
-| `PhaseEntered` | phase_name, phase_index, trigger |
-| `RequestReceived` | request_id, method |
-| `ResponseSent` | request_id, success, duration_ms |
-| `AttackTriggered` | attack_type, phase, details (String) |
-| `SideEffectTriggered` | effect_name, trigger, messages_sent, bytes_sent, completed, connection_id |
-| `Error` | error_type, message, context |

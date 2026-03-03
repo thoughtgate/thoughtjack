@@ -6,6 +6,10 @@ description: State machine concepts, atomic transitions, and timer mechanics
 
 # Phase Engine Design
 
+:::info v0.5 Architecture
+In v0.5, the phase engine concepts described here are wrapped in the **PhaseLoop** / **PhaseDriver** architecture. PhaseLoop owns the event loop (trace append, extractor capture, trigger evaluation, phase advancement), while PhaseDriver implementations handle protocol I/O. The core concepts — linear state machine, response-before-transition, trigger types — still apply. See [Architecture](/docs/explanation/architecture) for the full v0.5 module diagram.
+:::
+
 The phase engine is the core of ThoughtJack's temporal attack capability. It implements a state machine that progresses through phases based on events, time, and content matching.
 
 ## State machine model
@@ -93,7 +97,7 @@ Timer check at T=200ms: 0.2s < 30s → not met
 Timer check at T=30000ms: 30s >= 30s → FIRE
 ```
 
-The check interval is controlled by `THOUGHTJACK_TIMER_INTERVAL_MS` (default: 100ms). Lower values increase timer precision but add CPU overhead.
+The check interval defaults to 100ms. Lower values increase timer precision but add CPU overhead.
 
 ### Content-matching triggers
 
@@ -156,3 +160,34 @@ Entry actions are fire-and-forget — the engine doesn't wait for the client to 
 The last phase in the `phases` array is the terminal phase. Once entered, no further transitions occur. The server continues operating in the terminal phase state indefinitely.
 
 If no phases are configured, the server operates in the baseline state forever.
+
+## v0.5 additions
+
+The v0.5 engine builds on these concepts with additional abstractions:
+
+### PhaseLoop
+
+`PhaseLoop<D: PhaseDriver>` is generic over the driver and owns:
+- The `PhaseEngine` (state machine described above)
+- A `watch::Sender<HashMap<String, String>>` for extractor publication
+- A `SharedTrace` (append-only trace buffer)
+- An `ExtractorStore` reference (cross-actor shared state)
+
+It runs a `tokio::select!` loop between driver execution and event consumption.
+
+### PhaseDriver trait
+
+Each protocol mode implements `PhaseDriver`:
+
+```rust
+trait PhaseDriver: Send {
+    async fn drive_phase(&mut self, phase_index: usize, ...) -> Result<DriveResult>;
+    async fn on_phase_advanced(&mut self, from: usize, to: usize) -> Result<()>;
+}
+```
+
+Drivers focus on protocol I/O and emit `ProtocolEvent`s. PhaseLoop handles all state management.
+
+### Watch channels for extractors
+
+Extractors are published via `tokio::sync::watch` channels — cheap atomic swaps for the publisher (PhaseLoop) and atomic loads for consumers (drivers). Server-mode drivers borrow per-request for fresh values; client-mode drivers clone once at the start.

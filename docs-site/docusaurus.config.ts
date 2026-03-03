@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'ThoughtJack',
-  tagline: 'Adversarial MCP server for security testing',
+  tagline: 'Adversarial agent security testing tool',
   url: 'https://thoughtjack.io',
   baseUrl: '/',
 
@@ -66,11 +66,6 @@ const config: Config = {
           ],
         },
         {
-          label: 'Attack Library',
-          to: '/docs/scenarios',
-          position: 'left',
-        },
-        {
           type: 'dropdown',
           label: 'Coverage',
           position: 'left',
@@ -105,6 +100,10 @@ const config: Config = {
         },
       ],
       copyright: `Copyright ${new Date().getFullYear()} ThoughtJack. Built with Docusaurus.`,
+    },
+    colorMode: {
+      defaultMode: 'dark',
+      respectPrefersColorScheme: true,
     },
     prism: {
       theme: prismThemes.github,

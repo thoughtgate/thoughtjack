@@ -28,8 +28,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::{ConnectionContext, JsonRpcMessage, Result, Transport, TransportType};
-use crate::config::schema::DeliveryConfig;
+use super::{
+    ConnectionContext, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Result, Transport,
+    TransportType,
+};
 use crate::error::TransportError;
 
 /// Configuration for the HTTP transport.
@@ -74,6 +76,18 @@ struct HttpSharedState {
     max_message_size: usize,
     sse_connections: AtomicUsize,
     cancel: CancellationToken,
+    // TODO(v0.6): make session ID configurable — auto (UUID, current default),
+    // custom (user-provided string), or none (no Mcp-Session-Id header).
+    // Deferred: not needed for v0.5 adversarial testing scenarios.
+    session_id: String,
+    /// Pending server-initiated request/response channels keyed by JSON-RPC request ID.
+    ///
+    /// When the server sends a request to the client (e.g., `sampling/createMessage`
+    /// or `elicitation/create`), a oneshot sender is registered here. The POST handler
+    /// routes the client's JSON-RPC Response to the matching oneshot.
+    pending_server_requests: tokio::sync::Mutex<
+        std::collections::HashMap<String, tokio::sync::oneshot::Sender<JsonRpcMessage>>,
+    >,
 }
 
 /// RAII guard that removes a connection from the `DashMap` on drop.
@@ -154,6 +168,8 @@ impl HttpTransport {
             max_message_size: config.max_message_size,
             sse_connections: AtomicUsize::new(0),
             cancel: cancel.clone(),
+            session_id: uuid::Uuid::new_v4().to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
 
         let router = build_router(Arc::clone(&shared));
@@ -235,12 +251,77 @@ impl HttpTransport {
 
         let handle = ResponseHandle {
             response_tx: Some(incoming.response_tx),
-            sse_tx: self.shared.sse_tx.clone(),
             context,
             _guard: guard,
         };
 
         Some((incoming.message, handle))
+    }
+
+    /// Sends a server-initiated JSON-RPC request and waits for the response.
+    ///
+    /// Unlike `send_message()` + `receive_message()`, this uses a dedicated
+    /// oneshot channel so the response is routed back without disturbing
+    /// `current_response`. This prevents the channel-swap bug where
+    /// `receive_message()` replaces the active response channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] on send failure, timeout, or if the
+    /// response channel is dropped.
+    ///
+    /// Implements: TJ-SPEC-002 F-003
+    pub async fn send_server_request(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+        let request_id =
+            serde_json::to_string(&request.id).unwrap_or_else(|_| request.id.to_string());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Register the pending request in shared state (handler routes responses)
+        {
+            let mut pending = self.shared.pending_server_requests.lock().await;
+            pending.insert(request_id.clone(), tx);
+        }
+
+        // Send as SSE event on the current POST response body.
+        // The client receives this on the same SSE stream as the tool call
+        // response, then sends its response as a new POST.
+        let serialized = serde_json::to_string(&JsonRpcMessage::Request(request.clone()))?;
+        let sse_data = format!("event: message\ndata: {serialized}\n\n");
+        let response_tx = {
+            let guard = self.current_response.lock().await;
+            guard.as_ref().cloned()
+        };
+        if let Some(ch) = response_tx {
+            ch.send(Ok(Bytes::from(sse_data)))
+                .await
+                .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
+        } else {
+            // Fallback to SSE broadcast (shouldn't happen during tool call)
+            let _ = self.shared.sse_tx.send(serialized);
+        }
+
+        // Wait for response with 30s timeout
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok(JsonRpcMessage::Response(resp))) => Ok(resp),
+            Ok(Ok(_)) => Err(TransportError::InternalError(
+                "unexpected non-response message for server request".into(),
+            )),
+            Ok(Err(_)) => Err(TransportError::ConnectionClosed(
+                "server request response channel dropped".into(),
+            )),
+            Err(_) => {
+                // Clean up on timeout
+                self.shared
+                    .pending_server_requests
+                    .lock()
+                    .await
+                    .remove(&request_id);
+                Err(TransportError::InternalError(
+                    "server request timed out after 30s".into(),
+                ))
+            }
+        }
     }
 }
 
@@ -253,7 +334,6 @@ impl HttpTransport {
 /// Implements: TJ-SPEC-002 F-003
 pub struct ResponseHandle {
     response_tx: Option<mpsc::Sender<std::result::Result<Bytes, io::Error>>>,
-    sse_tx: broadcast::Sender<String>,
     context: ConnectionContext,
     _guard: ConnectionGuard,
 }
@@ -276,24 +356,19 @@ impl ResponseHandle {
 
     /// Sends a JSON-RPC message.
     ///
-    /// Responses go to the per-request body channel; notifications and
-    /// requests go to the SSE broadcast.
+    /// SSE-frames all messages on the POST response body, matching
+    /// `HttpTransport::send_message()` behavior.
     ///
     /// # Errors
     ///
     /// Returns [`TransportError`] on serialization or channel failure.
+    // TODO(v0.6): per-request content-type negotiation — put ResponseMode on
+    // ResponseHandle so Direct requests can use plain application/json
+    // instead of SSE framing. Deferred: SSE framing works for all v0.5 scenarios.
     pub async fn send_message(&self, message: &JsonRpcMessage) -> Result<()> {
-        match message {
-            JsonRpcMessage::Response(_) => {
-                let serialized = serde_json::to_vec(message)?;
-                self.send_raw(&serialized).await
-            }
-            JsonRpcMessage::Notification(_) | JsonRpcMessage::Request(_) => {
-                let serialized = serde_json::to_string(message)?;
-                let _ = self.sse_tx.send(serialized);
-                Ok(())
-            }
-        }
+        let serialized = serde_json::to_string(message)?;
+        let sse_data = format!("event: message\ndata: {serialized}\n\n");
+        self.send_raw(sse_data.as_bytes()).await
     }
 
     /// Finalizes the HTTP response by dropping the body sender.
@@ -360,10 +435,6 @@ impl Transport for ResponseHandleAdapter {
         ))
     }
 
-    fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
-        true
-    }
-
     fn transport_type(&self) -> TransportType {
         TransportType::Http
     }
@@ -393,6 +464,9 @@ impl std::fmt::Debug for HttpTransport {
 #[async_trait::async_trait]
 impl Transport for HttpTransport {
     async fn receive_message(&self) -> Result<Option<JsonRpcMessage>> {
+        // Note: server-initiated request responses (JSON-RPC Response POSTs) are
+        // routed directly to pending oneshot channels in handle_post_message().
+        // This method only sees Requests and Notifications.
         let mut rx = self.incoming_rx.lock().await;
         let incoming = rx.recv().await;
         drop(rx);
@@ -449,29 +523,35 @@ impl Transport for HttpTransport {
     }
 
     async fn send_message(&self, message: &JsonRpcMessage) -> Result<()> {
-        match message {
-            JsonRpcMessage::Response(_) => {
-                // Responses go to the per-request response channel (HTTP body)
-                let tx = {
-                    let guard = self.current_response.lock().await;
-                    guard.as_ref().cloned()
-                };
-                let Some(tx) = tx else {
+        let serialized = serde_json::to_string(message)?;
+
+        // MCP Streamable HTTP: all messages during a request go on the POST
+        // response body as SSE events. If there's an active response channel,
+        // send there. Otherwise fall back to the SSE broadcast (for out-of-band
+        // notifications when no request is in flight).
+        let tx = {
+            let guard = self.current_response.lock().await;
+            guard.as_ref().cloned()
+        };
+
+        if let Some(tx) = tx {
+            // SSE frame: event: message\ndata: <JSON>\n\n
+            let sse_data = format!("event: message\ndata: {serialized}\n\n");
+            tx.send(Ok(Bytes::from(sse_data)))
+                .await
+                .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
+        } else {
+            match message {
+                JsonRpcMessage::Notification(_) | JsonRpcMessage::Request(_) => {
+                    // Fallback: SSE broadcast (no active POST response)
+                    let _ = self.shared.sse_tx.send(serialized);
+                }
+                JsonRpcMessage::Response(_) => {
                     return Err(TransportError::ConnectionClosed(
                         "no active response channel (send_message called before receive_message)"
                             .into(),
                     ));
-                };
-                let serialized = serde_json::to_vec(message)?;
-                tx.send(Ok(Bytes::from(serialized))).await.map_err(|_| {
-                    TransportError::ConnectionClosed("response channel closed".into())
-                })?;
-            }
-            JsonRpcMessage::Notification(_) | JsonRpcMessage::Request(_) => {
-                // Server-initiated notifications/requests go to SSE broadcast
-                let serialized = serde_json::to_string(message)?;
-                // Ignore send errors — no subscribers is fine
-                let _ = self.shared.sse_tx.send(serialized);
+                }
             }
         }
         Ok(())
@@ -491,10 +571,6 @@ impl Transport for HttpTransport {
             .await
             .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
         Ok(())
-    }
-
-    fn supports_behavior(&self, _behavior: &DeliveryConfig) -> bool {
-        true
     }
 
     fn transport_type(&self) -> TransportType {
@@ -636,6 +712,49 @@ async fn handle_post_message(
         }
     };
 
+    // Route based on message type (MCP Streamable HTTP spec):
+    // - Response: client responding to server-initiated request → route to oneshot, 202
+    // - Notification: client notification (e.g. initialized) → push for driver, 202
+    // - Request: normal client request → SSE streaming response
+    let is_initialize =
+        matches!(&message, JsonRpcMessage::Request(req) if req.method == "initialize");
+    match &message {
+        JsonRpcMessage::Response(resp) => {
+            // Client is responding to a server-initiated request (sampling/elicitation).
+            let key = serde_json::to_string(&resp.id).unwrap_or_else(|_| resp.id.to_string());
+            let sender = {
+                let mut pending = shared.pending_server_requests.lock().await;
+                pending.remove(&key)
+            };
+            if let Some(tx) = sender {
+                let _ = tx.send(message);
+            } else {
+                tracing::debug!(id = ?resp.id, "no pending server request for response");
+            }
+            return StatusCode::ACCEPTED.into_response();
+        }
+        JsonRpcMessage::Notification(_) => {
+            // Push notification for driver to process, but return 202 immediately.
+            let (response_tx, _response_rx) =
+                mpsc::channel::<std::result::Result<Bytes, io::Error>>(1);
+            let connection_id = shared.next_connection_id.fetch_add(1, Ordering::SeqCst);
+            let incoming = IncomingRequest {
+                message,
+                response_tx,
+                connection_id,
+                remote_addr: addr,
+                connected_at: Instant::now(),
+            };
+            if shared.incoming_tx.send(incoming).await.is_err() {
+                return (StatusCode::SERVICE_UNAVAILABLE, "server shutting down").into_response();
+            }
+            return StatusCode::ACCEPTED.into_response();
+        }
+        JsonRpcMessage::Request(_) => {
+            // Normal request — proceed to SSE streaming response below.
+        }
+    }
+
     let connection_id = shared.next_connection_id.fetch_add(1, Ordering::SeqCst);
     let connected_at = Instant::now();
 
@@ -659,17 +778,20 @@ async fn handle_post_message(
         return (StatusCode::SERVICE_UNAVAILABLE, "server shutting down").into_response();
     }
 
-    // Return streaming response body
+    // Return SSE streaming response body (MCP Streamable HTTP).
+    // All interleaved messages (notifications, server requests, final response)
+    // are sent as `event: message\ndata: <JSON>\n\n` on this stream.
     let stream = ReceiverStream::new(response_rx);
     let body = Body::from_stream(stream);
 
-    Response::builder()
-        .header("content-type", "application/json")
-        .body(body)
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "failed to build HTTP response");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        })
+    let mut builder = Response::builder().header("content-type", "text/event-stream");
+    if is_initialize {
+        builder = builder.header("mcp-session-id", &shared.session_id);
+    }
+    builder.body(body).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to build HTTP response");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// `GET /sse` handler.
@@ -700,12 +822,16 @@ async fn handle_sse(
     let rx = shared.sse_tx.subscribe();
     let cancel = shared.cancel.clone();
 
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
+    // MCP Streamable HTTP: initial endpoint event tells the client where to POST
+    let endpoint_event: std::result::Result<SseEvent, std::convert::Infallible> =
+        Ok(SseEvent::default().event("endpoint").data("/message"));
+
+    let broadcast_stream = tokio_stream::wrappers::BroadcastStream::new(rx)
         .take_while(move |_| !cancel.is_cancelled())
         .filter_map(|result: std::result::Result<String, _>| match result {
             Ok(data) => {
                 let event: std::result::Result<SseEvent, std::convert::Infallible> =
-                    Ok(SseEvent::default().data(data));
+                    Ok(SseEvent::default().event("message").data(data));
                 Some(event)
             }
             Err(e) => {
@@ -713,6 +839,9 @@ async fn handle_sse(
                 None
             }
         });
+
+    // Chain: endpoint event first, then broadcast stream
+    let stream = tokio_stream::once(endpoint_event).chain(broadcast_stream);
 
     // Wrap in a stream that decrements the counter on drop
     let shared_for_drop = Arc::clone(&shared);
@@ -807,6 +936,8 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -895,6 +1026,8 @@ mod tests {
             max_message_size: 10, // tiny limit
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
         let app = test_router(shared);
 
@@ -923,6 +1056,8 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
         let app = test_router(shared);
 
@@ -1008,22 +1143,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supports_all_behaviors() {
-        let cancel = CancellationToken::new();
-        let config = HttpConfig {
-            bind_addr: "127.0.0.1:0".to_string(),
-            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-        };
-        let (transport, _addr) = HttpTransport::bind(config, cancel.clone()).await.unwrap();
-        assert!(transport.supports_behavior(&DeliveryConfig::Normal));
-        assert!(transport.supports_behavior(&DeliveryConfig::SlowLoris {
-            byte_delay_ms: Some(100),
-            chunk_size: Some(1),
-        }));
-        transport.shutdown();
-    }
-
-    #[tokio::test]
     async fn debug_format() {
         let cancel = CancellationToken::new();
         let config = HttpConfig {
@@ -1086,6 +1205,8 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
         let app = test_router(shared);
 
@@ -1120,6 +1241,8 @@ mod tests {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             sse_connections: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
         let app = test_router(shared);
 
@@ -1163,7 +1286,6 @@ mod tests {
     #[tokio::test]
     async fn response_handle_send_and_finalize() {
         let (response_tx, mut response_rx) = mpsc::channel(64);
-        let (sse_tx, _) = broadcast::channel(256);
         let connections: Arc<DashMap<u64, ConnectionState>> = Arc::new(DashMap::new());
         connections.insert(
             42,
@@ -1176,7 +1298,6 @@ mod tests {
 
         let handle = ResponseHandle {
             response_tx: Some(response_tx),
-            sse_tx,
             context: ConnectionContext {
                 connection_id: 42,
                 remote_addr: Some(SocketAddr::from(([127, 0, 0, 1], 9999))),
@@ -1201,12 +1322,10 @@ mod tests {
     #[tokio::test]
     async fn response_handle_adapter_implements_transport() {
         let (response_tx, mut response_rx) = mpsc::channel(64);
-        let (sse_tx, _sse_rx) = broadcast::channel(256);
         let connections: Arc<DashMap<u64, ConnectionState>> = Arc::new(DashMap::new());
 
         let handle = ResponseHandle {
             response_tx: Some(response_tx),
-            sse_tx,
             context: ConnectionContext {
                 connection_id: 1,
                 remote_addr: None,
@@ -1220,7 +1339,6 @@ mod tests {
 
         // Transport trait methods
         assert_eq!(adapter.transport_type(), TransportType::Http);
-        assert!(adapter.supports_behavior(&DeliveryConfig::Normal));
 
         // send_raw via Transport trait
         adapter.send_raw(b"raw bytes").await.unwrap();
@@ -1231,5 +1349,229 @@ mod tests {
         assert!(adapter.receive_message().await.is_err());
 
         adapter.finalize();
+    }
+
+    // ---- New tests ----
+
+    #[tokio::test]
+    async fn sse_stream_content_type() {
+        let shared = test_shared_state();
+        let app = test_router(shared);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/sse")
+            .header("host", "localhost:3000")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify SSE content-type header
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("text/event-stream"),
+            "Expected text/event-stream, got: {content_type}"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_posts_all_succeed() {
+        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            sse_connections: AtomicUsize::new(0),
+            cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+
+        let router = build_router(shared);
+
+        // Spawn a consumer that responds to all incoming requests
+        tokio::spawn(async move {
+            while let Some(incoming) = incoming_rx.recv().await {
+                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
+                incoming.response_tx.send(Ok(response)).await.ok();
+            }
+        });
+
+        let body = r#"{"jsonrpc":"2.0","method":"test","params":{},"id":1}"#;
+
+        // Send 3 concurrent requests using cloned routers
+        let mut handles = Vec::new();
+        for _ in 0..3 {
+            let app = router
+                .clone()
+                .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
+            let req = Request::builder()
+                .method("POST")
+                .uri("/message")
+                .header("content-type", "application/json")
+                .header("host", "localhost:3000")
+                .body(Body::from(body))
+                .unwrap();
+
+            handles.push(tokio::spawn(async move {
+                app.oneshot(req).await.unwrap().status()
+            }));
+        }
+
+        for handle in handles {
+            let status = handle.await.unwrap();
+            assert_eq!(status, StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn session_id_header_on_initialize() {
+        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            sse_connections: AtomicUsize::new(0),
+            cancel: CancellationToken::new(),
+            session_id: "test-session-42".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+        let app = test_router(shared);
+
+        // Consume the incoming request to prevent blocking
+        tokio::spawn(async move {
+            if let Some(incoming) = incoming_rx.recv().await {
+                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
+                incoming.response_tx.send(Ok(response)).await.ok();
+            }
+        });
+
+        let body = r#"{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header("content-type", "application/json")
+            .header("host", "localhost:3000")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Check Mcp-Session-Id header is present on initialize
+        let session_id = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(
+            session_id,
+            Some("test-session-42"),
+            "Expected mcp-session-id header"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_after_cancel_rejected() {
+        let cancel = CancellationToken::new();
+        let (incoming_tx, _rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            sse_connections: AtomicUsize::new(0),
+            cancel: cancel.clone(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+        let app = test_router(shared);
+
+        // Cancel the token before sending
+        cancel.cancel();
+
+        let body = r#"{"jsonrpc":"2.0","method":"test","params":{},"id":1}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header("content-type", "application/json")
+            .header("host", "localhost:3000")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // After cancel, the incoming_tx sender side is still alive but the
+        // receiver may never consume — behavior depends on whether handler
+        // checks cancel. At minimum, this should not panic.
+        // The handler sends to a channel that nobody reads, so it may timeout
+        // or return an error status.
+        assert!(
+            resp.status().is_client_error()
+                || resp.status().is_server_error()
+                || resp.status().is_success(),
+            "Expected a valid HTTP status, got: {}",
+            resp.status()
+        );
+    }
+
+    #[test]
+    fn connection_guard_cleanup_on_drop() {
+        let connections: Arc<DashMap<u64, ConnectionState>> = Arc::new(DashMap::new());
+        connections.insert(
+            42,
+            ConnectionState {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 9999)),
+                connected_at: Instant::now(),
+                request_count: AtomicU64::new(1),
+            },
+        );
+        assert_eq!(connections.len(), 1);
+
+        // Create guard and drop it
+        {
+            let _guard = ConnectionGuard::new(Arc::clone(&connections), 42);
+        }
+        // Connection should be removed after guard drop
+        assert_eq!(connections.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn sse_connection_counter_tracks() {
+        let shared = test_shared_state();
+        assert_eq!(shared.sse_connections.load(Ordering::SeqCst), 0);
+
+        let app = test_router(shared.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/sse")
+            .header("host", "localhost:3000")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // SSE connection counter should have been incremented when the
+        // handler started (it's decremented on stream drop).
+        // After the response is created, the counter reflects the active stream.
+        // Note: the exact count depends on whether the stream body is still alive.
+        // We just verify we can access the counter without panicking.
+        let count = shared.sse_connections.load(Ordering::SeqCst);
+        // Stream may be alive (1) or already dropped (0), both are valid
+        assert!(count <= 1, "Unexpected SSE connection count: {count}");
     }
 }

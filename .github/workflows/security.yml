@@ -148,11 +148,15 @@ jobs:
   # Does NOT run on PRs to keep CI fast. Can be triggered manually via
   # workflow_dispatch for on-demand fuzzing.
   #
-  # Fuzz targets:
-  # 1. Config loader (YAML parsing, directives, recursion)
-  # 2. JSON-RPC parser (malformed messages, binary framing)
-  # 3. Phase trigger (regex patterns, content matching)
-  # 4. Nested JSON generator (depth limits, stack overflow)
+  # Fuzz targets (v0.5):
+  # 1. JSON-RPC parser (malformed messages, binary framing)
+  # 2. OATF loader (YAML parsing, preprocessing, SDK validation)
+  # 3. MCP handler dispatch (request + state → response, 18 handlers)
+  # 4. Synthesize validation (protocol strings + JSON content)
+  # 5. URI template matching (RFC 6570 Level 1 {var} expansion)
+  # 6. MCP response dispatch (OATF response selection, interpolation)
+  # 7. A2A SSE parser (byte stream → JSON-RPC result extraction)
+  # 8. AG-UI SSE parser (event+data parsing, event type mapping)
   fuzz:
     name: Fuzz Testing
     runs-on: ubuntu-latest
@@ -164,10 +168,14 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - fuzz_config_loader
           - fuzz_jsonrpc_parser
-          - fuzz_phase_trigger
-          - fuzz_nested_json_generator
+          - fuzz_oatf_loader
+          - fuzz_mcp_handler
+          - fuzz_synthesize_validation
+          - fuzz_uri_template
+          - fuzz_mcp_response_dispatch
+          - fuzz_a2a_sse_parser
+          - fuzz_agui_sse_parser
 
     steps:
       - name: Checkout repository

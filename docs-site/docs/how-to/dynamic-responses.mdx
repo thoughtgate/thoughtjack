@@ -51,7 +51,7 @@ The handler sends a POST request with a JSON body containing the tool name, argu
 {"error": "error message"}
 ```
 
-**Security**: HTTP handlers require the `--allow-external-handlers` flag. Redirect following is disabled to prevent SSRF.
+**Security**: Redirect following is disabled to prevent SSRF.
 
 ## Command handler
 
@@ -82,7 +82,7 @@ The handler:
 3. Reads stdout for the response (same JSON format as HTTP)
 4. Applies the configured timeout
 
-**Security**: Command handlers also require `--allow-external-handlers`.
+**Security**: Command handlers execute local processes — use only with trusted handler scripts.
 
 ## Response sequences
 
@@ -184,9 +184,7 @@ Built-in functions:
 ## Running with handlers
 
 ```bash
-# Enable external handlers (required for HTTP and command handlers)
-thoughtjack server run --config my_config.yaml --allow-external-handlers
-
-# Sequences and match blocks don't require the flag
-thoughtjack server run --config my_config.yaml
+thoughtjack run --config my_config.yaml
 ```
+
+All handler types (HTTP, command, sequence, match) work without additional flags.
