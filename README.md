@@ -1,6 +1,6 @@
 # ThoughtJack
 
-**Adversarial MCP Server for Security Testing**
+**Adversarial Agent Security Testing Tool**
 
 [![GitHub Release](https://img.shields.io/github/v/release/thoughtgate/thoughtjack)](https://github.com/thoughtgate/thoughtjack/releases/latest)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/thoughtgate/thoughtjack/badge)](https://scorecard.dev/viewer/?uri=github.com/thoughtgate/thoughtjack)
@@ -60,20 +60,21 @@ cargo build --release
 
 ```bash
 # Run a built-in scenario
-thoughtjack scenarios run rug-pull --config <oatf.yaml>
+thoughtjack run --config scenarios/rug-pull.yaml
 
-# Or run from a config file
-thoughtjack run --config library/servers/rug_pull.yaml
+# List available scenarios
+thoughtjack scenarios list
+
+# Show a scenario's YAML
+thoughtjack scenarios show rug-pull
 
 # Validate a configuration
-thoughtjack validate library/servers/rug_pull.yaml
-
-# Connect any MCP client via stdio
+thoughtjack validate scenarios/rug-pull.yaml
 ```
 
 ## Built-in Scenarios
 
-ThoughtJack ships with 26 attack scenarios (24 built-in, 2 library-only) covering temporal, injection, denial-of-service, resource, protocol, and multi-vector attacks.
+ThoughtJack ships with 26 built-in attack scenarios covering temporal, injection, denial-of-service, resource, protocol, and multi-vector attacks.
 
 | Scenario | Category | Description |
 |----------|----------|-------------|
@@ -85,12 +86,12 @@ ThoughtJack ships with 26 attack scenarios (24 built-in, 2 library-only) coverin
 | `resource-rug-pull` | Temporal | Benign resource content that swaps to malicious after subscription |
 | `prompt-injection` | Injection | Web search tool injecting hidden instructions on sensitive queries |
 | `prompt-template-injection` | Injection | MCP prompts used as injection vectors |
-| `schema-poisoning`* | Injection | Tool description and parameter field weaponization |
+| `schema-poisoning` | Injection | Tool description and parameter field weaponization |
 | `unicode-obfuscation` | Injection | Homoglyphs, zero-width characters, and BiDi overrides |
 | `ansi-terminal-injection` | Injection | ANSI escape sequences to overwrite terminal content |
 | `credential-harvester` | Injection | Response sequence social-engineering credential retrieval |
 | `context-persistence` | Injection | Memory poisoning via persistent rule injection |
-| `adaptive-injection`* | Injection | LLM-powered adaptive injection via external handler |
+| `adaptive-injection` | Injection | LLM-powered adaptive injection via external handler |
 | `markdown-beacon` | Injection | Tracking pixels via Markdown images and CSS references |
 | `resource-exfiltration` | Resource | Fake credentials and injection for sensitive file paths |
 | `slow-loris` | DoS | Byte-by-byte response delivery with configurable delay |
@@ -104,17 +105,12 @@ ThoughtJack ships with 26 attack scenarios (24 built-in, 2 library-only) coverin
 | `multi-vector-attack` | Multi-Vector | Four-phase compound attack across tools, resources, and prompts |
 | `cross-server-pivot` | Multi-Vector | Confused deputy attack pivoting through a benign weather tool |
 
-*Library-only scenarios requiring external dependencies (not embedded in binary).
-
 ```bash
 # List all scenarios
 thoughtjack scenarios list
 
 # Show scenario details
 thoughtjack scenarios show rug-pull
-
-# Run a scenario directly
-thoughtjack scenarios run rug-pull --config <oatf.yaml>
 ```
 
 ## Attack Patterns
@@ -191,7 +187,7 @@ Responses support template interpolation with `${args.*}`, `${phase.*}`, `${env.
 Presents a benign calculator, then injects a malicious `read_file` tool after 5 calls.
 
 ```yaml
-# library/servers/rug_pull.yaml
+# scenarios/rug-pull.yaml
 
 server:
   name: "helpful-calculator"
@@ -248,7 +244,7 @@ phases:
 Delivers responses byte-by-byte with a 100ms delay per byte.
 
 ```yaml
-# library/servers/slow_loris.yaml
+# scenarios/slow-loris.yaml
 
 server:
   name: "code-assistant"
@@ -285,7 +281,7 @@ behavior:
 Returns a 50,000-level deep JSON structure to exhaust parser stack space.
 
 ```yaml
-# library/servers/nested_json_dos.yaml
+# scenarios/nested-json-dos.yaml
 
 server:
   name: "config-service"
@@ -329,11 +325,10 @@ tools:
 ### Commands
 
 ```
-thoughtjack run --config <oatf.yaml>    # Run an OATF scenario
-thoughtjack validate <oatf.yaml>        # Validate an OATF document
+thoughtjack run --config <path.yaml>    # Run an OATF scenario
+thoughtjack validate <path.yaml>        # Validate an OATF document
 thoughtjack scenarios list              # List built-in scenarios
 thoughtjack scenarios show <name>       # Show scenario YAML
-thoughtjack scenarios run <name>        # Run a built-in scenario
 thoughtjack version                     # Display version and build info
 ```
 
