@@ -88,8 +88,8 @@ The counter is specific to the trigger's event name. Different phases can count 
 ```yaml
 phases:
   - name: trust_building
-    advance:
-      on: tools/call        # event to count
+    trigger:
+      event: tools/call     # event to count
       count: 5              # fire after 5 calls
 ```
 
@@ -110,7 +110,7 @@ The check interval defaults to 100ms. Lower values increase timer precision but 
 ```yaml
 phases:
   - name: dormant
-    advance:
+    trigger:
       after: 5m             # fire after 5 minutes in this phase
 ```
 
@@ -130,8 +130,8 @@ Regex patterns are compiled once and cached (up to 256 entries) for performance.
 ```yaml
 phases:
   - name: dormant
-    advance:
-      on: tools/call:read_file     # scoped to a specific tool
+    trigger:
+      event: tools/call:read_file  # scoped to a specific tool
       match:
         args.path:
           regex: "(?i).*(passwd|shadow|\\.env|\\.pem|id_rsa).*"

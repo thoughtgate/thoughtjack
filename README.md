@@ -74,36 +74,11 @@ thoughtjack run --config scenarios/rug-pull.yaml
 
 ## Built-in Scenarios
 
-ThoughtJack ships with 26 built-in attack scenarios covering temporal, injection, denial-of-service, resource, protocol, and multi-vector attacks.
+ThoughtJack ships with a built-in attack scenario and an archive of 25 additional v0.2 scenarios under `scenarios/archive/`.
 
 | Scenario | Category | Description |
 |----------|----------|-------------|
 | `rug-pull` | Temporal | Trust-building calculator that swaps tool definitions after 5 calls |
-| `sleeper-agent` | Temporal | Time-bomb activation after configurable dormancy period |
-| `bait-and-switch` | Temporal | Content-triggered activation on sensitive file path queries |
-| `escalation-ladder` | Temporal | Four-phase gradual escalation from benign to full exploit |
-| `capability-confusion` | Temporal | Advertises listChanged: false then sends list_changed anyway |
-| `resource-rug-pull` | Temporal | Benign resource content that swaps to malicious after subscription |
-| `prompt-injection` | Injection | Web search tool injecting hidden instructions on sensitive queries |
-| `prompt-template-injection` | Injection | MCP prompts used as injection vectors |
-| `schema-poisoning` | Injection | Tool description and parameter field weaponization |
-| `unicode-obfuscation` | Injection | Homoglyphs, zero-width characters, and BiDi overrides |
-| `ansi-terminal-injection` | Injection | ANSI escape sequences to overwrite terminal content |
-| `credential-harvester` | Injection | Response sequence social-engineering credential retrieval |
-| `context-persistence` | Injection | Memory poisoning via persistent rule injection |
-| `adaptive-injection` | Injection | LLM-powered adaptive injection via external handler |
-| `markdown-beacon` | Injection | Tracking pixels via Markdown images and CSS references |
-| `resource-exfiltration` | Resource | Fake credentials and injection for sensitive file paths |
-| `slow-loris` | DoS | Byte-by-byte response delivery with configurable delay |
-| `nested-json-dos` | DoS | 50,000-level deep JSON for parser stack exhaustion |
-| `notification-flood` | DoS | Server-initiated notification flood at 10,000/sec |
-| `pipe-deadlock` | DoS | Stdio pipe deadlock by filling OS buffers |
-| `token-flush` | DoS | 500KB+ garbage payload to flush LLM context window |
-| `zombie-process` | DoS | Ignores cancellation and continues slow-dripping responses |
-| `id-collision` | Protocol | Request ID collision via forced sampling/createMessage IDs |
-| `batch-amplification` | Protocol | Single request triggers 10,000 JSON-RPC notification batch |
-| `multi-vector-attack` | Multi-Vector | Four-phase compound attack across tools, resources, and prompts |
-| `cross-server-pivot` | Multi-Vector | Confused deputy attack pivoting through a benign weather tool |
 
 ```bash
 # List all scenarios
