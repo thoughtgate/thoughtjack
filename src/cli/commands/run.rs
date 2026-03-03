@@ -41,9 +41,10 @@ pub async fn run(
     quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
-    let config = args.config.as_ref().ok_or_else(|| {
-        ThoughtJackError::Usage("--config <path> is required for `run`".into())
-    })?;
+    let config = args
+        .config
+        .as_ref()
+        .ok_or_else(|| ThoughtJackError::Usage("--config <path> is required for `run`".into()))?;
     let yaml = std::fs::read_to_string(config)?;
     run_from_yaml(&yaml, args, quiet, cancel).await
 }

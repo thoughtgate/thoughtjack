@@ -296,7 +296,10 @@ mod tests {
     #[test]
     fn list_filter_empty_category() {
         let result = list_scenarios(Some(ScenarioCategory::Protocol), None);
-        assert!(result.is_empty(), "No protocol scenarios after v0.2 archive");
+        assert!(
+            result.is_empty(),
+            "No protocol scenarios after v0.2 archive"
+        );
     }
 
     #[test]
