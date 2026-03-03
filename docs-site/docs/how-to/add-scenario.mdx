@@ -93,11 +93,10 @@ thoughtjack run --config scenarios/my_attack.yaml -vv
 
 ## 6. Regenerate the docs site
 
-After adding the scenario, rebuild the docs site to include it in the Attack Catalog:
+After adding the scenario, verify it works:
 
 ```bash
-cd docs-site
-npm run build
+thoughtjack scenarios list
 ```
 
-Your scenario will appear in the Attack Catalog with its metadata card, phase diagram, and YAML source toggle.
+Your scenario should appear in the listing with its metadata.

@@ -66,11 +66,6 @@ const config: Config = {
           ],
         },
         {
-          label: 'Attack Library',
-          to: '/docs/scenarios',
-          position: 'left',
-        },
-        {
           type: 'dropdown',
           label: 'Coverage',
           position: 'left',
