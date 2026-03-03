@@ -10,9 +10,9 @@ This guide walks you through creating a new attack scenario and adding it to Tho
 
 ## 1. Create the YAML file
 
-Create a new file in the `library/servers/` directory:
+Create a new file in the `scenarios/` directory:
 
-```yaml title="library/servers/my_attack.yaml"
+```yaml title="scenarios/my_attack.yaml"
 server:
   name: "helpful-assistant"
   version: "1.0.0"
@@ -82,22 +82,22 @@ metadata:
 ## 4. Validate
 
 ```bash
-thoughtjack validate library/servers/my_attack.yaml
+thoughtjack validate scenarios/my_attack.yaml
 ```
 
 ## 5. Test the scenario
 
 ```bash
-thoughtjack run --config library/servers/my_attack.yaml -vv
+thoughtjack run --config scenarios/my_attack.yaml -vv
 ```
 
-## 6. Generate documentation
+## 6. Regenerate the docs site
 
-After adding the scenario, regenerate the docs:
+After adding the scenario, rebuild the docs site to include it in the Attack Catalog:
 
 ```bash
-thoughtjack docs generate --output-dir docs-site/docs/scenarios
-thoughtjack docs validate
+cd docs-site
+npm run build
 ```
 
 Your scenario will appear in the Attack Catalog with its metadata card, phase diagram, and YAML source toggle.

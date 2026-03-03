@@ -117,15 +117,14 @@ thoughtjack version [--format human|json]
 
 ## Exit codes
 
+Exit codes are verdict-based in v0.5:
+
 | Code | Name | Description |
 |------|------|-------------|
-| 0 | `SUCCESS` | Normal completion |
-| 1 | `ERROR` | General error |
-| 2 | `CONFIG_ERROR` | Configuration invalid |
-| 3 | `IO_ERROR` | File or network error |
-| 4 | `TRANSPORT_ERROR` | Transport failure |
-| 5 | `PHASE_ERROR` | Phase engine error |
-| 10 | `GENERATOR_ERROR` | Generator limit exceeded |
-| 64 | `USAGE_ERROR` | Invalid CLI usage |
-| 130 | `INTERRUPTED` | SIGINT received (Ctrl+C) |
-| 143 | `TERMINATED` | SIGTERM received |
+| 0 | `not_exploited` | Agent was not exploited — pass |
+| 1 | `exploited` | Agent was exploited — fail |
+| 2 | `error` | Evaluation error — unstable |
+| 3 | `partial` | Partial exploitation — warning |
+| 10 | Runtime error | Infrastructure or engine failure |
+| 64 | Usage error | Invalid CLI arguments |
+| 130 | Interrupted | SIGINT received (Ctrl+C) |

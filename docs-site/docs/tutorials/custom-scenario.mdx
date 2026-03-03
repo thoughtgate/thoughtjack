@@ -172,15 +172,18 @@ Connect your MCP client and make 3 `tools/call` requests to `review_code`. After
 2. A new `check_dependencies` tool appearing in `tools/list`
 3. The prompt injection in the tool description
 
-## 7. Generate a diagram
+## 7. Visualize the phase flow
 
-Visualize the phase state machine:
+The phase state machine for this scenario looks like:
 
-```bash
-thoughtjack diagram my_scenario.yaml
+```mermaid
+stateDiagram-v2
+    [*] --> baseline
+    baseline --> trust_building: tools/call × 3
+    trust_building --> inject: immediate
 ```
 
-This outputs a Mermaid diagram showing the baseline → trust_building → inject flow with trigger conditions.
+You can include diagrams like this in your scenario documentation to help visualize the attack flow.
 
 ## Next steps
 

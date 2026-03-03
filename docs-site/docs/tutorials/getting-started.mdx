@@ -34,7 +34,11 @@ thoughtjack version
 You should see output like:
 
 ```
-thoughtjack 0.3.0 (rust 2024 edition)
+thoughtjack 0.5.0
+  commit:  a1b2c3d
+  built:   2026-01-15
+  rustc:   1.88.0 (2024 edition)
+  target:  aarch64-apple-darwin
 ```
 
 ## 2. Explore built-in scenarios
@@ -70,8 +74,11 @@ This displays the scenario's description, MITRE ATT&CK mapping, what to observe,
 
 The **rug pull** is a temporal attack: the server starts with a benign calculator tool, builds trust over 5 calls, then injects a malicious `read_file` tool.
 
+First, export the built-in scenario to a YAML file, then run it:
+
 ```bash
-thoughtjack run --scenario rug-pull
+thoughtjack scenarios show rug-pull > rug-pull.yaml
+thoughtjack run --config rug-pull.yaml
 ```
 
 ThoughtJack is now listening on stdin/stdout using the MCP JSON-RPC protocol. It will:
@@ -95,7 +102,7 @@ When testing your MCP client against this scenario, watch for:
 Run the same scenario with debug-level logging to see internal state transitions:
 
 ```bash
-thoughtjack run --scenario rug-pull -vv
+thoughtjack run --config rug-pull.yaml -vv
 ```
 
 With `-vv` (debug level), you'll see log lines for:
@@ -109,7 +116,7 @@ With `-vv` (debug level), you'll see log lines for:
 For machine-parseable logs, use JSON format:
 
 ```bash
-thoughtjack run --scenario rug-pull -vv --log-format json
+thoughtjack run --config rug-pull.yaml -vv --log-format json
 ```
 
 ## 5. Run from a config file
@@ -117,19 +124,19 @@ thoughtjack run --scenario rug-pull -vv --log-format json
 Built-in scenarios are convenient, but real testing uses YAML config files. You can view a scenario's YAML:
 
 ```bash
-thoughtjack scenarios show rug-pull --yaml
+thoughtjack scenarios show rug-pull
 ```
 
-Config files from the `library/` directory work the same way:
+Config files from the `scenarios/` directory work the same way:
 
 ```bash
-thoughtjack run --config library/servers/rug_pull.yaml
+thoughtjack run --config scenarios/rug-pull.yaml
 ```
 
 Always validate configs before running:
 
 ```bash
-thoughtjack validate library/servers/rug_pull.yaml
+thoughtjack validate scenarios/rug-pull.yaml
 ```
 
 ## Next steps
