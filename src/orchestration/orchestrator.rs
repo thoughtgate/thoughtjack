@@ -540,7 +540,7 @@ mod tests {
 
     // ---- Integration tests ----
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn orchestrate_single_server_completes() {
         tokio::time::timeout(Duration::from_secs(15), async {
             let loaded = load_test_doc(
@@ -586,7 +586,7 @@ attack:
         .expect("test timed out after 15s");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn orchestrate_mixed_outcomes() {
         tokio::time::timeout(Duration::from_secs(15), async {
             let loaded = load_test_doc(
@@ -640,7 +640,7 @@ attack:
         .expect("test timed out after 15s");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn max_session_timeout_cancels() {
         tokio::time::timeout(Duration::from_secs(15), async {
             let loaded = load_test_doc(
@@ -689,7 +689,7 @@ attack:
         .expect("test timed out after 15s");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn zero_client_shutdown() {
         tokio::time::timeout(Duration::from_secs(15), async {
             // Only server actors — shutdown triggers after all servers complete or cancel
@@ -734,7 +734,7 @@ attack:
 
     /// EC-ORCH-002: Actor with `await_extractors` pointing to never-set key
     /// + short timeout → times out gracefully without blocking forever.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ec_orch_002_await_extractor_timeout() {
         tokio::time::timeout(Duration::from_secs(15), async {
             let loaded = load_test_doc(
@@ -930,7 +930,7 @@ attack:
     }
 
     /// EC-ORCH-014: `grace_period: 0` → shutdown proceeds immediately, no delay.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ec_orch_014_zero_grace_period() {
         tokio::time::timeout(Duration::from_secs(15), async {
             let loaded = load_test_doc(
@@ -972,7 +972,7 @@ attack:
 
     /// EC-ORCH-016: Only server actors, no clients → servers complete,
     /// orchestrator shuts down cleanly.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ec_orch_016_zero_client_shutdown() {
         tokio::time::timeout(Duration::from_secs(15), async {
             let loaded = load_test_doc(

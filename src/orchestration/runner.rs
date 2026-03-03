@@ -983,7 +983,7 @@ attack:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mcp_server_stdio_runs_to_completion() {
         // mcp_server actor with terminal phase, no bind address (stdio mode).
         // Cancel after short delay → Result::Ok with Cancelled termination.
