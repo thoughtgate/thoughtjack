@@ -1,5 +1,6 @@
 [workspace]
-members = [".", "fuzz"]
+members = ["."]
+exclude = ["fuzz"]
 
 [package]
 name = "thoughtjack"

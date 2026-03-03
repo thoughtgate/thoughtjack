@@ -65,12 +65,20 @@ pub fn matches_uri_template(template: &str, uri: &str) -> bool {
                 if pos >= uri.len() {
                     return false;
                 }
-                pos += 1;
+                // Advance by one full character (may be multi-byte UTF-8)
+                pos += uri[pos..].chars().next().map_or(1, char::len_utf8);
             }
             continue;
         }
-        // After a variable (i > 0), skip at least 1 char so the variable is non-empty
-        let skip = usize::from(i > 0);
+        // After a variable (i > 0), skip at least 1 char so the variable is non-empty.
+        // Use the full character width to avoid landing mid-UTF-8-sequence.
+        let skip = if i > 0 {
+            uri.get(pos..)
+                .and_then(|s| s.chars().next())
+                .map_or(1, char::len_utf8)
+        } else {
+            0
+        };
         if pos + skip > uri.len() {
             return false;
         }
@@ -128,6 +136,29 @@ pub fn u64_to_usize(v: u64) -> usize {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// Regression test for fuzz crash-122a961bf40b7b79ae0394f3747fe1bad54a25f1.
+    /// Template with variables matched against URI starting with multi-byte
+    /// UTF-8 character (Ƃ = U+0182, 2 bytes). The `skip` logic advanced by
+    /// one byte instead of one character, landing mid-UTF-8-sequence and
+    /// panicking on the next string slice.
+    #[test]
+    fn regression_fuzz_multibyte_uri_no_panic() {
+        // Decoded from the fuzzer crash artifact
+        let template = "{Z}4{}}4{}\x01";
+        let uri = "\u{0182}4{}2=e";
+        // Must not panic — result doesn't matter
+        let _ = matches_uri_template(template, uri);
+    }
+
+    /// Multi-byte characters in both template and URI should not panic.
+    #[test]
+    fn multibyte_chars_in_template_and_uri() {
+        let _ = matches_uri_template("{v}é{w}", "Ƃéx");
+        let _ = matches_uri_template("préfixe{v}suffixe", "préfixeXsuffixe");
+        let _ = matches_uri_template("{v}", "日本語");
+        let _ = matches_uri_template("{a}{b}{c}", "αβγ");
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]

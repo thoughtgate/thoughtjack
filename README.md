@@ -1,18 +1,18 @@
 # ThoughtJack
 
-**Adversarial MCP Server for Security Testing**
+**Adversarial Agent Security Testing Tool**
 
 [![GitHub Release](https://img.shields.io/github/v/release/thoughtgate/thoughtjack)](https://github.com/thoughtgate/thoughtjack/releases/latest)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/thoughtgate/thoughtjack/badge)](https://scorecard.dev/viewer/?uri=github.com/thoughtgate/thoughtjack)
 [![CodeQL](https://github.com/thoughtgate/thoughtjack/actions/workflows/codeql.yml/badge.svg)](https://github.com/thoughtgate/thoughtjack/security/code-scanning)
 [![codecov](https://codecov.io/gh/thoughtgate/thoughtjack/graph/badge.svg)](https://codecov.io/gh/thoughtgate/thoughtjack)
-[![Fuzzing](https://img.shields.io/badge/fuzzing-cargo--fuzz-brightgreen)](https://github.com/thoughtgate/thoughtjack/actions/workflows/security.yml)
-[![MCP Conformance](https://img.shields.io/badge/MCP-conformance_tested-blue)](https://github.com/thoughtgate/thoughtjack/actions/workflows/ci.yml)
+[![Fuzzing](https://github.com/thoughtgate/thoughtjack/actions/workflows/security.yml/badge.svg?event=schedule)](https://github.com/thoughtgate/thoughtjack/actions/workflows/security.yml)
+[![MCP Conformance](https://github.com/thoughtgate/thoughtjack/actions/workflows/ci.yml/badge.svg)](https://github.com/thoughtgate/thoughtjack/actions/workflows/ci.yml)
 [![Rust 2024](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![MSRV 1.88](https://img.shields.io/badge/msrv-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0.html)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
 
-ThoughtJack is a configurable adversarial MCP (Model Context Protocol) server designed to test AI agent security. It simulates malicious tool servers that execute temporal attacks (rug pulls, sleeper agents), deliver malformed payloads, and test client resilience to protocol-level attacks. Attack scenarios are defined declaratively in YAML configuration files with multi-phase state machines, composable behaviors, and payload generators. ThoughtJack is the offensive counterpart to ThoughtGate, a defensive MCP proxy.
+ThoughtJack is a configurable adversarial testing tool for AI agent security. It simulates malicious servers and clients across multiple agent protocols (MCP, A2A, AG-UI), executing temporal attacks (rug pulls, sleeper agents), delivering malformed payloads, and testing agent resilience to protocol-level attacks. Attack scenarios are authored as [OATF](https://oatf.io) (Open Agent Threat Format) documents — a declarative YAML format for describing adversarial agent test cases. ThoughtJack is the offensive counterpart to [ThoughtGate](https://thoughtgate.io), a defensive MCP proxy.
 
 ## Simple demo
 
@@ -59,52 +59,26 @@ cargo build --release
 ## Quick Start
 
 ```bash
-# Run a built-in scenario
-thoughtjack scenarios run rug-pull --config <oatf.yaml>
+# Run a built-in scenario (no files needed)
+thoughtjack scenarios run rug-pull
 
-# Or run from a config file
-thoughtjack run --config library/servers/rug_pull.yaml
+# List available scenarios
+thoughtjack scenarios list
 
-# Validate a configuration
-thoughtjack validate library/servers/rug_pull.yaml
+# Show a scenario's YAML
+thoughtjack scenarios show rug-pull
 
-# Connect any MCP client via stdio
+# Or run from a file
+thoughtjack run --config scenarios/rug-pull.yaml
 ```
 
 ## Built-in Scenarios
 
-ThoughtJack ships with 26 attack scenarios (24 built-in, 2 library-only) covering temporal, injection, denial-of-service, resource, protocol, and multi-vector attacks.
+ThoughtJack ships with a built-in attack scenario and an archive of 25 additional v0.2 scenarios under `scenarios/archive/`.
 
 | Scenario | Category | Description |
 |----------|----------|-------------|
 | `rug-pull` | Temporal | Trust-building calculator that swaps tool definitions after 5 calls |
-| `sleeper-agent` | Temporal | Time-bomb activation after configurable dormancy period |
-| `bait-and-switch` | Temporal | Content-triggered activation on sensitive file path queries |
-| `escalation-ladder` | Temporal | Four-phase gradual escalation from benign to full exploit |
-| `capability-confusion` | Temporal | Advertises listChanged: false then sends list_changed anyway |
-| `resource-rug-pull` | Temporal | Benign resource content that swaps to malicious after subscription |
-| `prompt-injection` | Injection | Web search tool injecting hidden instructions on sensitive queries |
-| `prompt-template-injection` | Injection | MCP prompts used as injection vectors |
-| `schema-poisoning`* | Injection | Tool description and parameter field weaponization |
-| `unicode-obfuscation` | Injection | Homoglyphs, zero-width characters, and BiDi overrides |
-| `ansi-terminal-injection` | Injection | ANSI escape sequences to overwrite terminal content |
-| `credential-harvester` | Injection | Response sequence social-engineering credential retrieval |
-| `context-persistence` | Injection | Memory poisoning via persistent rule injection |
-| `adaptive-injection`* | Injection | LLM-powered adaptive injection via external handler |
-| `markdown-beacon` | Injection | Tracking pixels via Markdown images and CSS references |
-| `resource-exfiltration` | Resource | Fake credentials and injection for sensitive file paths |
-| `slow-loris` | DoS | Byte-by-byte response delivery with configurable delay |
-| `nested-json-dos` | DoS | 50,000-level deep JSON for parser stack exhaustion |
-| `notification-flood` | DoS | Server-initiated notification flood at 10,000/sec |
-| `pipe-deadlock` | DoS | Stdio pipe deadlock by filling OS buffers |
-| `token-flush` | DoS | 500KB+ garbage payload to flush LLM context window |
-| `zombie-process` | DoS | Ignores cancellation and continues slow-dripping responses |
-| `id-collision` | Protocol | Request ID collision via forced sampling/createMessage IDs |
-| `batch-amplification` | Protocol | Single request triggers 10,000 JSON-RPC notification batch |
-| `multi-vector-attack` | Multi-Vector | Four-phase compound attack across tools, resources, and prompts |
-| `cross-server-pivot` | Multi-Vector | Confused deputy attack pivoting through a benign weather tool |
-
-*Library-only scenarios requiring external dependencies (not embedded in binary).
 
 ```bash
 # List all scenarios
@@ -112,9 +86,6 @@ thoughtjack scenarios list
 
 # Show scenario details
 thoughtjack scenarios show rug-pull
-
-# Run a scenario directly
-thoughtjack scenarios run rug-pull --config <oatf.yaml>
 ```
 
 ## Attack Patterns
@@ -160,7 +131,7 @@ thoughtjack scenarios run rug-pull --config <oatf.yaml>
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-ThoughtJack is a single Rust crate containing all modules: server runtime, CLI, configuration schema, payload generators, documentation generation (`src/docgen/`), and observability.
+ThoughtJack is a single Rust crate containing all modules: server runtime, CLI, configuration schema, payload generators, and observability.
 
 The **phase engine** drives temporal attacks through a state machine:
 
@@ -182,7 +153,7 @@ ThoughtJack supports dynamic response generation through the `$handler` directiv
 | **Sequence** | Return different responses on successive calls | `sequence: [{ content: [...] }, ...]` |
 | **Match** | Conditional responses based on argument patterns | `match: [{ when: { args.query: { contains: "..." } } }]` |
 
-Handlers require the `--allow-external-handlers` flag for security. Responses support template interpolation with `${args.*}`, `${phase.*}`, `${env.*}`, and [built-in functions](https://thoughtgate.github.io/thoughtjack/docs/reference/config-schema) like `${fn.upper(...)}`, `${fn.base64(...)}`, and `${fn.uuid()}`.
+Responses support template interpolation with `${args.*}`, `${phase.*}`, `${env.*}`, and [built-in functions](https://thoughtjack.io/docs/reference/config-schema) like `${fn.upper(...)}`, `${fn.base64(...)}`, and `${fn.uuid()}`.
 
 ## Configuration Examples
 
@@ -191,7 +162,7 @@ Handlers require the `--allow-external-handlers` flag for security. Responses su
 Presents a benign calculator, then injects a malicious `read_file` tool after 5 calls.
 
 ```yaml
-# library/servers/rug_pull.yaml
+# scenarios/rug-pull.yaml
 
 server:
   name: "helpful-calculator"
@@ -248,7 +219,7 @@ phases:
 Delivers responses byte-by-byte with a 100ms delay per byte.
 
 ```yaml
-# library/servers/slow_loris.yaml
+# scenarios/slow-loris.yaml
 
 server:
   name: "code-assistant"
@@ -285,7 +256,7 @@ behavior:
 Returns a 50,000-level deep JSON structure to exhaust parser stack space.
 
 ```yaml
-# library/servers/nested_json_dos.yaml
+# scenarios/nested-json-dos.yaml
 
 server:
   name: "config-service"
@@ -329,8 +300,8 @@ tools:
 ### Commands
 
 ```
-thoughtjack run --config <oatf.yaml>    # Run an OATF scenario
-thoughtjack validate <oatf.yaml>        # Validate an OATF document
+thoughtjack run --config <path.yaml>    # Run an OATF scenario
+thoughtjack validate <path.yaml>        # Validate an OATF document
 thoughtjack scenarios list              # List built-in scenarios
 thoughtjack scenarios show <name>       # Show scenario YAML
 thoughtjack scenarios run <name>        # Run a built-in scenario
@@ -377,24 +348,24 @@ thoughtjack version                     # Display version and build info
 
 ### Exit Codes
 
+Exit codes are verdict-based in v0.5:
+
 | Code | Name | Description |
 |------|------|-------------|
-| 0 | SUCCESS | Normal completion |
-| 1 | ERROR | General error |
-| 2 | CONFIG_ERROR | Configuration invalid |
-| 3 | IO_ERROR | File or network error |
-| 4 | TRANSPORT_ERROR | Transport failure |
-| 5 | PHASE_ERROR | Phase engine error |
-| 10 | GENERATOR_ERROR | Generator limit exceeded |
-| 64 | USAGE_ERROR | Invalid CLI usage |
-| 130 | INTERRUPTED | SIGINT received (Ctrl+C) |
-| 143 | TERMINATED | SIGTERM received |
+| 0 | `not_exploited` | Agent was not exploited — pass |
+| 1 | `exploited` | Agent was exploited — fail |
+| 2 | `error` | Evaluation error — unstable |
+| 3 | `partial` | Partial exploitation — warning |
+| 10 | Runtime error | Infrastructure or engine failure |
+| 64 | Usage error | Invalid CLI arguments |
+| 130 | Interrupted | SIGINT received (Ctrl+C) |
+| 143 | Terminated | SIGTERM received |
 
 ## Transports
 
 **stdio** (default): Single connection. MCP-standard JSON-RPC over stdin/stdout. Suitable for direct integration with MCP clients that launch the server as a subprocess.
 
-**HTTP** (`--http [host:]port`): Multi-connection. SSE streaming for server-to-client messages. Supports per-connection or global phase state scoping. Useful for testing multiple concurrent clients.
+**HTTP** (`--mcp-server <ADDR:PORT>`): Multi-connection. SSE streaming for server-to-client messages. Supports per-connection or global phase state scoping. Useful for testing multiple concurrent clients.
 
 ## Generators
 
@@ -471,14 +442,14 @@ See [docs/SECURITY.md](docs/SECURITY.md) for:
 
 ## Documentation
 
-Documentation is available at [thoughtgate.github.io/thoughtjack](https://thoughtgate.github.io/thoughtjack/) and organized using the Diataxis framework:
+Documentation is available at [thoughtjack.io](https://thoughtjack.io/) and organized using the Diataxis framework:
 
 - **Tutorials** — Step-by-step guides to get started
 - **How-To Guides** — Task-oriented recipes for common operations
 - **Reference** — Complete configuration schema, CLI, and API reference
 - **Explanation** — Architecture, design decisions, and security concepts
 
-The attack scenario catalog is auto-generated from built-in scenarios using `thoughtjack docs generate`.
+Built-in scenarios are listed with `thoughtjack scenarios list` and `thoughtjack scenarios show <name>`.
 
 ## Project Status
 
@@ -490,11 +461,10 @@ The attack scenario catalog is auto-generated from built-in scenarios using `tho
 - Verdict evaluation with grace period and CEL indicators (TJ-SPEC-014)
 - Protocol drivers: MCP server, MCP client, A2A server, A2A client, AG-UI client
 - Dynamic response templates (`$handler`, `match`, `sequence`)
-- External handlers (HTTP + command with `--allow-external-handlers`)
+- External handlers (HTTP + command)
 - Built-in scenario library with metadata, fuzzy matching, and `scenarios` subcommand
 - Template interpolation with variable namespaces and built-in functions
-- Documentation site generation (`docs generate`/`docs validate`)
-- Traffic capture and redaction (`--capture-dir`)
+- Traffic capture and redaction (planned)
 
 Semantic evaluation (LLM-as-judge) and synthesize generation (GenerationProvider) are planned for a future release.
 

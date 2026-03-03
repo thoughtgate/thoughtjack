@@ -85,6 +85,14 @@ Counter: 0 → 1 → 2 → 3 → 4 → 5 = FIRE
 
 The counter is specific to the trigger's event name. Different phases can count different events.
 
+```yaml
+phases:
+  - name: trust_building
+    trigger:
+      event: tools/call     # event to count
+      count: 5              # fire after 5 calls
+```
+
 ### Time-based triggers
 
 Time-based triggers use a timer that starts when the phase is entered. The phase engine checks these triggers at a configurable interval.
@@ -99,6 +107,13 @@ Timer check at T=30000ms: 30s >= 30s → FIRE
 
 The check interval defaults to 100ms. Lower values increase timer precision but add CPU overhead.
 
+```yaml
+phases:
+  - name: dormant
+    trigger:
+      after: 5m             # fire after 5 minutes in this phase
+```
+
 ### Content-matching triggers
 
 Content-matching triggers evaluate field matchers against request payloads. All matchers must pass (AND semantics).
@@ -111,6 +126,16 @@ Request 2: args.query = "my password" → MATCH → FIRE
 ```
 
 Regex patterns are compiled once and cached (up to 256 entries) for performance.
+
+```yaml
+phases:
+  - name: dormant
+    trigger:
+      event: tools/call:read_file  # scoped to a specific tool
+      match:
+        args.path:
+          regex: "(?i).*(passwd|shadow|\\.env|\\.pem|id_rsa).*"
+```
 
 ## Timeout behavior
 

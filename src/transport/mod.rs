@@ -148,6 +148,55 @@ impl ConnectionContext {
     }
 }
 
+// ============================================================================
+// NullTransport (test-only)
+// ============================================================================
+
+/// A no-op transport for tests that pends forever on reads.
+///
+/// `receive_message()` returns `Pending` indefinitely, allowing the
+/// driver's `select!` to pick up cancellation tokens cleanly —
+/// unlike `StdioTransport` whose `spawn_blocking` stdin reads are
+/// uncancellable and cause test hangs.
+///
+/// Implements: TJ-SPEC-002 F-001
+#[cfg(test)]
+pub struct NullTransport;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl Transport for NullTransport {
+    async fn send_message(&self, _message: &JsonRpcMessage) -> Result<()> {
+        Ok(())
+    }
+
+    async fn send_raw(&self, _bytes: &[u8]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn receive_message(&self) -> Result<Option<JsonRpcMessage>> {
+        // Pend forever — the driver's `select!` will pick up the cancel token.
+        // Returning Ok(None) (EOF) would cause a tight spin loop in PhaseLoop.
+        std::future::pending().await
+    }
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::Stdio
+    }
+
+    async fn finalize_response(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn connection_context(&self) -> ConnectionContext {
+        ConnectionContext::stdio()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

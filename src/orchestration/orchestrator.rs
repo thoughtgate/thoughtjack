@@ -531,6 +531,7 @@ mod tests {
             grace_period: None,
             max_session,
             readiness_timeout: Duration::from_secs(30),
+            transport_factory: Some(crate::orchestration::runner::null_transport_factory()),
         }
     }
 
