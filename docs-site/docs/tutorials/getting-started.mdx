@@ -8,6 +8,8 @@ description: Install ThoughtJack, run your first scenario, and understand the ou
 
 In this tutorial you'll install ThoughtJack, run a built-in attack scenario, and learn to read the output. By the end you'll understand the core workflow for testing MCP clients.
 
+ThoughtJack executes attack scenarios authored as [OATF](https://oatf.io) (Open Agent Threat Format) documents — a declarative YAML format for describing adversarial agent test cases.
+
 ## 1. Install ThoughtJack
 
 Choose one method:
@@ -50,13 +52,13 @@ thoughtjack scenarios list
 ```
 
 ```
-Category      Name                   Description
-────────────  ─────────────────────  ──────────────────────────────────────
-Temporal      rug-pull               Trust-building then rug pull attack
-Temporal      sleeper-agent          Time-delayed phase transition attack
-Injection     prompt-injection       Prompt injection attack patterns
-Injection     credential-harvester   Credential harvesting via tool descriptions
-DoS           slow-loris             Slow loris byte-at-a-time delivery
+Category   Name                  Description
+─────────  ────────────────────  ──────────────────────────────────────────
+Temporal   rug-pull              Trust-building then rug pull attack
+Temporal   sleeper-agent         Time-delayed phase transition attack
+Injection  prompt-injection      Prompt injection attack patterns
+Injection  credential-harvester  Credential harvesting via tool descriptions
+DoS        slow-loris            Slow loris byte-at-a-time delivery
 ... and more
 ```
 
@@ -138,6 +140,30 @@ Always validate configs before running:
 ```bash
 thoughtjack validate scenarios/rug-pull.yaml
 ```
+
+## 6. Test an MCP server (client mode)
+
+The examples above run ThoughtJack as a **server** to test MCP clients. ThoughtJack can also run as an MCP **client** to test servers — useful for verifying that a server handles adversarial client requests correctly.
+
+### Connect to a running server
+
+If the target MCP server is already listening on HTTP:
+
+```bash
+thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:3000/message
+```
+
+### Spawn the server as a subprocess
+
+ThoughtJack can launch the server process and connect over stdio:
+
+```bash
+thoughtjack run --config scenario.yaml \
+  --mcp-client-command "npx" \
+  --mcp-client-args "-y @modelcontextprotocol/server-everything"
+```
+
+In client mode, ThoughtJack sends requests defined in the OATF scenario (tool calls, resource reads, etc.) and evaluates the server's responses against the configured indicators.
 
 ## Next steps
 

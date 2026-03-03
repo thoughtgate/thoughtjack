@@ -12,7 +12,7 @@
 [![MSRV 1.88](https://img.shields.io/badge/msrv-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0.html)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
 
-ThoughtJack is a configurable adversarial MCP (Model Context Protocol) server designed to test AI agent security. It simulates malicious tool servers that execute temporal attacks (rug pulls, sleeper agents), deliver malformed payloads, and test client resilience to protocol-level attacks. Attack scenarios are defined declaratively in YAML configuration files with multi-phase state machines, composable behaviors, and payload generators. ThoughtJack is the offensive counterpart to ThoughtGate, a defensive MCP proxy.
+ThoughtJack is a configurable adversarial testing tool for AI agent security. It simulates malicious servers and clients across multiple agent protocols (MCP, A2A, AG-UI), executing temporal attacks (rug pulls, sleeper agents), delivering malformed payloads, and testing agent resilience to protocol-level attacks. Attack scenarios are authored as [OATF](https://oatf.io) (Open Agent Threat Format) documents — a declarative YAML format for describing adversarial agent test cases. ThoughtJack is the offensive counterpart to [ThoughtGate](https://thoughtgate.io), a defensive MCP proxy.
 
 ## Simple demo
 
@@ -182,7 +182,7 @@ ThoughtJack supports dynamic response generation through the `$handler` directiv
 | **Sequence** | Return different responses on successive calls | `sequence: [{ content: [...] }, ...]` |
 | **Match** | Conditional responses based on argument patterns | `match: [{ when: { args.query: { contains: "..." } } }]` |
 
-Handlers require the `--allow-external-handlers` flag for security. Responses support template interpolation with `${args.*}`, `${phase.*}`, `${env.*}`, and [built-in functions](https://thoughtgate.github.io/thoughtjack/docs/reference/config-schema) like `${fn.upper(...)}`, `${fn.base64(...)}`, and `${fn.uuid()}`.
+Responses support template interpolation with `${args.*}`, `${phase.*}`, `${env.*}`, and [built-in functions](https://thoughtjack.io/docs/reference/config-schema) like `${fn.upper(...)}`, `${fn.base64(...)}`, and `${fn.uuid()}`.
 
 ## Configuration Examples
 
@@ -471,7 +471,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for:
 
 ## Documentation
 
-Documentation is available at [thoughtgate.github.io/thoughtjack](https://thoughtgate.github.io/thoughtjack/) and organized using the Diataxis framework:
+Documentation is available at [thoughtjack.io](https://thoughtjack.io/) and organized using the Diataxis framework:
 
 - **Tutorials** — Step-by-step guides to get started
 - **How-To Guides** — Task-oriented recipes for common operations
@@ -490,10 +490,10 @@ Built-in scenarios are listed with `thoughtjack scenarios list` and `thoughtjack
 - Verdict evaluation with grace period and CEL indicators (TJ-SPEC-014)
 - Protocol drivers: MCP server, MCP client, A2A server, A2A client, AG-UI client
 - Dynamic response templates (`$handler`, `match`, `sequence`)
-- External handlers (HTTP + command with `--allow-external-handlers`)
+- External handlers (HTTP + command)
 - Built-in scenario library with metadata, fuzzy matching, and `scenarios` subcommand
 - Template interpolation with variable namespaces and built-in functions
-- Traffic capture and redaction (`--capture-dir`)
+- Traffic capture and redaction (planned)
 
 Semantic evaluation (LLM-as-judge) and synthesize generation (GenerationProvider) are planned for a future release.
 
