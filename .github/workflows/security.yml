@@ -163,6 +163,9 @@ jobs:
     # Only run on schedule or manual dispatch (not on workflow_run)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 300  # 5 hours total (4 hours fuzzing + 1 hour overhead)
+    permissions:
+      contents: read
+      issues: write  # Required by "Create issue on crash" step
 
     strategy:
       fail-fast: false
