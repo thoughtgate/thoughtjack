@@ -160,7 +160,7 @@ thoughtjack scenarios run rug-pull --config <oatf.yaml>
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-ThoughtJack is a single Rust crate containing all modules: server runtime, CLI, configuration schema, payload generators, documentation generation (`src/docgen/`), and observability.
+ThoughtJack is a single Rust crate containing all modules: server runtime, CLI, configuration schema, payload generators, and observability.
 
 The **phase engine** drives temporal attacks through a state machine:
 
@@ -377,24 +377,24 @@ thoughtjack version                     # Display version and build info
 
 ### Exit Codes
 
+Exit codes are verdict-based in v0.5:
+
 | Code | Name | Description |
 |------|------|-------------|
-| 0 | SUCCESS | Normal completion |
-| 1 | ERROR | General error |
-| 2 | CONFIG_ERROR | Configuration invalid |
-| 3 | IO_ERROR | File or network error |
-| 4 | TRANSPORT_ERROR | Transport failure |
-| 5 | PHASE_ERROR | Phase engine error |
-| 10 | GENERATOR_ERROR | Generator limit exceeded |
-| 64 | USAGE_ERROR | Invalid CLI usage |
-| 130 | INTERRUPTED | SIGINT received (Ctrl+C) |
-| 143 | TERMINATED | SIGTERM received |
+| 0 | `not_exploited` | Agent was not exploited — pass |
+| 1 | `exploited` | Agent was exploited — fail |
+| 2 | `error` | Evaluation error — unstable |
+| 3 | `partial` | Partial exploitation — warning |
+| 10 | Runtime error | Infrastructure or engine failure |
+| 64 | Usage error | Invalid CLI arguments |
+| 130 | Interrupted | SIGINT received (Ctrl+C) |
+| 143 | Terminated | SIGTERM received |
 
 ## Transports
 
 **stdio** (default): Single connection. MCP-standard JSON-RPC over stdin/stdout. Suitable for direct integration with MCP clients that launch the server as a subprocess.
 
-**HTTP** (`--http [host:]port`): Multi-connection. SSE streaming for server-to-client messages. Supports per-connection or global phase state scoping. Useful for testing multiple concurrent clients.
+**HTTP** (`--mcp-server <ADDR:PORT>`): Multi-connection. SSE streaming for server-to-client messages. Supports per-connection or global phase state scoping. Useful for testing multiple concurrent clients.
 
 ## Generators
 
@@ -478,7 +478,7 @@ Documentation is available at [thoughtgate.github.io/thoughtjack](https://though
 - **Reference** — Complete configuration schema, CLI, and API reference
 - **Explanation** — Architecture, design decisions, and security concepts
 
-The attack scenario catalog is auto-generated from built-in scenarios using `thoughtjack docs generate`.
+Built-in scenarios are listed with `thoughtjack scenarios list` and `thoughtjack scenarios show <name>`.
 
 ## Project Status
 
@@ -493,7 +493,6 @@ The attack scenario catalog is auto-generated from built-in scenarios using `tho
 - External handlers (HTTP + command with `--allow-external-handlers`)
 - Built-in scenario library with metadata, fuzzy matching, and `scenarios` subcommand
 - Template interpolation with variable namespaces and built-in functions
-- Documentation site generation (`docs generate`/`docs validate`)
 - Traffic capture and redaction (`--capture-dir`)
 
 Semantic evaluation (LLM-as-judge) and synthesize generation (GenerationProvider) are planned for a future release.
