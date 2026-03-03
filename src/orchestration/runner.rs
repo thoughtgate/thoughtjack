@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn build_actor_config_maps_flags() {
         let args = RunArgs {
-            config: std::path::PathBuf::from("test.yaml"),
+            config: Some(std::path::PathBuf::from("test.yaml")),
             mcp_server: Some("0.0.0.0:8080".to_string()),
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1052,7 +1052,7 @@ attack:
     #[test]
     fn build_actor_config_parses_multiple_headers() {
         let args = RunArgs {
-            config: std::path::PathBuf::from("test.yaml"),
+            config: Some(std::path::PathBuf::from("test.yaml")),
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1091,7 +1091,7 @@ attack:
     #[test]
     fn build_actor_config_header_without_colon_skipped() {
         let args = RunArgs {
-            config: std::path::PathBuf::from("test.yaml"),
+            config: Some(std::path::PathBuf::from("test.yaml")),
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1120,7 +1120,7 @@ attack:
     #[test]
     fn build_actor_config_defaults() {
         let args = RunArgs {
-            config: std::path::PathBuf::from("test.yaml"),
+            config: Some(std::path::PathBuf::from("test.yaml")),
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,

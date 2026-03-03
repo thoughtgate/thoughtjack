@@ -76,9 +76,9 @@ pub enum Commands {
 /// Implements: TJ-SPEC-007 F-002
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Path to OATF scenario YAML document.
+    /// Path to OATF scenario YAML document (required for `run`, optional for `scenarios run`).
     #[arg(short, long, env = "THOUGHTJACK_CONFIG")]
-    pub config: PathBuf,
+    pub config: Option<PathBuf>,
 
     /// MCP server HTTP listen address (omit for stdio).
     #[arg(long, value_name = "ADDR:PORT")]
@@ -576,7 +576,7 @@ mod tests {
         );
     }
 
-    /// Scenarios run subcommand parses.
+    /// Scenarios run subcommand parses with --config.
     #[test]
     fn test_scenarios_run_command() {
         let cli = Cli::try_parse_from([
@@ -587,6 +587,20 @@ mod tests {
             "--config",
             "x.yaml",
         ]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    /// Scenarios run works without --config (uses built-in YAML).
+    #[test]
+    fn test_scenarios_run_without_config() {
+        let cli = Cli::try_parse_from(["thoughtjack", "scenarios", "run", "rug-pull"]);
+        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+    }
+
+    /// `run` without --config should parse (validated at runtime).
+    #[test]
+    fn test_run_without_config_parses() {
+        let cli = Cli::try_parse_from(["thoughtjack", "run"]);
         assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 }

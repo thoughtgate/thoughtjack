@@ -59,8 +59,8 @@ cargo build --release
 ## Quick Start
 
 ```bash
-# Run a built-in scenario
-thoughtjack run --config scenarios/rug-pull.yaml
+# Run a built-in scenario (no files needed)
+thoughtjack scenarios run rug-pull
 
 # List available scenarios
 thoughtjack scenarios list
@@ -68,8 +68,8 @@ thoughtjack scenarios list
 # Show a scenario's YAML
 thoughtjack scenarios show rug-pull
 
-# Validate a configuration
-thoughtjack validate scenarios/rug-pull.yaml
+# Or run from a file
+thoughtjack run --config scenarios/rug-pull.yaml
 ```
 
 ## Built-in Scenarios
@@ -329,6 +329,7 @@ thoughtjack run --config <path.yaml>    # Run an OATF scenario
 thoughtjack validate <path.yaml>        # Validate an OATF document
 thoughtjack scenarios list              # List built-in scenarios
 thoughtjack scenarios show <name>       # Show scenario YAML
+thoughtjack scenarios run <name>        # Run a built-in scenario
 thoughtjack version                     # Display version and build info
 ```
 
