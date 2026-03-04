@@ -1016,6 +1016,125 @@ attack:
     }
 
     #[tokio::test]
+    async fn a2a_client_fails_when_readiness_gate_closes() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: a2a_actor
+        mode: a2a_client
+        phases:
+          - name: send
+            state:
+              task_message:
+                role: user
+                parts:
+                  - kind: text
+                    text: "Hello"
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: Some("http://localhost:9090".to_string()),
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
+        };
+
+        let (tx, rx) = tokio::sync::broadcast::channel(1);
+        drop(tx);
+
+        let result = run_actor(
+            0,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            Some(rx),
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("readiness gate closed"),
+            "Expected gate closed error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_client_fails_when_readiness_gate_closes() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: mcp_actor
+        mode: mcp_client
+        phases:
+          - name: probe
+            state:
+              actions:
+                - list_tools
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: Some("http://localhost:8080/mcp".to_string()),
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
+        };
+
+        let (tx, rx) = tokio::sync::broadcast::channel(1);
+        drop(tx);
+
+        let result = run_actor(
+            0,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            Some(rx),
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("readiness gate closed"),
+            "Expected gate closed error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn a2a_server_mode_recognized() {
         let yaml = r#"
 oatf: "0.1"
@@ -1074,10 +1193,16 @@ attack:
         )
         .await;
 
-        // Should not get "not yet implemented" — should succeed or cancel gracefully
+        let actor_result = result.expect("a2a_server actor should run to a graceful termination");
+        assert_eq!(actor_result.actor_name, "a2a_actor");
         assert!(
-            result.is_ok(),
-            "Expected a2a_server to be recognized, got: {result:?}"
+            matches!(
+                actor_result.termination,
+                crate::engine::types::TerminationReason::Cancelled
+                    | crate::engine::types::TerminationReason::TerminalPhaseReached
+            ),
+            "unexpected termination: {:?}",
+            actor_result.termination
         );
     }
 
@@ -1142,7 +1267,7 @@ attack:
     #[tokio::test]
     async fn mcp_server_stdio_runs_to_completion() {
         // mcp_server actor with terminal phase, no bind address (stdio mode).
-        // Cancel after short delay → Result::Ok with Cancelled termination.
+        // Null transport reaches EOF immediately, with cancellation as a timeout safety net.
         let yaml = r#"
 oatf: "0.1"
 attack:
@@ -1200,9 +1325,17 @@ attack:
         .await
         .expect("test timed out — stdio actor did not respond to cancellation within 10s");
 
-        assert!(result.is_ok(), "Expected Ok, got: {result:?}");
-        let actor_result = result.unwrap();
+        let actor_result = result.expect("mcp_server actor should run to a graceful termination");
         assert_eq!(actor_result.actor_name, "default");
+        assert!(
+            matches!(
+                actor_result.termination,
+                crate::engine::types::TerminationReason::Cancelled
+                    | crate::engine::types::TerminationReason::TerminalPhaseReached
+            ),
+            "unexpected termination: {:?}",
+            actor_result.termination
+        );
     }
 
     #[test]

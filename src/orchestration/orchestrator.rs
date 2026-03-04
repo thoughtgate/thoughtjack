@@ -630,12 +630,25 @@ attack:
 
             assert_eq!(result.outcomes.len(), 2);
 
-            // Check we have both a success and an error
-            let has_error = result
+            let server_outcome = result
                 .outcomes
                 .iter()
-                .any(|o| matches!(o, ActorOutcome::Error { .. }));
-            assert!(has_error, "Expected at least one Error outcome");
+                .find(|o| o.actor_name() == "valid_server")
+                .expect("missing outcome for valid_server");
+            let client_outcome = result
+                .outcomes
+                .iter()
+                .find(|o| o.actor_name() == "bad_client")
+                .expect("missing outcome for bad_client");
+
+            assert!(
+                matches!(server_outcome, ActorOutcome::Success(_)),
+                "valid_server should succeed, got: {server_outcome:?}"
+            );
+            assert!(
+                matches!(client_outcome, ActorOutcome::Error { .. }),
+                "bad_client should fail, got: {client_outcome:?}"
+            );
         })
         .await
         .expect("test timed out after 15s");
@@ -675,15 +688,12 @@ attack:
                 .unwrap();
 
             assert_eq!(result.outcomes.len(), 1);
-            // Actor should be cancelled/aborted due to max_session expiry.
-            // Depending on timing, it may be Success(Cancelled) or Panic (aborted).
             match &result.outcomes[0] {
                 ActorOutcome::Success(r) => {
                     assert_eq!(r.actor_name, "default");
+                    assert_eq!(r.termination, TerminationReason::Cancelled);
                 }
-                ActorOutcome::Panic { .. } | ActorOutcome::Error { .. } => {
-                    // Task was aborted before graceful cancel — acceptable
-                }
+                other => panic!("Expected cancelled success outcome, got: {other:?}"),
             }
         })
         .await
@@ -1062,7 +1072,7 @@ attack:
 
             // Both servers should have outcomes
             assert_eq!(result.outcomes.len(), 2);
-            // All outcomes should be for servers (no clients)
+
             for outcome in &result.outcomes {
                 match outcome {
                     ActorOutcome::Success(r) => {
@@ -1071,14 +1081,19 @@ attack:
                             "unexpected actor: {}",
                             r.actor_name
                         );
+                        assert!(
+                            matches!(
+                                r.termination,
+                                TerminationReason::Cancelled
+                                    | TerminationReason::TerminalPhaseReached
+                            ),
+                            "unexpected termination for {}: {:?}",
+                            r.actor_name,
+                            r.termination
+                        );
                     }
                     other => {
-                        // Error/Panic outcomes are acceptable depending on timing
-                        let name = other.actor_name();
-                        assert!(
-                            name == "server1" || name == "server2",
-                            "unexpected actor: {name}"
-                        );
+                        panic!("Expected server cancellation success, got: {other:?}");
                     }
                 }
             }

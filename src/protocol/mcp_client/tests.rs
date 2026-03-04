@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::engine::types::{Direction, ProtocolEvent};
@@ -741,6 +742,38 @@ impl McpClientTransportReader for ErrorReader {
         _pending: &std::sync::Mutex<HashMap<String, PendingRequest>>,
     ) -> Result<Option<McpClientMessage>, EngineError> {
         Err(EngineError::Driver(self.error_message.clone()))
+    }
+}
+
+/// Reader that never produces messages and signals when dropped.
+struct DropSignalReader {
+    dropped: Arc<AtomicBool>,
+}
+
+impl Drop for DropSignalReader {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl McpClientTransportReader for DropSignalReader {
+    async fn recv(
+        &mut self,
+        _pending: &std::sync::Mutex<HashMap<String, PendingRequest>>,
+    ) -> Result<Option<McpClientMessage>, EngineError> {
+        std::future::pending().await
+    }
+}
+
+/// Helper guard that flips a flag when the task/future is dropped.
+struct DropSignal {
+    dropped: Arc<AtomicBool>,
+}
+
+impl Drop for DropSignal {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
     }
 }
 
@@ -1576,4 +1609,65 @@ async fn driver_forward_pending_events_drains_channels() {
     assert!(event_rx.try_recv().is_err());
 
     driver.transport_cancel.cancel();
+}
+
+#[tokio::test]
+async fn driver_drop_cancels_transport_and_aborts_handler_task() {
+    let (mock_writer, _sent) = MockWriter::new();
+    let writer: Arc<tokio::sync::Mutex<Box<dyn McpClientTransportWriter>>> =
+        Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
+    let reader = Box::new(MockReader::new(vec![]));
+    let mut driver = create_test_driver(writer, reader);
+
+    let handler_dropped = Arc::new(AtomicBool::new(false));
+    let task_guard = Arc::clone(&handler_dropped);
+    let (started_tx, started_rx) = oneshot::channel();
+    driver.handler_handle = Some(tokio::spawn(async move {
+        let _guard = DropSignal {
+            dropped: task_guard,
+        };
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    }));
+    started_rx
+        .await
+        .expect("handler task should start before teardown");
+
+    let token = driver.transport_cancel.clone();
+    drop(driver);
+
+    assert!(token.is_cancelled(), "drop should cancel transport token");
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while !handler_dropped.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler task should be dropped on driver teardown");
+}
+
+#[tokio::test]
+async fn driver_drop_stops_bootstrapped_multiplexer() {
+    let (mock_writer, _sent) = MockWriter::new();
+    let writer: Arc<tokio::sync::Mutex<Box<dyn McpClientTransportWriter>>> =
+        Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
+
+    let reader_dropped = Arc::new(AtomicBool::new(false));
+    let reader = Box::new(DropSignalReader {
+        dropped: Arc::clone(&reader_dropped),
+    });
+
+    let mut driver = create_test_driver(writer, reader);
+    let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
+    driver.bootstrap(ext_rx);
+
+    drop(driver);
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while !reader_dropped.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer reader should be dropped on driver teardown");
 }
