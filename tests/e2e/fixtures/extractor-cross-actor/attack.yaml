@@ -7,8 +7,8 @@ attack:
   description: >-
     Four-actor scenario testing cross-actor extractor propagation. An MCP server
     returns a secret value, the MCP client captures it via an extractor, the A2A
-    server waits for that extractor and interpolates it into its task response,
-    and the A2A client sends a task to verify the value flows end-to-end.
+    server interpolates the extracted value into its task response via the watch
+    channel, and the A2A client sends a task to verify the flow end-to-end.
 
   indicators:
     - id: echo_captured
@@ -78,11 +78,6 @@ attack:
         mode: a2a_server
         phases:
           - name: serve
-            await_extractors:
-              - actor: mcp_probe
-                extractors:
-                  - echo_text
-                timeout: "10s"
             state:
               agent_card:
                 name: "e2e-relay-agent"

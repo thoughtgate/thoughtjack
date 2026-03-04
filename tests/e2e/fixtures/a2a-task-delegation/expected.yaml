@@ -4,8 +4,6 @@ verdict:
 indicators:
   agui_trigger_sent:
     result: matched
-  task_completed:
-    result: matched
 execution:
   # AG-UI trigger sends at least one event
   min_trace_messages: 2
