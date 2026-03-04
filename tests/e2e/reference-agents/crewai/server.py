@@ -1,6 +1,10 @@
 """AG-UI server wrapping the CrewAI reference agent.
 
 Thin SSE endpoint that triggers a real CrewAI Crew with MCP tools.
+Crew creation is deferred to the first request (lazy init) to avoid
+a startup deadlock: the agent needs TJ's MCP server, but TJ needs the
+agent's AG-UI endpoint.
+
 Prints ``READY port=<N>`` to stdout when the server is listening.
 """
 
@@ -29,8 +33,12 @@ _args = _parser.parse_args()
 
 app = FastAPI()
 
-# Build the crew at import time (MCP tools are discovered here).
-_crew = create_crew(_args.llm_base_url, _args.mcp_server, _args.a2a_server)
+# Lazily initialized on first AG-UI request (after TJ has started).
+_crew = None
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
 
 
 @app.get("/health")
@@ -38,16 +46,14 @@ async def health() -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def _sse(data: dict) -> str:
-    return f"data: {json.dumps(data)}\n\n"
-
-
 @app.post("/")
 async def agent_endpoint(request: Request) -> StreamingResponse:
-    """AG-UI compatible endpoint: triggers CrewAI crew and streams SSE events."""
-    body = await request.json()
+    """AG-UI endpoint: lazily creates the CrewAI crew, kicks it off, streams SSE."""
+    global _crew
+    if _crew is None:
+        _crew = create_crew(_args.llm_base_url, _args.mcp_server, _args.a2a_server)
 
-    # Extract user message from AG-UI RunAgentInput
+    body = await request.json()
     messages = body.get("messages", [])
     user_msg = "Use available tools as instructed."
     for m in reversed(messages):

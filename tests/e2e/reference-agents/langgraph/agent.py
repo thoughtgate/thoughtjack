@@ -34,7 +34,7 @@ async def create_graph(
     for i, url in enumerate(mcp_server_urls):
         mcp_servers[f"server_{i}"] = {
             "transport": "streamable_http",
-            "url": f"{url}/mcp",
+            "url": url,
         }
 
     client = MultiServerMCPClient(mcp_servers)

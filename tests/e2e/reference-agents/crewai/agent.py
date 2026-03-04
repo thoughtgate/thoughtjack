@@ -32,7 +32,7 @@ def create_crew(
 
     tools = []
     for url in mcp_server_urls or []:
-        adapter = MCPServerAdapter(server_url=f"{url}/mcp")
+        adapter = MCPServerAdapter(server_url=url)
         tools.extend(adapter.tools)
 
     agent = Agent(

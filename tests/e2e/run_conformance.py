@@ -229,14 +229,38 @@ def run_framework_scenario(
 
     agent_url = f"http://127.0.0.1:{agent_port}"
     agent_proc = None
-    tj_proc = None
-    tj_stderr_path = output_dir / f"{scenario_name}-{framework}-tj.stderr"
     try:
         # 1. Configure mock-llm
         wait_healthy(mock_llm_url, timeout=5)
         post_mock_llm_config(mock_llm_url, mock_llm_yaml)
 
-        # 2. Build TJ command
+        # 2. Start reference agent first (it defers MCP connection to request time)
+        agent_dir = Path(__file__).parent / "reference-agents" / framework
+        server_py = agent_dir / "server.py"
+        agent_cmd = [
+            sys.executable, str(server_py),
+            "--llm-base-url", mock_llm_url,
+            "--port", str(agent_port),
+            "--mcp-server", f"http://127.0.0.1:{mcp_port}/message",
+        ]
+        has_a2a = any(m == "a2a_server" for m in modes)
+        if has_a2a:
+            agent_cmd.extend(["--a2a-server", f"http://127.0.0.1:{a2a_port}"])
+
+        with open(stderr_path, "w") as stderr_file:
+            agent_proc = subprocess.Popen(
+                agent_cmd,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+                text=True,
+                preexec_fn=os.setpgrp,
+            )
+
+        # 3. Wait for agent readiness (READY printed before MCP connection)
+        actual_port = wait_ready_marker(agent_proc, timeout=15)
+        wait_healthy(f"http://127.0.0.1:{actual_port}", timeout=10)
+
+        # 4. Run ThoughtJack (agent will lazily connect to TJ's MCP on first request)
         tj_cmd = [
             str(tj_binary), "run",
             "--config", str(attack_yaml),
@@ -250,60 +274,16 @@ def run_framework_scenario(
             tj_cmd.extend(["--a2a-server", f"127.0.0.1:{a2a_port}"])
         tj_cmd.extend(["--agui-client-endpoint", f"{agent_url}/"])
 
-        # 3. Start TJ first (it binds MCP/A2A server ports immediately)
         print(f"RUN: {' '.join(tj_cmd)}")
-        with open(tj_stderr_path, "w") as tj_stderr_file:
-            tj_proc = subprocess.Popen(
-                tj_cmd,
-                stdout=subprocess.PIPE,
-                stderr=tj_stderr_file,
-                text=True,
-            )
-        # Brief pause to let TJ bind its server ports
-        time.sleep(2)
-        if tj_proc.poll() is not None:
-            raise RuntimeError(
-                f"ThoughtJack exited early with code {tj_proc.returncode}"
-            )
+        result = subprocess.run(tj_cmd, capture_output=True, text=True, timeout=timeout + 10)
 
-        # 4. Start reference agent (can now connect to TJ's MCP/A2A servers)
-        agent_dir = Path(__file__).parent / "reference-agents" / framework
-        server_py = agent_dir / "server.py"
-        agent_cmd = [
-            sys.executable, str(server_py),
-            "--llm-base-url", mock_llm_url,
-            "--port", str(agent_port),
-            "--mcp-server", f"http://127.0.0.1:{mcp_port}",
-        ]
-        has_a2a = any(m == "a2a_server" for m in modes)
-        if has_a2a and framework == "crewai":
-            agent_cmd.extend(["--a2a-server", f"http://127.0.0.1:{a2a_port}"])
-
-        with open(stderr_path, "w") as stderr_file:
-            agent_proc = subprocess.Popen(
-                agent_cmd,
-                stdout=subprocess.PIPE,
-                stderr=stderr_file,
-                text=True,
-                preexec_fn=os.setpgrp,
-            )
-
-        # 5. Wait for agent readiness
-        actual_port = wait_ready_marker(agent_proc, timeout=15)
-        wait_healthy(f"http://127.0.0.1:{actual_port}", timeout=10)
-
-        # 6. Wait for TJ to finish
-        try:
-            tj_proc.wait(timeout=timeout + 10)
-        except subprocess.TimeoutExpired:
-            tj_proc.kill()
-            raise
-
-        if tj_proc.returncode not in (0, 1, 2, 3):
-            print(f"FAIL: ThoughtJack exited with code {tj_proc.returncode}")
+        if result.returncode not in (0, 1, 2, 3):
+            print(f"FAIL: ThoughtJack exited with code {result.returncode}")
+            if result.stderr:
+                print(f"  stderr: {result.stderr[:500]}")
             return False
 
-        # 7. Compare verdict
+        # 5. Compare verdict
         if not verdict_path.exists():
             print(f"FAIL: No verdict file at {verdict_path}")
             return False
@@ -314,14 +294,10 @@ def run_framework_scenario(
         print(f"INFRA ERROR: {exc}")
         if stderr_path.exists():
             print(f"Agent stderr:\n{read_stderr(stderr_path)}")
-        if tj_stderr_path.exists():
-            print(f"TJ stderr:\n{read_stderr(tj_stderr_path)}")
         return False
     finally:
         if agent_proc is not None:
             kill_process_group(agent_proc)
-        if tj_proc is not None and tj_proc.poll() is None:
-            tj_proc.kill()
 
 
 def run_self_test(
