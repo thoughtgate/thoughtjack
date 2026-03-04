@@ -1,0 +1,69 @@
+# E2E conformance: CEL expression indicators.
+# Multi-actor: MCP server (echo) + MCP client.
+oatf: "0.1"
+
+attack:
+  name: "CEL Indicators"
+  description: >-
+    Same MCP echo setup as mcp-client-basic but uses CEL expression indicators
+    instead of pattern matching. Tests the CEL evaluation pipeline with variable
+    bindings resolved from protocol messages.
+
+  indicators:
+    - id: response_non_empty
+      protocol: mcp
+      surface: tool_response
+      description: "CEL: tool response content is non-empty"
+      expression:
+        cel: "size(content) > 0"
+        variables:
+          content: "content"
+    - id: server_name_match
+      protocol: mcp
+      surface: server_info
+      description: "CEL: server name contains e2e"
+      expression:
+        cel: "name.contains('e2e')"
+        variables:
+          name: "serverInfo.name"
+
+  execution:
+    actors:
+      - name: target_server
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              server_info:
+                name: "e2e-cel-server"
+                version: "1.0.0"
+              capabilities:
+                tools: {}
+              tools:
+                - name: "echo"
+                  description: "Echoes input back to the caller"
+                  inputSchema:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                    required: ["message"]
+                  responses:
+                    - content:
+                        - type: text
+                          text: "Echo: hello"
+            trigger:
+              event: tools/call
+              count: 1
+
+      - name: test_client
+        mode: mcp_client
+        phases:
+          - name: discover_and_call
+            state:
+              actions:
+                - list_tools
+                - call_tool:
+                    name: "echo"
+                    arguments:
+                      message: "hello"

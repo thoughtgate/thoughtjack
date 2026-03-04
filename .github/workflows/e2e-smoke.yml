@@ -47,25 +47,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - scenario: mcp-tool-discovery
+          # Framework tests (3)
+          - scenario: mcp-tool-invocation
             framework: langgraph
             self_test: false
-          - scenario: mcp-tool-discovery
-            framework: crewai
-            self_test: false
-          - scenario: agui-event-streaming
-            framework: langgraph
-            self_test: false
-          - scenario: agui-event-streaming
+          - scenario: mcp-tool-invocation
             framework: crewai
             self_test: false
           - scenario: a2a-task-delegation
             framework: crewai
             self_test: false
+          # Self-tests (10)
           - scenario: mcp-client-basic
             framework: self-test
             self_test: true
           - scenario: a2a-client-basic
+            framework: self-test
+            self_test: true
+          - scenario: mcp-resources
+            framework: self-test
+            self_test: true
+          - scenario: mcp-prompts
+            framework: self-test
+            self_test: true
+          - scenario: multi-phase-rug-pull
+            framework: self-test
+            self_test: true
+          - scenario: extractor-cross-actor
+            framework: self-test
+            self_test: true
+          - scenario: cel-indicators
+            framework: self-test
+            self_test: true
+          - scenario: verdict-not-exploited
+            framework: self-test
+            self_test: true
+          - scenario: verdict-all-correlation
+            framework: self-test
+            self_test: true
+          - scenario: a2a-streaming
             framework: self-test
             self_test: true
     steps:

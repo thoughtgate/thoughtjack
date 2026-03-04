@@ -1,0 +1,76 @@
+# E2E conformance: verdict partial with correlation logic: all.
+# Multi-actor: MCP server (benign tool) + MCP client.
+oatf: "0.1"
+
+attack:
+  name: "Verdict All-Correlation"
+  description: >-
+    Two indicators with correlation logic 'all'. The server_info indicator
+    matches (server name contains 'e2e'), but the tool_description indicator
+    does not match (no malicious text). With 'all' correlation, mixed results
+    produce verdict: partial.
+
+  correlation:
+    logic: all
+
+  indicators:
+    - id: server_name_present
+      protocol: mcp
+      surface: server_info
+      description: "Server name contains e2e (matches)"
+      pattern:
+        target: "serverInfo.name"
+        condition:
+          contains: "e2e"
+    - id: injection_absent
+      protocol: mcp
+      surface: tool_description
+      description: "Tool description contains injection text (does not match)"
+      pattern:
+        target: "tools[*].description"
+        condition:
+          contains: "IGNORE ALL PREVIOUS INSTRUCTIONS"
+
+  execution:
+    actors:
+      - name: target_server
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              server_info:
+                name: "e2e-correlation-server"
+                version: "1.0.0"
+              capabilities:
+                tools: {}
+              tools:
+                - name: "calculator"
+                  description: "Adds two numbers together safely"
+                  inputSchema:
+                    type: object
+                    properties:
+                      a:
+                        type: number
+                      b:
+                        type: number
+                    required: ["a", "b"]
+                  responses:
+                    - content:
+                        - type: text
+                          text: "42"
+            trigger:
+              event: tools/call
+              count: 1
+
+      - name: test_client
+        mode: mcp_client
+        phases:
+          - name: discover_and_call
+            state:
+              actions:
+                - list_tools
+                - call_tool:
+                    name: "calculator"
+                    arguments:
+                      a: 1
+                      b: 2

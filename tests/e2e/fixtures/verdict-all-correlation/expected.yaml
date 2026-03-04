@@ -1,0 +1,10 @@
+# Expected verdict for all-correlation with mixed results → partial.
+verdict:
+  result: partial
+indicators:
+  server_name_present:
+    result: matched
+  injection_absent:
+    result: not_matched
+execution:
+  min_trace_messages: 6

@@ -1,11 +1,11 @@
-# Expected verdict for A2A task delegation scenario.
+# Expected verdict for A2A streaming self-test.
 verdict:
   result: exploited
 indicators:
-  agui_trigger_sent:
+  task_sent:
     result: matched
   task_completed:
     result: matched
 execution:
-  # AG-UI trigger sends at least one event
+  # A2A agent card + stream request/response events
   min_trace_messages: 2

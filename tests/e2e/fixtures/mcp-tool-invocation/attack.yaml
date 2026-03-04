@@ -1,13 +1,13 @@
-# E2E conformance: AG-UI event streaming with MCP server backend.
-# Multi-actor: MCP server (calculator) + AG-UI client.
+# E2E conformance: MCP server tool invocation with AG-UI trigger.
+# Multi-actor: MCP server (calculator) + AG-UI client to trigger the agent.
 oatf: "0.1"
 
 attack:
-  name: "AG-UI Event Streaming"
+  name: "MCP Tool Invocation"
   description: >-
-    Multi-actor scenario with an MCP server providing a calculator tool and an
-    AG-UI client that sends a run_agent_input to a framework agent. Verifies
-    AG-UI SSE event streaming and MCP tool invocation work together.
+    MCP server that serves a calculator tool, with an AG-UI client that triggers
+    the framework agent. Verifies that a framework agent can discover tools via
+    tools/list and invoke them via tools/call.
 
   indicators:
     - id: server_initialized
@@ -60,7 +60,7 @@ attack:
               event: tools/call
               count: 999
 
-      - name: agui_probe
+      - name: agui_trigger
         mode: ag_ui_client
         phases:
           - name: probe

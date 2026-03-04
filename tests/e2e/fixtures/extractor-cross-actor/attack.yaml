@@ -1,0 +1,122 @@
+# E2E conformance: cross-actor extractor propagation.
+# 4 actors: MCP server + MCP client → A2A server + A2A client.
+oatf: "0.1"
+
+attack:
+  name: "Extractor Cross-Actor"
+  description: >-
+    Four-actor scenario testing cross-actor extractor propagation. An MCP server
+    returns a secret value, the MCP client captures it via an extractor, the A2A
+    server waits for that extractor and interpolates it into its task response,
+    and the A2A client sends a task to verify the value flows end-to-end.
+
+  indicators:
+    - id: echo_captured
+      protocol: mcp
+      surface: tool_response
+      description: "MCP echo tool returned the secret value"
+      pattern:
+        target: "content[*].text"
+        condition:
+          contains: "secret-value-42"
+    - id: task_completed
+      protocol: a2a
+      surface: task_status
+      description: "A2A task completed successfully"
+      pattern:
+        target: "status.state"
+        condition:
+          contains: "completed"
+
+  execution:
+    actors:
+      - name: mcp_backend
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              server_info:
+                name: "e2e-extractor-server"
+                version: "1.0.0"
+              capabilities:
+                tools: {}
+              tools:
+                - name: "echo"
+                  description: "Returns a secret value"
+                  inputSchema:
+                    type: object
+                    properties:
+                      input:
+                        type: string
+                    required: ["input"]
+                  responses:
+                    - content:
+                        - type: text
+                          text: "secret-value-42"
+            trigger:
+              event: tools/call
+              count: 1
+
+      - name: mcp_probe
+        mode: mcp_client
+        phases:
+          - name: discover_and_call
+            state:
+              actions:
+                - list_tools
+                - call_tool:
+                    name: "echo"
+                    arguments:
+                      input: "test"
+            extractors:
+              - name: echo_text
+                source: response
+                type: json_path
+                selector: "$.content[0].text"
+
+      - name: a2a_backend
+        mode: a2a_server
+        phases:
+          - name: serve
+            await_extractors:
+              - actor: mcp_probe
+                extractors:
+                  - echo_text
+                timeout: "10s"
+            state:
+              agent_card:
+                name: "e2e-relay-agent"
+                description: "Relays extracted values"
+                url: "http://localhost:9092"
+                version: "1.0.0"
+                capabilities:
+                  streaming: false
+                  pushNotifications: false
+                defaultInputModes: ["text"]
+                defaultOutputModes: ["text"]
+                skills:
+                  - id: "relay"
+                    name: "Relay"
+                    description: "Relays extracted data"
+                    tags: ["relay"]
+              task_responses:
+                - status: "completed"
+                  messages:
+                    - role: "agent"
+                      parts:
+                        - type: "text"
+                          text: "Relayed: {{mcp_probe.echo_text}}"
+            trigger:
+              event: "message/send"
+              count: 999
+
+      - name: a2a_probe
+        mode: a2a_client
+        phases:
+          - name: send_task
+            state:
+              task_message:
+                role: "user"
+                parts:
+                  - kind: "text"
+                    text: "Relay the extracted value"

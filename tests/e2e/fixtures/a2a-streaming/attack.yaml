@@ -1,0 +1,73 @@
+# E2E conformance: A2A streaming (message/stream SSE path).
+# Multi-actor: A2A server (streaming) + A2A client (streaming: true).
+oatf: "0.1"
+
+attack:
+  name: "A2A Streaming"
+  description: >-
+    A2A server with streaming capability enabled. The A2A client sends a task
+    with streaming: true, triggering the message/stream SSE path instead of
+    message/send. Verifies the SSE streaming lifecycle events.
+
+  indicators:
+    - id: task_sent
+      protocol: a2a
+      surface: task_status
+      description: "A2A client sent streaming task to server"
+      pattern:
+        target: "message.role"
+        condition:
+          contains: "user"
+    - id: task_completed
+      protocol: a2a
+      surface: task_status
+      description: "A2A server completed streaming task"
+      pattern:
+        target: "status.state"
+        condition:
+          contains: "completed"
+
+  execution:
+    actors:
+      - name: target_server
+        mode: a2a_server
+        phases:
+          - name: serve
+            state:
+              agent_card:
+                name: "e2e-streaming-agent"
+                description: "Streaming echo agent for e2e testing"
+                url: "http://localhost:9090"
+                version: "1.0.0"
+                capabilities:
+                  streaming: true
+                  pushNotifications: false
+                defaultInputModes: ["text"]
+                defaultOutputModes: ["text"]
+                skills:
+                  - id: "echo"
+                    name: "Echo"
+                    description: "Echoes input back via streaming"
+                    tags: ["echo", "streaming"]
+              task_responses:
+                - status: "completed"
+                  messages:
+                    - role: "agent"
+                      parts:
+                        - type: "text"
+                          text: "Streamed: hello from A2A"
+            trigger:
+              event: "message/stream"
+              count: 999
+
+      - name: test_client
+        mode: a2a_client
+        phases:
+          - name: stream_task
+            state:
+              streaming: true
+              task_message:
+                role: "user"
+                parts:
+                  - kind: "text"
+                    text: "Hello from A2A streaming client"

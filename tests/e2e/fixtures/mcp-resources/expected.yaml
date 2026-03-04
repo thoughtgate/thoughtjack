@@ -1,0 +1,11 @@
+# Expected verdict for MCP resources self-test.
+verdict:
+  result: exploited
+indicators:
+  resource_listed:
+    result: matched
+  resource_read:
+    result: matched
+execution:
+  # MCP init req/resp + list req/resp + read req/resp → at least 6 trace messages
+  min_trace_messages: 6

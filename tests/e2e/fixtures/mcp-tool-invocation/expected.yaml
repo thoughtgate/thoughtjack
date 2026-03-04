@@ -1,4 +1,4 @@
-# Expected verdict for MCP tool discovery scenario.
+# Expected verdict for MCP tool invocation scenario.
 verdict:
   result: exploited
 indicators:

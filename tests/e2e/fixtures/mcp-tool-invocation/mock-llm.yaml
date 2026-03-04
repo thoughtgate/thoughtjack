@@ -1,5 +1,5 @@
-# mock-llm rules for AG-UI event streaming scenario.
-# Same tool-calling sequence as mcp-tool-discovery.
+# mock-llm rules for MCP tool invocation scenario.
+# Sequence: (1) tool call to calculator, (2) final text response.
 rules:
   - path: "/v1/chat/completions"
     sequence: 0
