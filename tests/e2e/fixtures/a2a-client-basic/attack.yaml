@@ -17,6 +17,14 @@ attack:
         target: "message.role"
         condition:
           contains: "user"
+    - id: task_completed
+      protocol: a2a
+      surface: task_status
+      description: "A2A server returned completed task"
+      pattern:
+        target: "status.state"
+        condition:
+          contains: "completed"
 
   execution:
     actors:

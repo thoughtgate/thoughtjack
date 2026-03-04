@@ -18,6 +18,8 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from crewai_tools import MCPServerAdapter
+
 from agent import create_crew
 
 _parser = argparse.ArgumentParser(description="CrewAI AG-UI reference agent")
@@ -35,6 +37,7 @@ app = FastAPI()
 
 # Lazily initialized on first AG-UI request (after TJ has started).
 _crew = None
+_adapters: list[MCPServerAdapter] = []
 
 
 def _sse(data: dict) -> str:
@@ -49,9 +52,15 @@ async def health() -> JSONResponse:
 @app.post("/")
 async def agent_endpoint(request: Request) -> StreamingResponse:
     """AG-UI endpoint: lazily creates the CrewAI crew, kicks it off, streams SSE."""
-    global _crew
+    global _crew, _adapters
     if _crew is None:
-        _crew = create_crew(_args.llm_base_url, _args.mcp_server, _args.a2a_server)
+        tools = []
+        for url in _args.mcp_server:
+            adapter = MCPServerAdapter(server_url=url)
+            adapter.__enter__()
+            _adapters.append(adapter)
+            tools.extend(adapter.tools)
+        _crew = create_crew(_args.llm_base_url, tools=tools, a2a_server_urls=_args.a2a_server)
 
     body = await request.json()
     messages = body.get("messages", [])
@@ -86,6 +95,15 @@ async def agent_endpoint(request: Request) -> StreamingResponse:
 @app.on_event("startup")
 async def on_startup() -> None:
     print(f"READY port={_args.port}", flush=True)
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    for adapter in _adapters:
+        try:
+            adapter.__exit__(None, None, None)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

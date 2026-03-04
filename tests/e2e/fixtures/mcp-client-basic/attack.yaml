@@ -17,6 +17,14 @@ attack:
         target: "serverInfo.name"
         condition:
           contains: "e2e"
+    - id: echo_tool_called
+      protocol: mcp
+      surface: tool_response
+      description: "Echo tool returned expected response"
+      pattern:
+        target: "content[0].text"
+        condition:
+          contains: "Echo"
 
   execution:
     actors:
@@ -53,10 +61,9 @@ attack:
         phases:
           - name: discover_and_call
             state:
-              requests:
-                - method: tools/list
-                - method: tools/call
-                  params:
+              actions:
+                - list_tools
+                - call_tool:
                     name: "echo"
                     arguments:
                       message: "hello"

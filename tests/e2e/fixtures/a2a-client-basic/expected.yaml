@@ -4,6 +4,8 @@ verdict:
 indicators:
   task_sent:
     result: matched
+  task_completed:
+    result: matched
 execution:
   # A2A client sends at least one request
   min_trace_messages: 2

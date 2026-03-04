@@ -4,6 +4,8 @@ verdict:
 indicators:
   server_initialized:
     result: matched
+  echo_tool_called:
+    result: matched
 execution:
-  # MCP initialize handshake → at least 2 trace messages
-  min_trace_messages: 2
+  # MCP init req/resp + list req/resp + call req/resp → at least 6 trace messages
+  min_trace_messages: 6

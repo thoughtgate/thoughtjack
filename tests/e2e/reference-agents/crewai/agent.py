@@ -6,19 +6,18 @@ Creates a single-agent Crew wired to MCP tools and optional A2A servers.
 from __future__ import annotations
 
 from crewai import Agent, Crew, LLM, Task
-from crewai_tools import MCPServerAdapter
 
 
 def create_crew(
     llm_base_url: str,
-    mcp_server_urls: list[str] | None = None,
+    tools: list | None = None,
     a2a_server_urls: list[str] | None = None,
 ) -> Crew:
-    """Build a CrewAI Crew wired to MCP tool servers and A2A agents.
+    """Build a CrewAI Crew wired to pre-initialized tools and A2A agents.
 
     Args:
         llm_base_url: Base URL for the mock LLM (OpenAI-compatible).
-        mcp_server_urls: List of MCP server HTTP URLs.
+        tools: Pre-initialized tool list (from MCPServerAdapter etc.).
         a2a_server_urls: List of A2A server URLs.
 
     Returns:
@@ -30,17 +29,12 @@ def create_crew(
         api_key="mock-key",
     )
 
-    tools = []
-    for url in mcp_server_urls or []:
-        adapter = MCPServerAdapter(server_url=url)
-        tools.extend(adapter.tools)
-
     agent = Agent(
         role="E2E Test Agent",
         goal="Execute tool calls and tasks as instructed",
         backstory="A test agent for e2e conformance testing",
         llm=llm,
-        tools=tools,
+        tools=tools or [],
         verbose=False,
     )
 
