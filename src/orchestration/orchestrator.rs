@@ -314,6 +314,7 @@ async fn wait_for_completion(
     let mut outcomes: Vec<ActorOutcome> = Vec::with_capacity(join_set.len());
     let mut clients_done = 0;
     let mut grace_started = false;
+    let mut max_session_expired = false;
     let max_session_sleep =
         tokio::time::sleep_until(tokio::time::Instant::now() + config.max_session);
     tokio::pin!(max_session_sleep);
@@ -345,7 +346,8 @@ async fn wait_for_completion(
                     spawn_grace_task(config, cancel, events);
                 }
             }
-            () = &mut max_session_sleep => {
+            () = &mut max_session_sleep, if !max_session_expired => {
+                max_session_expired = true;
                 tracing::warn!("max session expired, cancelling all actors");
                 events.emit(ThoughtJackEvent::OrchestratorShutdown {
                     reason: "max_session_expired".to_string(),

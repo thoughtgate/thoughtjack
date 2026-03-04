@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
+use crate::engine::driver::PhaseDriver;
 use crate::engine::types::{Direction, ProtocolEvent};
 use crate::error::EngineError;
 use crate::transport::jsonrpc::{
@@ -1562,6 +1563,57 @@ async fn driver_next_id_is_monotonic() {
     assert_eq!(driver.next_id(), 1);
     assert_eq!(driver.next_id(), 2);
     assert_eq!(driver.next_id(), 3);
+
+    driver.transport_cancel.cancel();
+}
+
+#[tokio::test]
+async fn drive_phase_with_actions_uses_short_idle_timeout() {
+    let (mock_writer, _sent) = MockWriter::new();
+    let writer: Arc<tokio::sync::Mutex<Box<dyn McpClientTransportWriter>>> =
+        Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
+
+    // Keep transport open after initialize (MockReader parks forever at EOF).
+    let reader = MockReader::new(vec![McpClientMessage::Response {
+        id: json!(1),
+        method: "initialize".to_string(),
+        result: json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {"listChanged": true}},
+            "serverInfo": {"name": "test-server", "version": "1.0"}
+        }),
+        is_error: false,
+        request_params: None,
+    }]);
+
+    let mut driver = create_test_driver(Arc::clone(&writer), Box::new(reader));
+    driver.phase_timeout = Duration::from_secs(30);
+
+    let (_ext_tx, extractors_rx) = watch::channel(HashMap::new());
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+
+    let state = json!({
+        // Unknown action still counts as an explicit action and should not
+        // force waiting the full phase timeout on a persistent transport.
+        "actions": ["noop"]
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        driver.drive_phase(0, &state, extractors_rx, event_tx, CancellationToken::new()),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "drive_phase should not wait full phase_timeout for action-driven phases"
+    );
+    let drive_result = result.unwrap();
+    assert!(
+        drive_result.is_ok(),
+        "drive_phase should complete successfully, got error: {:?}",
+        drive_result.err()
+    );
 
     driver.transport_cancel.cancel();
 }

@@ -39,6 +39,12 @@ pub(super) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default post-action event loop timeout.
 pub(super) const DEFAULT_PHASE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Idle timeout used after explicit actions complete.
+///
+/// Action-driven phases should finish quickly once request/response actions are
+/// done, while still allowing a short window for trailing notifications.
+pub(super) const POST_ACTION_IDLE_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// Initialization handshake timeout.
 pub(super) const INIT_TIMEOUT: Duration = Duration::from_secs(30);
 
