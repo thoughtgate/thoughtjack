@@ -30,9 +30,8 @@ pub(super) struct MessageMultiplexer {
     close_reason: Arc<std::sync::Mutex<Option<MultiplexerClosed>>>,
     /// Join handle for the background task.
     ///
-    /// Held for RAII: dropping aborts the background task. The field
-    /// is not read directly but its lifetime governs the task's lifetime.
-    #[allow(dead_code)]
+    /// Dropping this handle detaches the task. Call [`Self::abort`] during
+    /// shutdown for deterministic teardown.
     handle: JoinHandle<()>,
 }
 
@@ -165,5 +164,10 @@ impl MessageMultiplexer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .unwrap_or(MultiplexerClosed::TransportEof)
+    }
+
+    /// Aborts the multiplexer background task.
+    pub(super) fn abort(&self) {
+        self.handle.abort();
     }
 }

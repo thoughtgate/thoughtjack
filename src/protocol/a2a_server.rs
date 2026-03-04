@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -191,6 +192,11 @@ struct A2aSharedState {
     extractors: RwLock<Option<watch::Receiver<HashMap<String, String>>>>,
     /// Current phase effective state.
     state: RwLock<Value>,
+    /// Whether handlers should accept requests for the current phase.
+    ///
+    /// Toggled to `false` during phase transitions to avoid serving
+    /// stale state between `drive_phase()` calls.
+    accepting_requests: AtomicBool,
     /// Bypass synthesize output validation.
     raw_synthesize: bool,
 }
@@ -212,6 +218,13 @@ async fn handle_agent_card(
     }
     if let Err(resp) = validate_local_origin(&headers) {
         return resp;
+    }
+    if !shared.accepting_requests.load(Ordering::Acquire) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "phase transition in progress",
+        )
+            .into_response();
     }
 
     let card = shared.agent_card.read().await.clone();
@@ -247,6 +260,13 @@ async fn handle_jsonrpc(
     }
     if let Err(resp) = validate_local_origin(&headers) {
         return resp;
+    }
+    if !shared.accepting_requests.load(Ordering::Acquire) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "phase transition in progress",
+        )
+            .into_response();
     }
 
     if body.len() > MAX_JSONRPC_BODY_SIZE {
@@ -1061,6 +1081,10 @@ impl PhaseDriver for A2aServerDriver {
         event_tx: mpsc::UnboundedSender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
+        self.shared
+            .accepting_requests
+            .store(false, Ordering::Release);
+
         // Update shared state with current phase
         let agent_card_raw = state.get("agent_card").cloned().unwrap_or(json!({}));
         let current_extractors = extractors.borrow().clone();
@@ -1103,8 +1127,15 @@ impl PhaseDriver for A2aServerDriver {
             }));
         }
 
+        self.shared
+            .accepting_requests
+            .store(true, Ordering::Release);
+
         // Server-mode: wait for cancellation
         cancel.cancelled().await;
+        self.shared
+            .accepting_requests
+            .store(false, Ordering::Release);
         Ok(DriveResult::Complete)
     }
 
@@ -1131,6 +1162,7 @@ pub fn create_a2a_server_driver(bind_addr: &str, raw_synthesize: bool) -> A2aSer
         event_tx: RwLock::new(None),
         extractors: RwLock::new(None),
         state: RwLock::new(json!({})),
+        accepting_requests: AtomicBool::new(false),
         raw_synthesize,
     });
 
@@ -1440,6 +1472,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1470,6 +1503,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1495,6 +1529,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1512,6 +1547,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_requests_during_phase_transition() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(false),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let request = local_request_builder("GET", "/.well-known/agent.json")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
     async fn oversized_body_returns_413() {
         use axum::body::Body;
         use tower::ServiceExt;
@@ -1522,6 +1581,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1547,6 +1607,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1584,6 +1645,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1614,6 +1676,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1655,6 +1718,7 @@ mod tests {
                     }
                 ]
             })),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1704,6 +1768,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1741,6 +1806,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1778,6 +1844,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
@@ -1823,6 +1890,7 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 

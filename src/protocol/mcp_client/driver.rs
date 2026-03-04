@@ -69,9 +69,8 @@ pub struct McpClientDriver {
     pub(super) transport_cancel: CancellationToken,
     /// Spawned child process (for stdio transport).
     ///
-    /// Held for RAII: dropping the `Child` kills the process. The field
-    /// is not read directly but its lifetime determines the child's lifetime.
-    #[allow(dead_code)]
+    /// `spawn_stdio_transport` enables `kill_on_drop`, and `Drop` also
+    /// proactively sends a kill signal for deterministic teardown.
     pub(super) child: Option<Child>,
     /// Stderr from spawned child (for diagnostics on exit).
     pub(super) child_stderr: Option<ChildStderr>,
@@ -435,6 +434,25 @@ impl McpClientDriver {
         self.notification_rx = Some(notification_rx);
         self.handler_event_rx = Some(handler_event_rx);
         self.handler_handle = Some(handler_handle);
+    }
+}
+
+impl Drop for McpClientDriver {
+    fn drop(&mut self) {
+        // Stop background tasks first so no transport reads/writes continue
+        // while process teardown is in-flight.
+        self.transport_cancel.cancel();
+
+        if let Some(handle) = self.handler_handle.take() {
+            handle.abort();
+        }
+        if let Some(mux) = self.mux.take() {
+            mux.abort();
+        }
+
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+        }
     }
 }
 

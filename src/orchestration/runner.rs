@@ -238,6 +238,25 @@ fn parse_mcp_client_command(raw: &str) -> Result<(String, Vec<String>), EngineEr
     Ok((command, iter.collect()))
 }
 
+/// Waits for the server-readiness gate to open for a client actor.
+///
+/// Returns an error if the gate channel closes before readiness is signaled.
+async fn wait_for_readiness_gate(
+    actor_name: &str,
+    gate_rx: Option<broadcast::Receiver<()>>,
+) -> Result<(), EngineError> {
+    if let Some(mut rx) = gate_rx {
+        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
+        rx.recv().await.map_err(|err| {
+            EngineError::Phase(format!(
+                "readiness gate closed before actor '{actor_name}' started: {err}"
+            ))
+        })?;
+        tracing::debug!(actor = %actor_name, "readiness gate opened");
+    }
+    Ok(())
+}
+
 // ============================================================================
 // ActorRunContext
 // ============================================================================
@@ -470,12 +489,7 @@ async fn run_agui_client_actor(
         let _ = tx.send(());
     }
 
-    // Wait for server actors to be ready
-    if let Some(mut rx) = gate_rx {
-        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
-        let _ = rx.recv().await;
-        tracing::debug!(actor = %actor_name, "readiness gate opened");
-    }
+    wait_for_readiness_gate(actor_name, gate_rx).await?;
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),
@@ -632,12 +646,7 @@ async fn run_a2a_client_actor(
         let _ = tx.send(());
     }
 
-    // Wait for server actors to be ready
-    if let Some(mut rx) = gate_rx {
-        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
-        let _ = rx.recv().await;
-        tracing::debug!(actor = %actor_name, "readiness gate opened");
-    }
+    wait_for_readiness_gate(actor_name, gate_rx).await?;
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),
@@ -750,12 +759,7 @@ async fn run_mcp_client_actor(
         let _ = tx.send(());
     }
 
-    // Wait for server actors to be ready
-    if let Some(mut rx) = gate_rx {
-        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
-        let _ = rx.recv().await;
-        tracing::debug!(actor = %actor_name, "readiness gate opened");
-    }
+    wait_for_readiness_gate(actor_name, gate_rx).await?;
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),
@@ -948,6 +952,66 @@ attack:
         assert!(
             err.to_string().contains("--agui-client-endpoint"),
             "Expected endpoint error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agui_client_fails_when_readiness_gate_closes() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: agui_actor
+        mode: ag_ui_client
+        phases:
+          - name: setup
+            state:
+              run_agent_input:
+                messages:
+                  - role: user
+                    content: "Hello"
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: Some("http://localhost:3000".to_string()),
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
+        };
+
+        let (tx, rx) = tokio::sync::broadcast::channel(1);
+        drop(tx);
+
+        let result = run_actor(
+            0,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            Some(rx),
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("readiness gate closed"),
+            "Expected gate closed error, got: {err}"
         );
     }
 
