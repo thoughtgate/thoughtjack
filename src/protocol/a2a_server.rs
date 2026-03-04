@@ -17,7 +17,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -66,6 +67,9 @@ const TERMINAL_STATES: &[&str] = &["completed", "canceled", "failed", "rejected"
 
 /// Default inter-event delay for SSE streaming (ms).
 const SSE_EVENT_DELAY_MS: u64 = 200;
+
+/// Maximum accepted JSON-RPC body size for A2A server requests.
+const MAX_JSONRPC_BODY_SIZE: usize = crate::transport::DEFAULT_MAX_MESSAGE_SIZE;
 
 // ============================================================================
 // TaskStore
@@ -198,7 +202,18 @@ struct A2aSharedState {
 /// `GET /.well-known/agent.json` — serve the Agent Card.
 ///
 /// Implements: TJ-SPEC-017 F-002
-async fn handle_agent_card(State(shared): State<Arc<A2aSharedState>>) -> Response {
+async fn handle_agent_card(
+    State(shared): State<Arc<A2aSharedState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = validate_local_peer(addr) {
+        return resp;
+    }
+    if let Err(resp) = validate_local_origin(&headers) {
+        return resp;
+    }
+
     let card = shared.agent_card.read().await.clone();
 
     // Emit events
@@ -223,8 +238,29 @@ async fn handle_agent_card(State(shared): State<Arc<A2aSharedState>>) -> Respons
 /// Implements: TJ-SPEC-017 F-001
 async fn handle_jsonrpc(
     State(shared): State<Arc<A2aSharedState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    if let Err(resp) = validate_local_peer(addr) {
+        return resp;
+    }
+    if let Err(resp) = validate_local_origin(&headers) {
+        return resp;
+    }
+
+    if body.len() > MAX_JSONRPC_BODY_SIZE {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "request body too large: {} bytes (limit: {})",
+                body.len(),
+                MAX_JSONRPC_BODY_SIZE
+            ),
+        )
+            .into_response();
+    }
+
     // Parse JSON body
     let request: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -288,6 +324,70 @@ async fn handle_jsonrpc(
             axum::Json(error).into_response()
         }
     }
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_local_peer(addr: SocketAddr) -> Result<(), Response> {
+    if addr.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "non-local peer rejected").into_response())
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_local_origin(headers: &HeaderMap) -> Result<(), Response> {
+    let header_value = headers
+        .get("origin")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok());
+
+    let Some(header_value) = header_value else {
+        return Err((StatusCode::FORBIDDEN, "missing Origin or Host header").into_response());
+    };
+
+    let Some(hostname) = extract_hostname_for_origin_check(header_value) else {
+        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
+    };
+
+    if !matches!(
+        hostname.as_str(),
+        "localhost" | "127.0.0.1" | "[::1]" | "::1" | "0.0.0.0"
+    ) {
+        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
+    }
+
+    Ok(())
+}
+
+fn extract_hostname_for_origin_check(header_value: &str) -> Option<String> {
+    let authority = if header_value.contains("://") {
+        header_value
+            .parse::<Uri>()
+            .ok()?
+            .authority()?
+            .as_str()
+            .to_string()
+    } else {
+        header_value.to_string()
+    };
+
+    if authority == "::1" {
+        return Some("::1".to_string());
+    }
+
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let end = stripped.find(']')?;
+        return Some(format!("[{}]", &stripped[..end]).to_ascii_lowercase());
+    }
+
+    Some(
+        authority
+            .split(':')
+            .next()
+            .unwrap_or(authority.as_str())
+            .to_ascii_lowercase(),
+    )
 }
 
 /// Handle `message/send` — synchronous task response.
@@ -907,9 +1007,11 @@ fn jsonrpc_error(id: &Value, code: i64, message: &str) -> Value {
 ///
 /// Implements: TJ-SPEC-017 F-001
 fn build_router(shared: Arc<A2aSharedState>) -> Router {
+    let body_limit = axum::extract::DefaultBodyLimit::max(MAX_JSONRPC_BODY_SIZE);
     Router::new()
         .route("/.well-known/agent.json", get(handle_agent_card))
         .route("/", post(handle_jsonrpc))
+        .layer(body_limit)
         .with_state(shared)
 }
 
@@ -1069,6 +1171,18 @@ impl Drop for A2aServerDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::connect_info::MockConnectInfo;
+
+    fn test_router(shared: Arc<A2aSharedState>) -> Router {
+        build_router(shared).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))))
+    }
+
+    fn local_request_builder(method: &str, uri: &str) -> axum::http::request::Builder {
+        axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("host", "localhost:3000")
+    }
 
     // ---- TaskStore Tests ----
 
@@ -1329,11 +1443,9 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
-        let request = axum::http::Request::builder()
-            .method("GET")
-            .uri("/.well-known/agent.json")
+        let request = local_request_builder("GET", "/.well-known/agent.json")
             .body(Body::empty())
             .unwrap();
 
@@ -1345,6 +1457,83 @@ mod tests {
             .unwrap();
         let card: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(card["name"], "Test Agent");
+    }
+
+    #[tokio::test]
+    async fn rejects_non_loopback_peer() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            raw_synthesize: false,
+        });
+
+        let router =
+            build_router(shared).layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 2], 9999))));
+
+        let request = local_request_builder("GET", "/.well-known/agent.json")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_non_local_origin() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let request = local_request_builder("POST", "/")
+            .header("origin", "https://evil.example")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{}}"#,
+            ))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn oversized_body_returns_413() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let oversized = vec![b'a'; MAX_JSONRPC_BODY_SIZE + 1];
+        let request = local_request_builder("POST", "/")
+            .header("content-type", "application/json")
+            .body(Body::from(oversized))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
@@ -1361,7 +1550,7 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1370,9 +1559,7 @@ mod tests {
             "params": {}
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1400,11 +1587,9 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from("not valid json"))
             .unwrap();
@@ -1432,13 +1617,11 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({"jsonrpc": "2.0", "id": "1", "params": {}});
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1475,7 +1658,7 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1491,9 +1674,7 @@ mod tests {
             }
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1526,7 +1707,7 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1535,9 +1716,7 @@ mod tests {
             "params": {}
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1565,7 +1744,7 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1574,9 +1753,7 @@ mod tests {
             "params": {}
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1604,7 +1781,7 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1613,9 +1790,7 @@ mod tests {
             "params": {}
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1651,7 +1826,7 @@ mod tests {
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1660,9 +1835,7 @@ mod tests {
             "params": { "id": task_id }
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();

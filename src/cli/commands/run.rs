@@ -159,7 +159,16 @@ pub async fn run_from_yaml(
         print_human_summary(&output);
     }
 
-    // 13. Exit code
+    // 13. Runtime actor failures are treated as orchestration errors.
+    let actor_failures = summarize_actor_failures(&outcomes);
+    if !actor_failures.is_empty() {
+        return Err(ThoughtJackError::Orchestration(format!(
+            "actor execution failed: {}",
+            actor_failures.join("; ")
+        )));
+    }
+
+    // 14. Exit code
     let code = verdict_exit_code(&verdict.result);
     if code != 0 {
         return Err(ThoughtJackError::Verdict {
@@ -264,4 +273,102 @@ fn build_actor_statuses(outcomes: &[ActorOutcome], actors: &[oatf::Actor]) -> Ve
             }
         })
         .collect()
+}
+
+/// Summarizes runtime actor failures from orchestration outcomes.
+fn summarize_actor_failures(outcomes: &[ActorOutcome]) -> Vec<String> {
+    outcomes
+        .iter()
+        .filter_map(|outcome| match outcome {
+            ActorOutcome::Error { actor_name, error } => Some(format!("{actor_name}: {error}")),
+            ActorOutcome::Panic { actor_name } => Some(format!("{actor_name}: task panicked")),
+            ActorOutcome::Success(_) => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn test_run_args(max_session: Duration) -> RunArgs {
+        RunArgs {
+            config: None,
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(max_session),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(5)),
+            output: None,
+            header: vec![],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        }
+    }
+
+    #[test]
+    fn summarize_actor_failures_ignores_success() {
+        let outcomes = vec![ActorOutcome::Success(crate::engine::types::ActorResult {
+            actor_name: "ok".to_string(),
+            termination: crate::engine::types::TerminationReason::TerminalPhaseReached,
+            phases_completed: 1,
+            total_phases: 1,
+            final_phase: Some("done".to_string()),
+        })];
+        assert!(summarize_actor_failures(&outcomes).is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_from_yaml_returns_error_when_actor_fails() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: actor-runtime-failure
+  execution:
+    actors:
+      - name: server
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              tools:
+                - name: test_tool
+                  description: "test"
+                  inputSchema:
+                    type: object
+      - name: client
+        mode: ag_ui_client
+        phases:
+          - name: probe
+            state:
+              run_agent_input:
+                messages:
+                  - role: user
+                    content: "hello"
+"#;
+
+        let mut args = test_run_args(Duration::from_millis(500));
+        args.mcp_server = Some("127.0.0.1:0".to_string());
+
+        let err = run_from_yaml(yaml, &args, true, CancellationToken::new())
+            .await
+            .expect_err("actor runtime failure should bubble up as orchestration error");
+
+        match err {
+            ThoughtJackError::Orchestration(msg) => {
+                assert!(msg.contains("actor execution failed"));
+                assert!(msg.contains("client"));
+            }
+            other => panic!("expected orchestration error, got {other}"),
+        }
+    }
 }

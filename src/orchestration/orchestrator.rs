@@ -194,7 +194,10 @@ pub async fn orchestrate(
                 events.emit(ThoughtJackEvent::ReadinessGateTimeout { not_ready });
                 cancel.cancel();
                 join_set.abort_all();
-                return drain_join_set(join_set, &task_meta, trace, events).await;
+                drain_join_set(join_set, &task_meta, events).await;
+                return Err(EngineError::Phase(format!(
+                    "readiness gate failed: {gate_err}"
+                )));
             }
         }
     }
@@ -474,16 +477,11 @@ fn spawn_grace_task(config: &ActorConfig, cancel: &CancellationToken, events: &A
 async fn drain_join_set(
     mut join_set: JoinSet<ActorTaskResult>,
     task_meta: &TaskMetaMap,
-    trace: SharedTrace,
     events: &EventEmitter,
-) -> Result<OrchestratorResult, EngineError> {
-    let mut outcomes = Vec::with_capacity(join_set.len());
+) {
     while let Some(join_result) = join_set.join_next().await {
-        let (outcome, _) = unpack_join_result(join_result, task_meta, events);
-        outcomes.push(outcome);
+        let _ = unpack_join_result(join_result, task_meta, events);
     }
-
-    Ok(OrchestratorResult { outcomes, trace })
 }
 
 // ============================================================================
@@ -728,6 +726,46 @@ attack:
 
             // Single server actor should have an outcome
             assert_eq!(result.outcomes.len(), 1);
+        })
+        .await
+        .expect("test timed out after 15s");
+    }
+
+    #[tokio::test]
+    async fn readiness_gate_failure_returns_error() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+            );
+
+            let mut config = default_actor_config(Duration::from_secs(5));
+            config.mcp_server_bind = Some("invalid-bind-address".to_string());
+            config.readiness_timeout = Duration::from_millis(250);
+
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
+
+            let result = orchestrate(&loaded, &config, &events, cancel).await;
+            let err_text = match result {
+                Ok(_) => panic!("expected readiness gate failure to be fatal"),
+                Err(err) => err.to_string(),
+            };
+            assert!(
+                err_text.contains("readiness gate failed"),
+                "unexpected error text: {err_text}"
+            );
         })
         .await
         .expect("test timed out after 15s");
