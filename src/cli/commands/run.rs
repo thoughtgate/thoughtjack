@@ -6,16 +6,17 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::args::RunArgs;
 use crate::engine::trace::SharedTrace;
-use crate::engine::types::AwaitExtractor;
+use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
 use crate::error::ThoughtJackError;
 use crate::loader::{self, LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
+use crate::observability::init_metrics;
 use crate::orchestration::orchestrator::{ActorOutcome, orchestrate};
 use crate::orchestration::runner::{ActorConfig, build_actor_config, run_actor};
 use crate::orchestration::store::ExtractorStore;
@@ -70,19 +71,22 @@ pub async fn run_from_yaml(
         tracing::warn!("Synthesize output validation disabled (--raw-synthesize)");
     }
 
-    // 1. Load document
+    // 1. Initialize metrics (idempotent no-op if already initialized).
+    init_metrics(args.metrics_port)?;
+
+    // 2. Load document
     let loaded = loader::load_document(yaml)?;
 
-    // 2. Build ActorConfig from RunArgs
+    // 3. Build ActorConfig from RunArgs
     let config = build_actor_config(args);
 
-    // 3. Set up EventEmitter
+    // 4. Set up EventEmitter
     let events: Arc<EventEmitter> = match &args.events_file {
         Some(path) => Arc::new(EventEmitter::from_file(path)?),
         None => Arc::new(EventEmitter::noop()),
     };
 
-    // 4. Get actors
+    // 5. Get actors
     let actors = loaded
         .document
         .attack
@@ -91,7 +95,7 @@ pub async fn run_from_yaml(
         .as_ref()
         .ok_or_else(|| ThoughtJackError::Usage("no actors in document".into()))?;
 
-    // 5. Execute: single-actor bypass or multi-actor orchestrate
+    // 6. Execute: single-actor bypass or multi-actor orchestrate
     let start = Instant::now();
     let (outcomes, trace) = if actors.len() <= 1 {
         run_single_actor(&loaded, &config, &events, cancel).await?
@@ -104,7 +108,7 @@ pub async fn run_from_yaml(
     #[allow(clippy::cast_possible_truncation)]
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    // 6. Build ActorInfo list for verdict
+    // 7. Build ActorInfo list for verdict
     let actor_infos: Vec<ActorInfo> = actors
         .iter()
         .map(|a| ActorInfo {
@@ -113,7 +117,7 @@ pub async fn run_from_yaml(
         })
         .collect();
 
-    // 7. Evaluate verdict
+    // 8. Evaluate verdict
     let trace_snapshot = trace.snapshot();
     let cel = oatf::evaluate::default_cel_evaluator();
     let eval_config = EvaluationConfig {
@@ -130,16 +134,16 @@ pub async fn run_from_yaml(
         &source,
     );
 
-    // 8. Build actor statuses from outcomes
+    // 9. Build actor statuses from outcomes
     let actor_statuses = build_actor_statuses(&outcomes, actors);
 
-    // 9. Resolve grace period
+    // 10. Resolve grace period
     let grace_applied = resolve_grace_period(
         args.grace_period.map(Into::into),
         loaded.document.attack.grace_period.as_deref(),
     );
 
-    // 10. Build output
+    // 11. Build output
     let output = build_verdict_output(
         &loaded.document.attack,
         &verdict,
@@ -149,17 +153,17 @@ pub async fn run_from_yaml(
         duration_ms,
     );
 
-    // 11. Write JSON verdict if --output
+    // 12. Write JSON verdict if --output
     if let Some(ref path) = args.output {
         write_json_verdict(&output, path)?;
     }
 
-    // 12. Print human summary
+    // 13. Print human summary
     if !quiet {
         print_human_summary(&output);
     }
 
-    // 13. Runtime actor failures are treated as orchestration errors.
+    // 14. Runtime actor failures are treated as orchestration errors.
     let actor_failures = summarize_actor_failures(&outcomes);
     if !actor_failures.is_empty() {
         return Err(ThoughtJackError::Orchestration(format!(
@@ -168,7 +172,7 @@ pub async fn run_from_yaml(
         )));
     }
 
-    // 14. Exit code
+    // 15. Exit code
     let code = verdict_exit_code(&verdict.result);
     if code != 0 {
         return Err(ThoughtJackError::Verdict {
@@ -186,44 +190,123 @@ pub async fn run_from_yaml(
 async fn run_single_actor(
     loaded: &LoadedDocument,
     config: &ActorConfig,
-    events: &EventEmitter,
+    events: &Arc<EventEmitter>,
     cancel: CancellationToken,
 ) -> Result<(Vec<ActorOutcome>, SharedTrace), ThoughtJackError> {
     let actors = document_actors(&loaded.document);
 
-    let actor_name = &actors[0].name;
+    let actor_name = actors[0].name.clone();
+    let total_phases = actors[0].phases.len();
 
     // Build per-actor await_extractors config
     let await_cfg: HashMap<usize, Vec<AwaitExtractor>> = loaded
         .await_extractors
         .iter()
-        .filter(|((name, _), _)| name == actor_name)
+        .filter(|((name, _), _)| name == &actor_name)
         .map(|((_, phase_idx), specs)| (*phase_idx, specs.clone()))
         .collect();
 
     let trace = SharedTrace::new();
     let extractor_store = ExtractorStore::new();
 
-    let result = run_actor(
-        0,
-        loaded.document.clone(),
-        config,
-        trace.clone(),
-        extractor_store,
-        await_cfg,
-        cancel,
-        None,
-        None,
-        events,
-    )
-    .await
-    .map_err(|e| ThoughtJackError::Orchestration(e.to_string()))?;
-
-    events.emit(ThoughtJackEvent::OrchestratorCompleted {
-        summary: format!("single actor '{}' completed", result.actor_name),
+    let actor_cancel = cancel.child_token();
+    let cfg = config.clone();
+    let task_actor_cancel = actor_cancel.clone();
+    let task_events = Arc::clone(events);
+    let document = loaded.document.clone();
+    let trace_for_actor = trace.clone();
+    let mut actor_handle = tokio::spawn(async move {
+        run_actor(
+            0,
+            document,
+            &cfg,
+            trace_for_actor,
+            extractor_store,
+            await_cfg,
+            task_actor_cancel,
+            None,
+            None,
+            &task_events,
+        )
+        .await
     });
 
-    Ok((vec![ActorOutcome::Success(result)], trace))
+    let outcome = tokio::select! {
+        result = &mut actor_handle => {
+            unpack_single_actor_join(result, &actor_name, total_phases)
+        }
+        () = tokio::time::sleep(config.max_session) => {
+            actor_cancel.cancel();
+            wait_for_single_actor_shutdown(&mut actor_handle, &actor_name, total_phases).await
+        }
+        () = cancel.cancelled() => {
+            actor_cancel.cancel();
+            wait_for_single_actor_shutdown(&mut actor_handle, &actor_name, total_phases).await
+        }
+    };
+
+    let summary = match &outcome {
+        ActorOutcome::Success(result) => {
+            format!(
+                "single actor '{}' completed ({})",
+                result.actor_name, result.termination
+            )
+        }
+        ActorOutcome::Error { actor_name, error } => {
+            format!("single actor '{actor_name}' failed ({error})")
+        }
+        ActorOutcome::Panic { actor_name } => {
+            format!("single actor '{actor_name}' panicked")
+        }
+    };
+    events.emit(ThoughtJackEvent::OrchestratorCompleted { summary });
+
+    Ok((vec![outcome], trace))
+}
+
+fn unpack_single_actor_join(
+    join_result: Result<Result<ActorResult, crate::error::EngineError>, tokio::task::JoinError>,
+    actor_name: &str,
+    total_phases: usize,
+) -> ActorOutcome {
+    match join_result {
+        Ok(Ok(result)) => ActorOutcome::Success(result),
+        Ok(Err(err)) => ActorOutcome::Error {
+            actor_name: actor_name.to_string(),
+            error: err.to_string(),
+        },
+        Err(join_err) if join_err.is_cancelled() => {
+            ActorOutcome::Success(cancelled_actor_result(actor_name, total_phases))
+        }
+        Err(_join_err) => ActorOutcome::Panic {
+            actor_name: actor_name.to_string(),
+        },
+    }
+}
+
+async fn wait_for_single_actor_shutdown(
+    handle: &mut tokio::task::JoinHandle<Result<ActorResult, crate::error::EngineError>>,
+    actor_name: &str,
+    total_phases: usize,
+) -> ActorOutcome {
+    const SHUTDOWN_WAIT: Duration = Duration::from_secs(1);
+    match tokio::time::timeout(SHUTDOWN_WAIT, &mut *handle).await {
+        Ok(join_result) => unpack_single_actor_join(join_result, actor_name, total_phases),
+        Err(_elapsed) => {
+            handle.abort();
+            ActorOutcome::Success(cancelled_actor_result(actor_name, total_phases))
+        }
+    }
+}
+
+fn cancelled_actor_result(actor_name: &str, total_phases: usize) -> ActorResult {
+    ActorResult {
+        actor_name: actor_name.to_string(),
+        termination: TerminationReason::Cancelled,
+        phases_completed: 0,
+        total_phases,
+        final_phase: None,
+    }
 }
 
 /// Converts actor outcomes into `ActorStatus` entries.
@@ -370,5 +453,41 @@ attack:
             }
             other => panic!("expected orchestration error, got {other}"),
         }
+    }
+
+    #[tokio::test]
+    async fn run_from_yaml_single_actor_respects_max_session() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: single-max-session
+  execution:
+    mode: mcp_server
+    phases:
+      - name: long_running
+        state:
+          tools:
+            - name: test_tool
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 999
+      - name: terminal
+"#;
+
+        let args = test_run_args(Duration::from_millis(250));
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_from_yaml(yaml, &args, true, CancellationToken::new()),
+        )
+        .await;
+        assert!(result.is_ok(), "single-actor run exceeded timeout window");
+        assert!(
+            result.unwrap().is_ok(),
+            "single-actor run should complete after max-session cancellation"
+        );
     }
 }

@@ -11,7 +11,11 @@ use crate::cli::args::{OutputFormat, VersionArgs};
 /// build timestamp, Rust compiler version, and target triple.
 ///
 /// Implements: TJ-SPEC-007 F-008
-pub fn run(args: &VersionArgs) {
+pub fn run(args: &VersionArgs, quiet: bool) {
+    if quiet {
+        return;
+    }
+
     let name = env!("CARGO_PKG_NAME");
     let version = env!("CARGO_PKG_VERSION");
 

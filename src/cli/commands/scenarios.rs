@@ -20,8 +20,12 @@ use crate::scenarios::{self, ScenarioCategory};
 ///
 /// Implements: TJ-SPEC-010 F-004
 #[allow(clippy::unused_async)]
-pub async fn list(args: &ScenariosListArgs) -> Result<(), ThoughtJackError> {
+pub async fn list(args: &ScenariosListArgs, quiet: bool) -> Result<(), ThoughtJackError> {
     let results = scenarios::list_scenarios(args.category, args.tag.as_deref());
+
+    if quiet {
+        return Ok(());
+    }
 
     match args.format {
         OutputFormat::Json => {
@@ -68,7 +72,7 @@ pub async fn list(args: &ScenariosListArgs) -> Result<(), ThoughtJackError> {
                 println!();
             }
 
-            println!("Run a scenario: thoughtjack scenarios run <name> --config <oatf.yaml>");
+            println!("Run a scenario: thoughtjack scenarios run <name>");
             println!("View YAML:      thoughtjack scenarios show <name>");
         }
     }
@@ -86,7 +90,7 @@ pub async fn list(args: &ScenariosListArgs) -> Result<(), ThoughtJackError> {
 ///
 /// Implements: TJ-SPEC-010 F-005
 #[allow(clippy::unused_async)]
-pub async fn show(args: &ScenariosShowArgs) -> Result<(), ThoughtJackError> {
+pub async fn show(args: &ScenariosShowArgs, quiet: bool) -> Result<(), ThoughtJackError> {
     let scenario = scenarios::find_scenario(&args.name).ok_or_else(|| {
         let mut message = format!("Unknown scenario '{}'", args.name);
 
@@ -105,7 +109,9 @@ pub async fn show(args: &ScenariosShowArgs) -> Result<(), ThoughtJackError> {
         ThoughtJackError::Usage(message)
     })?;
 
-    print!("{}", scenario.yaml);
+    if !quiet {
+        print!("{}", scenario.yaml);
+    }
     Ok(())
 }
 
