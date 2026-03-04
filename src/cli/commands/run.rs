@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::cli::args::RunArgs;
 use crate::engine::trace::SharedTrace;
 use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
-use crate::error::ThoughtJackError;
+use crate::error::{EngineError, ThoughtJackError};
 use crate::loader::{self, LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
 use crate::observability::init_metrics;
@@ -78,7 +78,10 @@ pub async fn run_from_yaml(
     let loaded = loader::load_document(yaml)?;
 
     // 3. Build ActorConfig from RunArgs
-    let config = build_actor_config(args);
+    let config = build_actor_config(args).map_err(|e| match e {
+        EngineError::Driver(msg) => ThoughtJackError::Usage(msg),
+        other => ThoughtJackError::Usage(other.to_string()),
+    })?;
 
     // 4. Set up EventEmitter
     let events: Arc<EventEmitter> = match &args.events_file {
@@ -489,5 +492,39 @@ attack:
             result.unwrap().is_ok(),
             "single-actor run should complete after max-session cancellation"
         );
+    }
+
+    #[tokio::test]
+    async fn run_from_yaml_invalid_header_returns_usage_error() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: invalid-header-test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#;
+
+        let mut args = test_run_args(Duration::from_secs(1));
+        args.header = vec!["MissingColon".to_string()];
+
+        let err = run_from_yaml(yaml, &args, true, CancellationToken::new())
+            .await
+            .expect_err("invalid --header should fail with usage error");
+
+        match err {
+            ThoughtJackError::Usage(msg) => {
+                assert!(
+                    msg.contains("expected KEY:VALUE"),
+                    "unexpected usage error: {msg}"
+                );
+            }
+            other => panic!("expected usage error, got {other}"),
+        }
     }
 }

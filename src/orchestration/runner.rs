@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -97,21 +98,19 @@ pub struct ActorConfig {
 
 /// Builds an `ActorConfig` from CLI `RunArgs`.
 ///
+/// # Errors
+///
+/// Returns `EngineError::Driver` if any `--header` value is malformed
+/// (missing `:`, invalid header name, or invalid header value).
+///
 /// Implements: TJ-SPEC-015 F-003
-#[must_use]
-pub fn build_actor_config(args: &RunArgs) -> ActorConfig {
-    let headers: Vec<(String, String)> = args
-        .header
-        .iter()
-        .filter_map(|h| {
-            let mut parts = h.splitn(2, ':');
-            let key = parts.next()?.trim().to_string();
-            let value = parts.next()?.trim().to_string();
-            Some((key, value))
-        })
-        .collect();
+pub fn build_actor_config(args: &RunArgs) -> Result<ActorConfig, EngineError> {
+    let mut headers: Vec<(String, String)> = Vec::with_capacity(args.header.len());
+    for (idx, raw) in args.header.iter().enumerate() {
+        headers.push(parse_cli_header(raw, idx + 1)?);
+    }
 
-    ActorConfig {
+    Ok(ActorConfig {
         mcp_server_bind: args.mcp_server.clone(),
         agui_client_endpoint: args.agui_client_endpoint.clone(),
         a2a_server_bind: args.a2a_server.clone(),
@@ -126,7 +125,44 @@ pub fn build_actor_config(args: &RunArgs) -> ActorConfig {
         readiness_timeout: args.readiness_timeout.into(),
         #[cfg(test)]
         transport_factory: None,
+    })
+}
+
+/// Parses and validates a CLI `--header` value (`KEY:VALUE`).
+///
+/// Returns an `EngineError::Driver` with an actionable message when:
+/// - the delimiter `:` is missing,
+/// - the header name is empty/invalid,
+/// - the header value is not valid for HTTP.
+fn parse_cli_header(raw: &str, position: usize) -> Result<(String, String), EngineError> {
+    let Some((raw_key, raw_value)) = raw.split_once(':') else {
+        return Err(EngineError::Driver(format!(
+            "invalid --header value at position {position}: '{raw}' (expected KEY:VALUE)"
+        )));
+    };
+
+    let key = raw_key.trim();
+    let value = raw_value.trim();
+
+    if key.is_empty() {
+        return Err(EngineError::Driver(format!(
+            "invalid --header value at position {position}: empty header name"
+        )));
     }
+
+    HeaderName::from_bytes(key.as_bytes()).map_err(|_| {
+        EngineError::Driver(format!(
+            "invalid --header value at position {position}: '{key}' is not a valid HTTP header name"
+        ))
+    })?;
+
+    HeaderValue::from_str(value).map_err(|_| {
+        EngineError::Driver(format!(
+            "invalid --header value at position {position}: value for '{key}' is not a valid HTTP header value"
+        ))
+    })?;
+
+    Ok((key.to_string(), value.to_string()))
 }
 
 // ============================================================================
@@ -827,7 +863,7 @@ mod tests {
             events_file: None,
         };
 
-        let config = build_actor_config(&args);
+        let config = build_actor_config(&args).expect("valid headers should parse");
         assert_eq!(config.mcp_server_bind, Some("0.0.0.0:8080".to_string()));
         assert_eq!(
             config.agui_client_endpoint,
@@ -1364,7 +1400,7 @@ attack:
             events_file: None,
         };
 
-        let config = build_actor_config(&args);
+        let config = build_actor_config(&args).expect("valid headers should parse");
         assert_eq!(config.headers.len(), 3);
         // Standard header
         assert_eq!(config.headers[0].0, "Authorization");
@@ -1378,7 +1414,7 @@ attack:
     }
 
     #[test]
-    fn build_actor_config_header_without_colon_skipped() {
+    fn build_actor_config_header_without_colon_rejected() {
         let args = RunArgs {
             config: Some(std::path::PathBuf::from("test.yaml")),
             mcp_server: None,
@@ -1399,11 +1435,69 @@ attack:
             events_file: None,
         };
 
-        let config = build_actor_config(&args);
-        // "NoColonHere" has no colon, should be silently skipped
-        assert_eq!(config.headers.len(), 1);
-        assert_eq!(config.headers[0].0, "Valid");
-        assert_eq!(config.headers[0].1, "header");
+        let err = build_actor_config(&args).expect_err("missing colon should be rejected");
+        assert!(
+            err.to_string().contains("expected KEY:VALUE"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_actor_config_invalid_header_name_rejected() {
+        let args = RunArgs {
+            config: Some(std::path::PathBuf::from("test.yaml")),
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(300)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(30)),
+            output: None,
+            header: vec!["Bad Name: value".to_string()],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        };
+
+        let err = build_actor_config(&args).expect_err("invalid header name should be rejected");
+        assert!(
+            err.to_string().contains("valid HTTP header name"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_actor_config_invalid_header_value_rejected() {
+        let args = RunArgs {
+            config: Some(std::path::PathBuf::from("test.yaml")),
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(300)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(30)),
+            output: None,
+            header: vec!["X-Test: value\r\ninjected".to_string()],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        };
+
+        let err = build_actor_config(&args).expect_err("invalid header value should be rejected");
+        assert!(
+            err.to_string().contains("valid HTTP header value"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1428,7 +1522,7 @@ attack:
             events_file: None,
         };
 
-        let config = build_actor_config(&args);
+        let config = build_actor_config(&args).expect("empty header list should be valid");
         assert!(config.mcp_server_bind.is_none());
         assert!(config.agui_client_endpoint.is_none());
         assert!(config.a2a_server_bind.is_none());

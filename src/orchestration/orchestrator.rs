@@ -187,11 +187,18 @@ pub async fn orchestrate(
             }
             Err(gate_err) => {
                 tracing::error!(%gate_err, "readiness gate failed");
-                let not_ready = match &gate_err {
-                    GateError::Timeout { not_ready } => not_ready.clone(),
-                    GateError::ServerFailed { actor } => vec![actor.clone()],
-                };
-                events.emit(ThoughtJackEvent::ReadinessGateTimeout { not_ready });
+                match &gate_err {
+                    GateError::Timeout { not_ready } => {
+                        events.emit(ThoughtJackEvent::ReadinessGateTimeout {
+                            not_ready: not_ready.clone(),
+                        });
+                    }
+                    GateError::ServerFailed { actor } => {
+                        events.emit(ThoughtJackEvent::ReadinessGateServerFailed {
+                            actor: actor.clone(),
+                        });
+                    }
+                }
                 cancel.cancel();
                 join_set.abort_all();
                 drain_join_set(join_set, &task_meta, events).await;
@@ -775,6 +782,68 @@ attack:
             assert!(
                 err_text.contains("readiness gate failed"),
                 "unexpected error text: {err_text}"
+            );
+        })
+        .await
+        .expect("test timed out after 15s");
+    }
+
+    #[tokio::test]
+    async fn readiness_gate_server_failure_emits_server_failed_event() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+            );
+
+            let mut config = default_actor_config(Duration::from_secs(5));
+            config.mcp_server_bind = Some("invalid-bind-address".to_string());
+            config.readiness_timeout = Duration::from_millis(250);
+
+            let tempdir = tempfile::tempdir().expect("tempdir should be created");
+            let events_path = tempdir.path().join("events.jsonl");
+            let events = Arc::new(
+                EventEmitter::from_file(&events_path)
+                    .expect("event emitter file should be created"),
+            );
+            let cancel = CancellationToken::new();
+
+            let result = orchestrate(&loaded, &config, &events, cancel).await;
+            assert!(result.is_err(), "expected readiness gate failure");
+            events.flush();
+
+            let content = std::fs::read_to_string(&events_path)
+                .expect("should be able to read emitted events");
+            let event_types: Vec<String> = content
+                .lines()
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .expect("event line should be valid json")
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect();
+
+            assert!(
+                event_types.iter().any(|t| t == "ReadinessGateServerFailed"),
+                "expected ReadinessGateServerFailed event, got {event_types:?}"
+            );
+            assert!(
+                !event_types.iter().any(|t| t == "ReadinessGateTimeout"),
+                "timeout event should not be emitted for server failure path: {event_types:?}"
             );
         })
         .await

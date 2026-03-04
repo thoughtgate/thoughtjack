@@ -42,7 +42,6 @@ jobs:
     name: "${{ matrix.scenario }} × ${{ matrix.framework }}"
     runs-on: ubuntu-latest
     needs: [build-tj]
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
