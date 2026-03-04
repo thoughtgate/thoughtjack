@@ -18,6 +18,14 @@ attack:
         target: "serverInfo.name"
         condition:
           contains: "e2e"
+    - id: agui_request_sent
+      protocol: ag_ui
+      surface: agent_event
+      description: "AG-UI client sent run request to framework agent"
+      pattern:
+        target: "messages[*].role"
+        condition:
+          contains: "user"
 
   execution:
     actors:
