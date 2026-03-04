@@ -18,6 +18,14 @@ attack:
         target: "message.role"
         condition:
           contains: "user"
+    - id: sse_status_received
+      protocol: a2a
+      surface: task_status
+      description: "A2A client received SSE status-update event (streaming-specific)"
+      pattern:
+        target: "kind"
+        condition:
+          contains: "status-update"
     - id: task_completed
       protocol: a2a
       surface: task_status

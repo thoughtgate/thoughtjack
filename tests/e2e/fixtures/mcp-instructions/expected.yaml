@@ -1,0 +1,9 @@
+# Expected verdict for MCP instructions injection self-test.
+verdict:
+  result: exploited
+indicators:
+  instructions_injected:
+    result: matched
+execution:
+  # init(2) + list(2) + call(2) × 2 sides = 12
+  min_trace_messages: 8

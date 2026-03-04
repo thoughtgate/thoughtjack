@@ -7,5 +7,5 @@ indicators:
   echo_tool_called:
     result: matched
 execution:
-  # MCP init req/resp + list req/resp + call req/resp → at least 6 trace messages
-  min_trace_messages: 6
+  # MCP init(2×2) + list(2×2) + call(2×2) = 12; conservative floor
+  min_trace_messages: 8

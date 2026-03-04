@@ -7,5 +7,5 @@ indicators:
   tool_description_swapped:
     result: matched
 execution:
-  # init + list + call + list → many trace messages
-  min_trace_messages: 6
+  # init(2×2) + list(2×2) + call(2×2) + list(2×2) = 16; conservative floor
+  min_trace_messages: 8

@@ -1,0 +1,12 @@
+# Expected verdict for graceful degradation (partial actor failure).
+# MCP indicator matches despite A2A actor error → verdict exploited (any correlation).
+verdict:
+  result: exploited
+indicators:
+  mcp_echo_succeeded:
+    result: matched
+  a2a_unreachable:
+    result: not_matched
+execution:
+  # MCP events only (A2A actor errors before producing trace events)
+  min_trace_messages: 6

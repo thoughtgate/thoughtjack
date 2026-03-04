@@ -57,7 +57,7 @@ jobs:
           - scenario: a2a-task-delegation
             framework: crewai
             self_test: false
-          # Self-tests (10)
+          # Self-tests (13)
           - scenario: mcp-client-basic
             framework: self-test
             self_test: true
@@ -86,6 +86,15 @@ jobs:
             framework: self-test
             self_test: true
           - scenario: a2a-streaming
+            framework: self-test
+            self_test: true
+          - scenario: mcp-side-effects
+            framework: self-test
+            self_test: true
+          - scenario: mcp-instructions
+            framework: self-test
+            self_test: true
+          - scenario: error-graceful-degradation
             framework: self-test
             self_test: true
     steps:
@@ -155,3 +164,22 @@ jobs:
       - name: Stop mock-llm
         if: always() && !matrix.self_test
         run: kill "$MOCK_LLM_PID" 2>/dev/null || true
+
+  e2e-summary:
+    name: E2E Summary
+    runs-on: ubuntu-latest
+    needs: [e2e]
+    if: always()
+    steps:
+      - name: Check self-test results
+        run: |
+          # Fail the summary if any self-test job failed.
+          # Framework tests use continue-on-error so their failures are
+          # visible in the matrix but do not block the overall workflow.
+          results='${{ toJSON(needs.e2e.result) }}'
+          echo "e2e job result: $results"
+          if [ "$results" = '"failure"' ]; then
+            echo "FAIL: one or more e2e jobs failed"
+            exit 1
+          fi
+          echo "All e2e jobs passed (or were allowed to fail via continue-on-error)"
