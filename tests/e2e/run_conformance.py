@@ -280,8 +280,8 @@ def run_framework_scenario(
             tj_cmd.extend(["--mcp-server", f"127.0.0.1:{mcp_port}"])
         if any(m == "a2a_server" for m in modes):
             tj_cmd.extend(["--a2a-server", f"127.0.0.1:{a2a_port}"])
-        if any(m == "ag_ui_client" for m in modes):
-            tj_cmd.extend(["--agui-client-endpoint", f"{agent_url}/"])
+        # Framework scenarios always have an AG-UI agent endpoint to trigger
+        tj_cmd.extend(["--agui-client-endpoint", f"{agent_url}/"])
 
         print(f"RUN: {' '.join(tj_cmd)}")
         result = subprocess.run(tj_cmd, capture_output=True, text=True, timeout=timeout + 10)
@@ -299,7 +299,7 @@ def run_framework_scenario(
 
         return compare_verdict(verdict_path, expected_yaml)
 
-    except (TimeoutError, RuntimeError) as exc:
+    except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"INFRA ERROR: {exc}")
         if stderr_path.exists():
             print(f"Agent stderr:\n{read_stderr(stderr_path)}")

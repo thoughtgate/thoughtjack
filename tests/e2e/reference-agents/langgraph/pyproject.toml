@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "langgraph~=0.4",
     "langchain-openai~=0.3",
-    "langchain-mcp-adapters~=0.1",
+    "langchain-mcp-adapters>=0.1,<0.2",
     "ag-ui-langgraph>=0.0.25",
     "uvicorn~=0.34",
     "fastapi~=0.115",
