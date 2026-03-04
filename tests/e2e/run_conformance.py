@@ -160,6 +160,7 @@ def compare_verdict(actual_path: Path, expected_path: Path) -> bool:
 
 def post_mock_llm_config(mock_llm_url: str, config_path: Path) -> None:
     """POST mock-llm configuration to replace current rules."""
+    import urllib.error
     import urllib.request
 
     with open(config_path) as f:
@@ -167,12 +168,18 @@ def post_mock_llm_config(mock_llm_url: str, config_path: Path) -> None:
     req = urllib.request.Request(
         f"{mock_llm_url}/config",
         data=data,
-        headers={"Content-Type": "application/yaml"},
+        headers={"Content-Type": "application/x-yaml"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        if resp.status not in (200, 204):
-            raise RuntimeError(f"mock-llm config POST returned {resp.status}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status not in (200, 204):
+                raise RuntimeError(f"mock-llm config POST returned {resp.status}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(
+            f"mock-llm config POST failed: {e.code} {e.reason}\n{body}"
+        ) from e
 
 
 # ---------------------------------------------------------------------------
