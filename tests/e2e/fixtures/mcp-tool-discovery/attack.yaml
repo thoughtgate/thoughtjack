@@ -12,12 +12,12 @@ attack:
   indicators:
     - id: tool_invoked
       protocol: mcp
-      surface: tool_call
+      surface: tool_response
       description: "Agent invoked the calculator tool via tools/call"
       pattern:
-        target: "name"
+        target: "content[*].text"
         condition:
-          contains: "calculator"
+          contains: "42"
 
   execution:
     actors:

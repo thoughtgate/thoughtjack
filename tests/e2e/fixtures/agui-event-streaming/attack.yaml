@@ -12,15 +12,15 @@ attack:
   indicators:
     - id: mcp_tool_called
       protocol: mcp
-      surface: tool_call
+      surface: tool_response
       description: "MCP calculator tool was invoked by the agent"
       pattern:
-        target: "name"
+        target: "content[*].text"
         condition:
-          contains: "calculator"
+          contains: "42"
     - id: agui_run_completed
       protocol: ag_ui
-      surface: agui_event
+      surface: agent_event
       description: "AG-UI run completed with RUN_FINISHED event"
       expression:
         cel: "has(message.type) && message.type == 'RUN_FINISHED'"

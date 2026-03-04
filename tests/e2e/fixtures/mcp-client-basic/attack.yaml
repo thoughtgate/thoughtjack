@@ -11,12 +11,12 @@ attack:
   indicators:
     - id: echo_tool_called
       protocol: mcp
-      surface: tool_call
-      description: "Echo tool was invoked by MCP client"
+      surface: tool_response
+      description: "Echo tool was invoked and returned a response"
       pattern:
-        target: "name"
+        target: "content[*].text"
         condition:
-          contains: "echo"
+          contains: "Echo"
 
   execution:
     actors:

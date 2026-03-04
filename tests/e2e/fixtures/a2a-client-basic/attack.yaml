@@ -11,7 +11,7 @@ attack:
   indicators:
     - id: task_delegated
       protocol: a2a
-      surface: a2a_task
+      surface: task_status
       description: "A2A task was delegated and completed"
       expression:
         cel: "has(message.status) && message.status.state == 'completed'"
