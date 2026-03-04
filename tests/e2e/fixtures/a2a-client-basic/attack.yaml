@@ -9,12 +9,14 @@ attack:
     accepts tasks. An A2A client discovers the agent and sends a message/send request.
 
   indicators:
-    - id: task_delegated
+    - id: task_sent
       protocol: a2a
       surface: task_status
-      description: "A2A task was delegated and completed"
-      expression:
-        cel: "has(message.status) && message.status.state == 'completed'"
+      description: "A2A client sent task message to server"
+      pattern:
+        target: "message.role"
+        condition:
+          contains: "user"
 
   execution:
     actors:

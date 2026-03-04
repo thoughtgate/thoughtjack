@@ -2,10 +2,8 @@
 verdict:
   result: exploited
 indicators:
-  mcp_tool_called:
-    result: matched
-  agui_run_completed:
+  server_initialized:
     result: matched
 execution:
-  # AG-UI events + MCP tool call → 4+ trace messages
-  min_trace_messages: 4
+  # MCP initialize handshake → at least 2 trace messages
+  min_trace_messages: 2

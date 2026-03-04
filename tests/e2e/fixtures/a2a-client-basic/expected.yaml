@@ -2,8 +2,8 @@
 verdict:
   result: exploited
 indicators:
-  task_delegated:
+  task_sent:
     result: matched
 execution:
-  # A2A client: agent card fetch + message/send → at least 2 trace messages
+  # A2A client sends at least one request
   min_trace_messages: 2

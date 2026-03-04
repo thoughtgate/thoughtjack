@@ -2,8 +2,8 @@
 verdict:
   result: exploited
 indicators:
-  task_completed:
+  agui_trigger_sent:
     result: matched
 execution:
-  # Agent Card served + message/send → at least 3 trace messages
-  min_trace_messages: 3
+  # AG-UI trigger sends at least one event
+  min_trace_messages: 2

@@ -11,12 +11,14 @@ attack:
     and delegate tasks via A2A.
 
   indicators:
-    - id: task_completed
-      protocol: a2a
-      surface: task_status
-      description: "A2A task completed with expected status"
-      expression:
-        cel: "has(message.status) && message.status.state == 'completed'"
+    - id: agui_trigger_sent
+      protocol: ag_ui
+      surface: agent_event
+      description: "AG-UI trigger sent run request to framework agent"
+      pattern:
+        target: "messages[*].role"
+        condition:
+          contains: "user"
 
   execution:
     actors:

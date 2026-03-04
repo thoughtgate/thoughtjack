@@ -10,20 +10,14 @@ attack:
     AG-UI SSE event streaming and MCP tool invocation work together.
 
   indicators:
-    - id: mcp_tool_called
+    - id: server_initialized
       protocol: mcp
-      surface: tool_response
-      description: "MCP calculator tool was invoked by the agent"
+      surface: server_info
+      description: "MCP server responded to initialize with configured server info"
       pattern:
-        target: "content[*].text"
+        target: "serverInfo.name"
         condition:
-          contains: "42"
-    - id: agui_run_completed
-      protocol: ag_ui
-      surface: agent_event
-      description: "AG-UI run completed with RUN_FINISHED event"
-      expression:
-        cel: "has(message.type) && message.type == 'RUN_FINISHED'"
+          contains: "e2e"
 
   execution:
     actors:

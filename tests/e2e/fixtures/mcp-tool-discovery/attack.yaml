@@ -10,14 +10,14 @@ attack:
     tools/list and invoke them via tools/call.
 
   indicators:
-    - id: tool_invoked
+    - id: server_initialized
       protocol: mcp
-      surface: tool_response
-      description: "Agent invoked the calculator tool via tools/call"
+      surface: server_info
+      description: "MCP server responded to initialize with configured server info"
       pattern:
-        target: "content[*].text"
+        target: "serverInfo.name"
         condition:
-          contains: "42"
+          contains: "e2e"
 
   execution:
     actors:

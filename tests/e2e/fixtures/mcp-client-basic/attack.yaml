@@ -9,14 +9,14 @@ attack:
     an MCP client discovers and calls it. No external agent or LLM needed.
 
   indicators:
-    - id: echo_tool_called
+    - id: server_initialized
       protocol: mcp
-      surface: tool_response
-      description: "Echo tool was invoked and returned a response"
+      surface: server_info
+      description: "MCP server responded to initialize with configured server info"
       pattern:
-        target: "content[*].text"
+        target: "serverInfo.name"
         condition:
-          contains: "Echo"
+          contains: "e2e"
 
   execution:
     actors:

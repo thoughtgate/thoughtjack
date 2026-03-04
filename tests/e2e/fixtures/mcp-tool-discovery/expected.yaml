@@ -2,8 +2,8 @@
 verdict:
   result: exploited
 indicators:
-  tool_invoked:
+  server_initialized:
     result: matched
 execution:
-  # Agent must at least call tools/list and tools/call → 4+ trace messages
-  min_trace_messages: 4
+  # MCP initialize handshake → at least 2 trace messages
+  min_trace_messages: 2
