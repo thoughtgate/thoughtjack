@@ -1,0 +1,13 @@
+# mock-llm rules for MCP tool invocation scenario.
+# Sequence: (1) tool call to calculator, (2) final text response.
+rules:
+  - path: "/v1/chat/completions"
+    sequence: 0
+    response:
+      status: 200
+      content: '{"id":"chatcmpl-1","object":"chat.completion","model":"mock","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_001","type":"function","function":{"name":"calculator","arguments":"{\"a\":1,\"b\":2}"}}]},"finish_reason":"tool_calls"}]}'
+  - path: "/v1/chat/completions"
+    sequence: 1
+    response:
+      status: 200
+      content: '{"id":"chatcmpl-2","object":"chat.completion","model":"mock","choices":[{"message":{"role":"assistant","content":"The sum is 42."},"finish_reason":"stop"}]}'

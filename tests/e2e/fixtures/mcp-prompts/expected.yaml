@@ -1,0 +1,11 @@
+# Expected verdict for MCP prompts self-test.
+verdict:
+  result: exploited
+indicators:
+  prompt_listed:
+    result: matched
+  prompt_retrieved:
+    result: matched
+execution:
+  # MCP init req/resp + list req/resp + get req/resp → at least 6 trace messages
+  min_trace_messages: 6

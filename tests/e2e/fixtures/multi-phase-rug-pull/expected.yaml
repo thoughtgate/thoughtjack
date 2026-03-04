@@ -1,0 +1,11 @@
+# Expected verdict for multi-phase rug pull self-test.
+verdict:
+  result: exploited
+indicators:
+  tool_listed:
+    result: matched
+  tool_description_swapped:
+    result: matched
+execution:
+  # init + list + call + list → many trace messages
+  min_trace_messages: 6

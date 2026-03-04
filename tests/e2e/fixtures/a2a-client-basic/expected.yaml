@@ -1,0 +1,11 @@
+# Expected verdict for A2A client self-test.
+verdict:
+  result: exploited
+indicators:
+  task_sent:
+    result: matched
+  task_completed:
+    result: matched
+execution:
+  # A2A client sends at least one request
+  min_trace_messages: 2

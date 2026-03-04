@@ -1,3 +1,5 @@
 /target/
 .DS_Store
 proptest-regressions/
+tests/e2e/results/*.json
+tests/e2e/results/*.stderr

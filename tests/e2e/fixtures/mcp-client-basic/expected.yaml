@@ -1,0 +1,11 @@
+# Expected verdict for MCP client self-test.
+verdict:
+  result: exploited
+indicators:
+  server_initialized:
+    result: matched
+  echo_tool_called:
+    result: matched
+execution:
+  # MCP init req/resp + list req/resp + call req/resp → at least 6 trace messages
+  min_trace_messages: 6

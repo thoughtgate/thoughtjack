@@ -1,0 +1,10 @@
+# Expected verdict for CEL indicators self-test.
+verdict:
+  result: exploited
+indicators:
+  response_non_empty:
+    result: matched
+  server_name_match:
+    result: matched
+execution:
+  min_trace_messages: 6

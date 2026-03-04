@@ -115,8 +115,9 @@ pub async fn run_from_yaml(
 
     // 7. Evaluate verdict
     let trace_snapshot = trace.snapshot();
+    let cel = oatf::evaluate::default_cel_evaluator();
     let eval_config = EvaluationConfig {
-        cel_evaluator: None,
+        cel_evaluator: Some(&cel),
         semantic_evaluator: None,
         no_semantic: args.no_semantic,
     };

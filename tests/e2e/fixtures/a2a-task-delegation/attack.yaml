@@ -1,0 +1,64 @@
+# E2E conformance: A2A server task delegation.
+# Multi-actor: A2A server + AG-UI client to trigger the agent.
+oatf: "0.1"
+
+attack:
+  name: "A2A Task Delegation"
+  description: >-
+    A2A server that serves an Agent Card at .well-known/agent.json and accepts
+    message/send requests with a static task result, with an AG-UI client that
+    triggers the framework agent. Verifies that a framework agent can discover
+    and delegate tasks via A2A.
+
+  indicators:
+    - id: agui_trigger_sent
+      protocol: ag_ui
+      surface: agent_event
+      description: "AG-UI trigger sent run request to framework agent"
+      pattern:
+        target: "messages[*].role"
+        condition:
+          contains: "user"
+  execution:
+    actors:
+      - name: a2a_backend
+        mode: a2a_server
+        phases:
+          - name: serve
+            state:
+              agent_card:
+                name: "e2e-helper"
+                description: "A helpful assistant for e2e testing"
+                url: "http://localhost:9090"
+                version: "1.0.0"
+                capabilities:
+                  streaming: false
+                  pushNotifications: false
+                defaultInputModes: ["text"]
+                defaultOutputModes: ["text"]
+                skills:
+                  - id: "summarize"
+                    name: "Summarize"
+                    description: "Summarizes input text"
+                    tags: ["text", "summarize"]
+              task_response:
+                status:
+                  state: "completed"
+                  message:
+                    role: "agent"
+                    parts:
+                      - type: "text"
+                        text: "Summary: The input has been processed successfully."
+            trigger:
+              event: "message/send"
+              count: 999
+
+      - name: agui_trigger
+        mode: ag_ui_client
+        phases:
+          - name: probe
+            state:
+              run_agent_input:
+                messages:
+                  - role: user
+                    content: "Delegate a summarization task to the available A2A agent."

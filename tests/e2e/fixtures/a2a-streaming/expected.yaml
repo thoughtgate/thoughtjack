@@ -1,0 +1,11 @@
+# Expected verdict for A2A streaming self-test.
+verdict:
+  result: exploited
+indicators:
+  task_sent:
+    result: matched
+  task_completed:
+    result: matched
+execution:
+  # A2A agent card + stream request/response events
+  min_trace_messages: 2

@@ -1,0 +1,72 @@
+# E2E conformance: A2A client self-test (no framework agent, no mock-llm).
+# Multi-actor: A2A server + A2A client.
+oatf: "0.1"
+
+attack:
+  name: "A2A Client Basic"
+  description: >-
+    Self-test with two ThoughtJack actors. An A2A server serves an Agent Card and
+    accepts tasks. An A2A client discovers the agent and sends a message/send request.
+
+  indicators:
+    - id: task_sent
+      protocol: a2a
+      surface: task_status
+      description: "A2A client sent task message to server"
+      pattern:
+        target: "message.role"
+        condition:
+          contains: "user"
+    - id: task_completed
+      protocol: a2a
+      surface: task_status
+      description: "A2A server returned completed task"
+      pattern:
+        target: "status.state"
+        condition:
+          contains: "completed"
+
+  execution:
+    actors:
+      - name: target_server
+        mode: a2a_server
+        phases:
+          - name: serve
+            state:
+              agent_card:
+                name: "e2e-echo-agent"
+                description: "Echo agent for self-testing"
+                url: "http://localhost:9090"
+                version: "1.0.0"
+                capabilities:
+                  streaming: false
+                  pushNotifications: false
+                defaultInputModes: ["text"]
+                defaultOutputModes: ["text"]
+                skills:
+                  - id: "echo"
+                    name: "Echo"
+                    description: "Echoes input back"
+                    tags: ["echo"]
+              task_response:
+                status:
+                  state: "completed"
+                  message:
+                    role: "agent"
+                    parts:
+                      - type: "text"
+                        text: "Echo: hello from A2A"
+            trigger:
+              event: "message/send"
+              count: 999
+
+      - name: test_client
+        mode: a2a_client
+        phases:
+          - name: send_task
+            state:
+              task_message:
+                role: "user"
+                parts:
+                  - kind: "text"
+                    text: "Hello from A2A client"

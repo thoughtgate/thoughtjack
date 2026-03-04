@@ -39,7 +39,7 @@ bytes = "1.11"
 tokio-stream = { version = "0.1", features = ["sync"] }
 strsim = "0.11"
 humantime = "2"
-oatf = "0.2"
+oatf = { version = "0.2", features = ["cel-eval"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"

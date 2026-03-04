@@ -1,0 +1,11 @@
+# Expected verdict for cross-actor extractor self-test.
+verdict:
+  result: exploited
+indicators:
+  echo_captured:
+    result: matched
+  task_completed:
+    result: matched
+execution:
+  # MCP init + list + call + A2A card + task → many trace messages
+  min_trace_messages: 4

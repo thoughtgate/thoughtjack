@@ -1,0 +1,71 @@
+# E2E conformance: MCP server tool invocation with AG-UI trigger.
+# Multi-actor: MCP server (calculator) + AG-UI client to trigger the agent.
+oatf: "0.1"
+
+attack:
+  name: "MCP Tool Invocation"
+  description: >-
+    MCP server that serves a calculator tool, with an AG-UI client that triggers
+    the framework agent. Verifies that a framework agent can discover tools via
+    tools/list and invoke them via tools/call.
+
+  indicators:
+    - id: server_initialized
+      protocol: mcp
+      surface: server_info
+      description: "MCP server responded to initialize with configured server info"
+      pattern:
+        target: "serverInfo.name"
+        condition:
+          contains: "e2e"
+    - id: agui_request_sent
+      protocol: ag_ui
+      surface: agent_event
+      description: "AG-UI client sent run request to framework agent"
+      pattern:
+        target: "messages[*].role"
+        condition:
+          contains: "user"
+
+  execution:
+    actors:
+      - name: mcp_backend
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              server_info:
+                name: "e2e-calculator"
+                version: "1.0.0"
+              capabilities:
+                tools: {}
+              tools:
+                - name: "calculator"
+                  description: "Adds two numbers together"
+                  inputSchema:
+                    type: object
+                    properties:
+                      a:
+                        type: number
+                        description: "First number"
+                      b:
+                        type: number
+                        description: "Second number"
+                    required: ["a", "b"]
+                  responses:
+                    - content:
+                        - type: text
+                          text: "42"
+            trigger:
+              event: tools/call
+              count: 999
+
+      - name: agui_trigger
+        mode: ag_ui_client
+        phases:
+          - name: probe
+            state:
+              run_agent_input:
+                messages:
+                  - role: user
+                    content: "Use the calculator tool to add 1 and 2."

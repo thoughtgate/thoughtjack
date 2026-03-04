@@ -1,0 +1,10 @@
+# Expected verdict for MCP tool invocation scenario.
+verdict:
+  result: exploited
+indicators:
+  server_initialized:
+    result: matched
+  agui_request_sent:
+    result: matched
+execution:
+  min_trace_messages: 2
