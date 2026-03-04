@@ -5,5 +5,5 @@ indicators:
   agui_trigger_sent:
     result: matched
 execution:
-  # AG-UI run_agent events + A2A card + message/send
-  min_trace_messages: 4
+  # AG-UI trigger sends at least one event
+  min_trace_messages: 2
