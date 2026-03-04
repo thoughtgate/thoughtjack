@@ -1,8 +1,5 @@
 # E2E conformance: A2A client self-test (no framework agent, no mock-llm).
 # Multi-actor: A2A server + A2A client.
-#
-# No indicators — this is a benign scenario testing infrastructure only.
-# Verdict is not_exploited when no indicators match (default).
 oatf: "0.1"
 
 attack:
@@ -10,6 +7,14 @@ attack:
   description: >-
     Self-test with two ThoughtJack actors. An A2A server serves an Agent Card and
     accepts tasks. An A2A client discovers the agent and sends a message/send request.
+
+  indicators:
+    - id: task_delegated
+      protocol: a2a
+      surface: a2a_task
+      description: "A2A task was delegated and completed"
+      expression:
+        cel: "has(message.status) && message.status.state == 'completed'"
 
   execution:
     actors:

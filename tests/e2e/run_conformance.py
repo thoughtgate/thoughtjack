@@ -102,31 +102,65 @@ def compare_verdict(actual_path: Path, expected_path: Path) -> bool:
     with open(expected_path) as f:
         expected = yaml.safe_load(f)
 
-    # Check top-level verdict result
-    actual_result = actual.get("verdict", {}).get("result")
+    passed = True
+
+    # Check top-level verdict result — fail explicitly if missing
+    actual_verdict = actual.get("verdict", {})
+    actual_result = actual_verdict.get("result")
     expected_result = expected.get("verdict", {}).get("result")
+    if actual_result is None:
+        print("FAIL: verdict.result is missing from output")
+        print(f"  verdict JSON: {json.dumps(actual_verdict, indent=2)[:500]}")
+        return False
     if actual_result != expected_result:
         print(f"FAIL: verdict.result: expected={expected_result}, actual={actual_result}")
-        return False
+        print(f"  verdict JSON: {json.dumps(actual_verdict, indent=2)[:500]}")
+        passed = False
 
     # Check individual indicator results if specified
     expected_indicators = expected.get("indicators", {})
-    actual_ind_list = actual.get("verdict", {}).get("indicator_verdicts", [])
-    if expected_indicators and actual_ind_list:
-        actual_indicators = {
-            ind["id"]: ind["result"]
-            for ind in actual_ind_list
-            if "id" in ind
-        }
-        for ind_id, spec in expected_indicators.items():
-            expected_ind_result = spec.get("result")
-            actual_ind_result = actual_indicators.get(ind_id)
-            if actual_ind_result != expected_ind_result:
-                print(
-                    f"FAIL: indicator {ind_id}: "
-                    f"expected={expected_ind_result}, actual={actual_ind_result}"
-                )
-                return False
+    actual_ind_list = actual_verdict.get("indicator_verdicts", [])
+    if expected_indicators:
+        if not actual_ind_list:
+            print(
+                f"FAIL: expected {len(expected_indicators)} indicator(s) "
+                f"but verdict contains no indicator_verdicts"
+            )
+            passed = False
+        else:
+            actual_indicators = {
+                ind["id"]: ind
+                for ind in actual_ind_list
+                if "id" in ind
+            }
+            for ind_id, spec in expected_indicators.items():
+                expected_ind_result = spec.get("result")
+                actual_ind = actual_indicators.get(ind_id)
+                if actual_ind is None:
+                    print(
+                        f"FAIL: indicator '{ind_id}': "
+                        f"expected={expected_ind_result}, not found in output"
+                    )
+                    print(
+                        f"  available indicators: "
+                        f"{[i.get('id') for i in actual_ind_list]}"
+                    )
+                    passed = False
+                    continue
+                actual_ind_result = actual_ind.get("result")
+                if actual_ind_result != expected_ind_result:
+                    print(
+                        f"FAIL: indicator '{ind_id}': "
+                        f"expected={expected_ind_result}, actual={actual_ind_result}"
+                    )
+                    # Print evidence for debugging
+                    evidence = actual_ind.get("evidence")
+                    if evidence:
+                        print(f"  evidence: {json.dumps(evidence)[:300]}")
+                    passed = False
+
+    if not passed:
+        return False
 
     # Execution health checks: verify actors actually ran
     exec_summary = actual.get("execution_summary", {})

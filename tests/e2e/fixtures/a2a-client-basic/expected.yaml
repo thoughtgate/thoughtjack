@@ -1,6 +1,9 @@
 # Expected verdict for A2A client self-test.
 verdict:
-  result: not_exploited
+  result: exploited
+indicators:
+  task_delegated:
+    result: matched
 execution:
   # A2A client: agent card fetch + message/send → at least 2 trace messages
   min_trace_messages: 2

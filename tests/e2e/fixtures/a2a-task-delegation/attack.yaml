@@ -1,8 +1,5 @@
 # E2E conformance: A2A server task delegation.
 # Multi-actor: A2A server + AG-UI client to trigger the agent.
-#
-# No indicators — this is a benign scenario testing infrastructure only.
-# Verdict is not_exploited when no indicators match (default).
 oatf: "0.1"
 
 attack:
@@ -12,6 +9,14 @@ attack:
     message/send requests with a static task result, with an AG-UI client that
     triggers the framework agent. Verifies that a framework agent can discover
     and delegate tasks via A2A.
+
+  indicators:
+    - id: task_completed
+      protocol: a2a
+      surface: a2a_task
+      description: "A2A task completed with expected status"
+      expression:
+        cel: "has(message.status) && message.status.state == 'completed'"
 
   execution:
     actors:

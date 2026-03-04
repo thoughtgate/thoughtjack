@@ -1,8 +1,5 @@
 # E2E conformance: MCP client self-test (no framework agent, no mock-llm).
 # Multi-actor: MCP server (echo tool) + MCP client (discovers and calls echo).
-#
-# No indicators — this is a benign scenario testing infrastructure only.
-# Verdict is not_exploited when no indicators match (default).
 oatf: "0.1"
 
 attack:
@@ -10,6 +7,16 @@ attack:
   description: >-
     Self-test with two ThoughtJack actors. An MCP server serves an echo tool and
     an MCP client discovers and calls it. No external agent or LLM needed.
+
+  indicators:
+    - id: echo_tool_called
+      protocol: mcp
+      surface: tool_call
+      description: "Echo tool was invoked by MCP client"
+      pattern:
+        target: "name"
+        condition:
+          contains: "echo"
 
   execution:
     actors:

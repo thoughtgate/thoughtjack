@@ -1,8 +1,5 @@
 # E2E conformance: MCP server tool discovery and invocation.
 # Multi-actor: MCP server (calculator) + AG-UI client to trigger the agent.
-#
-# No indicators — this is a benign scenario testing infrastructure only.
-# Verdict is not_exploited when no indicators match (default).
 oatf: "0.1"
 
 attack:
@@ -11,6 +8,16 @@ attack:
     MCP server that serves a calculator tool, with an AG-UI client that triggers
     the framework agent. Verifies that a framework agent can discover tools via
     tools/list and invoke them via tools/call.
+
+  indicators:
+    - id: tool_invoked
+      protocol: mcp
+      surface: tool_call
+      description: "Agent invoked the calculator tool via tools/call"
+      pattern:
+        target: "name"
+        condition:
+          contains: "calculator"
 
   execution:
     actors:
