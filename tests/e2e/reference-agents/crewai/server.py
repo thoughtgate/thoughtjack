@@ -1,22 +1,21 @@
 """AG-UI server wrapping the CrewAI reference agent.
 
-Starts an HTTP server exposing the CrewAI agent via AG-UI protocol.
+Thin SSE endpoint that triggers a real CrewAI Crew with MCP tools.
 Prints ``READY port=<N>`` to stdout when the server is listening.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
+import json
+import uuid
 
 import uvicorn
-from ag_ui_crewai import add_crewai_flow_fastapi_endpoint
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from agent import E2ETestFlow
+from agent import create_crew
 
-# Parsed at module level so startup event can access the port.
 _parser = argparse.ArgumentParser(description="CrewAI AG-UI reference agent")
 _parser.add_argument("--llm-base-url", required=True, help="Mock LLM base URL")
 _parser.add_argument("--port", type=int, default=8000, help="Listen port")
@@ -30,19 +29,56 @@ _args = _parser.parse_args()
 
 app = FastAPI()
 
+# Build the crew at import time (MCP tools are discovered here).
+_crew = create_crew(_args.llm_base_url, _args.mcp_server, _args.a2a_server)
+
 
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
+@app.post("/")
+async def agent_endpoint(request: Request) -> StreamingResponse:
+    """AG-UI compatible endpoint: triggers CrewAI crew and streams SSE events."""
+    body = await request.json()
+
+    # Extract user message from AG-UI RunAgentInput
+    messages = body.get("messages", [])
+    user_msg = "Use available tools as instructed."
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            user_msg = m.get("content", user_msg)
+            break
+
+    run_id = str(uuid.uuid4())
+    thread_id = body.get("threadId", str(uuid.uuid4()))
+
+    async def generate():
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+
+        try:
+            result = _crew.kickoff(inputs={"user_message": user_msg})
+            content = str(result)
+        except Exception as exc:
+            yield _sse({"type": "RUN_ERROR", "runId": run_id, "message": str(exc)})
+            return
+
+        msg_id = str(uuid.uuid4())
+        yield _sse({"type": "TEXT_MESSAGE_START", "messageId": msg_id, "role": "assistant"})
+        yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": msg_id, "delta": content or "done"})
+        yield _sse({"type": "TEXT_MESSAGE_END", "messageId": msg_id})
+        yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
-    flow = E2ETestFlow()
-    flow.model = "openai/mock"
-    flow.base_url = _args.llm_base_url
-    flow.api_key = "mock-key"
-    add_crewai_flow_fastapi_endpoint(app, flow, "/")
     print(f"READY port={_args.port}", flush=True)
 
 

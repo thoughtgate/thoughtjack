@@ -219,32 +219,63 @@ def run_framework_scenario(
     a2a_port = base_port + 1
     agent_port = base_port + 2
 
+    # Load attack YAML to detect modes
+    with open(attack_yaml) as f:
+        attack_doc = yaml.safe_load(f)
+    execution = attack_doc.get("attack", {}).get("execution", {})
+    mode = execution.get("mode", "")
+    actors = execution.get("actors", [])
+    modes = [mode] if mode else [a.get("mode", "") for a in actors]
+
+    agent_url = f"http://127.0.0.1:{agent_port}"
     agent_proc = None
+    tj_proc = None
+    tj_stderr_path = output_dir / f"{scenario_name}-{framework}-tj.stderr"
     try:
         # 1. Configure mock-llm
         wait_healthy(mock_llm_url, timeout=5)
         post_mock_llm_config(mock_llm_url, mock_llm_yaml)
 
-        # 2. Determine agent module path
+        # 2. Build TJ command
+        tj_cmd = [
+            str(tj_binary), "run",
+            "--config", str(attack_yaml),
+            "--output", str(verdict_path),
+            "--max-session", f"{timeout}s",
+            "--no-semantic",
+        ]
+        if any(m == "mcp_server" for m in modes):
+            tj_cmd.extend(["--mcp-server", f"127.0.0.1:{mcp_port}"])
+        if any(m == "a2a_server" for m in modes):
+            tj_cmd.extend(["--a2a-server", f"127.0.0.1:{a2a_port}"])
+        tj_cmd.extend(["--agui-client-endpoint", f"{agent_url}/"])
+
+        # 3. Start TJ first (it binds MCP/A2A server ports immediately)
+        print(f"RUN: {' '.join(tj_cmd)}")
+        with open(tj_stderr_path, "w") as tj_stderr_file:
+            tj_proc = subprocess.Popen(
+                tj_cmd,
+                stdout=subprocess.PIPE,
+                stderr=tj_stderr_file,
+                text=True,
+            )
+        # Brief pause to let TJ bind its server ports
+        time.sleep(2)
+        if tj_proc.poll() is not None:
+            raise RuntimeError(
+                f"ThoughtJack exited early with code {tj_proc.returncode}"
+            )
+
+        # 4. Start reference agent (can now connect to TJ's MCP/A2A servers)
         agent_dir = Path(__file__).parent / "reference-agents" / framework
         server_py = agent_dir / "server.py"
-
-        # 3. Start reference agent
         agent_cmd = [
             sys.executable, str(server_py),
             "--llm-base-url", mock_llm_url,
             "--port", str(agent_port),
             "--mcp-server", f"http://127.0.0.1:{mcp_port}",
         ]
-
-        # Load attack YAML to detect A2A actors
-        with open(attack_yaml) as f:
-            attack_doc = yaml.safe_load(f)
-        execution = attack_doc.get("attack", {}).get("execution", {})
-        has_a2a = execution.get("mode") == "a2a_server" or any(
-            a.get("mode") == "a2a_server"
-            for a in execution.get("actors", [])
-        )
+        has_a2a = any(m == "a2a_server" for m in modes)
         if has_a2a and framework == "crewai":
             agent_cmd.extend(["--a2a-server", f"http://127.0.0.1:{a2a_port}"])
 
@@ -257,42 +288,22 @@ def run_framework_scenario(
                 preexec_fn=os.setpgrp,
             )
 
-        # 4. Wait for agent readiness
+        # 5. Wait for agent readiness
         actual_port = wait_ready_marker(agent_proc, timeout=15)
-        agent_url = f"http://127.0.0.1:{actual_port}"
-        wait_healthy(agent_url, timeout=10)
+        wait_healthy(f"http://127.0.0.1:{actual_port}", timeout=10)
 
-        # 5. Run ThoughtJack
-        tj_cmd = [
-            str(tj_binary), "run",
-            "--config", str(attack_yaml),
-            "--output", str(verdict_path),
-            "--max-session", f"{timeout}s",
-            "--no-semantic",
-        ]
+        # 6. Wait for TJ to finish
+        try:
+            tj_proc.wait(timeout=timeout + 10)
+        except subprocess.TimeoutExpired:
+            tj_proc.kill()
+            raise
 
-        # Add protocol-specific flags based on attack modes
-        mode = execution.get("mode", "")
-        actors = execution.get("actors", [])
-        modes = [mode] if mode else [a.get("mode", "") for a in actors]
-
-        if any(m == "mcp_server" for m in modes):
-            tj_cmd.extend(["--mcp-server", f"127.0.0.1:{mcp_port}"])
-        if any(m == "a2a_server" for m in modes):
-            tj_cmd.extend(["--a2a-server", f"127.0.0.1:{a2a_port}"])
-        # Framework scenarios always have an AG-UI agent endpoint to trigger
-        tj_cmd.extend(["--agui-client-endpoint", f"{agent_url}/"])
-
-        print(f"RUN: {' '.join(tj_cmd)}")
-        result = subprocess.run(tj_cmd, capture_output=True, text=True, timeout=timeout + 10)
-
-        if result.returncode not in (0, 1, 2, 3):
-            print(f"FAIL: ThoughtJack exited with code {result.returncode}")
-            if result.stderr:
-                print(f"  stderr: {result.stderr[:500]}")
+        if tj_proc.returncode not in (0, 1, 2, 3):
+            print(f"FAIL: ThoughtJack exited with code {tj_proc.returncode}")
             return False
 
-        # 6. Compare verdict
+        # 7. Compare verdict
         if not verdict_path.exists():
             print(f"FAIL: No verdict file at {verdict_path}")
             return False
@@ -303,10 +314,14 @@ def run_framework_scenario(
         print(f"INFRA ERROR: {exc}")
         if stderr_path.exists():
             print(f"Agent stderr:\n{read_stderr(stderr_path)}")
+        if tj_stderr_path.exists():
+            print(f"TJ stderr:\n{read_stderr(tj_stderr_path)}")
         return False
     finally:
         if agent_proc is not None:
             kill_process_group(agent_proc)
+        if tj_proc is not None and tj_proc.poll() is None:
+            tj_proc.kill()
 
 
 def run_self_test(
