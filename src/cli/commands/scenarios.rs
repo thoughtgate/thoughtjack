@@ -130,6 +130,13 @@ pub async fn run_scenario(
     quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
+    if args.run.config.is_some() {
+        return Err(ThoughtJackError::Usage(
+            "--config is not supported with `scenarios run` (it always uses the built-in scenario YAML)"
+                .to_string(),
+        ));
+    }
+
     let scenario = scenarios::find_scenario(&args.name).ok_or_else(|| {
         let mut message = format!("Unknown scenario '{}'", args.name);
 
@@ -142,4 +149,56 @@ pub async fn run_scenario(
     })?;
 
     super::run::run_from_yaml(scenario.yaml, &args.run, quiet, cancel).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::cli::args::RunArgs;
+
+    fn test_run_args() -> RunArgs {
+        RunArgs {
+            config: None,
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(1)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(1)),
+            output: None,
+            header: vec![],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_scenario_rejects_config_override() {
+        let mut run = test_run_args();
+        run.config = Some(PathBuf::from("custom.yaml"));
+        let args = ScenariosRunArgs {
+            name: "rug-pull".to_string(),
+            run,
+        };
+
+        let err = run_scenario(&args, true, CancellationToken::new())
+            .await
+            .expect_err("scenarios run should reject --config");
+
+        match err {
+            ThoughtJackError::Usage(msg) => {
+                assert!(msg.contains("--config"), "unexpected message: {msg}");
+            }
+            other => panic!("expected usage error, got {other}"),
+        }
+    }
 }

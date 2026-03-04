@@ -205,6 +205,7 @@ pub struct ScenariosShowArgs {
 /// Arguments for `scenarios run`.
 ///
 /// Runs a built-in scenario with the same flags as `run`.
+/// `--config` is not supported for this command.
 ///
 /// Implements: TJ-SPEC-010 F-008
 #[derive(Args, Debug)]

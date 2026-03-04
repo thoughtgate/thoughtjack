@@ -240,7 +240,9 @@ async fn run_single_actor(
         }
         () = tokio::time::sleep(config.max_session) => {
             actor_cancel.cancel();
-            wait_for_single_actor_shutdown(&mut actor_handle, &actor_name, total_phases).await
+            mark_timeout_outcome(
+                wait_for_single_actor_shutdown(&mut actor_handle, &actor_name, total_phases).await,
+            )
         }
         () = cancel.cancelled() => {
             actor_cancel.cancel();
@@ -299,6 +301,18 @@ async fn wait_for_single_actor_shutdown(
             handle.abort();
             ActorOutcome::Success(cancelled_actor_result(actor_name, total_phases))
         }
+    }
+}
+
+fn mark_timeout_outcome(outcome: ActorOutcome) -> ActorOutcome {
+    match outcome {
+        ActorOutcome::Success(mut result) => {
+            if result.termination == TerminationReason::Cancelled {
+                result.termination = TerminationReason::MaxSessionExpired;
+            }
+            ActorOutcome::Success(result)
+        }
+        other => other,
     }
 }
 
@@ -363,14 +377,47 @@ fn build_actor_statuses(outcomes: &[ActorOutcome], actors: &[oatf::Actor]) -> Ve
 
 /// Summarizes runtime actor failures from orchestration outcomes.
 fn summarize_actor_failures(outcomes: &[ActorOutcome]) -> Vec<String> {
-    outcomes
+    let mut failures: Vec<String> = outcomes
         .iter()
         .filter_map(|outcome| match outcome {
             ActorOutcome::Error { actor_name, error } => Some(format!("{actor_name}: {error}")),
             ActorOutcome::Panic { actor_name } => Some(format!("{actor_name}: task panicked")),
             ActorOutcome::Success(_) => None,
         })
-        .collect()
+        .collect();
+
+    if failures.is_empty() {
+        let successful: Vec<&ActorResult> = outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                ActorOutcome::Success(result) => Some(result),
+                ActorOutcome::Error { .. } | ActorOutcome::Panic { .. } => None,
+            })
+            .collect();
+
+        let any_completed = successful.iter().any(|result| {
+            !matches!(
+                result.termination,
+                TerminationReason::Cancelled | TerminationReason::MaxSessionExpired
+            )
+        });
+
+        if !successful.is_empty() && !any_completed {
+            let cancelled = successful
+                .iter()
+                .filter(|result| result.termination == TerminationReason::Cancelled)
+                .count();
+            let timed_out = successful
+                .iter()
+                .filter(|result| result.termination == TerminationReason::MaxSessionExpired)
+                .count();
+            failures.push(format!(
+                "all actors terminated by cancellation/timeout before completion (cancelled: {cancelled}, timeout: {timed_out})"
+            ));
+        }
+    }
+
+    failures
 }
 
 #[cfg(test)]
@@ -410,6 +457,41 @@ mod tests {
             total_phases: 1,
             final_phase: Some("done".to_string()),
         })];
+        assert!(summarize_actor_failures(&outcomes).is_empty());
+    }
+
+    #[test]
+    fn summarize_actor_failures_all_cancelled_returns_failure() {
+        let outcomes = vec![ActorOutcome::Success(crate::engine::types::ActorResult {
+            actor_name: "server".to_string(),
+            termination: crate::engine::types::TerminationReason::Cancelled,
+            phases_completed: 0,
+            total_phases: 2,
+            final_phase: None,
+        })];
+        let failures = summarize_actor_failures(&outcomes);
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("cancellation/timeout"));
+    }
+
+    #[test]
+    fn summarize_actor_failures_mixed_completion_is_not_failure() {
+        let outcomes = vec![
+            ActorOutcome::Success(crate::engine::types::ActorResult {
+                actor_name: "server".to_string(),
+                termination: crate::engine::types::TerminationReason::Cancelled,
+                phases_completed: 0,
+                total_phases: 2,
+                final_phase: None,
+            }),
+            ActorOutcome::Success(crate::engine::types::ActorResult {
+                actor_name: "client".to_string(),
+                termination: crate::engine::types::TerminationReason::TerminalPhaseReached,
+                phases_completed: 1,
+                total_phases: 1,
+                final_phase: Some("done".to_string()),
+            }),
+        ];
         assert!(summarize_actor_failures(&outcomes).is_empty());
     }
 
@@ -488,10 +570,18 @@ attack:
         )
         .await;
         assert!(result.is_ok(), "single-actor run exceeded timeout window");
-        assert!(
-            result.unwrap().is_ok(),
-            "single-actor run should complete after max-session cancellation"
-        );
+        let err = result
+            .unwrap()
+            .expect_err("single-actor timeout should be reported as a runtime failure");
+        match err {
+            ThoughtJackError::Orchestration(msg) => {
+                assert!(
+                    msg.contains("cancellation/timeout"),
+                    "unexpected error: {msg}"
+                );
+            }
+            other => panic!("expected orchestration error, got {other}"),
+        }
     }
 
     #[tokio::test]
