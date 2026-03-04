@@ -209,6 +209,35 @@ fn resolve_headers_for_mode(base: &[(String, String)], mode: &str) -> Vec<(Strin
     merge_headers(base, &env_headers)
 }
 
+/// Parses `--mcp-client-args` using shell quoting rules.
+///
+/// Returns an `EngineError::Driver` if the string has invalid shell syntax
+/// (for example, unbalanced quotes).
+fn parse_mcp_client_args(raw: &str) -> Result<Vec<String>, EngineError> {
+    shlex::split(raw)
+        .ok_or_else(|| EngineError::Driver("invalid --mcp-client-args: unbalanced quotes".into()))
+}
+
+/// Parses `--mcp-client-command` into executable + inline arguments.
+///
+/// Supports command strings with inline args (for example,
+/// `"npx -y @modelcontextprotocol/server-everything"`).
+///
+/// Returns an `EngineError::Driver` if shell syntax is invalid or the
+/// command resolves to an empty token list.
+fn parse_mcp_client_command(raw: &str) -> Result<(String, Vec<String>), EngineError> {
+    let parts = shlex::split(raw).ok_or_else(|| {
+        EngineError::Driver("invalid --mcp-client-command: unbalanced quotes".into())
+    })?;
+
+    let mut iter = parts.into_iter();
+    let command = iter
+        .next()
+        .ok_or_else(|| EngineError::Driver("invalid --mcp-client-command: empty command".into()))?;
+
+    Ok((command, iter.collect()))
+}
+
 // ============================================================================
 // ActorRunContext
 // ============================================================================
@@ -490,7 +519,7 @@ async fn run_agui_client_actor(
 
 /// Runs an A2A server actor — creates driver and phase loop.
 ///
-/// Server-mode: binds HTTP transport inside `drive_phase()`, signals readiness.
+/// Server-mode: binds HTTP transport inside `drive_phase()`.
 ///
 /// Implements: TJ-SPEC-017 F-001
 async fn run_a2a_server_actor(
@@ -514,19 +543,14 @@ async fn run_a2a_server_actor(
         .as_deref()
         .unwrap_or("127.0.0.1:9090");
 
-    events.emit(ThoughtJackEvent::ActorReady {
-        actor_name: actor_name.to_string(),
-        bind_address: bind_addr.to_string(),
-    });
+    let (bound_addr_tx, mut bound_addr_rx) = oneshot::channel();
 
-    // Signal readiness (server binds inside drive_phase, but we signal
-    // immediately since the bind happens before accepting requests)
+    // Create driver. Readiness is signalled only after bind succeeds.
+    let mut driver = a2a_server::create_a2a_server_driver(bind_addr, config.raw_synthesize);
     if let Some(tx) = ready_tx {
-        let _ = tx.send(());
+        driver.set_ready_sender(tx);
     }
-
-    // Create driver
-    let driver = a2a_server::create_a2a_server_driver(bind_addr, config.raw_synthesize);
+    driver.set_bound_addr_sender(bound_addr_tx);
 
     // Create phase engine
     let engine = PhaseEngine::new(document, actor_index);
@@ -548,7 +572,26 @@ async fn run_a2a_server_actor(
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
-    let result = phase_loop.run().await?;
+    let run_fut = phase_loop.run();
+    tokio::pin!(run_fut);
+    let mut ready_emitted = false;
+
+    let result = loop {
+        tokio::select! {
+            ready = &mut bound_addr_rx, if !ready_emitted => {
+                if let Ok(addr) = ready {
+                    events.emit(ThoughtJackEvent::ActorReady {
+                        actor_name: actor_name.to_string(),
+                        bind_address: addr.to_string(),
+                    });
+                }
+                ready_emitted = true;
+            }
+            run_result = &mut run_fut => {
+                break run_result?;
+            }
+        }
+    };
 
     events.emit(ThoughtJackEvent::ActorCompleted {
         actor_name: actor_name.to_string(),
@@ -663,20 +706,23 @@ async fn run_mcp_client_actor(
         config.mcp_client_command.as_deref(),
         config.mcp_client_endpoint.as_deref(),
     ) {
-        (Some(command), _) => {
-            let args: Vec<String> = config
+        (Some(command_raw), _) => {
+            let (command, mut args) = parse_mcp_client_command(command_raw)?;
+            let extra_args: Vec<String> = config
                 .mcp_client_args
                 .as_deref()
-                .map(|a| a.split_whitespace().map(String::from).collect())
+                .map(parse_mcp_client_args)
+                .transpose()?
                 .unwrap_or_default();
+            args.extend(extra_args);
             let driver = mcp_client::create_mcp_client_driver(
-                Some(command),
+                Some(command.as_str()),
                 &args,
                 None,
                 &[],
                 config.raw_synthesize,
             )?;
-            (driver, format!("stdio:{command}"))
+            (driver, format!("stdio:{command_raw}"))
         }
         (None, Some(endpoint)) => {
             // Merge mode-specific auth env vars with --header
@@ -1316,5 +1362,50 @@ attack:
         let merged = merge_headers(&[], &overrides);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].1, "Bearer token");
+    }
+
+    #[test]
+    fn parse_mcp_client_args_respects_quotes() {
+        let parsed = parse_mcp_client_args(r#"--flag "two words" 'three words'"#).unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                "--flag".to_string(),
+                "two words".to_string(),
+                "three words".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_mcp_client_args_rejects_unbalanced_quotes() {
+        let err = parse_mcp_client_args("\"oops").unwrap_err();
+        assert!(err.to_string().contains("invalid --mcp-client-args"));
+    }
+
+    #[test]
+    fn parse_mcp_client_command_supports_inline_args() {
+        let (command, args) =
+            parse_mcp_client_command("npx -y @modelcontextprotocol/server-everything").unwrap();
+        assert_eq!(command, "npx");
+        assert_eq!(
+            args,
+            vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-everything".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_mcp_client_command_rejects_empty() {
+        let err = parse_mcp_client_command("").unwrap_err();
+        assert!(err.to_string().contains("invalid --mcp-client-command"));
+    }
+
+    #[test]
+    fn parse_mcp_client_command_rejects_unbalanced_quotes() {
+        let err = parse_mcp_client_command("\"oops").unwrap_err();
+        assert!(err.to_string().contains("invalid --mcp-client-command"));
     }
 }

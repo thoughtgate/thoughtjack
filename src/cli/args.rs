@@ -84,7 +84,8 @@ pub struct RunArgs {
     #[arg(long, value_name = "ADDR:PORT")]
     pub mcp_server: Option<String>,
 
-    /// Spawn MCP client by running a command (e.g., "npx -y @modelcontextprotocol/server-everything").
+    /// Spawn MCP client by running a command (supports inline args, e.g.,
+    /// `"npx -y @modelcontextprotocol/server-everything"`).
     #[arg(long, value_name = "CMD")]
     pub mcp_client_command: Option<String>,
 

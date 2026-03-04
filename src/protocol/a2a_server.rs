@@ -25,7 +25,7 @@ use oatf::ResponseEntry;
 use oatf::primitives::{interpolate_value, select_response};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -937,6 +937,10 @@ pub struct A2aServerDriver {
     server_handle: Option<JoinHandle<()>>,
     /// Actual bound address (resolved after bind).
     bound_addr: Option<SocketAddr>,
+    /// Optional readiness sender used by the orchestrator gate.
+    ready_tx: Option<oneshot::Sender<()>>,
+    /// Optional sender used by runner observability to emit `ActorReady` on bind.
+    bound_addr_tx: Option<oneshot::Sender<SocketAddr>>,
     /// Cancel token for the HTTP server's lifetime (not per-phase).
     ///
     /// This is separate from the per-phase cancel token passed to
@@ -974,6 +978,12 @@ impl PhaseDriver for A2aServerDriver {
                 .local_addr()
                 .map_err(|e| EngineError::Driver(format!("failed to get local addr: {e}")))?;
             self.bound_addr = Some(addr);
+            if let Some(tx) = self.bound_addr_tx.take() {
+                let _ = tx.send(addr);
+            }
+            if let Some(tx) = self.ready_tx.take() {
+                let _ = tx.send(());
+            }
 
             tracing::info!(%addr, "A2A server listening");
 
@@ -1028,7 +1038,21 @@ pub fn create_a2a_server_driver(bind_addr: &str, raw_synthesize: bool) -> A2aSer
         shared,
         server_handle: None,
         bound_addr: None,
+        ready_tx: None,
+        bound_addr_tx: None,
         server_cancel: CancellationToken::new(),
+    }
+}
+
+impl A2aServerDriver {
+    /// Sets the readiness sender consumed after a successful bind.
+    pub fn set_ready_sender(&mut self, tx: oneshot::Sender<()>) {
+        self.ready_tx = Some(tx);
+    }
+
+    /// Sets the bound-address sender consumed after a successful bind.
+    pub fn set_bound_addr_sender(&mut self, tx: oneshot::Sender<SocketAddr>) {
+        self.bound_addr_tx = Some(tx);
     }
 }
 

@@ -18,7 +18,7 @@ use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
 use crate::error::EngineError;
 use crate::loader::{LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
-use crate::orchestration::gate::ReadinessGate;
+use crate::orchestration::gate::{GateError, ReadinessGate};
 use crate::orchestration::runner::{ActorConfig, run_actor};
 use crate::orchestration::store::ExtractorStore;
 
@@ -187,9 +187,11 @@ pub async fn orchestrate(
             }
             Err(gate_err) => {
                 tracing::error!(%gate_err, "readiness gate failed");
-                events.emit(ThoughtJackEvent::ReadinessGateTimeout {
-                    not_ready: server_names.clone(),
-                });
+                let not_ready = match &gate_err {
+                    GateError::Timeout { not_ready } => not_ready.clone(),
+                    GateError::ServerFailed { actor } => vec![actor.clone()],
+                };
+                events.emit(ThoughtJackEvent::ReadinessGateTimeout { not_ready });
                 cancel.cancel();
                 join_set.abort_all();
                 return drain_join_set(join_set, &task_meta, trace, events).await;

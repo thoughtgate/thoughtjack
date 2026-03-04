@@ -6,8 +6,11 @@
 //!
 //! See TJ-SPEC-015 §3.1 for the readiness gate specification.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
+use futures_util::future::select_all;
 use tokio::sync::{broadcast, oneshot};
 
 // ============================================================================
@@ -117,31 +120,47 @@ impl ReadinessGate {
     /// Implements: TJ-SPEC-015 F-002
     pub async fn wait_all_ready(self, timeout: Duration) -> Result<(), GateError> {
         let Self { ready_rxs, gate_tx } = self;
-        let all_names: Vec<String> = ready_rxs.iter().map(|(n, _)| n.clone()).collect();
-        let result = tokio::time::timeout(timeout, wait_all_receivers(ready_rxs)).await;
+        wait_all_receivers(ready_rxs, timeout).await?;
 
-        match result {
-            Ok(Ok(())) => {
-                // All servers ready — fire the broadcast gate
-                let _ = gate_tx.send(());
-                Ok(())
-            }
-            Ok(Err(gate_err)) => Err(gate_err),
-            Err(_elapsed) => Err(GateError::Timeout {
-                not_ready: all_names,
-            }),
-        }
+        // All servers ready — fire the broadcast gate
+        let _ = gate_tx.send(());
+        Ok(())
     }
 }
 
-/// Awaits all oneshot receivers sequentially.
+type ReadyWait =
+    Pin<Box<dyn Future<Output = (String, Result<(), oneshot::error::RecvError>)> + Send>>;
+
+/// Awaits all oneshot receivers concurrently with a shared timeout.
 async fn wait_all_receivers(
     ready_rxs: Vec<(String, oneshot::Receiver<()>)>,
+    timeout: Duration,
 ) -> Result<(), GateError> {
-    for (name, rx) in ready_rxs {
-        rx.await
-            .map_err(|_| GateError::ServerFailed { actor: name })?;
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    let mut not_ready: Vec<String> = ready_rxs.iter().map(|(name, _)| name.clone()).collect();
+    let mut waits: Vec<ReadyWait> = ready_rxs
+        .into_iter()
+        .map(|(name, rx)| Box::pin(async move { (name, rx.await) }) as ReadyWait)
+        .collect();
+
+    while !waits.is_empty() {
+        let selected = tokio::time::timeout_at(deadline, select_all(waits)).await;
+        match selected {
+            Ok(((name, Ok(())), _idx, remaining)) => {
+                waits = remaining;
+                not_ready.retain(|n| n != &name);
+            }
+            Ok(((name, Err(_)), _idx, _remaining)) => {
+                return Err(GateError::ServerFailed { actor: name });
+            }
+            Err(_elapsed) => {
+                not_ready.sort();
+                return Err(GateError::Timeout { not_ready });
+            }
+        }
     }
+
     Ok(())
 }
 
@@ -192,12 +211,7 @@ mod tests {
         let result = gate.wait_all_ready(Duration::from_millis(50)).await;
         assert!(result.is_err());
         if let Err(GateError::Timeout { not_ready }) = result {
-            // Should include the server names
-            assert!(
-                not_ready.contains(&"server1".to_string())
-                    || not_ready.contains(&"server2".to_string()),
-                "Expected server names in not_ready, got: {not_ready:?}"
-            );
+            assert_eq!(not_ready, vec!["server2".to_string()]);
         } else {
             panic!("Expected GateError::Timeout, got {result:?}");
         }
