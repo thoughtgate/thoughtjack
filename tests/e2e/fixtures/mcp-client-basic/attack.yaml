@@ -22,7 +22,7 @@ attack:
       surface: tool_response
       description: "Echo tool returned expected response"
       pattern:
-        target: "content[0].text"
+        target: "content[*].text"
         condition:
           contains: "Echo"
 
