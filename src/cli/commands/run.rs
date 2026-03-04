@@ -44,7 +44,8 @@ pub async fn run(
 ) -> Result<(), ThoughtJackError> {
     let config = args
         .config
-        .as_ref()
+        .clone()
+        .or_else(|| std::env::var_os("THOUGHTJACK_CONFIG").map(std::path::PathBuf::from))
         .ok_or_else(|| ThoughtJackError::Usage("--config <path> is required for `run`".into()))?;
     let yaml = std::fs::read_to_string(config)?;
     run_from_yaml(&yaml, args, quiet, cancel).await
@@ -97,6 +98,7 @@ pub async fn run_from_yaml(
         .actors
         .as_ref()
         .ok_or_else(|| ThoughtJackError::Usage("no actors in document".into()))?;
+    validate_transport_flags(actors, &config)?;
 
     // 6. Execute: single-actor bypass or multi-actor orchestrate
     let start = Instant::now();
@@ -185,6 +187,47 @@ pub async fn run_from_yaml(
     }
 
     Ok(())
+}
+
+fn validate_transport_flags(
+    actors: &[oatf::Actor],
+    config: &ActorConfig,
+) -> Result<(), ThoughtJackError> {
+    let mut missing: Vec<String> = Vec::new();
+    for actor in actors {
+        match actor.mode.as_str() {
+            "mcp_client"
+                if config.mcp_client_command.is_none() && config.mcp_client_endpoint.is_none() =>
+            {
+                missing.push(format!(
+                    "actor '{}' (mcp_client) requires --mcp-client-command (stdio) or --mcp-client-endpoint (HTTP)",
+                    actor.name
+                ));
+            }
+            "ag_ui_client" if config.agui_client_endpoint.is_none() => {
+                missing.push(format!(
+                    "actor '{}' (ag_ui_client) requires --agui-client-endpoint",
+                    actor.name
+                ));
+            }
+            "a2a_client" if config.a2a_client_endpoint.is_none() => {
+                missing.push(format!(
+                    "actor '{}' (a2a_client) requires --a2a-client-endpoint",
+                    actor.name
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(ThoughtJackError::Usage(format!(
+            "missing required transport flags:\n{}",
+            missing.join("\n")
+        )))
+    }
 }
 
 /// Single-actor shortcut: no orchestrator, no readiness gate.
@@ -496,7 +539,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_from_yaml_returns_error_when_actor_fails() {
+    async fn run_from_yaml_missing_client_transport_is_usage_error() {
         let yaml = r#"
 oatf: "0.1"
 attack:
@@ -529,14 +572,14 @@ attack:
 
         let err = run_from_yaml(yaml, &args, true, CancellationToken::new())
             .await
-            .expect_err("actor runtime failure should bubble up as orchestration error");
+            .expect_err("missing client transport should fail with usage error");
 
         match err {
-            ThoughtJackError::Orchestration(msg) => {
-                assert!(msg.contains("actor execution failed"));
-                assert!(msg.contains("client"));
+            ThoughtJackError::Usage(msg) => {
+                assert!(msg.contains("missing required transport flags"));
+                assert!(msg.contains("ag_ui_client"));
             }
-            other => panic!("expected orchestration error, got {other}"),
+            other => panic!("expected usage error, got {other}"),
         }
     }
 

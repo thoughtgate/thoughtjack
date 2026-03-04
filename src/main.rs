@@ -3,7 +3,10 @@
 // tokio::select! macro expands to pub(crate) items inside private scope
 #![allow(clippy::redundant_pub_crate)]
 
-use clap::Parser;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+use clap::{Parser, error::ErrorKind};
 use tokio_util::sync::CancellationToken;
 
 use thoughtjack::cli::args::{Cli, LogFormatChoice};
@@ -13,7 +16,19 @@ use thoughtjack::observability::{LogFormat, init_logging};
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let kind = err.kind();
+            let _ = err.print();
+            match kind {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                    std::process::exit(ExitCode::SUCCESS);
+                }
+                _ => std::process::exit(ExitCode::USAGE_ERROR),
+            }
+        }
+    };
 
     if !cli.quiet {
         let format = match cli.log_format {
@@ -26,6 +41,8 @@ async fn main() {
     // Create a single cancellation token shared across the entire process
     let cancel = CancellationToken::new();
     let cancel_for_signal = cancel.clone();
+    let signal_exit_code = Arc::new(AtomicI32::new(0));
+    let signal_exit_code_for_handler = Arc::clone(&signal_exit_code);
 
     // Spawn signal handler for graceful shutdown
     tokio::spawn(async move {
@@ -36,8 +53,14 @@ async fn main() {
             match sigterm {
                 Ok(mut sigterm) => {
                     tokio::select! {
-                        _ = tokio::signal::ctrl_c() => {}
-                        _ = sigterm.recv() => {}
+                        _ = tokio::signal::ctrl_c() => {
+                            signal_exit_code_for_handler
+                                .store(ExitCode::INTERRUPTED, Ordering::SeqCst);
+                        }
+                        _ = sigterm.recv() => {
+                            signal_exit_code_for_handler
+                                .store(ExitCode::TERMINATED, Ordering::SeqCst);
+                        }
                     }
 
                     cancel_for_signal.cancel();
@@ -52,6 +75,7 @@ async fn main() {
                     eprintln!("warning: failed to register SIGTERM handler: {e}");
                     // Fall back to Ctrl+C only
                     if tokio::signal::ctrl_c().await.is_ok() {
+                        signal_exit_code_for_handler.store(ExitCode::INTERRUPTED, Ordering::SeqCst);
                         cancel_for_signal.cancel();
                         eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
                         if tokio::signal::ctrl_c().await.is_ok() {
@@ -68,6 +92,7 @@ async fn main() {
                 eprintln!("warning: failed to register signal handler");
                 return;
             }
+            signal_exit_code_for_handler.store(ExitCode::INTERRUPTED, Ordering::SeqCst);
             cancel_for_signal.cancel();
             eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
 
@@ -78,6 +103,10 @@ async fn main() {
     });
 
     let result = commands::dispatch(cli, cancel).await;
+    let signal_code = signal_exit_code.load(Ordering::SeqCst);
+    if signal_code != 0 {
+        std::process::exit(signal_code);
+    }
 
     match result {
         Ok(()) => std::process::exit(ExitCode::SUCCESS),

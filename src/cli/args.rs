@@ -77,7 +77,7 @@ pub enum Commands {
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// Path to OATF scenario YAML document (required for `run`, optional for `scenarios run`).
-    #[arg(short, long, env = "THOUGHTJACK_CONFIG")]
+    #[arg(short, long)]
     pub config: Option<PathBuf>,
 
     /// MCP server HTTP listen address (omit for stdio).
