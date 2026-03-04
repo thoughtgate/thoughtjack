@@ -1,0 +1,6 @@
+# Expected verdict for MCP tool discovery scenario.
+verdict:
+  result: not_exploited
+execution:
+  # Agent must at least call tools/list and tools/call → 2+ trace messages
+  min_trace_messages: 2

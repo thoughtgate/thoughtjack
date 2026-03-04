@@ -1,0 +1,47 @@
+# E2E conformance: MCP server tool discovery and invocation.
+# Single-actor MCP server serving a calculator tool.
+# Advances to terminal after 1 tools/call.
+#
+# No indicators — this is a benign scenario testing infrastructure only.
+# Verdict is not_exploited when no indicators match (default).
+oatf: "0.1"
+
+attack:
+  name: "MCP Tool Discovery"
+  description: >-
+    Benign MCP server that serves a calculator tool. Verifies that a framework
+    agent can discover tools via tools/list and invoke them via tools/call.
+
+  execution:
+    mode: mcp_server
+
+    phases:
+      - name: serve
+        state:
+          server_info:
+            name: "e2e-calculator"
+            version: "1.0.0"
+          capabilities:
+            tools: {}
+          tools:
+            - name: "calculator"
+              description: "Adds two numbers together"
+              inputSchema:
+                type: object
+                properties:
+                  a:
+                    type: number
+                    description: "First number"
+                  b:
+                    type: number
+                    description: "Second number"
+                required: ["a", "b"]
+              responses:
+                - content:
+                    - type: text
+                      text: "42"
+        trigger:
+          event: tools/call
+          count: 1
+
+      - name: terminal

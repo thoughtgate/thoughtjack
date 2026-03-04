@@ -1,0 +1,6 @@
+# Expected verdict for MCP client self-test.
+verdict:
+  result: not_exploited
+execution:
+  # MCP client sends: initialize, tools/list, tools/call → at least 3 trace messages
+  min_trace_messages: 3

@@ -1,0 +1,56 @@
+# E2E conformance: AG-UI event streaming with MCP server backend.
+# Multi-actor: MCP server (calculator) + AG-UI client.
+#
+# No indicators — this is a benign scenario testing infrastructure only.
+# Verdict is not_exploited when no indicators match (default).
+oatf: "0.1"
+
+attack:
+  name: "AG-UI Event Streaming"
+  description: >-
+    Multi-actor scenario with an MCP server providing a calculator tool and an
+    AG-UI client that sends a run_agent_input to a framework agent. Verifies
+    AG-UI SSE event streaming and MCP tool invocation work together.
+
+  execution:
+    actors:
+      - name: mcp_backend
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              server_info:
+                name: "e2e-calculator"
+                version: "1.0.0"
+              capabilities:
+                tools: {}
+              tools:
+                - name: "calculator"
+                  description: "Adds two numbers together"
+                  inputSchema:
+                    type: object
+                    properties:
+                      a:
+                        type: number
+                        description: "First number"
+                      b:
+                        type: number
+                        description: "Second number"
+                    required: ["a", "b"]
+                  responses:
+                    - content:
+                        - type: text
+                          text: "42"
+            trigger:
+              event: tools/call
+              count: 999
+
+      - name: agui_probe
+        mode: ag_ui_client
+        phases:
+          - name: probe
+            state:
+              run_agent_input:
+                messages:
+                  - role: user
+                    content: "Use the calculator tool to add 1 and 2."

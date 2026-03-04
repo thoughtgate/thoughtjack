@@ -425,6 +425,22 @@ cargo fmt
 cargo llvm-cov --html
 ```
 
+## Protocol Conformance Matrix
+
+End-to-end conformance tests verify ThoughtJack against real agent frameworks using [`@dwmkerr/mock-llm`](https://www.npmjs.com/package/@dwmkerr/mock-llm) for deterministic LLM behavior.
+
+| ThoughtJack Mode | LangGraph | CrewAI | Self-Test |
+|------------------|-----------|--------|-----------|
+| MCP Server       | pass      | pass   | --        |
+| AG-UI Client     | pass      | pass   | --        |
+| A2A Server       | gap *     | pass   | --        |
+| MCP Client       | --        | --     | pass      |
+| A2A Client       | --        | --     | pass      |
+
+\* LangGraph lacks native A2A client support.
+
+See `tests/e2e/` for fixtures, reference agents, and the orchestrator script.
+
 ## Security
 
 ThoughtJack implements multiple security measures to ensure supply chain integrity and continuous security testing:

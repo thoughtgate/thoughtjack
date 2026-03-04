@@ -1,0 +1,200 @@
+name: E2E Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions: read-all
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-tj:
+    name: Build ThoughtJack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@e814c742d4444ce2f3f6abddea7faf00161ed941 # 1.88
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+      - name: Build release binary
+        run: cargo build --release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: thoughtjack-binary
+          path: target/release/thoughtjack
+          retention-days: 3
+
+  e2e-pinned:
+    name: "pinned: ${{ matrix.scenario }} × ${{ matrix.framework }}"
+    runs-on: ubuntu-latest
+    needs: [build-tj]
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scenario: mcp-tool-discovery
+            framework: langgraph
+            self_test: false
+          - scenario: mcp-tool-discovery
+            framework: crewai
+            self_test: false
+          - scenario: agui-event-streaming
+            framework: langgraph
+            self_test: false
+          - scenario: agui-event-streaming
+            framework: crewai
+            self_test: false
+          - scenario: a2a-task-delegation
+            framework: crewai
+            self_test: false
+          - scenario: mcp-client-basic
+            framework: self-test
+            self_test: true
+          - scenario: a2a-client-basic
+            framework: self-test
+            self_test: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: thoughtjack-binary
+          path: target/release
+      - name: Make binary executable
+        run: chmod +x target/release/thoughtjack
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: ${{ !matrix.self_test }}
+        with:
+          node-version: "22"
+
+      - name: Install mock-llm
+        if: ${{ !matrix.self_test }}
+        run: npm install -g @dwmkerr/mock-llm
+
+      - name: Start mock-llm
+        if: ${{ !matrix.self_test }}
+        run: |
+          mock-llm &
+          echo "MOCK_LLM_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Install agent dependencies (pinned)
+        if: ${{ !matrix.self_test }}
+        run: pip install -e tests/e2e/reference-agents/${{ matrix.framework }}/
+
+      - name: Install orchestrator dependencies
+        run: pip install pyyaml
+
+      - name: Run e2e scenario
+        run: |
+          args=(
+            --scenario "tests/e2e/fixtures/${{ matrix.scenario }}"
+            --tj-binary ./target/release/thoughtjack
+            --base-port 19000
+            --timeout 60
+            --output-dir tests/e2e/results
+          )
+          if [ "${{ matrix.self_test }}" = "true" ]; then
+            args+=(--self-test)
+          else
+            args+=(
+              --framework "${{ matrix.framework }}"
+              --mock-llm-url http://localhost:6556
+            )
+          fi
+          python tests/e2e/run_conformance.py "${args[@]}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: "e2e-pinned-${{ matrix.scenario }}-${{ matrix.framework }}"
+          path: tests/e2e/results/
+          retention-days: 14
+
+      - name: Stop mock-llm
+        if: always() && !matrix.self_test
+        run: kill "$MOCK_LLM_PID" 2>/dev/null || true
+
+  e2e-upgrade:
+    name: "upgrade: ${{ matrix.scenario }} × ${{ matrix.framework }}"
+    runs-on: ubuntu-latest
+    needs: [build-tj]
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scenario: mcp-tool-discovery
+            framework: langgraph
+          - scenario: mcp-tool-discovery
+            framework: crewai
+          - scenario: agui-event-streaming
+            framework: langgraph
+          - scenario: agui-event-streaming
+            framework: crewai
+          - scenario: a2a-task-delegation
+            framework: crewai
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: thoughtjack-binary
+          path: target/release
+      - name: Make binary executable
+        run: chmod +x target/release/thoughtjack
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install mock-llm
+        run: npm install -g @dwmkerr/mock-llm
+
+      - name: Start mock-llm
+        run: |
+          mock-llm &
+          echo "MOCK_LLM_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Install agent dependencies (--upgrade)
+        run: pip install --upgrade -e tests/e2e/reference-agents/${{ matrix.framework }}/
+
+      - name: Install orchestrator dependencies
+        run: pip install pyyaml
+
+      - name: Run e2e scenario
+        run: |
+          python tests/e2e/run_conformance.py \
+            --scenario "tests/e2e/fixtures/${{ matrix.scenario }}" \
+            --framework "${{ matrix.framework }}" \
+            --tj-binary ./target/release/thoughtjack \
+            --mock-llm-url http://localhost:6556 \
+            --base-port 19000 \
+            --timeout 60 \
+            --output-dir tests/e2e/results
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: "e2e-upgrade-${{ matrix.scenario }}-${{ matrix.framework }}"
+          path: tests/e2e/results/
+          retention-days: 14
+
+      - name: Stop mock-llm
+        if: always()
+        run: kill "$MOCK_LLM_PID" 2>/dev/null || true

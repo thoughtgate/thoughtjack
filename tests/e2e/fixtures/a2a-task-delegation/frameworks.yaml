@@ -1,0 +1,3 @@
+# LangGraph lacks native A2A client support.
+frameworks:
+  - crewai

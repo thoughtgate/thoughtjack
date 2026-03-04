@@ -1,0 +1,46 @@
+# E2E conformance: A2A server task delegation.
+# Single-actor A2A server serving an Agent Card and accepting message/send.
+#
+# No indicators — this is a benign scenario testing infrastructure only.
+# Verdict is not_exploited when no indicators match (default).
+oatf: "0.1"
+
+attack:
+  name: "A2A Task Delegation"
+  description: >-
+    A2A server that serves an Agent Card at .well-known/agent.json and accepts
+    message/send requests with a static task result. Verifies that a framework
+    agent can discover and delegate tasks via A2A.
+
+  execution:
+    mode: a2a_server
+
+    phases:
+      - name: serve
+        state:
+          agent_card:
+            name: "e2e-helper"
+            description: "A helpful assistant for e2e testing"
+            url: "http://localhost:9090"
+            version: "1.0.0"
+            capabilities:
+              streaming: false
+              pushNotifications: false
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text"]
+            skills:
+              - id: "summarize"
+                name: "Summarize"
+                description: "Summarizes input text"
+                tags: ["text", "summarize"]
+          task_response:
+            status:
+              state: "completed"
+              message:
+                role: "agent"
+                parts:
+                  - type: "text"
+                    text: "Summary: The input has been processed successfully."
+        trigger:
+          event: "message/send"
+          count: 999

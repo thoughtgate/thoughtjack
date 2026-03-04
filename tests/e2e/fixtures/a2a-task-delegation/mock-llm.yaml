@@ -1,0 +1,8 @@
+# mock-llm rules for A2A task delegation scenario.
+# Single response: agent processes the A2A task result.
+rules:
+  - path: "/v1/chat/completions"
+    sequence: 0
+    response:
+      status: 200
+      content: '{"id":"chatcmpl-1","object":"chat.completion","model":"mock","choices":[{"message":{"role":"assistant","content":"I received the summary from the A2A agent: The input has been processed successfully."},"finish_reason":"stop"}]}'

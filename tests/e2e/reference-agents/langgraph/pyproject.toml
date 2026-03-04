@@ -1,0 +1,17 @@
+[project]
+name = "thoughtjack-e2e-langgraph"
+version = "0.1.0"
+description = "LangGraph reference agent for ThoughtJack e2e conformance tests"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph~=0.4",
+    "langchain-openai~=0.3",
+    "langchain-mcp-adapters~=0.1",
+    "ag-ui-langgraph~=0.1",
+    "uvicorn~=0.34",
+    "fastapi~=0.115",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
