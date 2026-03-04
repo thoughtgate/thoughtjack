@@ -144,7 +144,11 @@ impl PhaseEngine {
     /// Implements: TJ-SPEC-013 F-001
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        self.get_phase(self.current_phase).trigger.is_none()
+        let phases = &self.actor().phases;
+        if self.current_phase >= phases.len() {
+            return true;
+        }
+        phases[self.current_phase].trigger.is_none()
     }
 
     /// Returns a reference to the phase at the given index.
@@ -168,9 +172,10 @@ impl PhaseEngine {
     /// Implements: TJ-SPEC-013 F-001
     #[must_use]
     pub fn current_phase_name(&self) -> &str {
-        self.get_phase(self.current_phase)
-            .name
-            .as_deref()
+        self.actor()
+            .phases
+            .get(self.current_phase)
+            .and_then(|p| p.name.as_deref())
             .unwrap_or("unnamed")
     }
 
@@ -486,7 +491,7 @@ attack:
     }
 
     #[test]
-    fn advance_beyond_last_phase_wraps_safely() {
+    fn advance_beyond_last_phase_marks_terminal() {
         let doc = load_test_document(
             r#"
 oatf: "0.1"
@@ -522,6 +527,12 @@ attack:
             content: serde_json::json!({}),
         };
         assert_eq!(engine.process_event(&event), PhaseAction::Stay);
+
+        // Advancing beyond last phase should be treated as terminal completion
+        // and must not panic in is_terminal().
+        let beyond = engine.advance_phase();
+        assert_eq!(beyond, 2);
+        assert!(engine.is_terminal());
     }
 
     #[test]
