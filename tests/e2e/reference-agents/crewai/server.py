@@ -56,8 +56,14 @@ async def agent_endpoint(request: Request) -> StreamingResponse:
     if _crew is None:
         tools = []
         for url in _args.mcp_server:
-            adapter = MCPServerAdapter(server_url=url)
-            adapter.__enter__()
+            # MCPServerAdapter expects a dict with url + transport, not a bare URL.
+            # TJ's MCP HTTP transport exposes GET /sse (SSE) + POST /message.
+            # The orchestrator passes http://host:port/message; derive the SSE URL.
+            sse_url = url.rsplit("/", 1)[0] + "/sse" if "/message" in url else url
+            adapter = MCPServerAdapter(
+                {"url": sse_url, "transport": "sse"},
+                connect_timeout=10,
+            )
             _adapters.append(adapter)
             tools.extend(adapter.tools)
         _crew = create_crew(_args.llm_base_url, tools=tools, a2a_server_urls=_args.a2a_server)
