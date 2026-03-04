@@ -6,7 +6,7 @@ Creates a single-agent Crew wired to MCP tools and optional A2A servers.
 from __future__ import annotations
 
 from crewai import Agent, Crew, LLM, Task
-from crewai_tools.mcp import MCPServerAdapter
+from crewai_tools import MCPServerAdapter
 
 
 def create_crew(

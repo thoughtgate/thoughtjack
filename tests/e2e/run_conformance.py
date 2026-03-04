@@ -241,10 +241,10 @@ def run_framework_scenario(
             sys.executable, str(server_py),
             "--llm-base-url", mock_llm_url,
             "--port", str(agent_port),
-            "--mcp-server", f"http://127.0.0.1:{mcp_port}/message",
         ]
-        has_a2a = any(m == "a2a_server" for m in modes)
-        if has_a2a:
+        if any(m == "mcp_server" for m in modes):
+            agent_cmd.extend(["--mcp-server", f"http://127.0.0.1:{mcp_port}/message"])
+        if any(m == "a2a_server" for m in modes):
             agent_cmd.extend(["--a2a-server", f"http://127.0.0.1:{a2a_port}"])
 
         with open(stderr_path, "w") as stderr_file:
