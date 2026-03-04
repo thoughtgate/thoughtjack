@@ -12,7 +12,7 @@ import signal
 import sys
 
 import uvicorn
-from ag_ui.langgraph import add_langgraph_fastapi_endpoint
+from ag_ui_langgraph import LangGraphAgent, add_langgraph_fastapi_endpoint
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -44,7 +44,8 @@ async def main() -> None:
     args = parse_args()
 
     graph = await create_graph(args.llm_base_url, args.mcp_server)
-    add_langgraph_fastapi_endpoint(app, "/", graph)
+    agent = LangGraphAgent(name="e2e-test", graph=graph)
+    add_langgraph_fastapi_endpoint(app, agent, "/")
 
     config = uvicorn.Config(
         app,

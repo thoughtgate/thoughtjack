@@ -12,11 +12,11 @@ import signal
 import sys
 
 import uvicorn
-from ag_ui.crewai import add_crewai_flow_fastapi_endpoint
+from ag_ui_crewai import add_crewai_flow_fastapi_endpoint
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from agent import create_crew
+from agent import E2ETestFlow
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,8 +49,12 @@ async def health() -> JSONResponse:
 async def main() -> None:
     args = parse_args()
 
-    crew = create_crew(args.llm_base_url, args.mcp_server, args.a2a_server)
-    add_crewai_flow_fastapi_endpoint(app, "/", crew)
+    flow = E2ETestFlow()
+    flow.model = "openai/mock"
+    flow.base_url = args.llm_base_url
+    flow.api_key = "mock-key"
+
+    add_crewai_flow_fastapi_endpoint(app, flow, "/")
 
     config = uvicorn.Config(
         app,

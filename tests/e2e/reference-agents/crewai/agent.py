@@ -1,65 +1,40 @@
 """CrewAI reference agent for ThoughtJack e2e conformance tests.
 
-Creates a single-agent Crew wired to MCP tools and optional A2A servers.
+Creates a Flow[CopilotKitState] that uses MCP tools via crewai-tools.
 """
 
 from __future__ import annotations
 
-from crewai import Agent, Crew, LLM, Task
-from crewai_tools.mcp import MCPServerAdapter
+from ag_ui_crewai import CopilotKitState, copilotkit_stream
+from crewai.flow.flow import Flow, start
+from litellm import acompletion
 
 
-def create_crew(
-    llm_base_url: str,
-    mcp_server_urls: list[str] | None = None,
-    a2a_server_urls: list[str] | None = None,
-) -> Crew:
-    """Build a CrewAI Crew wired to MCP tool servers and A2A agents.
+class E2ETestFlow(Flow[CopilotKitState]):
+    """Simple agentic chat flow that streams LLM responses with tool support."""
 
-    Args:
-        llm_base_url: Base URL for the mock LLM (OpenAI-compatible).
-        mcp_server_urls: List of MCP server HTTP URLs.
-        a2a_server_urls: List of A2A server URLs.
+    model: str = "openai/mock"
+    base_url: str = "http://localhost:6556"
+    api_key: str = "mock-key"
 
-    Returns:
-        A Crew instance ready to kickoff.
-    """
-    llm = LLM(
-        model="openai/mock",
-        base_url=llm_base_url,
-        api_key="mock-key",
-    )
+    @start()
+    async def chat(self):
+        """Run a single LLM completion with available tools."""
+        # Gather tools from CopilotKit actions (wired by AG-UI endpoint)
+        tools = self.state.copilotkit.actions if self.state.copilotkit else []
 
-    tools = []
-    for url in mcp_server_urls or []:
-        adapter = MCPServerAdapter(server_url=f"{url}/mcp")
-        tools.extend(adapter.tools)
+        response = await copilotkit_stream(
+            acompletion(
+                model=self.model,
+                messages=[{"role": "system", "content": "You are a test agent."}]
+                + [m.model_dump() for m in self.state.messages],
+                tools=tools if tools else None,
+                api_base=self.base_url,
+                api_key=self.api_key,
+                stream=True,
+            )
+        )
 
-    agent = Agent(
-        role="E2E Test Agent",
-        goal="Execute tool calls and tasks as instructed",
-        backstory="A test agent for e2e conformance testing",
-        llm=llm,
-        tools=tools,
-        verbose=False,
-    )
-
-    task = Task(
-        description="Follow instructions and use available tools",
-        agent=agent,
-        expected_output="Task result",
-    )
-
-    crew_kwargs: dict = {
-        "agents": [agent],
-        "tasks": [task],
-        "verbose": False,
-    }
-
-    # Wire A2A agents if provided
-    if a2a_server_urls:
-        crew_kwargs["a2a_agents"] = [
-            {"url": url} for url in a2a_server_urls
-        ]
-
-    return Crew(**crew_kwargs)
+        # Append assistant response to state
+        self.state.messages.append(response)
+        return response

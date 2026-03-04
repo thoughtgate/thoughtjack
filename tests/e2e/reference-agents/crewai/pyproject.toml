@@ -4,9 +4,9 @@ version = "0.1.0"
 description = "CrewAI reference agent for ThoughtJack e2e conformance tests"
 requires-python = ">=3.11"
 dependencies = [
-    "crewai~=0.114",
-    "crewai-tools[mcp]~=0.40",
-    "ag-ui-crewai~=0.1",
+    "crewai>=0.80",
+    "ag-ui-crewai>=0.1",
+    "litellm",
     "uvicorn~=0.34",
     "fastapi~=0.115",
 ]
