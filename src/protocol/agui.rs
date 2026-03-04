@@ -663,8 +663,9 @@ struct RunAgentInput {
 ///
 /// # Errors
 ///
-/// Returns `EngineError::Driver` if `state["run_agent_input"]` is missing
-/// or if a `synthesize` block is present (not yet supported).
+/// Returns `EngineError::Driver` if `state["run_agent_input"]` is missing,
+/// if `run_agent_input.messages` is missing or not an array, or if a
+/// `synthesize` block is present (not yet supported).
 ///
 /// Implements: TJ-SPEC-016 F-001
 fn build_run_agent_input(
@@ -691,11 +692,12 @@ fn build_run_agent_input(
     }
 
     // Extract messages (required)
-    let messages = interpolated
-        .get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let messages_value = interpolated.get("messages").ok_or_else(|| {
+        EngineError::Driver("AG-UI run_agent_input missing required 'messages' array".to_string())
+    })?;
+    let messages = messages_value.as_array().cloned().ok_or_else(|| {
+        EngineError::Driver("AG-UI run_agent_input 'messages' must be an array".to_string())
+    })?;
 
     // Auto-generate message IDs if missing
     let messages: Vec<Value> = messages
@@ -1512,6 +1514,32 @@ mod tests {
         });
         let result = build_run_agent_input(&state, &HashMap::new(), "t1").unwrap();
         assert!(result.messages.is_empty());
+    }
+
+    #[test]
+    fn missing_messages_errors() {
+        let state = json!({
+            "run_agent_input": {
+                "tools": [{"type": "function", "function": {"name": "calc"}}]
+            }
+        });
+        let result = build_run_agent_input(&state, &HashMap::new(), "t1");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing required 'messages'"), "got: {err}");
+    }
+
+    #[test]
+    fn non_array_messages_errors() {
+        let state = json!({
+            "run_agent_input": {
+                "messages": {"role": "user", "content": "Hello"}
+            }
+        });
+        let result = build_run_agent_input(&state, &HashMap::new(), "t1");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("'messages' must be an array"), "got: {err}");
     }
 
     #[test]

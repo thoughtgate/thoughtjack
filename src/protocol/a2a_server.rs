@@ -587,6 +587,26 @@ async fn handle_message_stream(
     Sse::new(sse_stream).into_response()
 }
 
+fn required_task_id(params: &Value) -> Result<&str, &'static str> {
+    match params.get("id") {
+        Some(Value::String(id)) if !id.trim().is_empty() => Ok(id.as_str()),
+        Some(Value::String(_)) => Err("Invalid params: 'id' must be a non-empty string"),
+        Some(_) => Err("Invalid params: 'id' must be a string"),
+        None => Err("Invalid params: missing required 'id' field"),
+    }
+}
+
+async fn invalid_params_response(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    method: &str,
+    message: &str,
+) -> Response {
+    let result = jsonrpc_error(request_id, INVALID_PARAMS, message);
+    emit_outgoing(shared, method, result.get("error").unwrap_or(&Value::Null)).await;
+    axum::Json(result).into_response()
+}
+
 /// Handle `tasks/get` — return task status.
 ///
 /// Implements: TJ-SPEC-017 F-005
@@ -595,7 +615,10 @@ async fn handle_tasks_get(
     request_id: &Value,
     params: &Value,
 ) -> Response {
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = match required_task_id(params) {
+        Ok(id) => id,
+        Err(msg) => return invalid_params_response(shared, request_id, "tasks/get", msg).await,
+    };
 
     let result = {
         let store = shared.task_store.read().await;
@@ -641,7 +664,10 @@ async fn handle_tasks_cancel(
     request_id: &Value,
     params: &Value,
 ) -> Response {
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = match required_task_id(params) {
+        Ok(id) => id,
+        Err(msg) => return invalid_params_response(shared, request_id, "tasks/cancel", msg).await,
+    };
 
     let result = {
         let mut store = shared.task_store.write().await;
@@ -687,7 +713,12 @@ async fn handle_tasks_resubscribe(
     request_id: &Value,
     params: &Value,
 ) -> Response {
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = match required_task_id(params) {
+        Ok(id) => id,
+        Err(msg) => {
+            return invalid_params_response(shared, request_id, "tasks/resubscribe", msg).await;
+        }
+    };
 
     let result = {
         let store = shared.task_store.read().await;
@@ -1854,6 +1885,154 @@ mod tests {
             "jsonrpc": "2.0",
             "id": "req-1",
             "method": "message/stream",
+            "params": {}
+        });
+
+        let request = local_request_builder("POST", "/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn tasks_get_missing_id_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/get",
+            "params": {}
+        });
+
+        let request = local_request_builder("POST", "/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn tasks_get_non_string_id_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/get",
+            "params": {"id": 42}
+        });
+
+        let request = local_request_builder("POST", "/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn tasks_cancel_missing_id_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/cancel",
+            "params": {}
+        });
+
+        let request = local_request_builder("POST", "/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn tasks_resubscribe_missing_id_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/resubscribe",
             "params": {}
         });
 

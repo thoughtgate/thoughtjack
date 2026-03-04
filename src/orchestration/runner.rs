@@ -335,14 +335,10 @@ pub(crate) struct ActorRunContext<'a> {
 /// and protocol driver. Server-mode actors signal readiness via `ready_tx`.
 /// Client-mode actors wait for the gate via `gate_rx`.
 ///
-/// # Panics
-///
-/// Panics if the document has no actors after normalization, or if
-/// `actor_index` is out of bounds.
-///
 /// # Errors
 ///
-/// Returns `EngineError::Driver` if the actor's mode is not yet supported.
+/// Returns `EngineError::Driver` if `actor_index` is out of bounds for the
+/// normalized actor list, or if the actor's mode is not yet supported.
 /// Propagates any errors from transport binding or phase loop execution.
 ///
 /// Implements: TJ-SPEC-015 F-003
@@ -360,7 +356,12 @@ pub async fn run_actor(
     events: &EventEmitter,
 ) -> Result<ActorResult, EngineError> {
     let actors = document_actors(&document);
-    let actor = &actors[actor_index];
+    let actor = actors.get(actor_index).ok_or_else(|| {
+        EngineError::Driver(format!(
+            "actor index {actor_index} out of bounds (have {} actors)",
+            actors.len()
+        ))
+    })?;
     let actor_name = actor.name.clone();
     let mode = actor.mode.clone();
 
@@ -932,6 +933,61 @@ attack:
             err.to_string().contains("not yet implemented"),
             "Expected 'not yet implemented', got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn actor_index_out_of_bounds_returns_error() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: server_actor
+        mode: mcp_server
+        phases:
+          - name: setup
+            state:
+              tools: []
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
+            transport_factory: Some(null_transport_factory()),
+        };
+
+        let result = run_actor(
+            1,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            None,
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("actor index 1 out of bounds"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("have 1 actors"), "unexpected error: {err}");
     }
 
     #[tokio::test]
