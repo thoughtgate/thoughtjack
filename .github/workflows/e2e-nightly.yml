@@ -45,7 +45,7 @@ jobs:
           - scenario: a2a-task-delegation
             framework: crewai
             self_test: false
-          # Self-tests (10)
+          # Self-tests (12)
           - scenario: mcp-client-basic
             framework: self-test
             self_test: true
@@ -74,6 +74,14 @@ jobs:
             framework: self-test
             self_test: true
           - scenario: a2a-streaming
+            framework: self-test
+            self_test: true
+          # mcp-side-effects disabled: server panics with HTTP transport
+          # during logging/sampling interleaving (needs stdio transport)
+          - scenario: mcp-instructions
+            framework: self-test
+            self_test: true
+          - scenario: error-graceful-degradation
             framework: self-test
             self_test: true
     steps:

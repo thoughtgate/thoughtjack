@@ -7,4 +7,4 @@ indicators:
   server_name_match:
     result: matched
 execution:
-  min_trace_messages: 6
+  min_trace_messages: 8

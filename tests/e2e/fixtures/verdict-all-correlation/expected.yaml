@@ -7,4 +7,4 @@ indicators:
   injection_absent:
     result: not_matched
 execution:
-  min_trace_messages: 6
+  min_trace_messages: 8

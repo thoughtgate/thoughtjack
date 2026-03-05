@@ -7,5 +7,5 @@ indicators:
   task_completed:
     result: matched
 execution:
-  # A2A client sends at least one request
-  min_trace_messages: 2
+  # card fetch(2×2) + message/send request(2) + response(2) = 8
+  min_trace_messages: 4

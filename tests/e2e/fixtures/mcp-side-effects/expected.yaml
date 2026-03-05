@@ -1,0 +1,12 @@
+# Expected verdict for MCP side-effects self-test.
+verdict:
+  result: exploited
+indicators:
+  logging_exfil:
+    result: matched
+  sampling_injected:
+    result: matched
+execution:
+  # init(2) + list(2) + logging(1) + sampling_req(1) + sampling_resp(1) + call(2)
+  # × 2 sides = ~14-18 trace messages
+  min_trace_messages: 8

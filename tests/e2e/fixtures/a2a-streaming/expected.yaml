@@ -4,8 +4,10 @@ verdict:
 indicators:
   task_sent:
     result: matched
+  sse_status_received:
+    result: matched
   task_completed:
     result: matched
 execution:
-  # A2A agent card + stream request/response events
-  min_trace_messages: 2
+  # card(2×2) + stream request(1) + SSE connected(1) + SSE events(~3) + stream outgoing(1)
+  min_trace_messages: 6

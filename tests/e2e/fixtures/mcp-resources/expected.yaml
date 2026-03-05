@@ -7,5 +7,5 @@ indicators:
   resource_read:
     result: matched
 execution:
-  # MCP init req/resp + list req/resp + read req/resp → at least 6 trace messages
-  min_trace_messages: 6
+  # MCP init(2×2) + list_resources(2×2) + read_resource(2×2) = 12; conservative floor
+  min_trace_messages: 8

@@ -7,5 +7,5 @@ indicators:
   prompt_retrieved:
     result: matched
 execution:
-  # MCP init req/resp + list req/resp + get req/resp → at least 6 trace messages
-  min_trace_messages: 6
+  # MCP init(2×2) + list_prompts(2×2) + get_prompt(2×2) = 12; conservative floor
+  min_trace_messages: 8

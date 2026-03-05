@@ -1,0 +1,81 @@
+# E2E conformance: graceful degradation when one actor fails.
+# Multi-actor: MCP server + MCP client (succeed) + A2A client (no server → errors).
+oatf: "0.1"
+
+attack:
+  name: "Error Graceful Degradation"
+  description: >-
+    Tests that the verdict pipeline handles partial actor failures correctly.
+    The MCP server and client complete normally, but the A2A client has no
+    corresponding server and errors with connection refused. The verdict should
+    still evaluate correctly based on the successful actors' trace events.
+
+  indicators:
+    - id: mcp_echo_succeeded
+      protocol: mcp
+      surface: tool_response
+      description: "MCP echo tool returned expected value despite A2A actor failure"
+      pattern:
+        target: "content[*].text"
+        condition:
+          contains: "graceful-test"
+    - id: a2a_unreachable
+      protocol: a2a
+      surface: task_status
+      description: "A2A indicator not matched because client actor errored"
+      pattern:
+        target: "status.state"
+        condition:
+          contains: "completed"
+
+  execution:
+    actors:
+      - name: target_server
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              server_info:
+                name: "e2e-graceful-server"
+                version: "1.0.0"
+              capabilities:
+                tools: {}
+              tools:
+                - name: "echo"
+                  description: "Echoes input"
+                  inputSchema:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                    required: ["message"]
+                  responses:
+                    - content:
+                        - type: text
+                          text: "graceful-test"
+            trigger:
+              event: tools/call
+              count: 1
+
+      - name: test_client
+        mode: mcp_client
+        phases:
+          - name: discover_and_call
+            state:
+              actions:
+                - list_tools
+                - call_tool:
+                    name: "echo"
+                    arguments:
+                      message: "hello"
+
+      - name: a2a_client_no_server
+        mode: a2a_client
+        phases:
+          - name: attempt_task
+            state:
+              task_message:
+                role: "user"
+                parts:
+                  - kind: "text"
+                    text: "This task will fail because no A2A server exists"
