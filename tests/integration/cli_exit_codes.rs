@@ -21,17 +21,17 @@ fn thoughtjack_bin() -> std::path::PathBuf {
         return std::path::PathBuf::from(path);
     }
 
-    let mut path = match std::env::var_os("CARGO_TARGET_DIR") {
-        Some(dir) => {
+    let mut path = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
+        |dir| {
             let dir = std::path::PathBuf::from(dir);
             if dir.is_absolute() {
                 dir
             } else {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(dir)
             }
-        }
-        None => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
-    };
+        },
+    );
     path.push("debug");
     path.push("thoughtjack");
     #[cfg(windows)]
