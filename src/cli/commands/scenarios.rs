@@ -130,13 +130,6 @@ pub async fn run_scenario(
     quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
-    if args.run.config.is_some() {
-        return Err(ThoughtJackError::Usage(
-            "--config is not supported with `scenarios run` (it always uses the built-in scenario YAML)"
-                .to_string(),
-        ));
-    }
-
     let scenario = scenarios::find_scenario(&args.name).ok_or_else(|| {
         let mut message = format!("Unknown scenario '{}'", args.name);
 
@@ -148,20 +141,19 @@ pub async fn run_scenario(
         ThoughtJackError::Usage(message)
     })?;
 
-    super::run::run_from_yaml(scenario.yaml, &args.run, quiet, cancel).await
+    let run_args: crate::cli::args::RunArgs = (&args.run).into();
+    super::run::run_from_yaml(scenario.yaml, &run_args, quiet, cancel).await
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::time::Duration;
 
     use super::*;
-    use crate::cli::args::RunArgs;
+    use crate::cli::args::ScenariosRunOverrides;
 
-    fn test_run_args() -> RunArgs {
-        RunArgs {
-            config: None,
+    fn test_run_args() -> ScenariosRunOverrides {
+        ScenariosRunOverrides {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -182,21 +174,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_scenario_rejects_config_override() {
-        let mut run = test_run_args();
-        run.config = Some(PathBuf::from("custom.yaml"));
+    async fn run_scenario_unknown_name_is_usage_error() {
         let args = ScenariosRunArgs {
-            name: "rug-pull".to_string(),
-            run,
+            name: "not-a-real-scenario".to_string(),
+            run: test_run_args(),
         };
 
         let err = run_scenario(&args, true, CancellationToken::new())
             .await
-            .expect_err("scenarios run should reject --config");
+            .expect_err("unknown scenario should fail with usage error");
 
         match err {
             ThoughtJackError::Usage(msg) => {
-                assert!(msg.contains("--config"), "unexpected message: {msg}");
+                assert!(
+                    msg.contains("Unknown scenario"),
+                    "unexpected message: {msg}"
+                );
             }
             other => panic!("expected usage error, got {other}"),
         }

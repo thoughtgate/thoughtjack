@@ -139,6 +139,19 @@ attack:
     ]);
     assert_exit_code(&conflict, 64, "conflicting flags should be usage error");
 
+    let scenarios_config = run_thoughtjack(&[
+        "scenarios",
+        "run",
+        "rug-pull",
+        "--config",
+        "tests/fixtures/smoke_test.yaml",
+    ]);
+    assert_exit_code(
+        &scenarios_config,
+        64,
+        "scenarios run should reject --config at parse time",
+    );
+
     let scenarios_run = run_thoughtjack(&[
         "scenarios",
         "run",
