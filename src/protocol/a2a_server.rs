@@ -18,8 +18,9 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use axum::Router;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -208,17 +209,7 @@ struct A2aSharedState {
 /// `GET /.well-known/agent.json` — serve the Agent Card.
 ///
 /// Implements: TJ-SPEC-017 F-002
-async fn handle_agent_card(
-    State(shared): State<Arc<A2aSharedState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-) -> Response {
-    if let Err(resp) = validate_local_peer(addr) {
-        return resp;
-    }
-    if let Err(resp) = validate_local_origin(&headers) {
-        return resp;
-    }
+async fn handle_agent_card(State(shared): State<Arc<A2aSharedState>>) -> Response {
     if !shared.accepting_requests.load(Ordering::Acquire) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -251,16 +242,8 @@ async fn handle_agent_card(
 /// Implements: TJ-SPEC-017 F-001
 async fn handle_jsonrpc(
     State(shared): State<Arc<A2aSharedState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    if let Err(resp) = validate_local_peer(addr) {
-        return resp;
-    }
-    if let Err(resp) = validate_local_origin(&headers) {
-        return resp;
-    }
     if !shared.accepting_requests.load(Ordering::Acquire) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -366,6 +349,21 @@ fn validate_local_origin(headers: &HeaderMap) -> Result<(), Response> {
     }
 
     Ok(())
+}
+
+/// Router-level local-only guard for all A2A endpoints.
+async fn require_local_only(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Err(resp) = validate_local_peer(addr) {
+        return resp;
+    }
+    if let Err(resp) = validate_local_origin(request.headers()) {
+        return resp;
+    }
+    next.run(request).await
 }
 
 fn extract_hostname_for_origin_check(header_value: &str) -> Option<String> {
@@ -1051,6 +1049,7 @@ fn build_router(shared: Arc<A2aSharedState>) -> Router {
         .route("/.well-known/agent.json", get(handle_agent_card))
         .route("/", post(handle_jsonrpc))
         .layer(body_limit)
+        .route_layer(middleware::from_fn(require_local_only))
         .with_state(shared)
 }
 
