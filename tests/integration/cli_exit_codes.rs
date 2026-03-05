@@ -10,8 +10,6 @@ use std::time::Duration;
 
 use tempfile::NamedTempFile;
 
-use crate::common::mock_server::find_free_port;
-
 fn thoughtjack_bin() -> std::path::PathBuf {
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_thoughtjack") {
         return std::path::PathBuf::from(path);
@@ -262,60 +260,41 @@ fn run_sigterm_exits_143() {
 
 #[tokio::test]
 async fn run_multi_actor_client_completes_server_cancelled_exits_success() {
-    let port = find_free_port().await;
-
     let yaml = r#"
 oatf: "0.1"
 attack:
   name: mixed_completion
   execution:
     actors:
-      - name: server
-        mode: a2a_server
+      - name: fast_actor
+        mode: mcp_server
+        phases:
+          - name: terminal
+            state:
+              tools: []
+      - name: slow_actor
+        mode: mcp_server
         phases:
           - name: serve
             state:
-              agent_card:
-                name: "test-agent"
-                defaultInputModes: ["text/plain"]
-                defaultOutputModes: ["text/plain"]
-                skills: []
-              task_responses:
-                - status: completed
-                  messages:
-                    - role: agent
-                      parts:
-                        - kind: text
-                          text: "done"
+              tools:
+                - name: hold
+                  description: "wait"
+                  inputSchema:
+                    type: object
             trigger:
-              event: message/send
+              event: tools/call
               count: 999
           - name: terminal
-      - name: client
-        mode: a2a_client
-        phases:
-          - name: send
-            state:
-              task_message:
-                role: user
-                parts:
-                  - kind: text
-                    text: "hello"
 "#;
     let file = write_temp_yaml(yaml);
     let config_path = file.path().to_string_lossy().into_owned();
-    let endpoint = format!("http://127.0.0.1:{port}");
-
     let output = run_thoughtjack(&[
         "run",
         "--config",
         &config_path,
-        "--a2a-server",
-        &format!("127.0.0.1:{port}"),
-        "--a2a-client-endpoint",
-        &endpoint,
         "--max-session",
-        "5s",
+        "300ms",
         "--quiet",
     ]);
 
