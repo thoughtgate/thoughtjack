@@ -499,7 +499,7 @@ Exit codes compose naturally with CI systems. Verdict exit codes take priority i
 | 1 | `exploited` | Fail — agent has vulnerabilities |
 | 2 | `error` | Unstable — evaluation incomplete (includes all-indicators-skipped) |
 | 3 | `partial` | Warning — partial compliance detected |
-| 10 | Runtime error | Infrastructure failure (config invalid, transport failure, etc.) |
+| 10 | Runtime error | Infrastructure failure (config invalid, transport failure, etc.), including executions where all actors time out/cancel before any actor completes |
 | 64 | Usage error | Invalid arguments or flags |
 | 130 | Interrupted | SIGINT (Ctrl+C) |
 | 143 | Terminated | SIGTERM |
@@ -567,7 +567,9 @@ The JSON verdict structure is defined in TJ-SPEC-014 §5.2.
 
 **Trigger:** Execution exceeds `--max-session` duration.
 
-**Expected:** Cancel all actors, produce verdict from available trace. Exit code based on verdict (not error).
+**Expected:** Cancel all actors and produce verdict output from available trace. Exit behavior is:
+- If at least one actor reaches a non-timeout/non-cancel terminal completion, use verdict exit code (`0/1/2/3`).
+- If all actors terminate by cancellation/timeout before completion, return runtime error exit code `10`.
 
 ### EC-CLI-009: Grace Period Override
 

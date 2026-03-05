@@ -20,8 +20,12 @@ use crate::scenarios::{self, ScenarioCategory};
 ///
 /// Implements: TJ-SPEC-010 F-004
 #[allow(clippy::unused_async)]
-pub async fn list(args: &ScenariosListArgs) -> Result<(), ThoughtJackError> {
+pub async fn list(args: &ScenariosListArgs, quiet: bool) -> Result<(), ThoughtJackError> {
     let results = scenarios::list_scenarios(args.category, args.tag.as_deref());
+
+    if quiet {
+        return Ok(());
+    }
 
     match args.format {
         OutputFormat::Json => {
@@ -68,7 +72,7 @@ pub async fn list(args: &ScenariosListArgs) -> Result<(), ThoughtJackError> {
                 println!();
             }
 
-            println!("Run a scenario: thoughtjack scenarios run <name> --config <oatf.yaml>");
+            println!("Run a scenario: thoughtjack scenarios run <name>");
             println!("View YAML:      thoughtjack scenarios show <name>");
         }
     }
@@ -86,7 +90,7 @@ pub async fn list(args: &ScenariosListArgs) -> Result<(), ThoughtJackError> {
 ///
 /// Implements: TJ-SPEC-010 F-005
 #[allow(clippy::unused_async)]
-pub async fn show(args: &ScenariosShowArgs) -> Result<(), ThoughtJackError> {
+pub async fn show(args: &ScenariosShowArgs, quiet: bool) -> Result<(), ThoughtJackError> {
     let scenario = scenarios::find_scenario(&args.name).ok_or_else(|| {
         let mut message = format!("Unknown scenario '{}'", args.name);
 
@@ -105,7 +109,9 @@ pub async fn show(args: &ScenariosShowArgs) -> Result<(), ThoughtJackError> {
         ThoughtJackError::Usage(message)
     })?;
 
-    print!("{}", scenario.yaml);
+    if !quiet {
+        print!("{}", scenario.yaml);
+    }
     Ok(())
 }
 
@@ -135,5 +141,57 @@ pub async fn run_scenario(
         ThoughtJackError::Usage(message)
     })?;
 
-    super::run::run_from_yaml(scenario.yaml, &args.run, quiet, cancel).await
+    let run_args: crate::cli::args::RunArgs = (&args.run).into();
+    super::run::run_from_yaml(scenario.yaml, &run_args, quiet, cancel).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::cli::args::ScenariosRunOverrides;
+
+    fn test_run_args() -> ScenariosRunOverrides {
+        ScenariosRunOverrides {
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(1)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(1)),
+            output: None,
+            header: vec![],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_scenario_unknown_name_is_usage_error() {
+        let args = ScenariosRunArgs {
+            name: "not-a-real-scenario".to_string(),
+            run: test_run_args(),
+        };
+
+        let err = run_scenario(&args, true, CancellationToken::new())
+            .await
+            .expect_err("unknown scenario should fail with usage error");
+
+        match err {
+            ThoughtJackError::Usage(msg) => {
+                assert!(
+                    msg.contains("Unknown scenario"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected usage error, got {other}"),
+        }
+    }
 }

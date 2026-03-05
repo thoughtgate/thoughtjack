@@ -6,6 +6,7 @@
 mod a2a_client_http;
 mod a2a_server_http;
 mod agui_http;
+mod cli_exit_codes;
 mod mcp_client_stdio;
 mod orchestration;
 mod verdict_pipeline;

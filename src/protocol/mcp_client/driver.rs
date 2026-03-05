@@ -22,7 +22,7 @@ use super::transport::{
 };
 use super::{
     CorrelatedResponse, DEFAULT_PHASE_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, HandlerState, INIT_TIMEOUT,
-    NotificationMessage, PendingRequest, SERVER_REQUEST_BUFFER_SIZE,
+    NotificationMessage, POST_ACTION_IDLE_TIMEOUT, PendingRequest, SERVER_REQUEST_BUFFER_SIZE,
 };
 
 // ============================================================================
@@ -69,9 +69,8 @@ pub struct McpClientDriver {
     pub(super) transport_cancel: CancellationToken,
     /// Spawned child process (for stdio transport).
     ///
-    /// Held for RAII: dropping the `Child` kills the process. The field
-    /// is not read directly but its lifetime determines the child's lifetime.
-    #[allow(dead_code)]
+    /// `spawn_stdio_transport` enables `kill_on_drop`, and `Drop` also
+    /// proactively sends a kill signal for deterministic teardown.
     pub(super) child: Option<Child>,
     /// Stderr from spawned child (for diagnostics on exit).
     pub(super) child_stderr: Option<ChildStderr>,
@@ -438,6 +437,25 @@ impl McpClientDriver {
     }
 }
 
+impl Drop for McpClientDriver {
+    fn drop(&mut self) {
+        // Stop background tasks first so no transport reads/writes continue
+        // while process teardown is in-flight.
+        self.transport_cancel.cancel();
+
+        if let Some(handle) = self.handler_handle.take() {
+            handle.abort();
+        }
+        if let Some(mux) = self.mux.take() {
+            mux.abort();
+        }
+
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+        }
+    }
+}
+
 // ============================================================================
 // PhaseDriver Implementation
 // ============================================================================
@@ -484,7 +502,13 @@ impl PhaseDriver for McpClientDriver {
         // Clone extractors for action interpolation
         let current_extractors = extractors.borrow().clone();
 
-        // Execute actions defined in the phase state
+        // Execute actions defined in the phase state.
+        // For action-driven phases, use a short post-action idle window rather
+        // than waiting the full phase timeout.
+        let has_actions = state
+            .get("actions")
+            .and_then(Value::as_array)
+            .is_some_and(|actions| !actions.is_empty());
         if let Some(actions) = state.get("actions").and_then(Value::as_array) {
             for action_value in actions {
                 // Forward any buffered handler events before each action
@@ -498,8 +522,14 @@ impl PhaseDriver for McpClientDriver {
         }
 
         // Post-action event loop: forward handler and notification events
-        // until cancel fires or phase_timeout expires. PhaseLoop checks triggers
-        // on each forwarded event and will cancel if a trigger fires.
+        // until cancel fires or timeout expires. For phases that executed
+        // explicit actions, use a short idle timeout to avoid stalling until
+        // max-session on persistent HTTP transports.
+        let idle_timeout = if has_actions {
+            POST_ACTION_IDLE_TIMEOUT
+        } else {
+            self.phase_timeout
+        };
         loop {
             tokio::select! {
                 biased;
@@ -554,7 +584,7 @@ impl PhaseDriver for McpClientDriver {
                         break;
                     }
                 }
-                () = tokio::time::sleep(self.phase_timeout) => {
+                () = tokio::time::sleep(idle_timeout) => {
                     break;
                 }
             }

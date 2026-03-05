@@ -13,11 +13,14 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use async_trait::async_trait;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -25,7 +28,7 @@ use oatf::ResponseEntry;
 use oatf::primitives::{interpolate_value, select_response};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -66,6 +69,9 @@ const TERMINAL_STATES: &[&str] = &["completed", "canceled", "failed", "rejected"
 
 /// Default inter-event delay for SSE streaming (ms).
 const SSE_EVENT_DELAY_MS: u64 = 200;
+
+/// Maximum accepted JSON-RPC body size for A2A server requests.
+const MAX_JSONRPC_BODY_SIZE: usize = crate::transport::DEFAULT_MAX_MESSAGE_SIZE;
 
 // ============================================================================
 // TaskStore
@@ -187,6 +193,11 @@ struct A2aSharedState {
     extractors: RwLock<Option<watch::Receiver<HashMap<String, String>>>>,
     /// Current phase effective state.
     state: RwLock<Value>,
+    /// Whether handlers should accept requests for the current phase.
+    ///
+    /// Toggled to `false` during phase transitions to avoid serving
+    /// stale state between `drive_phase()` calls.
+    accepting_requests: AtomicBool,
     /// Bypass synthesize output validation.
     raw_synthesize: bool,
 }
@@ -199,6 +210,14 @@ struct A2aSharedState {
 ///
 /// Implements: TJ-SPEC-017 F-002
 async fn handle_agent_card(State(shared): State<Arc<A2aSharedState>>) -> Response {
+    if !shared.accepting_requests.load(Ordering::Acquire) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "phase transition in progress",
+        )
+            .into_response();
+    }
+
     let card = shared.agent_card.read().await.clone();
 
     // Emit events
@@ -225,6 +244,14 @@ async fn handle_jsonrpc(
     State(shared): State<Arc<A2aSharedState>>,
     body: axum::body::Bytes,
 ) -> Response {
+    if !shared.accepting_requests.load(Ordering::Acquire) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "phase transition in progress",
+        )
+            .into_response();
+    }
+
     // Parse JSON body
     let request: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -288,6 +315,85 @@ async fn handle_jsonrpc(
             axum::Json(error).into_response()
         }
     }
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_local_peer(addr: SocketAddr) -> Result<(), Response> {
+    if addr.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "non-local peer rejected").into_response())
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_local_origin(headers: &HeaderMap) -> Result<(), Response> {
+    let header_value = headers
+        .get("origin")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok());
+
+    let Some(header_value) = header_value else {
+        return Err((StatusCode::FORBIDDEN, "missing Origin or Host header").into_response());
+    };
+
+    let Some(hostname) = extract_hostname_for_origin_check(header_value) else {
+        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
+    };
+
+    if !matches!(
+        hostname.as_str(),
+        "localhost" | "127.0.0.1" | "[::1]" | "::1" | "0.0.0.0"
+    ) {
+        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
+    }
+
+    Ok(())
+}
+
+/// Router-level local-only guard for all A2A endpoints.
+async fn require_local_only(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Err(resp) = validate_local_peer(addr) {
+        return resp;
+    }
+    if let Err(resp) = validate_local_origin(request.headers()) {
+        return resp;
+    }
+    next.run(request).await
+}
+
+fn extract_hostname_for_origin_check(header_value: &str) -> Option<String> {
+    let authority = if header_value.contains("://") {
+        header_value
+            .parse::<Uri>()
+            .ok()?
+            .authority()?
+            .as_str()
+            .to_string()
+    } else {
+        header_value.to_string()
+    };
+
+    if authority == "::1" {
+        return Some("::1".to_string());
+    }
+
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let end = stripped.find(']')?;
+        return Some(format!("[{}]", &stripped[..end]).to_ascii_lowercase());
+    }
+
+    Some(
+        authority
+            .split(':')
+            .next()
+            .unwrap_or(authority.as_str())
+            .to_ascii_lowercase(),
+    )
 }
 
 /// Handle `message/send` — synchronous task response.
@@ -467,6 +573,26 @@ async fn handle_message_stream(
     Sse::new(sse_stream).into_response()
 }
 
+fn required_task_id(params: &Value) -> Result<&str, &'static str> {
+    match params.get("id") {
+        Some(Value::String(id)) if !id.trim().is_empty() => Ok(id.as_str()),
+        Some(Value::String(_)) => Err("Invalid params: 'id' must be a non-empty string"),
+        Some(_) => Err("Invalid params: 'id' must be a string"),
+        None => Err("Invalid params: missing required 'id' field"),
+    }
+}
+
+async fn invalid_params_response(
+    shared: &Arc<A2aSharedState>,
+    request_id: &Value,
+    method: &str,
+    message: &str,
+) -> Response {
+    let result = jsonrpc_error(request_id, INVALID_PARAMS, message);
+    emit_outgoing(shared, method, result.get("error").unwrap_or(&Value::Null)).await;
+    axum::Json(result).into_response()
+}
+
 /// Handle `tasks/get` — return task status.
 ///
 /// Implements: TJ-SPEC-017 F-005
@@ -475,7 +601,10 @@ async fn handle_tasks_get(
     request_id: &Value,
     params: &Value,
 ) -> Response {
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = match required_task_id(params) {
+        Ok(id) => id,
+        Err(msg) => return invalid_params_response(shared, request_id, "tasks/get", msg).await,
+    };
 
     let result = {
         let store = shared.task_store.read().await;
@@ -521,7 +650,10 @@ async fn handle_tasks_cancel(
     request_id: &Value,
     params: &Value,
 ) -> Response {
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = match required_task_id(params) {
+        Ok(id) => id,
+        Err(msg) => return invalid_params_response(shared, request_id, "tasks/cancel", msg).await,
+    };
 
     let result = {
         let mut store = shared.task_store.write().await;
@@ -567,7 +699,12 @@ async fn handle_tasks_resubscribe(
     request_id: &Value,
     params: &Value,
 ) -> Response {
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = match required_task_id(params) {
+        Ok(id) => id,
+        Err(msg) => {
+            return invalid_params_response(shared, request_id, "tasks/resubscribe", msg).await;
+        }
+    };
 
     let result = {
         let store = shared.task_store.read().await;
@@ -907,9 +1044,12 @@ fn jsonrpc_error(id: &Value, code: i64, message: &str) -> Value {
 ///
 /// Implements: TJ-SPEC-017 F-001
 fn build_router(shared: Arc<A2aSharedState>) -> Router {
+    let body_limit = axum::extract::DefaultBodyLimit::max(MAX_JSONRPC_BODY_SIZE);
     Router::new()
         .route("/.well-known/agent.json", get(handle_agent_card))
         .route("/", post(handle_jsonrpc))
+        .layer(body_limit)
+        .route_layer(middleware::from_fn(require_local_only))
         .with_state(shared)
 }
 
@@ -937,6 +1077,10 @@ pub struct A2aServerDriver {
     server_handle: Option<JoinHandle<()>>,
     /// Actual bound address (resolved after bind).
     bound_addr: Option<SocketAddr>,
+    /// Optional readiness sender used by the orchestrator gate.
+    ready_tx: Option<oneshot::Sender<()>>,
+    /// Optional sender used by runner observability to emit `ActorReady` on bind.
+    bound_addr_tx: Option<oneshot::Sender<SocketAddr>>,
     /// Cancel token for the HTTP server's lifetime (not per-phase).
     ///
     /// This is separate from the per-phase cancel token passed to
@@ -955,6 +1099,10 @@ impl PhaseDriver for A2aServerDriver {
         event_tx: mpsc::UnboundedSender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
+        self.shared
+            .accepting_requests
+            .store(false, Ordering::Release);
+
         // Update shared state with current phase
         let agent_card_raw = state.get("agent_card").cloned().unwrap_or(json!({}));
         let current_extractors = extractors.borrow().clone();
@@ -974,6 +1122,12 @@ impl PhaseDriver for A2aServerDriver {
                 .local_addr()
                 .map_err(|e| EngineError::Driver(format!("failed to get local addr: {e}")))?;
             self.bound_addr = Some(addr);
+            if let Some(tx) = self.bound_addr_tx.take() {
+                let _ = tx.send(addr);
+            }
+            if let Some(tx) = self.ready_tx.take() {
+                let _ = tx.send(());
+            }
 
             tracing::info!(%addr, "A2A server listening");
 
@@ -991,8 +1145,15 @@ impl PhaseDriver for A2aServerDriver {
             }));
         }
 
+        self.shared
+            .accepting_requests
+            .store(true, Ordering::Release);
+
         // Server-mode: wait for cancellation
         cancel.cancelled().await;
+        self.shared
+            .accepting_requests
+            .store(false, Ordering::Release);
         Ok(DriveResult::Complete)
     }
 
@@ -1019,6 +1180,7 @@ pub fn create_a2a_server_driver(bind_addr: &str, raw_synthesize: bool) -> A2aSer
         event_tx: RwLock::new(None),
         extractors: RwLock::new(None),
         state: RwLock::new(json!({})),
+        accepting_requests: AtomicBool::new(false),
         raw_synthesize,
     });
 
@@ -1028,7 +1190,21 @@ pub fn create_a2a_server_driver(bind_addr: &str, raw_synthesize: bool) -> A2aSer
         shared,
         server_handle: None,
         bound_addr: None,
+        ready_tx: None,
+        bound_addr_tx: None,
         server_cancel: CancellationToken::new(),
+    }
+}
+
+impl A2aServerDriver {
+    /// Sets the readiness sender consumed after a successful bind.
+    pub fn set_ready_sender(&mut self, tx: oneshot::Sender<()>) {
+        self.ready_tx = Some(tx);
+    }
+
+    /// Sets the bound-address sender consumed after a successful bind.
+    pub fn set_bound_addr_sender(&mut self, tx: oneshot::Sender<SocketAddr>) {
+        self.bound_addr_tx = Some(tx);
     }
 }
 
@@ -1045,6 +1221,18 @@ impl Drop for A2aServerDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::connect_info::MockConnectInfo;
+
+    fn test_router(shared: Arc<A2aSharedState>) -> Router {
+        build_router(shared).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))))
+    }
+
+    fn local_request_builder(method: &str, uri: &str) -> axum::http::request::Builder {
+        axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("host", "localhost:3000")
+    }
 
     // ---- TaskStore Tests ----
 
@@ -1302,14 +1490,13 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
-        let request = axum::http::Request::builder()
-            .method("GET")
-            .uri("/.well-known/agent.json")
+        let request = local_request_builder("GET", "/.well-known/agent.json")
             .body(Body::empty())
             .unwrap();
 
@@ -1324,6 +1511,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_non_loopback_peer() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router =
+            build_router(shared).layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 2], 9999))));
+
+        let request = local_request_builder("GET", "/.well-known/agent.json")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_non_local_origin() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let request = local_request_builder("POST", "/")
+            .header("origin", "https://evil.example")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{}}"#,
+            ))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_requests_during_phase_transition() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(false),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let request = local_request_builder("GET", "/.well-known/agent.json")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn oversized_body_returns_413() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let oversized = vec![b'a'; MAX_JSONRPC_BODY_SIZE + 1];
+        let request = local_request_builder("POST", "/")
+            .header("content-type", "application/json")
+            .body(Body::from(oversized))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
     async fn unknown_method_returns_error() {
         use axum::body::Body;
         use tower::ServiceExt;
@@ -1334,10 +1625,11 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1346,9 +1638,7 @@ mod tests {
             "params": {}
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1373,14 +1663,13 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from("not valid json"))
             .unwrap();
@@ -1405,16 +1694,15 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({"jsonrpc": "2.0", "id": "1", "params": {}});
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1448,10 +1736,11 @@ mod tests {
                     }
                 ]
             })),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1467,9 +1756,7 @@ mod tests {
             }
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1499,10 +1786,11 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1511,9 +1799,7 @@ mod tests {
             "params": {}
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1538,10 +1824,11 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1550,9 +1837,7 @@ mod tests {
             "params": {}
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1577,10 +1862,11 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1589,9 +1875,155 @@ mod tests {
             "params": {}
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn tasks_get_missing_id_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/get",
+            "params": {}
+        });
+
+        let request = local_request_builder("POST", "/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn tasks_get_non_string_id_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/get",
+            "params": {"id": 42}
+        });
+
+        let request = local_request_builder("POST", "/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn tasks_cancel_missing_id_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/cancel",
+            "params": {}
+        });
+
+        let request = local_request_builder("POST", "/")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        let resp_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp_body).unwrap();
+
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn tasks_resubscribe_missing_id_returns_invalid_params() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let shared = Arc::new(A2aSharedState {
+            agent_card: RwLock::new(json!({})),
+            task_store: RwLock::new(TaskStore::new()),
+            event_tx: RwLock::new(None),
+            extractors: RwLock::new(None),
+            state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
+            raw_synthesize: false,
+        });
+
+        let router = test_router(shared);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "tasks/resubscribe",
+            "params": {}
+        });
+
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
@@ -1624,10 +2056,11 @@ mod tests {
             event_tx: RwLock::new(None),
             extractors: RwLock::new(None),
             state: RwLock::new(json!({})),
+            accepting_requests: AtomicBool::new(true),
             raw_synthesize: false,
         });
 
-        let router = build_router(shared);
+        let router = test_router(shared);
 
         let body = json!({
             "jsonrpc": "2.0",
@@ -1636,9 +2069,7 @@ mod tests {
             "params": { "id": task_id }
         });
 
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/")
+        let request = local_request_builder("POST", "/")
             .header("Content-Type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();

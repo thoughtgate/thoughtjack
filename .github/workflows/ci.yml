@@ -54,7 +54,6 @@ jobs:
   mcp-conformance:
     name: MCP Conformance
     runs-on: ubuntu-latest
-    continue-on-error: true
     needs: [test]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -103,7 +102,6 @@ jobs:
   e2e-self-test:
     name: "E2E Self-Test (${{ matrix.scenario }})"
     runs-on: ubuntu-latest
-    continue-on-error: true
     needs: [test]
     strategy:
       fail-fast: false

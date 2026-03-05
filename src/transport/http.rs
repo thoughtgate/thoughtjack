@@ -653,21 +653,61 @@ fn validate_local_origin(headers: &axum::http::HeaderMap) -> std::result::Result
     let Some(header_value) = origin else {
         return Err((StatusCode::FORBIDDEN, "missing Origin or Host header").into_response());
     };
-    let host_part = header_value
-        .strip_prefix("http://")
-        .or_else(|| header_value.strip_prefix("https://"))
-        .unwrap_or(header_value);
-    // Strip port suffix (handles both IPv4 `host:port` and bare hostnames)
-    let hostname = host_part.split(':').next().unwrap_or(host_part);
-    let hostname = hostname.to_ascii_lowercase();
-    let hostname = hostname.as_str();
+    let Some(hostname) = extract_hostname_for_origin_check(header_value) else {
+        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
+    };
     if !matches!(
-        hostname,
+        hostname.as_str(),
         "localhost" | "127.0.0.1" | "[::1]" | "::1" | "0.0.0.0"
     ) {
         return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
     }
     Ok(())
+}
+
+/// Validates that the remote peer is loopback.
+#[allow(clippy::result_large_err)]
+fn validate_local_peer(addr: SocketAddr) -> std::result::Result<(), Response> {
+    if addr.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "non-local peer rejected").into_response())
+    }
+}
+
+/// Extracts a normalized hostname from Origin/Host values.
+///
+/// Handles both:
+/// - Origin values with scheme (e.g. `http://localhost:3000`, `http://[::1]:3000`)
+/// - Host values without scheme (e.g. `localhost:3000`, `[::1]:3000`)
+fn extract_hostname_for_origin_check(header_value: &str) -> Option<String> {
+    let authority = if header_value.contains("://") {
+        header_value
+            .parse::<axum::http::Uri>()
+            .ok()?
+            .authority()?
+            .as_str()
+            .to_string()
+    } else {
+        header_value.to_string()
+    };
+
+    if authority == "::1" {
+        return Some("::1".to_string());
+    }
+
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let end = stripped.find(']')?;
+        return Some(format!("[{}]", &stripped[..end]).to_ascii_lowercase());
+    }
+
+    Some(
+        authority
+            .split(':')
+            .next()
+            .unwrap_or(authority.as_str())
+            .to_ascii_lowercase(),
+    )
 }
 
 /// `POST /message` handler.
@@ -681,6 +721,11 @@ async fn handle_post_message(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    // Restrict to loopback peers (prevents forged Host/Origin bypass).
+    if let Err(resp) = validate_local_peer(addr) {
+        return resp;
+    }
+
     // DNS rebinding protection: validate Origin or Host header
     if let Err(resp) = validate_local_origin(&headers) {
         return resp;
@@ -801,8 +846,14 @@ async fn handle_post_message(
 /// the number of concurrent SSE connections.
 async fn handle_sse(
     State(shared): State<Arc<HttpSharedState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    // Restrict to loopback peers (prevents forged Host/Origin bypass).
+    if let Err(resp) = validate_local_peer(addr) {
+        return resp;
+    }
+
     // DNS rebinding protection (same check as POST /message)
     if let Err(resp) = validate_local_origin(&headers) {
         return resp;
@@ -1265,6 +1316,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dns_rebinding_ipv6_origin_allowed() {
+        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            sse_connections: AtomicUsize::new(0),
+            cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+        let app = test_router(shared);
+
+        tokio::spawn(async move {
+            if let Some(incoming) = incoming_rx.recv().await {
+                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
+                incoming.response_tx.send(Ok(response)).await.ok();
+            }
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header("origin", "http://[::1]:3001")
+            .body(Body::from(valid_jsonrpc_body()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_host_ipv6_allowed() {
+        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            sse_connections: AtomicUsize::new(0),
+            cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+        let app = test_router(shared);
+
+        tokio::spawn(async move {
+            if let Some(incoming) = incoming_rx.recv().await {
+                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
+                incoming.response_tx.send(Ok(response)).await.ok();
+            }
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header("host", "[::1]:3001")
+            .body(Body::from(valid_jsonrpc_body()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn dns_rebinding_no_header_rejected() {
         let shared = test_shared_state();
         let app = test_router(shared);
@@ -1273,6 +1394,38 @@ mod tests {
             .method("POST")
             .uri("/message")
             .body(Body::from(valid_jsonrpc_body()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_remote_peer_rejected_even_with_local_host() {
+        let shared = test_shared_state();
+        let app = build_router(shared).layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 5], 9))));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header("host", "localhost:3000")
+            .body(Body::from(valid_jsonrpc_body()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn sse_remote_peer_rejected_even_with_local_host() {
+        let shared = test_shared_state();
+        let app = build_router(shared).layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 5], 9))));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/sse")
+            .header("host", "localhost:3000")
+            .body(Body::empty())
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();

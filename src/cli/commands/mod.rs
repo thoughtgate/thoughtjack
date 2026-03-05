@@ -24,15 +24,15 @@ pub async fn dispatch(cli: Cli, cancel: CancellationToken) -> Result<(), Thought
     match cli.command {
         Commands::Run(args) => run::run(&args, quiet, cancel).await,
         Commands::Scenarios(cmd) => match cmd.subcommand {
-            ScenariosSubcommand::List(ref args) => scenarios::list(args).await,
-            ScenariosSubcommand::Show(ref args) => scenarios::show(args).await,
+            ScenariosSubcommand::List(ref args) => scenarios::list(args, quiet).await,
+            ScenariosSubcommand::Show(ref args) => scenarios::show(args, quiet).await,
             ScenariosSubcommand::Run(ref args) => {
                 scenarios::run_scenario(args, quiet, cancel).await
             }
         },
         Commands::Validate(args) => validate::validate(&args, quiet).await,
         Commands::Version(args) => {
-            version::run(&args);
+            version::run(&args, quiet);
             Ok(())
         }
     }

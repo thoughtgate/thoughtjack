@@ -290,7 +290,10 @@ pub(super) fn spawn_stdio_transport(
     command: &str,
     args: &[String],
 ) -> Result<(StdioReader, StdioWriter, Child), EngineError> {
-    let mut child = Command::new(command)
+    let mut cmd = Command::new(command);
+    // Ensure child processes do not outlive the driver if dropped unexpectedly.
+    cmd.kill_on_drop(true);
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

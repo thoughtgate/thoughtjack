@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -97,21 +98,19 @@ pub struct ActorConfig {
 
 /// Builds an `ActorConfig` from CLI `RunArgs`.
 ///
+/// # Errors
+///
+/// Returns `EngineError::Driver` if any `--header` value is malformed
+/// (missing `:`, invalid header name, or invalid header value).
+///
 /// Implements: TJ-SPEC-015 F-003
-#[must_use]
-pub fn build_actor_config(args: &RunArgs) -> ActorConfig {
-    let headers: Vec<(String, String)> = args
-        .header
-        .iter()
-        .filter_map(|h| {
-            let mut parts = h.splitn(2, ':');
-            let key = parts.next()?.trim().to_string();
-            let value = parts.next()?.trim().to_string();
-            Some((key, value))
-        })
-        .collect();
+pub fn build_actor_config(args: &RunArgs) -> Result<ActorConfig, EngineError> {
+    let mut headers: Vec<(String, String)> = Vec::with_capacity(args.header.len());
+    for (idx, raw) in args.header.iter().enumerate() {
+        headers.push(parse_cli_header(raw, idx + 1)?);
+    }
 
-    ActorConfig {
+    Ok(ActorConfig {
         mcp_server_bind: args.mcp_server.clone(),
         agui_client_endpoint: args.agui_client_endpoint.clone(),
         a2a_server_bind: args.a2a_server.clone(),
@@ -126,7 +125,44 @@ pub fn build_actor_config(args: &RunArgs) -> ActorConfig {
         readiness_timeout: args.readiness_timeout.into(),
         #[cfg(test)]
         transport_factory: None,
+    })
+}
+
+/// Parses and validates a CLI `--header` value (`KEY:VALUE`).
+///
+/// Returns an `EngineError::Driver` with an actionable message when:
+/// - the delimiter `:` is missing,
+/// - the header name is empty/invalid,
+/// - the header value is not valid for HTTP.
+fn parse_cli_header(raw: &str, position: usize) -> Result<(String, String), EngineError> {
+    let Some((raw_key, raw_value)) = raw.split_once(':') else {
+        return Err(EngineError::Driver(format!(
+            "invalid --header value at position {position}: '{raw}' (expected KEY:VALUE)"
+        )));
+    };
+
+    let key = raw_key.trim();
+    let value = raw_value.trim();
+
+    if key.is_empty() {
+        return Err(EngineError::Driver(format!(
+            "invalid --header value at position {position}: empty header name"
+        )));
     }
+
+    HeaderName::from_bytes(key.as_bytes()).map_err(|_| {
+        EngineError::Driver(format!(
+            "invalid --header value at position {position}: '{key}' is not a valid HTTP header name"
+        ))
+    })?;
+
+    HeaderValue::from_str(value).map_err(|_| {
+        EngineError::Driver(format!(
+            "invalid --header value at position {position}: value for '{key}' is not a valid HTTP header value"
+        ))
+    })?;
+
+    Ok((key.to_string(), value.to_string()))
 }
 
 // ============================================================================
@@ -209,6 +245,54 @@ fn resolve_headers_for_mode(base: &[(String, String)], mode: &str) -> Vec<(Strin
     merge_headers(base, &env_headers)
 }
 
+/// Parses `--mcp-client-args` using shell quoting rules.
+///
+/// Returns an `EngineError::Driver` if the string has invalid shell syntax
+/// (for example, unbalanced quotes).
+fn parse_mcp_client_args(raw: &str) -> Result<Vec<String>, EngineError> {
+    shlex::split(raw)
+        .ok_or_else(|| EngineError::Driver("invalid --mcp-client-args: unbalanced quotes".into()))
+}
+
+/// Parses `--mcp-client-command` into executable + inline arguments.
+///
+/// Supports command strings with inline args (for example,
+/// `"npx -y @modelcontextprotocol/server-everything"`).
+///
+/// Returns an `EngineError::Driver` if shell syntax is invalid or the
+/// command resolves to an empty token list.
+fn parse_mcp_client_command(raw: &str) -> Result<(String, Vec<String>), EngineError> {
+    let parts = shlex::split(raw).ok_or_else(|| {
+        EngineError::Driver("invalid --mcp-client-command: unbalanced quotes".into())
+    })?;
+
+    let mut iter = parts.into_iter();
+    let command = iter
+        .next()
+        .ok_or_else(|| EngineError::Driver("invalid --mcp-client-command: empty command".into()))?;
+
+    Ok((command, iter.collect()))
+}
+
+/// Waits for the server-readiness gate to open for a client actor.
+///
+/// Returns an error if the gate channel closes before readiness is signaled.
+async fn wait_for_readiness_gate(
+    actor_name: &str,
+    gate_rx: Option<broadcast::Receiver<()>>,
+) -> Result<(), EngineError> {
+    if let Some(mut rx) = gate_rx {
+        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
+        rx.recv().await.map_err(|err| {
+            EngineError::Phase(format!(
+                "readiness gate closed before actor '{actor_name}' started: {err}"
+            ))
+        })?;
+        tracing::debug!(actor = %actor_name, "readiness gate opened");
+    }
+    Ok(())
+}
+
 // ============================================================================
 // ActorRunContext
 // ============================================================================
@@ -251,14 +335,10 @@ pub(crate) struct ActorRunContext<'a> {
 /// and protocol driver. Server-mode actors signal readiness via `ready_tx`.
 /// Client-mode actors wait for the gate via `gate_rx`.
 ///
-/// # Panics
-///
-/// Panics if the document has no actors after normalization, or if
-/// `actor_index` is out of bounds.
-///
 /// # Errors
 ///
-/// Returns `EngineError::Driver` if the actor's mode is not yet supported.
+/// Returns `EngineError::Driver` if `actor_index` is out of bounds for the
+/// normalized actor list, or if the actor's mode is not yet supported.
 /// Propagates any errors from transport binding or phase loop execution.
 ///
 /// Implements: TJ-SPEC-015 F-003
@@ -276,7 +356,12 @@ pub async fn run_actor(
     events: &EventEmitter,
 ) -> Result<ActorResult, EngineError> {
     let actors = document_actors(&document);
-    let actor = &actors[actor_index];
+    let actor = actors.get(actor_index).ok_or_else(|| {
+        EngineError::Driver(format!(
+            "actor index {actor_index} out of bounds (have {} actors)",
+            actors.len()
+        ))
+    })?;
     let actor_name = actor.name.clone();
     let mode = actor.mode.clone();
 
@@ -441,12 +526,7 @@ async fn run_agui_client_actor(
         let _ = tx.send(());
     }
 
-    // Wait for server actors to be ready
-    if let Some(mut rx) = gate_rx {
-        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
-        let _ = rx.recv().await;
-        tracing::debug!(actor = %actor_name, "readiness gate opened");
-    }
+    wait_for_readiness_gate(actor_name, gate_rx).await?;
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),
@@ -490,7 +570,7 @@ async fn run_agui_client_actor(
 
 /// Runs an A2A server actor — creates driver and phase loop.
 ///
-/// Server-mode: binds HTTP transport inside `drive_phase()`, signals readiness.
+/// Server-mode: binds HTTP transport inside `drive_phase()`.
 ///
 /// Implements: TJ-SPEC-017 F-001
 async fn run_a2a_server_actor(
@@ -514,19 +594,14 @@ async fn run_a2a_server_actor(
         .as_deref()
         .unwrap_or("127.0.0.1:9090");
 
-    events.emit(ThoughtJackEvent::ActorReady {
-        actor_name: actor_name.to_string(),
-        bind_address: bind_addr.to_string(),
-    });
+    let (bound_addr_tx, mut bound_addr_rx) = oneshot::channel();
 
-    // Signal readiness (server binds inside drive_phase, but we signal
-    // immediately since the bind happens before accepting requests)
+    // Create driver. Readiness is signalled only after bind succeeds.
+    let mut driver = a2a_server::create_a2a_server_driver(bind_addr, config.raw_synthesize);
     if let Some(tx) = ready_tx {
-        let _ = tx.send(());
+        driver.set_ready_sender(tx);
     }
-
-    // Create driver
-    let driver = a2a_server::create_a2a_server_driver(bind_addr, config.raw_synthesize);
+    driver.set_bound_addr_sender(bound_addr_tx);
 
     // Create phase engine
     let engine = PhaseEngine::new(document, actor_index);
@@ -548,7 +623,26 @@ async fn run_a2a_server_actor(
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
-    let result = phase_loop.run().await?;
+    let run_fut = phase_loop.run();
+    tokio::pin!(run_fut);
+    let mut ready_emitted = false;
+
+    let result = loop {
+        tokio::select! {
+            ready = &mut bound_addr_rx, if !ready_emitted => {
+                if let Ok(addr) = ready {
+                    events.emit(ThoughtJackEvent::ActorReady {
+                        actor_name: actor_name.to_string(),
+                        bind_address: addr.to_string(),
+                    });
+                }
+                ready_emitted = true;
+            }
+            run_result = &mut run_fut => {
+                break run_result?;
+            }
+        }
+    };
 
     events.emit(ThoughtJackEvent::ActorCompleted {
         actor_name: actor_name.to_string(),
@@ -589,12 +683,7 @@ async fn run_a2a_client_actor(
         let _ = tx.send(());
     }
 
-    // Wait for server actors to be ready
-    if let Some(mut rx) = gate_rx {
-        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
-        let _ = rx.recv().await;
-        tracing::debug!(actor = %actor_name, "readiness gate opened");
-    }
+    wait_for_readiness_gate(actor_name, gate_rx).await?;
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),
@@ -663,20 +752,23 @@ async fn run_mcp_client_actor(
         config.mcp_client_command.as_deref(),
         config.mcp_client_endpoint.as_deref(),
     ) {
-        (Some(command), _) => {
-            let args: Vec<String> = config
+        (Some(command_raw), _) => {
+            let (command, mut args) = parse_mcp_client_command(command_raw)?;
+            let extra_args: Vec<String> = config
                 .mcp_client_args
                 .as_deref()
-                .map(|a| a.split_whitespace().map(String::from).collect())
+                .map(parse_mcp_client_args)
+                .transpose()?
                 .unwrap_or_default();
+            args.extend(extra_args);
             let driver = mcp_client::create_mcp_client_driver(
-                Some(command),
+                Some(command.as_str()),
                 &args,
                 None,
                 &[],
                 config.raw_synthesize,
             )?;
-            (driver, format!("stdio:{command}"))
+            (driver, format!("stdio:{command_raw}"))
         }
         (None, Some(endpoint)) => {
             // Merge mode-specific auth env vars with --header
@@ -704,12 +796,7 @@ async fn run_mcp_client_actor(
         let _ = tx.send(());
     }
 
-    // Wait for server actors to be ready
-    if let Some(mut rx) = gate_rx {
-        tracing::debug!(actor = %actor_name, "waiting for server readiness gate");
-        let _ = rx.recv().await;
-        tracing::debug!(actor = %actor_name, "readiness gate opened");
-    }
+    wait_for_readiness_gate(actor_name, gate_rx).await?;
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),
@@ -777,7 +864,7 @@ mod tests {
             events_file: None,
         };
 
-        let config = build_actor_config(&args);
+        let config = build_actor_config(&args).expect("valid headers should parse");
         assert_eq!(config.mcp_server_bind, Some("0.0.0.0:8080".to_string()));
         assert_eq!(
             config.agui_client_endpoint,
@@ -849,6 +936,61 @@ attack:
     }
 
     #[tokio::test]
+    async fn actor_index_out_of_bounds_returns_error() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: server_actor
+        mode: mcp_server
+        phases:
+          - name: setup
+            state:
+              tools: []
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
+            transport_factory: Some(null_transport_factory()),
+        };
+
+        let result = run_actor(
+            1,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            None,
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("actor index 1 out of bounds"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("have 1 actors"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
     async fn agui_client_requires_endpoint() {
         let yaml = r#"
 oatf: "0.1"
@@ -902,6 +1044,185 @@ attack:
         assert!(
             err.to_string().contains("--agui-client-endpoint"),
             "Expected endpoint error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agui_client_fails_when_readiness_gate_closes() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: agui_actor
+        mode: ag_ui_client
+        phases:
+          - name: setup
+            state:
+              run_agent_input:
+                messages:
+                  - role: user
+                    content: "Hello"
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: Some("http://localhost:3000".to_string()),
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
+        };
+
+        let (tx, rx) = tokio::sync::broadcast::channel(1);
+        drop(tx);
+
+        let result = run_actor(
+            0,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            Some(rx),
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("readiness gate closed"),
+            "Expected gate closed error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a2a_client_fails_when_readiness_gate_closes() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: a2a_actor
+        mode: a2a_client
+        phases:
+          - name: send
+            state:
+              task_message:
+                role: user
+                parts:
+                  - kind: text
+                    text: "Hello"
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: Some("http://localhost:9090".to_string()),
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
+        };
+
+        let (tx, rx) = tokio::sync::broadcast::channel(1);
+        drop(tx);
+
+        let result = run_actor(
+            0,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            Some(rx),
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("readiness gate closed"),
+            "Expected gate closed error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_client_fails_when_readiness_gate_closes() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: mcp_actor
+        mode: mcp_client
+        phases:
+          - name: probe
+            state:
+              actions:
+                - list_tools
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let config = ActorConfig {
+            mcp_server_bind: None,
+            agui_client_endpoint: None,
+            a2a_server_bind: None,
+            a2a_client_endpoint: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: Some("http://localhost:8080/mcp".to_string()),
+            headers: vec![],
+            raw_synthesize: false,
+            grace_period: None,
+            max_session: Duration::from_secs(300),
+            readiness_timeout: Duration::from_secs(30),
+            transport_factory: None,
+        };
+
+        let (tx, rx) = tokio::sync::broadcast::channel(1);
+        drop(tx);
+
+        let result = run_actor(
+            0,
+            doc,
+            &config,
+            SharedTrace::new(),
+            ExtractorStore::new(),
+            HashMap::new(),
+            CancellationToken::new(),
+            None,
+            Some(rx),
+            &EventEmitter::noop(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("readiness gate closed"),
+            "Expected gate closed error, got: {err}"
         );
     }
 
@@ -964,10 +1285,16 @@ attack:
         )
         .await;
 
-        // Should not get "not yet implemented" — should succeed or cancel gracefully
+        let actor_result = result.expect("a2a_server actor should run to a graceful termination");
+        assert_eq!(actor_result.actor_name, "a2a_actor");
         assert!(
-            result.is_ok(),
-            "Expected a2a_server to be recognized, got: {result:?}"
+            matches!(
+                actor_result.termination,
+                crate::engine::types::TerminationReason::Cancelled
+                    | crate::engine::types::TerminationReason::TerminalPhaseReached
+            ),
+            "unexpected termination: {:?}",
+            actor_result.termination
         );
     }
 
@@ -1032,7 +1359,7 @@ attack:
     #[tokio::test]
     async fn mcp_server_stdio_runs_to_completion() {
         // mcp_server actor with terminal phase, no bind address (stdio mode).
-        // Cancel after short delay → Result::Ok with Cancelled termination.
+        // Null transport reaches EOF immediately, with cancellation as a timeout safety net.
         let yaml = r#"
 oatf: "0.1"
 attack:
@@ -1090,9 +1417,17 @@ attack:
         .await
         .expect("test timed out — stdio actor did not respond to cancellation within 10s");
 
-        assert!(result.is_ok(), "Expected Ok, got: {result:?}");
-        let actor_result = result.unwrap();
+        let actor_result = result.expect("mcp_server actor should run to a graceful termination");
         assert_eq!(actor_result.actor_name, "default");
+        assert!(
+            matches!(
+                actor_result.termination,
+                crate::engine::types::TerminationReason::Cancelled
+                    | crate::engine::types::TerminationReason::TerminalPhaseReached
+            ),
+            "unexpected termination: {:?}",
+            actor_result.termination
+        );
     }
 
     #[test]
@@ -1121,7 +1456,7 @@ attack:
             events_file: None,
         };
 
-        let config = build_actor_config(&args);
+        let config = build_actor_config(&args).expect("valid headers should parse");
         assert_eq!(config.headers.len(), 3);
         // Standard header
         assert_eq!(config.headers[0].0, "Authorization");
@@ -1135,7 +1470,7 @@ attack:
     }
 
     #[test]
-    fn build_actor_config_header_without_colon_skipped() {
+    fn build_actor_config_header_without_colon_rejected() {
         let args = RunArgs {
             config: Some(std::path::PathBuf::from("test.yaml")),
             mcp_server: None,
@@ -1156,11 +1491,69 @@ attack:
             events_file: None,
         };
 
-        let config = build_actor_config(&args);
-        // "NoColonHere" has no colon, should be silently skipped
-        assert_eq!(config.headers.len(), 1);
-        assert_eq!(config.headers[0].0, "Valid");
-        assert_eq!(config.headers[0].1, "header");
+        let err = build_actor_config(&args).expect_err("missing colon should be rejected");
+        assert!(
+            err.to_string().contains("expected KEY:VALUE"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_actor_config_invalid_header_name_rejected() {
+        let args = RunArgs {
+            config: Some(std::path::PathBuf::from("test.yaml")),
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(300)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(30)),
+            output: None,
+            header: vec!["Bad Name: value".to_string()],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        };
+
+        let err = build_actor_config(&args).expect_err("invalid header name should be rejected");
+        assert!(
+            err.to_string().contains("valid HTTP header name"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_actor_config_invalid_header_value_rejected() {
+        let args = RunArgs {
+            config: Some(std::path::PathBuf::from("test.yaml")),
+            mcp_server: None,
+            mcp_client_command: None,
+            mcp_client_args: None,
+            mcp_client_endpoint: None,
+            agui_client_endpoint: None,
+            a2a_server: None,
+            a2a_client_endpoint: None,
+            grace_period: None,
+            max_session: humantime::Duration::from(Duration::from_secs(300)),
+            readiness_timeout: humantime::Duration::from(Duration::from_secs(30)),
+            output: None,
+            header: vec!["X-Test: value\r\ninjected".to_string()],
+            no_semantic: false,
+            raw_synthesize: false,
+            metrics_port: None,
+            events_file: None,
+        };
+
+        let err = build_actor_config(&args).expect_err("invalid header value should be rejected");
+        assert!(
+            err.to_string().contains("valid HTTP header value"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1185,7 +1578,7 @@ attack:
             events_file: None,
         };
 
-        let config = build_actor_config(&args);
+        let config = build_actor_config(&args).expect("empty header list should be valid");
         assert!(config.mcp_server_bind.is_none());
         assert!(config.agui_client_endpoint.is_none());
         assert!(config.a2a_server_bind.is_none());
@@ -1316,5 +1709,50 @@ attack:
         let merged = merge_headers(&[], &overrides);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].1, "Bearer token");
+    }
+
+    #[test]
+    fn parse_mcp_client_args_respects_quotes() {
+        let parsed = parse_mcp_client_args(r#"--flag "two words" 'three words'"#).unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                "--flag".to_string(),
+                "two words".to_string(),
+                "three words".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_mcp_client_args_rejects_unbalanced_quotes() {
+        let err = parse_mcp_client_args("\"oops").unwrap_err();
+        assert!(err.to_string().contains("invalid --mcp-client-args"));
+    }
+
+    #[test]
+    fn parse_mcp_client_command_supports_inline_args() {
+        let (command, args) =
+            parse_mcp_client_command("npx -y @modelcontextprotocol/server-everything").unwrap();
+        assert_eq!(command, "npx");
+        assert_eq!(
+            args,
+            vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-everything".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_mcp_client_command_rejects_empty() {
+        let err = parse_mcp_client_command("").unwrap_err();
+        assert!(err.to_string().contains("invalid --mcp-client-command"));
+    }
+
+    #[test]
+    fn parse_mcp_client_command_rejects_unbalanced_quotes() {
+        let err = parse_mcp_client_command("\"oops").unwrap_err();
+        assert!(err.to_string().contains("invalid --mcp-client-command"));
     }
 }

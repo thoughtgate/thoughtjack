@@ -18,7 +18,7 @@ use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
 use crate::error::EngineError;
 use crate::loader::{LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
-use crate::orchestration::gate::ReadinessGate;
+use crate::orchestration::gate::{GateError, ReadinessGate};
 use crate::orchestration::runner::{ActorConfig, run_actor};
 use crate::orchestration::store::ExtractorStore;
 
@@ -187,12 +187,24 @@ pub async fn orchestrate(
             }
             Err(gate_err) => {
                 tracing::error!(%gate_err, "readiness gate failed");
-                events.emit(ThoughtJackEvent::ReadinessGateTimeout {
-                    not_ready: server_names.clone(),
-                });
+                match &gate_err {
+                    GateError::Timeout { not_ready } => {
+                        events.emit(ThoughtJackEvent::ReadinessGateTimeout {
+                            not_ready: not_ready.clone(),
+                        });
+                    }
+                    GateError::ServerFailed { actor } => {
+                        events.emit(ThoughtJackEvent::ReadinessGateServerFailed {
+                            actor: actor.clone(),
+                        });
+                    }
+                }
                 cancel.cancel();
                 join_set.abort_all();
-                return drain_join_set(join_set, &task_meta, trace, events).await;
+                drain_join_set(join_set, &task_meta, events).await;
+                return Err(EngineError::Phase(format!(
+                    "readiness gate failed: {gate_err}"
+                )));
             }
         }
     }
@@ -302,6 +314,7 @@ async fn wait_for_completion(
     let mut outcomes: Vec<ActorOutcome> = Vec::with_capacity(join_set.len());
     let mut clients_done = 0;
     let mut grace_started = false;
+    let mut max_session_expired = false;
     let max_session_sleep =
         tokio::time::sleep_until(tokio::time::Instant::now() + config.max_session);
     tokio::pin!(max_session_sleep);
@@ -333,7 +346,8 @@ async fn wait_for_completion(
                     spawn_grace_task(config, cancel, events);
                 }
             }
-            () = &mut max_session_sleep => {
+            () = &mut max_session_sleep, if !max_session_expired => {
+                max_session_expired = true;
                 tracing::warn!("max session expired, cancelling all actors");
                 events.emit(ThoughtJackEvent::OrchestratorShutdown {
                     reason: "max_session_expired".to_string(),
@@ -472,16 +486,11 @@ fn spawn_grace_task(config: &ActorConfig, cancel: &CancellationToken, events: &A
 async fn drain_join_set(
     mut join_set: JoinSet<ActorTaskResult>,
     task_meta: &TaskMetaMap,
-    trace: SharedTrace,
     events: &EventEmitter,
-) -> Result<OrchestratorResult, EngineError> {
-    let mut outcomes = Vec::with_capacity(join_set.len());
+) {
     while let Some(join_result) = join_set.join_next().await {
-        let (outcome, _) = unpack_join_result(join_result, task_meta, events);
-        outcomes.push(outcome);
+        let _ = unpack_join_result(join_result, task_meta, events);
     }
-
-    Ok(OrchestratorResult { outcomes, trace })
 }
 
 // ============================================================================
@@ -630,12 +639,25 @@ attack:
 
             assert_eq!(result.outcomes.len(), 2);
 
-            // Check we have both a success and an error
-            let has_error = result
+            let server_outcome = result
                 .outcomes
                 .iter()
-                .any(|o| matches!(o, ActorOutcome::Error { .. }));
-            assert!(has_error, "Expected at least one Error outcome");
+                .find(|o| o.actor_name() == "valid_server")
+                .expect("missing outcome for valid_server");
+            let client_outcome = result
+                .outcomes
+                .iter()
+                .find(|o| o.actor_name() == "bad_client")
+                .expect("missing outcome for bad_client");
+
+            assert!(
+                matches!(server_outcome, ActorOutcome::Success(_)),
+                "valid_server should succeed, got: {server_outcome:?}"
+            );
+            assert!(
+                matches!(client_outcome, ActorOutcome::Error { .. }),
+                "bad_client should fail, got: {client_outcome:?}"
+            );
         })
         .await
         .expect("test timed out after 15s");
@@ -675,15 +697,12 @@ attack:
                 .unwrap();
 
             assert_eq!(result.outcomes.len(), 1);
-            // Actor should be cancelled/aborted due to max_session expiry.
-            // Depending on timing, it may be Success(Cancelled) or Panic (aborted).
             match &result.outcomes[0] {
                 ActorOutcome::Success(r) => {
                     assert_eq!(r.actor_name, "default");
+                    assert_eq!(r.termination, TerminationReason::Cancelled);
                 }
-                ActorOutcome::Panic { .. } | ActorOutcome::Error { .. } => {
-                    // Task was aborted before graceful cancel — acceptable
-                }
+                other => panic!("Expected cancelled success outcome, got: {other:?}"),
             }
         })
         .await
@@ -726,6 +745,108 @@ attack:
 
             // Single server actor should have an outcome
             assert_eq!(result.outcomes.len(), 1);
+        })
+        .await
+        .expect("test timed out after 15s");
+    }
+
+    #[tokio::test]
+    async fn readiness_gate_failure_returns_error() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+            );
+
+            let mut config = default_actor_config(Duration::from_secs(5));
+            config.mcp_server_bind = Some("invalid-bind-address".to_string());
+            config.readiness_timeout = Duration::from_millis(250);
+
+            let events = Arc::new(EventEmitter::noop());
+            let cancel = CancellationToken::new();
+
+            let result = orchestrate(&loaded, &config, &events, cancel).await;
+            let err_text = match result {
+                Ok(_) => panic!("expected readiness gate failure to be fatal"),
+                Err(err) => err.to_string(),
+            };
+            assert!(
+                err_text.contains("readiness gate failed"),
+                "unexpected error text: {err_text}"
+            );
+        })
+        .await
+        .expect("test timed out after 15s");
+    }
+
+    #[tokio::test]
+    async fn readiness_gate_server_failure_emits_server_failed_event() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let loaded = load_test_doc(
+                r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    state:
+      tools:
+        - name: test_tool
+          description: "test"
+          inputSchema:
+            type: object
+"#,
+            );
+
+            let mut config = default_actor_config(Duration::from_secs(5));
+            config.mcp_server_bind = Some("invalid-bind-address".to_string());
+            config.readiness_timeout = Duration::from_millis(250);
+
+            let tempdir = tempfile::tempdir().expect("tempdir should be created");
+            let events_path = tempdir.path().join("events.jsonl");
+            let events = Arc::new(
+                EventEmitter::from_file(&events_path)
+                    .expect("event emitter file should be created"),
+            );
+            let cancel = CancellationToken::new();
+
+            let result = orchestrate(&loaded, &config, &events, cancel).await;
+            assert!(result.is_err(), "expected readiness gate failure");
+            events.flush();
+
+            let content = std::fs::read_to_string(&events_path)
+                .expect("should be able to read emitted events");
+            let event_types: Vec<String> = content
+                .lines()
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .expect("event line should be valid json")
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect();
+
+            assert!(
+                event_types.iter().any(|t| t == "ReadinessGateServerFailed"),
+                "expected ReadinessGateServerFailed event, got {event_types:?}"
+            );
+            assert!(
+                !event_types.iter().any(|t| t == "ReadinessGateTimeout"),
+                "timeout event should not be emitted for server failure path: {event_types:?}"
+            );
         })
         .await
         .expect("test timed out after 15s");
@@ -1022,7 +1143,7 @@ attack:
 
             // Both servers should have outcomes
             assert_eq!(result.outcomes.len(), 2);
-            // All outcomes should be for servers (no clients)
+
             for outcome in &result.outcomes {
                 match outcome {
                     ActorOutcome::Success(r) => {
@@ -1031,14 +1152,19 @@ attack:
                             "unexpected actor: {}",
                             r.actor_name
                         );
+                        assert!(
+                            matches!(
+                                r.termination,
+                                TerminationReason::Cancelled
+                                    | TerminationReason::TerminalPhaseReached
+                            ),
+                            "unexpected termination for {}: {:?}",
+                            r.actor_name,
+                            r.termination
+                        );
                     }
                     other => {
-                        // Error/Panic outcomes are acceptable depending on timing
-                        let name = other.actor_name();
-                        assert!(
-                            name == "server1" || name == "server2",
-                            "unexpected actor: {name}"
-                        );
+                        panic!("Expected server cancellation success, got: {other:?}");
                     }
                 }
             }

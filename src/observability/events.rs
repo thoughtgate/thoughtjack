@@ -129,6 +129,12 @@ pub enum ThoughtJackEvent {
         not_ready: Vec<String>,
     },
 
+    /// Readiness gate failed because a server actor exited before signaling readiness.
+    ReadinessGateServerFailed {
+        /// Server actor that failed before becoming ready.
+        actor: String,
+    },
+
     /// An actor started executing its phase loop.
     ActorStarted {
         /// Actor name.
@@ -629,6 +635,9 @@ mod tests {
             },
             ThoughtJackEvent::ReadinessGateTimeout {
                 not_ready: vec!["a".to_owned()],
+            },
+            ThoughtJackEvent::ReadinessGateServerFailed {
+                actor: "a".to_owned(),
             },
             ThoughtJackEvent::ActorStarted {
                 actor_name: "a".to_owned(),
