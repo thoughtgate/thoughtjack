@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- CLI behaviour alignment and test coverage ([#37](https://github.com/thoughtgate/thoughtjack/pull/37)) (bf5a425)
+- Disable value_relayed indicator due to MCP server panic in 4-actor scenario (0937ae3)
+- Fix extractor race, revert a2a min_traces, disable mcp-side-effects (4e0cf38)
+- Pass node-version 22 to MCP conformance action (f54179c)
+- Replace stdio with NullTransport in tests to prevent hangs (d1a72f5)
+- Make --config optional for scenarios run (edd9401)
+- Replace panicking signal handlers with graceful fallbacks (0e84fc8)
+- Exclude fuzz crate from workspace to fix release builds (4473e94)
+- URI template multi-byte panic + fuzz job permissions (6fd4b11)
+
+### Build
+
+- Bump GitHub Actions and Rust dependencies (70ecf08)
+
+### CI/CD
+
+- Add GitHub Pages deployment workflow and live status badges (697abfd)
+
+### Documentation
+
+- Fix stale scenario counts and deprecated trigger syntax (7c791a4)
+- Fix stale file paths, scenario count, and Quick Start in README (908d932)
+- Define OATF, add client mode tutorial, fix stale references (962d675)
+- Fix exit codes, CLI flags, and trigger examples (e6c27de)
+
+### Features
+
+- Harden conformance suite with deeper assertions and attack coverage (05c369e)
+- Add e2e conformance test infrastructure ([#35](https://github.com/thoughtgate/thoughtjack/pull/35)) (97acc74)
+
+### Refactoring
+
+- Archive v0.2 scenarios, migrate rug-pull to OATF (b5f6d11)
+
 ## [0.5.0] - 2026-03-02
 
 ### Added
