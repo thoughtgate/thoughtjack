@@ -269,18 +269,6 @@ async fn handle_jsonrpc(
             .into_response();
     }
 
-    if body.len() > MAX_JSONRPC_BODY_SIZE {
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!(
-                "request body too large: {} bytes (limit: {})",
-                body.len(),
-                MAX_JSONRPC_BODY_SIZE
-            ),
-        )
-            .into_response();
-    }
-
     // Parse JSON body
     let request: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,

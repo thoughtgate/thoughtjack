@@ -13,12 +13,25 @@ use tempfile::NamedTempFile;
 use crate::common::mock_server::find_free_port;
 
 fn thoughtjack_bin() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_thoughtjack") {
+        return std::path::PathBuf::from(path);
+    }
+
     if let Some(path) = option_env!("CARGO_BIN_EXE_thoughtjack") {
         return std::path::PathBuf::from(path);
     }
 
-    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("target");
+    let mut path = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => {
+            let dir = std::path::PathBuf::from(dir);
+            if dir.is_absolute() {
+                dir
+            } else {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(dir)
+            }
+        }
+        None => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
+    };
     path.push("debug");
     path.push("thoughtjack");
     #[cfg(windows)]
