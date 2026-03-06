@@ -1,0 +1,426 @@
+# OATF conformance document — non-adversarial MCP server for protocol testing.
+# No phases, no behaviors, no side effects — pure benign MCP server.
+oatf: "0.1"
+attack:
+  name: conformance
+  execution:
+    mode: mcp_server
+    state:
+      capabilities:
+        tools: {}
+        resources:
+          subscribe: true
+          listChanged: true
+        prompts: {}
+        logging: {}
+
+      tools:
+        - name: "echo"
+          description: "Echoes input back to the caller"
+          inputSchema:
+            type: object
+            properties:
+              message:
+                type: string
+                description: "Message to echo"
+            required: ["message"]
+          responses:
+            - content:
+                - type: text
+                  text: "Echo: hello"
+
+        - name: "add"
+          description: "Adds two numbers"
+          inputSchema:
+            type: object
+            properties:
+              a:
+                type: number
+              b:
+                type: number
+            required: ["a", "b"]
+          responses:
+            - content:
+                - type: text
+                  text: "42"
+
+        - name: "test_simple_text"
+          description: "Returns simple text for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "This is a simple text response for testing."
+
+        - name: "test_error_handling"
+          description: "Returns an error for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - isError: true
+              content:
+                - type: text
+                  text: "This tool intentionally returns an error for testing"
+
+        # --- Conformance: content type tests ---
+
+        - name: "test_image_content"
+          description: "Returns image content for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: image
+                  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg=="
+                  mimeType: "image/png"
+
+        - name: "test_audio_content"
+          description: "Returns audio content for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: audio
+                  data: "UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAA"
+                  mimeType: "audio/wav"
+
+        - name: "test_embedded_resource"
+          description: "Returns embedded resource content for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: resource
+                  resource:
+                    uri: "test://embedded-resource"
+                    mimeType: "text/plain"
+                    text: "This is an embedded resource content."
+
+        - name: "test_multiple_content_types"
+          description: "Returns multiple content types for testing"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Multiple content types test:"
+                - type: image
+                  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg=="
+                  mimeType: "image/png"
+                - type: resource
+                  resource:
+                    uri: "test://mixed-content-resource"
+                    mimeType: "application/json"
+                    text: "{\"test\":\"data\",\"value\":123}"
+
+        # --- Conformance: interleaving tools ---
+
+        - name: "test_tool_with_logging"
+          description: "Tool that sends logging notifications during execution"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Logging tool execution completed successfully."
+
+        - name: "test_tool_with_progress"
+          description: "Tool that sends progress notifications during execution"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Progress tool execution completed successfully."
+
+        - name: "test_sampling"
+          description: "Tool that requests LLM sampling during execution"
+          inputSchema:
+            type: object
+            properties:
+              prompt:
+                type: string
+                description: "Prompt to send for sampling"
+            required: ["prompt"]
+          responses:
+            - content:
+                - type: text
+                  text: "LLM response: sampling completed"
+
+        - name: "test_elicitation"
+          description: "Tool that requests user input via elicitation"
+          inputSchema:
+            type: object
+            properties:
+              message:
+                type: string
+                description: "Message to display"
+            required: ["message"]
+          responses:
+            - content:
+                - type: text
+                  text: "User response: action accepted"
+
+        - name: "test_elicitation_sep1034_defaults"
+          description: "Tool that tests elicitation with default values per SEP-1034"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Elicitation with defaults completed."
+
+        - name: "test_elicitation_sep1330_enums"
+          description: "Tool that tests elicitation with enum schemas per SEP-1330"
+          inputSchema:
+            type: object
+            properties: {}
+          responses:
+            - content:
+                - type: text
+                  text: "Elicitation with enums completed."
+
+      resources:
+        - uri: "file:///docs/readme"
+          name: "README"
+          description: "Project documentation"
+          mimeType: "text/plain"
+          responses:
+            - contents:
+                - uri: "file:///docs/readme"
+                  mimeType: "text/plain"
+                  text: "ThoughtJack conformance test resource."
+
+        - uri: "test://static-text"
+          name: "static-text"
+          description: "Static text resource for conformance testing"
+          mimeType: "text/plain"
+          responses:
+            - contents:
+                - uri: "test://static-text"
+                  mimeType: "text/plain"
+                  text: "This is the content of the static text resource."
+
+        # --- Conformance: binary resource ---
+
+        - uri: "test://static-binary"
+          name: "static-binary"
+          description: "Binary resource for conformance testing"
+          mimeType: "image/png"
+          responses:
+            - contents:
+                - uri: "test://static-binary"
+                  mimeType: "image/png"
+                  blob: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg=="
+
+      prompts:
+        - name: "greet"
+          description: "Generates a greeting"
+          arguments:
+            - name: "name"
+              description: "Name to greet"
+              required: true
+          responses:
+            - messages:
+                - role: assistant
+                  content:
+                    type: text
+                    text: "Hello! How can I help you today?"
+
+        - name: "test_simple_prompt"
+          description: "Simple prompt for conformance testing"
+          responses:
+            - messages:
+                - role: user
+                  content:
+                    type: text
+                    text: "This is a simple prompt for testing."
+
+        # --- Conformance: advanced prompt types ---
+
+        - name: "test_prompt_with_arguments"
+          description: "Prompt with argument substitution for conformance testing"
+          arguments:
+            - name: "arg1"
+              description: "First argument"
+              required: true
+            - name: "arg2"
+              description: "Second argument"
+              required: true
+          responses:
+            - messages:
+                - role: user
+                  content:
+                    type: text
+                    text: "Prompt with arguments: arg1='{{request.arguments.arg1}}', arg2='{{request.arguments.arg2}}'"
+
+        - name: "test_prompt_with_embedded_resource"
+          description: "Prompt with embedded resource content for conformance testing"
+          arguments:
+            - name: "resourceUri"
+              description: "URI of the resource to embed"
+              required: true
+          responses:
+            - messages:
+                - role: user
+                  content:
+                    type: resource
+                    resource:
+                      uri: "test://example-resource"
+                      mimeType: "text/plain"
+                      text: "Embedded resource content for testing."
+                - role: user
+                  content:
+                    type: text
+                    text: "Please process the embedded resource above."
+
+        - name: "test_prompt_with_image"
+          description: "Prompt with image content for conformance testing"
+          responses:
+            - messages:
+                - role: user
+                  content:
+                    type: image
+                    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg=="
+                    mimeType: "image/png"
+                - role: user
+                  content:
+                    type: text
+                    text: "Please analyze the image above."
+
+      # --- Conformance: resource templates ---
+
+      resource_templates:
+        - uriTemplate: "test://template/{id}/data"
+          name: "test-template"
+          description: "Template resource with ID parameter"
+          mimeType: "application/json"
+          responses:
+            - contents:
+                - uri: "{{request.uri}}"
+                  mimeType: "application/json"
+                  text: "{\"id\":\"123\",\"data\":\"Template resource content for 123\"}"
+
+      # --- Conformance: logging (tool-filtered) ---
+
+      logging:
+        - level: "info"
+          data: "Tool execution started"
+          tool: "test_tool_with_logging"
+        - level: "info"
+          data: "Tool processing data"
+          tool: "test_tool_with_logging"
+        - level: "info"
+          data: "Tool execution completed"
+          tool: "test_tool_with_logging"
+
+      # --- Conformance: progress (tool-filtered) ---
+
+      progress:
+        - progress: 0
+          total: 100
+          tool: "test_tool_with_progress"
+        - progress: 50
+          total: 100
+          tool: "test_tool_with_progress"
+        - progress: 100
+          total: 100
+          tool: "test_tool_with_progress"
+
+      # --- Conformance: sampling (tool-filtered) ---
+
+      sampling_requests:
+        - tool: "test_sampling"
+          messages:
+            - role: "user"
+              content:
+                type: "text"
+                text: "Please analyze this request"
+          maxTokens: 100
+
+      # --- Conformance: elicitation (tool-filtered) ---
+
+      elicitations:
+        - tool: "test_elicitation"
+          message: "Please provide your information"
+          requestedSchema:
+            type: object
+            properties:
+              username:
+                type: string
+                description: "User's response"
+              email:
+                type: string
+                description: "User's email address"
+            required:
+              - username
+              - email
+
+        - tool: "test_elicitation_sep1034_defaults"
+          message: "Please provide information with defaults"
+          requestedSchema:
+            type: object
+            properties:
+              name:
+                type: string
+                default: "John Doe"
+              age:
+                type: integer
+                default: 30
+              score:
+                type: number
+                default: 95.5
+              status:
+                type: string
+                enum: ["active", "inactive", "pending"]
+                default: "active"
+              verified:
+                type: boolean
+                default: true
+
+        - tool: "test_elicitation_sep1330_enums"
+          message: "Please select options"
+          requestedSchema:
+            type: object
+            properties:
+              untitledSingle:
+                type: string
+                enum: ["option1", "option2", "option3"]
+              titledSingle:
+                type: string
+                oneOf:
+                  - const: "value1"
+                    title: "First Option"
+                  - const: "value2"
+                    title: "Second Option"
+                  - const: "value3"
+                    title: "Third Option"
+              legacyEnum:
+                type: string
+                enum: ["opt1", "opt2", "opt3"]
+                enumNames: ["Option One", "Option Two", "Option Three"]
+              untitledMulti:
+                type: array
+                items:
+                  type: string
+                  enum: ["option1", "option2", "option3"]
+              titledMulti:
+                type: array
+                items:
+                  anyOf:
+                    - const: "value1"
+                      title: "First Choice"
+                    - const: "value2"
+                      title: "Second Choice"
+                    - const: "value3"
+                      title: "Third Choice"

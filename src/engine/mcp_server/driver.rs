@@ -382,11 +382,13 @@ impl McpServerDriver {
                         method = %notif.method,
                         "interleaved notification during server request wait, re-emitting"
                     );
-                    let _ = event_tx.send(ProtocolEvent {
-                        direction: Direction::Incoming,
-                        method: notif.method.clone(),
-                        content: notif.params.unwrap_or(Value::Null),
-                    }).await;
+                    let _ = event_tx
+                        .send(ProtocolEvent {
+                            direction: Direction::Incoming,
+                            method: notif.method.clone(),
+                            content: notif.params.unwrap_or(Value::Null),
+                        })
+                        .await;
                 }
                 Ok(Some(JsonRpcMessage::Request(req))) => {
                     if self.deferred_requests.len() < MAX_DEFERRED_REQUESTS {
@@ -447,11 +449,13 @@ impl McpServerDriver {
                 })),
             );
 
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Outgoing,
-                method: "notifications/message".to_string(),
-                content: json!({ "level": level, "data": data }),
-            }).await;
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "notifications/message".to_string(),
+                    content: json!({ "level": level, "data": data }),
+                })
+                .await;
 
             if let Err(err) = self
                 .transport
@@ -510,11 +514,13 @@ impl McpServerDriver {
             let notif =
                 JsonRpcNotification::new("notifications/progress", Some(notif_params.clone()));
 
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Outgoing,
-                method: "notifications/progress".to_string(),
-                content: notif_params,
-            }).await;
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "notifications/progress".to_string(),
+                    content: notif_params,
+                })
+                .await;
 
             if let Err(err) = self
                 .transport
@@ -596,21 +602,25 @@ impl McpServerDriver {
             )),
         };
 
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "sampling/createMessage".to_string(),
-            content: serde_json::to_value(&sampling_request).unwrap_or(Value::Null),
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "sampling/createMessage".to_string(),
+                content: serde_json::to_value(&sampling_request).unwrap_or(Value::Null),
+            })
+            .await;
 
         if let Some(resp) = self
             .send_server_request(&sampling_request, event_tx, cancel)
             .await
         {
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Incoming,
-                method: "sampling/createMessage".to_string(),
-                content: serde_json::to_value(&resp).unwrap_or(Value::Null),
-            }).await;
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "sampling/createMessage".to_string(),
+                    content: serde_json::to_value(&resp).unwrap_or(Value::Null),
+                })
+                .await;
         }
     }
 
@@ -719,22 +729,26 @@ impl McpServerDriver {
         };
 
         // Emit outgoing elicitation event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "elicitation/create".to_string(),
-            content: serde_json::to_value(&elicitation_request).unwrap_or(Value::Null),
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "elicitation/create".to_string(),
+                content: serde_json::to_value(&elicitation_request).unwrap_or(Value::Null),
+            })
+            .await;
 
         // Send request and wait for response
         if let Some(resp) = self
             .send_server_request(&elicitation_request, event_tx, cancel)
             .await
         {
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Incoming,
-                method: "elicitation/create".to_string(),
-                content: serde_json::to_value(&resp).unwrap_or(Value::Null),
-            }).await;
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "elicitation/create".to_string(),
+                    content: serde_json::to_value(&resp).unwrap_or(Value::Null),
+                })
+                .await;
         }
     }
 
@@ -747,11 +761,13 @@ impl McpServerDriver {
         cancel: &CancellationToken,
     ) -> Result<Option<DriveResult>, EngineError> {
         let incoming_content = request.params.clone().unwrap_or(Value::Null);
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: request.method.clone(),
-            content: incoming_content,
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: request.method.clone(),
+                content: incoming_content,
+            })
+            .await;
 
         let current_extractors = extractors.borrow().clone();
         let response = self
@@ -776,11 +792,13 @@ impl McpServerDriver {
                 serde_json::to_value(e).unwrap_or(Value::Null)
             })
         });
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: request.method.clone(),
-            content: outgoing_content,
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: request.method.clone(),
+                content: outgoing_content,
+            })
+            .await;
 
         self.transport
             .finalize_response()

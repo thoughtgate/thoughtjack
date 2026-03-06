@@ -251,16 +251,20 @@ async fn handle_agent_card(State(shared): State<Arc<A2aSharedState>>) -> Respons
     // Emit events (clone sender to avoid holding RwLock guard across .await)
     let tx = shared.event_tx.read().await.as_ref().cloned();
     if let Some(tx) = tx {
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: "agent_card/get".to_string(),
-            content: json!({}),
-        }).await;
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "agent_card/get".to_string(),
-            content: card.clone(),
-        }).await;
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "agent_card/get".to_string(),
+                content: json!({}),
+            })
+            .await;
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "agent_card/get".to_string(),
+                content: card.clone(),
+            })
+            .await;
     }
 
     axum::Json(card).into_response()
@@ -299,11 +303,13 @@ async fn handle_jsonrpc(
     // Emit incoming event (clone sender to avoid holding RwLock guard across .await)
     let tx = shared.event_tx.read().await.as_ref().cloned();
     if let Some(tx) = tx {
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: method.clone(),
-            content: params.clone(),
-        }).await;
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: method.clone(),
+                content: params.clone(),
+            })
+            .await;
     }
 
     // Route by method
@@ -437,16 +443,18 @@ async fn handle_message_stream(
     // Emit SSE events for trace (clone sender to avoid holding RwLock guard across .await)
     let tx = shared.event_tx.read().await.as_ref().cloned();
     if let Some(tx) = tx {
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "message/stream".to_string(),
-            content: json!({
-                "taskId": task_id,
-                "contextId": context_id,
-                "status": status,
-                "artifacts_count": artifacts.len(),
-            }),
-        }).await;
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "message/stream".to_string(),
+                content: json!({
+                    "taskId": task_id,
+                    "contextId": context_id,
+                    "status": status,
+                    "artifacts_count": artifacts.len(),
+                }),
+            })
+            .await;
     }
 
     let delay_ms = SSE_EVENT_DELAY_MS;
@@ -1064,11 +1072,13 @@ async fn get_extractors(shared: &Arc<A2aSharedState>) -> HashMap<String, String>
 async fn emit_outgoing(shared: &Arc<A2aSharedState>, method: &str, content: &Value) {
     let tx = shared.event_tx.read().await.as_ref().cloned();
     if let Some(tx) = tx {
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: method.to_string(),
-            content: content.clone(),
-        }).await;
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: method.to_string(),
+                content: content.clone(),
+            })
+            .await;
     }
 }
 
