@@ -74,12 +74,8 @@ pub enum Commands {
 /// Arguments for `run` — execute an OATF scenario.
 ///
 /// Implements: TJ-SPEC-007 F-002
-#[derive(Args, Debug)]
-pub struct RunArgs {
-    /// Path to OATF scenario YAML document (required for `run`, optional for `scenarios run`).
-    #[arg(short, long)]
-    pub config: Option<PathBuf>,
-
+#[derive(Args, Debug, Clone)]
+pub struct ExecutionArgs {
     /// MCP server HTTP listen address (omit for stdio).
     #[arg(long, value_name = "ADDR:PORT")]
     pub mcp_server: Option<String>,
@@ -144,6 +140,20 @@ pub struct RunArgs {
     /// Write structured events to a JSONL file instead of stderr.
     #[arg(long, env = "THOUGHTJACK_EVENTS_FILE")]
     pub events_file: Option<PathBuf>,
+}
+
+/// Arguments for `run` — execute an OATF scenario.
+///
+/// Implements: TJ-SPEC-007 F-002
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// Path to OATF scenario YAML document.
+    #[arg(short, long, env = "THOUGHTJACK_CONFIG", value_name = "PATH")]
+    pub config: PathBuf,
+
+    /// Shared runtime and output options.
+    #[command(flatten)]
+    pub execution: ExecutionArgs,
 }
 
 // ============================================================================
@@ -213,105 +223,9 @@ pub struct ScenariosRunArgs {
     /// Built-in scenario name.
     pub name: String,
 
-    /// Run arguments (same as `thoughtjack run`, except `--config`).
+    /// Shared runtime and output options (same as `thoughtjack run`, except `--config`).
     #[command(flatten)]
-    pub run: ScenariosRunOverrides,
-}
-
-/// Runtime overrides for `scenarios run`.
-///
-/// Mirrors `RunArgs` except `--config`, because the scenario YAML comes
-/// from the built-in library.
-#[derive(Args, Debug)]
-pub struct ScenariosRunOverrides {
-    /// MCP server HTTP listen address (omit for stdio).
-    #[arg(long, value_name = "ADDR:PORT")]
-    pub mcp_server: Option<String>,
-
-    /// Spawn MCP client by running a command (supports inline args, e.g.,
-    /// `"npx -y @modelcontextprotocol/server-everything"`).
-    #[arg(long, value_name = "CMD")]
-    pub mcp_client_command: Option<String>,
-
-    /// Extra arguments for `--mcp-client-command`.
-    #[arg(long, value_name = "ARGS", requires = "mcp_client_command")]
-    pub mcp_client_args: Option<String>,
-
-    /// Connect MCP client to an HTTP endpoint instead of spawning.
-    #[arg(long, value_name = "URL", conflicts_with = "mcp_client_command")]
-    pub mcp_client_endpoint: Option<String>,
-
-    /// Connect AG-UI client to an endpoint.
-    #[arg(long, value_name = "URL")]
-    pub agui_client_endpoint: Option<String>,
-
-    /// A2A server listen address [default: 127.0.0.1:9090].
-    #[arg(long, value_name = "ADDR:PORT")]
-    pub a2a_server: Option<String>,
-
-    /// A2A client target endpoint.
-    #[arg(long, value_name = "URL")]
-    pub a2a_client_endpoint: Option<String>,
-
-    /// Override document grace period.
-    #[arg(long, value_name = "DURATION")]
-    pub grace_period: Option<humantime::Duration>,
-
-    /// Safety timeout for entire session [default: 5m].
-    #[arg(long, value_name = "DURATION", default_value = "5m")]
-    pub max_session: humantime::Duration,
-
-    /// Timeout for server readiness gate [default: 30s].
-    #[arg(long, value_name = "DURATION", default_value = "30s")]
-    pub readiness_timeout: humantime::Duration,
-
-    /// Write JSON verdict to file (use `-` for stdout).
-    #[arg(short, long, value_name = "PATH")]
-    pub output: Option<String>,
-
-    /// HTTP headers for client transports (repeatable).
-    #[arg(long, value_name = "KEY:VALUE")]
-    pub header: Vec<String>,
-
-    /// Disable semantic (LLM-as-judge) indicator evaluation.
-    #[arg(long)]
-    pub no_semantic: bool,
-
-    /// Bypass synthesize output validation (allows malformed responses).
-    #[arg(long)]
-    pub raw_synthesize: bool,
-
-    /// Enable Prometheus metrics endpoint on the specified port.
-    #[arg(long, env = "THOUGHTJACK_METRICS_PORT")]
-    pub metrics_port: Option<u16>,
-
-    /// Write structured events to a JSONL file instead of stderr.
-    #[arg(long, env = "THOUGHTJACK_EVENTS_FILE")]
-    pub events_file: Option<PathBuf>,
-}
-
-impl From<&ScenariosRunOverrides> for RunArgs {
-    fn from(value: &ScenariosRunOverrides) -> Self {
-        Self {
-            config: None,
-            mcp_server: value.mcp_server.clone(),
-            mcp_client_command: value.mcp_client_command.clone(),
-            mcp_client_args: value.mcp_client_args.clone(),
-            mcp_client_endpoint: value.mcp_client_endpoint.clone(),
-            agui_client_endpoint: value.agui_client_endpoint.clone(),
-            a2a_server: value.a2a_server.clone(),
-            a2a_client_endpoint: value.a2a_client_endpoint.clone(),
-            grace_period: value.grace_period,
-            max_session: value.max_session,
-            readiness_timeout: value.readiness_timeout,
-            output: value.output.clone(),
-            header: value.header.clone(),
-            no_semantic: value.no_semantic,
-            raw_synthesize: value.raw_synthesize,
-            metrics_port: value.metrics_port,
-            events_file: value.events_file.clone(),
-        }
-    }
+    pub execution: ExecutionArgs,
 }
 
 // ============================================================================
@@ -698,10 +612,10 @@ mod tests {
         assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 
-    /// `run` without --config should parse (validated at runtime).
+    /// `run` without --config should fail at parse time.
     #[test]
-    fn test_run_without_config_parses() {
+    fn test_run_without_config_fails() {
         let cli = Cli::try_parse_from(["thoughtjack", "run"]);
-        assert!(cli.is_ok(), "Failed to parse: {cli:?}");
+        assert!(cli.is_err(), "Expected clap parse error");
     }
 }

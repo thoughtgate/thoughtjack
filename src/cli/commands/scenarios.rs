@@ -141,8 +141,7 @@ pub async fn run_scenario(
         ThoughtJackError::Usage(message)
     })?;
 
-    let run_args: crate::cli::args::RunArgs = (&args.run).into();
-    super::run::run_from_yaml(scenario.yaml, &run_args, quiet, cancel).await
+    super::run::run_from_yaml(scenario.yaml, &args.execution, quiet, cancel).await
 }
 
 #[cfg(test)]
@@ -150,10 +149,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::cli::args::ScenariosRunOverrides;
-
-    fn test_run_args() -> ScenariosRunOverrides {
-        ScenariosRunOverrides {
+    use crate::cli::args::ExecutionArgs;
+    fn test_run_args() -> ExecutionArgs {
+        ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -177,7 +175,7 @@ mod tests {
     async fn run_scenario_unknown_name_is_usage_error() {
         let args = ScenariosRunArgs {
             name: "not-a-real-scenario".to_string(),
-            run: test_run_args(),
+            execution: test_run_args(),
         };
 
         let err = run_scenario(&args, true, CancellationToken::new())

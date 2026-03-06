@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::args::RunArgs;
+use crate::cli::args::{ExecutionArgs, RunArgs};
 use crate::engine::trace::SharedTrace;
 use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
 use crate::error::{EngineError, ThoughtJackError};
@@ -42,13 +42,8 @@ pub async fn run(
     quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
-    let config = args
-        .config
-        .clone()
-        .or_else(|| std::env::var_os("THOUGHTJACK_CONFIG").map(std::path::PathBuf::from))
-        .ok_or_else(|| ThoughtJackError::Usage("--config <path> is required for `run`".into()))?;
-    let yaml = std::fs::read_to_string(config)?;
-    run_from_yaml(&yaml, args, quiet, cancel).await
+    let yaml = std::fs::read_to_string(&args.config)?;
+    run_from_yaml(&yaml, &args.execution, quiet, cancel).await
 }
 
 /// Execute an OATF scenario from raw YAML content.
@@ -63,7 +58,7 @@ pub async fn run(
 /// Implements: TJ-SPEC-007 F-002
 pub async fn run_from_yaml(
     yaml: &str,
-    args: &RunArgs,
+    args: &ExecutionArgs,
     quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
@@ -78,7 +73,7 @@ pub async fn run_from_yaml(
     // 2. Load document
     let loaded = loader::load_document(yaml)?;
 
-    // 3. Build ActorConfig from RunArgs
+    // 3. Build ActorConfig from shared execution args
     let mut config = build_actor_config(args).map_err(|e| match e {
         EngineError::Driver(msg) => ThoughtJackError::Usage(msg),
         other => ThoughtJackError::Usage(other.to_string()),
@@ -487,9 +482,8 @@ mod tests {
 
     use super::*;
 
-    fn test_run_args(max_session: Duration) -> RunArgs {
-        RunArgs {
-            config: None,
+    fn test_run_args(max_session: Duration) -> ExecutionArgs {
+        ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,

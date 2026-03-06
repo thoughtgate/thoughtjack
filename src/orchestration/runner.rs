@@ -14,7 +14,7 @@ use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::args::RunArgs;
+use crate::cli::args::ExecutionArgs;
 use crate::engine::mcp_server::McpServerDriver;
 use crate::engine::phase::PhaseEngine;
 use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
@@ -96,7 +96,7 @@ pub struct ActorConfig {
     pub transport_factory: Option<TransportFactory>,
 }
 
-/// Builds an `ActorConfig` from CLI `RunArgs`.
+/// Builds an `ActorConfig` from shared CLI execution options.
 ///
 /// # Errors
 ///
@@ -104,7 +104,7 @@ pub struct ActorConfig {
 /// (missing `:`, invalid header name, or invalid header value).
 ///
 /// Implements: TJ-SPEC-015 F-003
-pub fn build_actor_config(args: &RunArgs) -> Result<ActorConfig, EngineError> {
+pub fn build_actor_config(args: &ExecutionArgs) -> Result<ActorConfig, EngineError> {
     let mut headers: Vec<(String, String)> = Vec::with_capacity(args.header.len());
     for (idx, raw) in args.header.iter().enumerate() {
         headers.push(parse_cli_header(raw, idx + 1)?);
@@ -848,8 +848,7 @@ mod tests {
 
     #[test]
     fn build_actor_config_maps_flags() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: Some("0.0.0.0:8080".to_string()),
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1436,8 +1435,7 @@ attack:
 
     #[test]
     fn build_actor_config_parses_multiple_headers() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1475,8 +1473,7 @@ attack:
 
     #[test]
     fn build_actor_config_header_without_colon_rejected() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1504,8 +1501,7 @@ attack:
 
     #[test]
     fn build_actor_config_invalid_header_name_rejected() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1533,8 +1529,7 @@ attack:
 
     #[test]
     fn build_actor_config_invalid_header_value_rejected() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1562,8 +1557,7 @@ attack:
 
     #[test]
     fn build_actor_config_defaults() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,

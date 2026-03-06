@@ -97,6 +97,46 @@ attack:
     )
 }
 
+fn write_terminal_yaml() -> NamedTempFile {
+    write_temp_yaml(
+        r#"
+oatf: "0.1"
+attack:
+  name: terminal
+  execution:
+    mode: mcp_server
+    phases:
+      - name: terminal
+        state:
+          tools: []
+"#,
+    )
+}
+
+fn write_semantic_only_yaml() -> NamedTempFile {
+    write_temp_yaml(
+        r#"
+oatf: "0.1"
+attack:
+  name: semantic-only
+  indicators:
+    - id: semantic_only
+      protocol: mcp
+      surface: tool_description
+      semantic:
+        target: description
+        intent: data exfiltration
+        threshold: 0.7
+  execution:
+    mode: mcp_server
+    phases:
+      - name: terminal
+        state:
+          tools: []
+"#,
+    )
+}
+
 #[test]
 fn cli_command_paths_have_expected_exit_codes() {
     let no_args = run_thoughtjack(&[]);
@@ -217,6 +257,60 @@ fn scenarios_run_ignores_thoughtjack_config_env() {
     assert!(
         !stderr.contains("--config is not supported with `scenarios run`"),
         "unexpected --config rejection from environment variable.\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn run_help_mentions_thoughtjack_config_env() {
+    let output = run_thoughtjack(&["run", "--help"]);
+    assert_exit_code(&output, 0, "run --help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("THOUGHTJACK_CONFIG"),
+        "run help should mention THOUGHTJACK_CONFIG.\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--config <PATH>"),
+        "run help should show config as a named argument.\nstdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn run_accepts_thoughtjack_config_env() {
+    let file = write_terminal_yaml();
+    let config_path = file.path().to_string_lossy().into_owned();
+    let output =
+        run_thoughtjack_with_env(&["run", "--quiet"], &[("THOUGHTJACK_CONFIG", &config_path)]);
+
+    assert_exit_code(
+        &output,
+        0,
+        "run should accept THOUGHTJACK_CONFIG without an explicit --config flag",
+    );
+}
+
+#[test]
+fn quiet_verdict_exit_does_not_write_stderr() {
+    let file = write_semantic_only_yaml();
+    let config_path = file.path().to_string_lossy().into_owned();
+    let output = run_thoughtjack(&["run", "--config", &config_path, "--quiet", "--output", "-"]);
+
+    assert_exit_code(
+        &output,
+        2,
+        "semantic-only verdict should exit with evaluation error code",
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("\"result\": \"error\""),
+        "stdout should contain the JSON verdict.\nstdout:\n{stdout}"
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "quiet verdict exit should not write to stderr.\nstderr:\n{stderr}"
     );
 }
 
