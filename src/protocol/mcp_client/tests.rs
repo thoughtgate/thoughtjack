@@ -787,7 +787,7 @@ async fn multiplexer_routes_response_to_oneshot() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -833,7 +833,7 @@ async fn multiplexer_routes_server_request_to_handler() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, mut server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -872,7 +872,7 @@ async fn multiplexer_routes_notification() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, mut notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, mut notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -910,7 +910,7 @@ async fn multiplexer_unmatched_response_id_ec_mcpc_001() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -947,7 +947,7 @@ async fn multiplexer_eof_sets_close_reason() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -977,7 +977,7 @@ async fn multiplexer_transport_error_sets_close_reason() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -1015,7 +1015,7 @@ async fn multiplexer_cancel_sets_close_reason() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -1061,7 +1061,7 @@ async fn handler_responds_to_sampling() {
     }));
     let (ext_tx, ext_rx) = watch::channel(HashMap::new());
     let _ = ext_tx; // keep sender alive
-    let (handler_event_tx, mut handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, mut handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1117,7 +1117,7 @@ async fn handler_responds_to_ping() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let handler_state = Arc::new(tokio::sync::RwLock::new(HandlerState { state: json!({}) }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1162,7 +1162,7 @@ async fn handler_responds_to_roots_list() {
         }),
     }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1212,7 +1212,7 @@ async fn handler_responds_to_elicitation() {
         }),
     }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1253,7 +1253,7 @@ async fn handler_unknown_method_returns_empty() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let handler_state = Arc::new(tokio::sync::RwLock::new(HandlerState { state: json!({}) }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1301,7 +1301,7 @@ async fn handler_sampling_error_sends_error_response() {
         }),
     }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1356,7 +1356,7 @@ async fn handler_uses_fresh_extractors() {
         }),
     }));
     let (ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1401,7 +1401,7 @@ async fn handler_stops_on_cancel() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let handler_state = Arc::new(tokio::sync::RwLock::new(HandlerState { state: json!({}) }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (_server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1627,8 +1627,8 @@ async fn driver_forward_pending_events_drains_channels() {
     let mut driver = create_test_driver(writer, reader);
 
     // Set up channels manually
-    let (handler_tx, handler_rx) = mpsc::unbounded_channel();
-    let (notif_tx, notif_rx) = mpsc::unbounded_channel();
+    let (handler_tx, handler_rx) = mpsc::channel(8);
+    let (notif_tx, notif_rx) = mpsc::channel(8);
     driver.handler_event_rx = Some(handler_rx);
     driver.notification_rx = Some(notif_rx);
 
@@ -1639,12 +1639,14 @@ async fn driver_forward_pending_events_drains_channels() {
             method: "sampling/createMessage".to_string(),
             content: json!({}),
         })
+        .await
         .unwrap();
     notif_tx
         .send(NotificationMessage {
             method: "notifications/progress".to_string(),
             params: Some(json!({"progress": 50})),
         })
+        .await
         .unwrap();
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();

@@ -7,18 +7,19 @@
 //! See TJ-SPEC-013 §7 for the loading pipeline.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
-
 use crate::engine::types::AwaitExtractor;
 use crate::error::LoaderError;
+
+#[cfg(test)]
+use std::time::Duration;
 
 /// Result of pre-processing YAML before SDK loading.
 #[derive(Debug)]
 struct PreprocessResult {
     /// Clean YAML with `await_extractors` keys removed.
     clean_yaml: String,
-    /// Extracted `await_extractors` configs keyed by `(actor_name, phase_name)`.
-    await_extractors: HashMap<(String, String), Vec<AwaitExtractor>>,
+    /// Extracted `await_extractors` configs keyed by `(actor_name, phase_index)`.
+    await_extractors: HashMap<(String, usize), Vec<AwaitExtractor>>,
 }
 
 /// Result of loading an OATF document.
@@ -53,7 +54,7 @@ fn preprocess_yaml(yaml: &str) -> Result<PreprocessResult, LoaderError> {
     let mut doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).map_err(|e| LoaderError::Preprocess(e.to_string()))?;
 
-    let mut await_map: HashMap<(String, String), Vec<AwaitExtractor>> = HashMap::new();
+    let mut await_map: HashMap<(String, usize), Vec<AwaitExtractor>> = HashMap::new();
 
     // Navigate to the phases in the document.
     // OATF supports three forms: single-phase (state), multi-phase (phases), multi-actor (actors).
@@ -70,7 +71,7 @@ fn preprocess_yaml(yaml: &str) -> Result<PreprocessResult, LoaderError> {
 
         // Process phases in multi-phase form
         if let Some(phases) = execution.get_mut("phases") {
-            extract_from_phases(phases, "default", is_single_actor, &mut await_map);
+            extract_from_phases(phases, "default", is_single_actor, &mut await_map)?;
         }
 
         // Process phases in multi-actor form
@@ -85,7 +86,7 @@ fn preprocess_yaml(yaml: &str) -> Result<PreprocessResult, LoaderError> {
                     .to_string();
 
                 if let Some(phases) = actor.get_mut("phases") {
-                    extract_from_phases(phases, &actor_name, is_single_actor, &mut await_map);
+                    extract_from_phases(phases, &actor_name, is_single_actor, &mut await_map)?;
                 }
             }
         }
@@ -105,78 +106,85 @@ fn extract_from_phases(
     phases: &mut serde_yaml::Value,
     actor_name: &str,
     is_single_actor: bool,
-    await_map: &mut HashMap<(String, String), Vec<AwaitExtractor>>,
-) {
+    await_map: &mut HashMap<(String, usize), Vec<AwaitExtractor>>,
+) -> Result<(), LoaderError> {
     let Some(phases_seq) = phases.as_sequence_mut() else {
-        return;
+        return Ok(());
     };
 
-    for phase in phases_seq {
+    for (phase_index, phase) in phases_seq.iter_mut().enumerate() {
         let Some(phase_map) = phase.as_mapping_mut() else {
             continue;
         };
-
-        let phase_name = phase_map
-            .get(serde_yaml::Value::String("name".to_string()))
-            .and_then(serde_yaml::Value::as_str)
-            .unwrap_or("unnamed")
-            .to_string();
 
         let await_key = serde_yaml::Value::String("await_extractors".to_string());
 
         if let Some(await_val) = phase_map.remove(&await_key) {
             if is_single_actor {
                 tracing::warn!(
-                    phase = %phase_name,
+                    phase_index,
                     "await_extractors on single-actor document — ignored"
                 );
                 continue;
             }
 
-            if let Some(specs) = parse_await_extractors(&await_val) {
-                await_map.insert((actor_name.to_string(), phase_name), specs);
+            if let Some(specs) = parse_await_extractors(&await_val)? {
+                await_map.insert((actor_name.to_string(), phase_index), specs);
             }
         }
     }
+
+    Ok(())
 }
 
 /// Parse an `await_extractors` YAML value into `AwaitExtractor` specs.
 ///
-/// Skips individual malformed entries with a warning rather than
-/// failing the entire list.
-fn parse_await_extractors(value: &serde_yaml::Value) -> Option<Vec<AwaitExtractor>> {
-    let seq = value.as_sequence()?;
+fn parse_await_extractors(value: &serde_yaml::Value) -> Result<Option<Vec<AwaitExtractor>>, LoaderError> {
+    let seq = value
+        .as_sequence()
+        .ok_or_else(|| LoaderError::Preprocess("await_extractors must be a sequence".to_string()))?;
     let mut result = Vec::with_capacity(seq.len());
 
     for (i, item) in seq.iter().enumerate() {
-        let Some(actor) = item.get("actor").and_then(serde_yaml::Value::as_str) else {
-            tracing::warn!(
-                index = i,
-                "await_extractors entry missing required 'actor' field — skipped"
-            );
-            continue;
-        };
-        let Some(extractor_seq) = item
+        let actor = item
+            .get("actor")
+            .and_then(serde_yaml::Value::as_str)
+            .ok_or_else(|| {
+                LoaderError::Preprocess(format!(
+                    "await_extractors[{i}] is missing required string field 'actor'"
+                ))
+            })?;
+        let extractor_seq = item
             .get("extractors")
             .and_then(serde_yaml::Value::as_sequence)
-        else {
-            tracing::warn!(
-                index = i,
-                actor,
-                "await_extractors entry missing required 'extractors' field — skipped"
-            );
-            continue;
-        };
-        let extractors: Vec<String> = extractor_seq
-            .iter()
-            .filter_map(serde_yaml::Value::as_str)
-            .map(String::from)
-            .collect();
+            .ok_or_else(|| {
+                LoaderError::Preprocess(format!(
+                    "await_extractors[{i}] for actor '{actor}' is missing required sequence field 'extractors'"
+                ))
+            })?;
+        let mut extractors = Vec::with_capacity(extractor_seq.len());
+        for (extractor_index, extractor) in extractor_seq.iter().enumerate() {
+            let extractor_name = extractor.as_str().ok_or_else(|| {
+                LoaderError::Preprocess(format!(
+                    "await_extractors[{i}].extractors[{extractor_index}] for actor '{actor}' must be a string"
+                ))
+            })?;
+            extractors.push(extractor_name.to_string());
+        }
+        if extractors.is_empty() {
+            return Err(LoaderError::Preprocess(format!(
+                "await_extractors[{i}] for actor '{actor}' must contain at least one extractor"
+            )));
+        }
         let timeout_str = item
             .get("timeout")
             .and_then(serde_yaml::Value::as_str)
             .unwrap_or("30s");
-        let timeout = humantime::parse_duration(timeout_str).unwrap_or(Duration::from_secs(30));
+        let timeout = humantime::parse_duration(timeout_str).map_err(|e| {
+            LoaderError::Preprocess(format!(
+                "await_extractors[{i}] for actor '{actor}' has invalid timeout '{timeout_str}': {e}"
+            ))
+        })?;
 
         result.push(AwaitExtractor {
             actor: actor.to_string(),
@@ -186,9 +194,9 @@ fn parse_await_extractors(value: &serde_yaml::Value) -> Option<Vec<AwaitExtracto
     }
 
     if result.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(result)
+        Ok(Some(result))
     }
 }
 
@@ -240,20 +248,7 @@ pub fn load_document(yaml: &str) -> Result<LoadedDocument, LoaderError> {
         ));
     }
 
-    // Convert (actor_name, phase_name) → (actor_name, phase_index) mapping
-    let mut await_by_index: HashMap<(String, usize), Vec<AwaitExtractor>> = HashMap::new();
-
-    if let Some(actors) = &document.attack.execution.actors {
-        for actor in actors {
-            for (phase_index, phase) in actor.phases.iter().enumerate() {
-                let phase_name = phase.name.as_deref().unwrap_or("unnamed");
-                let key = (actor.name.clone(), phase_name.to_string());
-                if let Some(specs) = preprocess.await_extractors.get(&key) {
-                    await_by_index.insert((actor.name.clone(), phase_index), specs.clone());
-                }
-            }
-        }
-    }
+    let await_by_index = preprocess.await_extractors;
 
     // Check for circular await_extractors dependencies (EC-ORCH-003)
     detect_await_cycles(&await_by_index)?;
@@ -453,7 +448,7 @@ attack:
         let result = preprocess_yaml(yaml).unwrap();
 
         // await_extractors should be extracted
-        let key = ("actor1".to_string(), "phase_one".to_string());
+        let key = ("actor1".to_string(), 0usize);
         let specs = result.await_extractors.get(&key).unwrap();
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].actor, "actor2");

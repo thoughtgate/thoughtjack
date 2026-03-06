@@ -262,20 +262,10 @@ async fn handle_jsonrpc(
         }
     };
 
-    // Validate JSON-RPC structure
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let method = match request.get("method").and_then(Value::as_str) {
-        Some(m) => m.to_string(),
-        None => {
-            return axum::Json(jsonrpc_error(
-                &id,
-                INVALID_REQUEST,
-                "Invalid request: missing 'method'",
-            ))
-            .into_response();
-        }
+    let (id, method, params) = match validate_jsonrpc_request(&request) {
+        Ok(validated) => validated,
+        Err(error) => return axum::Json(error).into_response(),
     };
-    let params = request.get("params").cloned().unwrap_or(Value::Null);
 
     // Emit incoming event
     if let Some(tx) = shared.event_tx.read().await.as_ref() {
@@ -473,77 +463,7 @@ async fn handle_message_stream(
     let context_id_hint = request_message.get("contextId").and_then(Value::as_str);
     let (task_id, context_id) = shared.task_store.write().await.create_task(context_id_hint);
 
-    // Store task data
-    {
-        let mut store = shared.task_store.write().await;
-        if let Some(task) = store.get_task_mut(&task_id) {
-            task.status.clone_from(&status);
-            task.history.clone_from(&history_msgs);
-            task.artifacts.clone_from(&artifacts);
-        }
-    }
-
     let req_id = request_id.clone();
-
-    // Build SSE event sequence
-    let mut events: Vec<SseEvent> = Vec::new();
-
-    // 1. Initial Task
-    let initial_task = json!({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {
-            "kind": "task",
-            "id": task_id,
-            "contextId": context_id,
-            "status": { "state": "submitted" },
-            "history": history_msgs,
-        }
-    });
-    events.push(SseEvent::default().data(initial_task.to_string()));
-
-    // 2. Working status update
-    let working = json!({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {
-            "kind": "status-update",
-            "taskId": task_id,
-            "contextId": context_id,
-            "status": { "state": "working" },
-            "final": false,
-        }
-    });
-    events.push(SseEvent::default().data(working.to_string()));
-
-    // 3. Artifact updates
-    for artifact in &artifacts {
-        let artifact_event = json!({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "kind": "artifact-update",
-                "taskId": task_id,
-                "contextId": context_id,
-                "artifact": artifact,
-            }
-        });
-        events.push(SseEvent::default().data(artifact_event.to_string()));
-    }
-
-    // 4. Final status update
-    let final_status = json!({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {
-            "kind": "status-update",
-            "taskId": task_id,
-            "contextId": context_id,
-            "status": { "state": status },
-            "final": true,
-        }
-    });
-    events.push(SseEvent::default().data(final_status.to_string()));
 
     // Emit SSE events for trace
     if let Some(tx) = shared.event_tx.read().await.as_ref() {
@@ -559,18 +479,164 @@ async fn handle_message_stream(
         });
     }
 
-    // Build stream with inter-event delays using unfold
     let delay_ms = SSE_EVENT_DELAY_MS;
+    let history_for_stream = Arc::new(history_msgs);
+    let artifacts_for_stream = Arc::new(artifacts);
+    let final_status = status.clone();
+    let shared_for_stream = Arc::clone(shared);
+    let task_id_for_stream = task_id.clone();
+    let context_id_for_stream = context_id.clone();
+    let req_id_for_stream = req_id.clone();
+    let total_steps = artifacts_for_stream.len() + 3;
+
     let sse_stream = futures_util::stream::unfold(
-        (events.into_iter(), delay_ms),
-        |(mut iter, delay)| async move {
-            let event = iter.next()?;
+        (
+            shared_for_stream,
+            task_id_for_stream,
+            context_id_for_stream,
+            req_id_for_stream,
+            final_status,
+            history_for_stream,
+            artifacts_for_stream,
+            0usize,
+            delay_ms,
+            total_steps,
+        ),
+        |(shared, task_id, context_id, req_id, final_status, history_msgs, artifacts, step, delay, total_steps)| async move {
+            if step >= total_steps {
+                return None;
+            }
+
             tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-            Some((Ok::<_, std::convert::Infallible>(event), (iter, delay)))
+
+            let event = match step {
+                0 => {
+                    if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
+                        task.status = "submitted".to_string();
+                    }
+                    let initial_task = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "kind": "task",
+                            "id": task_id,
+                            "contextId": context_id,
+                            "status": { "state": "submitted" },
+                            "history": history_msgs.as_ref(),
+                        }
+                    });
+                    SseEvent::default().data(initial_task.to_string())
+                }
+                1 => {
+                    if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
+                        task.status = "working".to_string();
+                    }
+                    let working = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "kind": "status-update",
+                            "taskId": task_id,
+                            "contextId": context_id,
+                            "status": { "state": "working" },
+                            "final": false,
+                        }
+                    });
+                    SseEvent::default().data(working.to_string())
+                }
+                final_step if final_step == total_steps - 1 => {
+                    if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
+                        task.status = final_status.clone();
+                        task.history = history_msgs.as_ref().clone();
+                        task.artifacts = artifacts.as_ref().clone();
+                    }
+                    let final_status = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "kind": "status-update",
+                            "taskId": task_id,
+                            "contextId": context_id,
+                            "status": { "state": final_status },
+                            "final": true,
+                        }
+                    });
+                    SseEvent::default().data(final_status.to_string())
+                }
+                artifact_step => {
+                    let artifact_index = artifact_step - 2;
+                    let artifact = artifacts[artifact_index].clone();
+                    if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
+                        task.artifacts.push(artifact.clone());
+                    }
+                    let artifact_event = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "kind": "artifact-update",
+                            "taskId": task_id,
+                            "contextId": context_id,
+                            "artifact": artifact,
+                        }
+                    });
+                    SseEvent::default().data(artifact_event.to_string())
+                }
+            };
+
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (shared, task_id, context_id, req_id, final_status, history_msgs, artifacts, step + 1, delay, total_steps),
+            ))
         },
     );
 
     Sse::new(sse_stream).into_response()
+}
+
+fn validate_jsonrpc_request(request: &Value) -> Result<(Value, String, Value), Value> {
+    let Some(obj) = request.as_object() else {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: expected JSON-RPC object",
+        ));
+    };
+
+    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: expected jsonrpc='2.0'",
+        ));
+    }
+
+    let Some(method) = obj.get("method").and_then(Value::as_str) else {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: missing 'method'",
+        ));
+    };
+
+    let id = obj.get("id").cloned().unwrap_or(Value::Null);
+    if !matches!(id, Value::Null | Value::String(_) | Value::Number(_)) {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: 'id' must be string, number, or null",
+        ));
+    }
+
+    let params = obj.get("params").cloned().unwrap_or(Value::Null);
+    if !params.is_null() && !params.is_object() && !params.is_array() {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: 'params' must be an object or array",
+        ));
+    }
+
+    Ok((id, method.to_string(), params))
 }
 
 fn required_task_id(params: &Value) -> Result<&str, &'static str> {

@@ -747,8 +747,28 @@ async fn run_mcp_client_actor(
         gate_rx,
         events,
     } = ctx;
-    // Determine transport from CLI flags
-    let (driver, bind_address) = match (
+    let bind_address = config
+        .mcp_client_command
+        .as_deref()
+        .map(|command| format!("stdio:{command}"))
+        .or_else(|| config.mcp_client_endpoint.clone())
+        .ok_or_else(|| {
+            EngineError::Driver(
+                "mcp_client mode requires --mcp-client-command (stdio) \
+                 or --mcp-client-endpoint (HTTP)"
+                    .to_string(),
+            )
+        })?;
+
+    // Client actors signal readiness immediately (they don't bind a port)
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(());
+    }
+
+    wait_for_readiness_gate(actor_name, gate_rx).await?;
+
+    // Determine transport from CLI flags only after startup is allowed.
+    let driver = match (
         config.mcp_client_command.as_deref(),
         config.mcp_client_endpoint.as_deref(),
     ) {
@@ -761,42 +781,26 @@ async fn run_mcp_client_actor(
                 .transpose()?
                 .unwrap_or_default();
             args.extend(extra_args);
-            let driver = mcp_client::create_mcp_client_driver(
+            mcp_client::create_mcp_client_driver(
                 Some(command.as_str()),
                 &args,
                 None,
                 &[],
                 config.raw_synthesize,
-            )?;
-            (driver, format!("stdio:{command_raw}"))
+            )?
         }
         (None, Some(endpoint)) => {
-            // Merge mode-specific auth env vars with --header
             let headers = resolve_headers_for_mode(&config.headers, "mcp_client");
-            let driver = mcp_client::create_mcp_client_driver(
+            mcp_client::create_mcp_client_driver(
                 None,
                 &[],
                 Some(endpoint),
                 &headers,
                 config.raw_synthesize,
-            )?;
-            (driver, endpoint.to_string())
+            )?
         }
-        (None, None) => {
-            return Err(EngineError::Driver(
-                "mcp_client mode requires --mcp-client-command (stdio) \
-                 or --mcp-client-endpoint (HTTP)"
-                    .to_string(),
-            ));
-        }
+        (None, None) => unreachable!("validated above"),
     };
-
-    // Client actors signal readiness immediately (they don't bind a port)
-    if let Some(tx) = ready_tx {
-        let _ = tx.send(());
-    }
-
-    wait_for_readiness_gate(actor_name, gate_rx).await?;
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),

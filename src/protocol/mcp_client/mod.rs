@@ -56,6 +56,15 @@ pub(super) const SERVER_REQUEST_BUFFER_SIZE: usize = 64;
 /// Capacity warning threshold (75% of buffer).
 pub(super) const SERVER_REQUEST_BUFFER_WARNING: usize = SERVER_REQUEST_BUFFER_SIZE / 4;
 
+/// Maximum queued transport messages awaiting multiplexer classification.
+pub(super) const HTTP_MESSAGE_BUFFER_SIZE: usize = 256;
+
+/// Maximum queued notifications awaiting driver forwarding.
+pub(super) const NOTIFICATION_BUFFER_SIZE: usize = 128;
+
+/// Maximum queued handler protocol events awaiting driver forwarding.
+pub(super) const HANDLER_EVENT_BUFFER_SIZE: usize = 128;
+
 // ============================================================================
 // Core Types
 // ============================================================================

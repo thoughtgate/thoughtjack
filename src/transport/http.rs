@@ -48,7 +48,7 @@ pub struct HttpConfig {
 /// An incoming request received by the `POST /message` handler.
 struct IncomingRequest {
     message: JsonRpcMessage,
-    response_tx: mpsc::Sender<std::result::Result<Bytes, io::Error>>,
+    response_tx: Option<mpsc::Sender<std::result::Result<Bytes, io::Error>>>,
     connection_id: u64,
     remote_addr: SocketAddr,
     connected_at: Instant,
@@ -250,7 +250,7 @@ impl HttpTransport {
             ConnectionGuard::new(Arc::clone(&self.shared.connections), incoming.connection_id);
 
         let handle = ResponseHandle {
-            response_tx: Some(incoming.response_tx),
+            response_tx: incoming.response_tx,
             context,
             _guard: guard,
         };
@@ -293,9 +293,16 @@ impl HttpTransport {
             guard.as_ref().cloned()
         };
         if let Some(ch) = response_tx {
-            ch.send(Ok(Bytes::from(sse_data)))
-                .await
-                .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
+            if ch.send(Ok(Bytes::from(sse_data))).await.is_err() {
+                self.shared
+                    .pending_server_requests
+                    .lock()
+                    .await
+                    .remove(&request_id);
+                return Err(TransportError::ConnectionClosed(
+                    "response channel closed".into(),
+                ));
+            }
         } else {
             // Fallback to SSE broadcast (shouldn't happen during tool call)
             let _ = self.shared.sse_tx.send(serialized);
@@ -478,7 +485,7 @@ impl Transport for HttpTransport {
         // Store the response sender for subsequent send_message/send_raw calls
         {
             let mut guard = self.current_response.lock().await;
-            *guard = Some(req.response_tx);
+            *guard = req.response_tx.clone();
         }
 
         // Track connection here (not in the handler) to avoid a race where the
@@ -780,12 +787,10 @@ async fn handle_post_message(
         }
         JsonRpcMessage::Notification(_) => {
             // Push notification for driver to process, but return 202 immediately.
-            let (response_tx, _response_rx) =
-                mpsc::channel::<std::result::Result<Bytes, io::Error>>(1);
             let connection_id = shared.next_connection_id.fetch_add(1, Ordering::SeqCst);
             let incoming = IncomingRequest {
                 message,
-                response_tx,
+                response_tx: None,
                 connection_id,
                 remote_addr: addr,
                 connected_at: Instant::now(),
@@ -812,7 +817,7 @@ async fn handle_post_message(
 
     let incoming = IncomingRequest {
         message,
-        response_tx,
+        response_tx: Some(response_tx),
         connection_id,
         remote_addr: addr,
         connected_at,
@@ -1125,7 +1130,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
                 // Drop sender to close the stream
             }
         });
@@ -1265,7 +1272,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1300,7 +1309,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1335,7 +1346,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1370,7 +1383,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1555,7 +1570,9 @@ mod tests {
         tokio::spawn(async move {
             while let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1607,7 +1624,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 

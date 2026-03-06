@@ -47,7 +47,7 @@ impl MessageMultiplexer {
         writer: Arc<tokio::sync::Mutex<Box<dyn McpClientTransportWriter>>>,
         pending: Arc<std::sync::Mutex<HashMap<String, PendingRequest>>>,
         server_request_tx: mpsc::Sender<ServerRequestMessage>,
-        notification_tx: mpsc::UnboundedSender<NotificationMessage>,
+        notification_tx: mpsc::Sender<NotificationMessage>,
         response_senders: Arc<
             std::sync::Mutex<HashMap<String, oneshot::Sender<CorrelatedResponse>>>,
         >,
@@ -81,7 +81,14 @@ impl MessageMultiplexer {
                                 }
                             }
                             Ok(Some(McpClientMessage::Notification { method, params })) => {
-                                let _ = notification_tx.send(NotificationMessage { method, params });
+                                if notification_tx
+                                    .try_send(NotificationMessage { method, params })
+                                    .is_err()
+                                {
+                                    break MultiplexerClosed::TransportError(
+                                        "notification backlog exceeded".to_string()
+                                    );
+                                }
                             }
                             Ok(Some(McpClientMessage::ServerRequest { id, method, params })) => {
                                 // Backpressure check (§3.7)
@@ -135,7 +142,10 @@ impl MessageMultiplexer {
             *reason
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(exit_reason);
-            // Drop response_senders — all waiting receivers get RecvError
+            senders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
         });
 
         Self {
@@ -164,6 +174,13 @@ impl MessageMultiplexer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .unwrap_or(MultiplexerClosed::TransportEof)
+    }
+
+    pub(super) fn remove_response(&self, id_key: &str) {
+        self.response_senders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id_key);
     }
 
     /// Aborts the multiplexer background task.

@@ -73,6 +73,30 @@ fn write_temp_yaml(content: &str) -> NamedTempFile {
     file
 }
 
+fn write_long_running_server_yaml() -> NamedTempFile {
+    write_temp_yaml(
+        r#"
+oatf: "0.1"
+attack:
+  name: long-running-server
+  execution:
+    mode: mcp_server
+    phases:
+      - name: serve
+        state:
+          tools:
+            - name: hold
+              description: "wait"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 999
+      - name: terminal
+"#,
+    )
+}
+
 #[test]
 fn cli_command_paths_have_expected_exit_codes() {
     let no_args = run_thoughtjack(&[]);
@@ -154,6 +178,8 @@ attack:
         "scenarios",
         "run",
         "rug-pull",
+        "--mcp-server",
+        "127.0.0.1:0",
         "--max-session",
         "300ms",
         "--quiet",
@@ -197,11 +223,15 @@ fn scenarios_run_ignores_thoughtjack_config_env() {
 #[cfg(unix)]
 #[test]
 fn run_sigint_exits_130() {
+    let file = write_long_running_server_yaml();
+    let config_path = file.path().to_string_lossy().into_owned();
     let mut child = Command::new(thoughtjack_bin())
         .args([
             "run",
             "--config",
-            "tests/fixtures/smoke_test.yaml",
+            &config_path,
+            "--mcp-server",
+            "127.0.0.1:0",
             "--max-session",
             "30s",
             "--quiet",
@@ -229,11 +259,15 @@ fn run_sigint_exits_130() {
 #[cfg(unix)]
 #[test]
 fn run_sigterm_exits_143() {
+    let file = write_long_running_server_yaml();
+    let config_path = file.path().to_string_lossy().into_owned();
     let mut child = Command::new(thoughtjack_bin())
         .args([
             "run",
             "--config",
-            "tests/fixtures/smoke_test.yaml",
+            &config_path,
+            "--mcp-server",
+            "127.0.0.1:0",
             "--max-session",
             "30s",
             "--quiet",

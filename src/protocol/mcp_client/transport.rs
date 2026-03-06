@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
 
 use crate::error::EngineError;
 use crate::transport::jsonrpc::{
     JSONRPC_VERSION, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
 };
 
-use super::{McpClientMessage, PendingRequest};
+use super::{HTTP_MESSAGE_BUFFER_SIZE, McpClientMessage, PendingRequest};
 
 // ============================================================================
 // Transport Traits
@@ -342,7 +344,9 @@ pub(super) struct HttpWriter {
     /// Extra HTTP headers from CLI `--header` flags.
     headers: Vec<(String, String)>,
     /// Channel sender — parsed response messages pushed here for the reader.
-    message_tx: mpsc::UnboundedSender<JsonRpcMessage>,
+    message_tx: mpsc::Sender<JsonRpcMessage>,
+    /// Background response collectors spawned for in-flight HTTP responses.
+    response_tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
 }
 
 /// HTTP reader for MCP Streamable HTTP transport.
@@ -352,7 +356,7 @@ pub(super) struct HttpWriter {
 /// Implements: TJ-SPEC-018 F-001
 pub(super) struct HttpReader {
     /// Channel receiver — messages arrive from `HttpWriter` after each POST.
-    message_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
+    message_rx: mpsc::Receiver<JsonRpcMessage>,
 }
 
 #[async_trait]
@@ -458,14 +462,29 @@ impl HttpWriter {
             .unwrap_or("")
             .to_string();
 
-        if content_type.contains("text/event-stream") {
-            self.collect_sse_response(response).await?;
-        } else {
-            // Default: application/json (single message)
-            self.collect_json_response(response).await?;
-        }
+        self.spawn_response_collector(response, content_type);
 
         Ok(())
+    }
+
+    fn spawn_response_collector(&self, response: reqwest::Response, content_type: String) {
+        let message_tx = self.message_tx.clone();
+        let handle = tokio::spawn(async move {
+            let result = if content_type.contains("text/event-stream") {
+                Self::collect_sse_response(message_tx, response).await
+            } else {
+                Self::collect_json_response(message_tx, response).await
+            };
+
+            if let Err(err) = result {
+                tracing::warn!("failed to collect MCP HTTP response body: {err}");
+            }
+        });
+
+        self.response_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(handle);
     }
 
     /// Send an HTTP POST with retry on connection-level errors.
@@ -524,7 +543,10 @@ impl HttpWriter {
     }
 
     /// Parse a single JSON response body as a `JsonRpcMessage` and push to channel.
-    async fn collect_json_response(&self, response: reqwest::Response) -> Result<(), EngineError> {
+    async fn collect_json_response(
+        message_tx: mpsc::Sender<JsonRpcMessage>,
+        response: reqwest::Response,
+    ) -> Result<(), EngineError> {
         let text = response
             .text()
             .await
@@ -540,13 +562,16 @@ impl HttpWriter {
             .map_err(|e| EngineError::Driver(format!("failed to parse JSON-RPC response: {e}")))?;
 
         // Ignore send failure — reader may have been dropped (shutdown)
-        let _ = self.message_tx.send(msg);
+        let _ = message_tx.send(msg).await;
 
         Ok(())
     }
 
     /// Parse an SSE response body, extracting `data:` lines as `JsonRpcMessage` values.
-    async fn collect_sse_response(&self, response: reqwest::Response) -> Result<(), EngineError> {
+    async fn collect_sse_response(
+        message_tx: mpsc::Sender<JsonRpcMessage>,
+        response: reqwest::Response,
+    ) -> Result<(), EngineError> {
         use futures_util::StreamExt;
 
         let mut stream = response.bytes_stream();
@@ -559,7 +584,7 @@ impl HttpWriter {
             for result in parser.feed(&bytes) {
                 match result {
                     Ok(msg) => {
-                        let _ = self.message_tx.send(msg);
+                        let _ = message_tx.send(msg).await;
                     }
                     Err(e) => {
                         tracing::warn!("skipping malformed SSE data in MCP response: {e}");
@@ -568,7 +593,30 @@ impl HttpWriter {
             }
         }
 
+        for result in parser.finish() {
+            match result {
+                Ok(msg) => {
+                    let _ = message_tx.send(msg).await;
+                }
+                Err(e) => {
+                    tracing::warn!("skipping malformed SSE data in MCP response: {e}");
+                }
+            }
+        }
+
         Ok(())
+    }
+}
+
+impl Drop for HttpWriter {
+    fn drop(&mut self) {
+        let mut tasks = self
+            .response_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for handle in tasks.drain(..) {
+            handle.abort();
+        }
     }
 }
 
@@ -600,8 +648,9 @@ pub(super) fn create_http_transport(
         .build()
         .map_err(|e| EngineError::Driver(format!("failed to build HTTP client: {e}")))?;
 
-    let (message_tx, message_rx) = mpsc::unbounded_channel();
+    let (message_tx, message_rx) = mpsc::channel(HTTP_MESSAGE_BUFFER_SIZE);
     let session_id = Arc::new(Mutex::new(None));
+    let response_tasks = Arc::new(StdMutex::new(Vec::new()));
 
     let writer = HttpWriter {
         client,
@@ -609,6 +658,7 @@ pub(super) fn create_http_transport(
         session_id,
         headers: headers.to_vec(),
         message_tx,
+        response_tasks,
     };
 
     let reader = HttpReader { message_rx };
@@ -642,6 +692,18 @@ impl McpSseParser {
     /// Feed raw bytes and extract any complete JSON-RPC messages.
     fn feed(&mut self, bytes: &[u8]) -> Vec<Result<JsonRpcMessage, String>> {
         let raw_events = self.inner.feed(bytes);
+        self.map_raw_events(raw_events)
+    }
+
+    fn finish(&mut self) -> Vec<Result<JsonRpcMessage, String>> {
+        let raw_events = self.inner.finish();
+        self.map_raw_events(raw_events)
+    }
+
+    fn map_raw_events(
+        &mut self,
+        raw_events: Vec<Result<crate::transport::sse::RawSseEvent, crate::transport::sse::SseParseError>>,
+    ) -> Vec<Result<JsonRpcMessage, String>> {
         let mut messages = Vec::new();
 
         for raw in raw_events {
@@ -768,7 +830,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_reader_returns_none_on_sender_drop() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(8);
         let mut reader = HttpReader { message_rx: rx };
         let pending = std::sync::Mutex::new(HashMap::new());
 
@@ -781,7 +843,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_reader_receives_response() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(8);
         let mut reader = HttpReader { message_rx: rx };
         let pending = std::sync::Mutex::new(HashMap::new());
 
@@ -796,7 +858,7 @@ mod tests {
 
         // Send a response message
         let resp = JsonRpcResponse::success(json!(1), json!({"tools": []}));
-        tx.send(JsonRpcMessage::Response(resp)).unwrap();
+        tx.send(JsonRpcMessage::Response(resp)).await.unwrap();
 
         let result = reader.recv(&pending).await.unwrap();
         assert!(result.is_some());

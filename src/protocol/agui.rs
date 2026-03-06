@@ -223,6 +223,25 @@ impl SseParser {
     const fn consecutive_errors(&self) -> usize {
         self.consecutive_errors
     }
+
+    fn finish(&mut self) -> Vec<Result<AgUiEvent, String>> {
+        let raw_events = self.inner.finish();
+        let mut events = Vec::new();
+
+        for raw in raw_events {
+            match raw {
+                Err(e) => {
+                    self.consecutive_errors += 1;
+                    events.push(Err(format!("SSE parse error: {e}")));
+                }
+                Ok(raw_event) => {
+                    events.push(self.dispatch_raw_event(raw_event));
+                }
+            }
+        }
+
+        events
+    }
 }
 
 // ============================================================================
@@ -237,6 +256,11 @@ struct SseStream {
     stream: Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     /// Buffered events from the parser (multiple events can come from one chunk).
     pending: Vec<Result<AgUiEvent, String>>,
+}
+
+enum SseStreamError {
+    Parse(String),
+    Transport(String),
 }
 
 impl SseStream {
@@ -256,13 +280,13 @@ impl SseStream {
     /// # Errors
     ///
     /// Returns an error on HTTP stream errors or malformed SSE data.
-    async fn next_event(&mut self) -> Result<Option<AgUiEvent>, EngineError> {
+    async fn next_event(&mut self) -> Result<Option<AgUiEvent>, SseStreamError> {
         loop {
             // Drain any buffered events first
             if let Some(result) = self.pending.pop() {
                 return match result {
                     Ok(event) => Ok(Some(event)),
-                    Err(msg) => Err(EngineError::Driver(msg)),
+                    Err(msg) => Err(SseStreamError::Parse(msg)),
                 };
             }
 
@@ -276,11 +300,15 @@ impl SseStream {
                     // Continue loop to drain pending
                 }
                 Some(Err(e)) => {
-                    return Err(EngineError::Driver(format!("SSE stream error: {e}")));
+                    return Err(SseStreamError::Transport(format!("SSE stream error: {e}")));
                 }
                 None => {
-                    // Stream exhausted
-                    return Ok(None);
+                    let mut events = self.parser.finish();
+                    if events.is_empty() {
+                        return Ok(None);
+                    }
+                    events.reverse();
+                    self.pending = events;
                 }
             }
         }
@@ -923,6 +951,7 @@ impl PhaseDriver for AgUiDriver {
 
         // Build RunAgentInput from state + extractors
         let input = build_run_agent_input(state, &current_extractors, self.transport.thread_id())?;
+        self.transport.thread_id = input.thread_id.clone();
 
         // Emit outgoing request event
         let input_value = serde_json::to_value(&input)
@@ -980,7 +1009,7 @@ impl PhaseDriver for AgUiDriver {
                             });
                             return Ok(DriveResult::Complete);
                         }
-                        Ok(Err(e)) => {
+                        Ok(Err(SseStreamError::Parse(e))) => {
                             // Parse error — warn and continue (up to MAX_CONSECUTIVE_ERRORS)
                             tracing::warn!("SSE parse error: {e}");
                             if stream.parser.consecutive_errors() >= MAX_CONSECUTIVE_ERRORS {
@@ -995,6 +1024,9 @@ impl PhaseDriver for AgUiDriver {
                                 });
                                 return Ok(DriveResult::Complete);
                             }
+                        }
+                        Ok(Err(SseStreamError::Transport(e))) => {
+                            return Err(EngineError::Driver(e));
                         }
                         Err(_) => {
                             // Timeout

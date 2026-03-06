@@ -30,6 +30,13 @@ use super::types::{
     ActorResult, AwaitExtractor, Direction, PhaseAction, ProtocolEvent, TerminationReason,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DriveLoopAction {
+    Stay,
+    Advance,
+    TransportClosed,
+}
+
 // ============================================================================
 // Free functions for event processing
 // ============================================================================
@@ -246,7 +253,9 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     pub async fn run(&mut self) -> Result<ActorResult, EngineError> {
         loop {
             let phase_index = self.phase_engine.current_phase;
-            self.prepare_phase(phase_index).await;
+            if self.prepare_phase(phase_index).await {
+                return Ok(self.build_result(TerminationReason::Cancelled));
+            }
             let effective_state = self.phase_engine.effective_state();
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
@@ -274,11 +283,24 @@ impl<D: PhaseDriver> PhaseLoop<D> {
 
                 tokio::pin!(drive_fut);
 
+                let mut phase_advancing = false;
                 loop {
                     tokio::select! {
                         result = &mut drive_fut => {
-                            result?;
-                            break drain_events(&mut event_rx, &mut self.phase_engine, &ctx);
+                            let drive_result = result?;
+                            let drained_action = drain_events(&mut event_rx, &mut self.phase_engine, &ctx);
+                            break match drive_result {
+                                super::types::DriveResult::Complete => {
+                                    if phase_advancing || drained_action == PhaseAction::Advance {
+                                        DriveLoopAction::Advance
+                                    } else {
+                                        DriveLoopAction::Stay
+                                    }
+                                }
+                                super::types::DriveResult::TransportClosed => {
+                                    DriveLoopAction::TransportClosed
+                                }
+                            };
                         }
                         event = event_rx.recv() => {
                             match event {
@@ -286,12 +308,16 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                                     if process_protocol_event(evt, &mut self.phase_engine, &ctx)
                                         == PhaseAction::Advance
                                     {
+                                        phase_advancing = true;
                                         phase_cancel.cancel();
-                                        break PhaseAction::Advance;
                                     }
                                 }
                                 None => {
-                                    break PhaseAction::Stay;
+                                    break if phase_advancing {
+                                        DriveLoopAction::Advance
+                                    } else {
+                                        DriveLoopAction::Stay
+                                    };
                                 }
                             }
                         }
@@ -315,7 +341,11 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 }
             };
 
-            if action == PhaseAction::Advance {
+            if action == DriveLoopAction::TransportClosed {
+                return Ok(self.build_result(TerminationReason::TransportClosed));
+            }
+
+            if action == DriveLoopAction::Advance {
                 let to = self.phase_engine.advance_phase();
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
@@ -328,7 +358,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     /// Prepare a phase: await cross-actor extractors, publish initial
     /// extractor values, and execute `on_enter` actions.
     #[allow(clippy::needless_pass_by_ref_mut, clippy::cognitive_complexity)]
-    async fn prepare_phase(&mut self, phase_index: usize) {
+    async fn prepare_phase(&mut self, phase_index: usize) -> bool {
         if let Some(await_specs) = self.await_extractors_config.get(&phase_index) {
             for spec in await_specs {
                 tracing::debug!(
@@ -366,6 +396,9 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                                 );
                                 break;
                             }
+                            () = self.cancel.cancelled() => {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -385,6 +418,8 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             )
             .await;
         }
+
+        false
     }
 
     /// Build a completion result for this actor with the given termination reason.

@@ -396,7 +396,7 @@ fn completion_returns_empty() {
 // ---- PhaseDriver integration tests ----
 
 #[tokio::test]
-async fn drive_phase_completes_on_eof() {
+async fn drive_phase_returns_transport_closed_on_eof() {
     let (transport, _outgoing) = MockTransport::setup(vec![]);
     let mut driver = McpServerDriver::new(transport, false);
 
@@ -409,7 +409,7 @@ async fn drive_phase_completes_on_eof() {
         .drive_phase(0, &state, rx, event_tx, cancel)
         .await
         .unwrap();
-    assert!(matches!(result, DriveResult::Complete));
+    assert!(matches!(result, DriveResult::TransportClosed));
 }
 
 #[tokio::test]

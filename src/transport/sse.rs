@@ -94,6 +94,8 @@ pub struct SseParser {
     current_event_type: Option<String>,
     /// Accumulated `data:` field content (may span multiple lines).
     current_data: String,
+    /// Ignore all remaining lines in the current event after an overflow.
+    discard_current_event: bool,
 }
 
 impl SseParser {
@@ -104,6 +106,7 @@ impl SseParser {
             buffer: String::new(),
             current_event_type: None,
             current_data: String::new(),
+            discard_current_event: false,
         }
     }
 
@@ -116,9 +119,9 @@ impl SseParser {
 
         // Check buffer overflow before appending
         if self.buffer.len() + text.len() > MAX_BUFFER_SIZE {
+            self.reset_current_event();
+            self.discard_current_event = true;
             self.buffer.clear();
-            self.current_data.clear();
-            self.current_event_type = None;
             return vec![Err(SseParseError::BufferOverflow)];
         }
 
@@ -131,37 +134,78 @@ impl SseParser {
                 .trim_end_matches('\r')
                 .to_string();
             self.buffer = self.buffer[newline_pos + 1..].to_string();
-
-            if line.is_empty() {
-                // Blank line = dispatch event
-                if let Some(event) = self.dispatch_event() {
-                    events.push(event);
-                }
-            } else if let Some(value) = line.strip_prefix("event:") {
-                self.current_event_type = Some(value.trim().to_string());
-            } else if let Some(value) = line.strip_prefix("data:") {
-                let trimmed = value.trim_start();
-                // Check data overflow before appending
-                let new_len = self.current_data.len()
-                    + usize::from(!self.current_data.is_empty())
-                    + trimmed.len();
-                if new_len > MAX_DATA_SIZE {
-                    self.current_data.clear();
-                    self.current_event_type = None;
-                    events.push(Err(SseParseError::DataOverflow));
-                } else {
-                    if !self.current_data.is_empty() {
-                        self.current_data.push('\n');
-                    }
-                    self.current_data.push_str(trimmed);
-                }
-            } else if line.starts_with(':') {
-                // SSE comment — ignore
-            }
-            // Other lines are ignored per SSE spec
+            self.process_line(&line, &mut events);
         }
 
         events
+    }
+
+    /// Flush any partially buffered event when the byte stream ends.
+    pub fn finish(&mut self) -> Vec<Result<RawSseEvent, SseParseError>> {
+        let mut events = Vec::new();
+
+        if !self.buffer.is_empty() {
+            let line = std::mem::take(&mut self.buffer);
+            self.process_line(line.trim_end_matches('\r'), &mut events);
+        }
+
+        if self.discard_current_event {
+            self.discard_current_event = false;
+            self.reset_current_event();
+            return events;
+        }
+
+        if let Some(event) = self.dispatch_event() {
+            events.push(event);
+        }
+
+        events
+    }
+
+    fn process_line(
+        &mut self,
+        line: &str,
+        events: &mut Vec<Result<RawSseEvent, SseParseError>>,
+    ) {
+        if line.is_empty() {
+            if self.discard_current_event {
+                self.discard_current_event = false;
+                self.reset_current_event();
+            } else if let Some(event) = self.dispatch_event() {
+                events.push(event);
+            }
+            return;
+        }
+
+        if self.discard_current_event {
+            return;
+        }
+
+        if let Some(value) = line.strip_prefix("event:") {
+            self.current_event_type = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            let trimmed = value.trim_start();
+            let new_len = self.current_data.len()
+                + usize::from(!self.current_data.is_empty())
+                + trimmed.len();
+            if new_len > MAX_DATA_SIZE {
+                self.discard_current_event = true;
+                self.reset_current_event();
+                events.push(Err(SseParseError::DataOverflow));
+            } else {
+                if !self.current_data.is_empty() {
+                    self.current_data.push('\n');
+                }
+                self.current_data.push_str(trimmed);
+            }
+        } else if line.starts_with(':') {
+            // SSE comment — ignore
+        }
+    }
+
+    fn reset_current_event(&mut self) {
+        self.current_data.clear();
+        self.current_event_type = None;
     }
 
     /// Dispatch an accumulated event (called on blank line).
@@ -317,7 +361,11 @@ mod tests {
         let huge = vec![b'x'; MAX_BUFFER_SIZE + 1];
         let _ = parser.feed(&huge);
 
-        // Parser should recover and parse subsequent events
+        // Buffer overflow discards the rest of the current event until a blank line.
+        let events = parser.feed(b"data: {\"ignored\":true}\n\n");
+        assert!(events.is_empty());
+
+        // After the record boundary, subsequent events parse normally.
         let events = parser.feed(b"data: {\"recovered\":true}\n\n");
         assert_eq!(events.len(), 1);
         assert!(events[0].is_ok());

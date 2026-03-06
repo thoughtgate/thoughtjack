@@ -21,9 +21,10 @@ use super::transport::{
     spawn_stdio_transport,
 };
 use super::{
-    CorrelatedResponse, DEFAULT_PHASE_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, HandlerState, INIT_TIMEOUT,
-    NotificationMessage, POST_ACTION_IDLE_TIMEOUT, PendingRequest, SERVER_REQUEST_BUFFER_SIZE,
-};
+    CorrelatedResponse, DEFAULT_PHASE_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, HANDLER_EVENT_BUFFER_SIZE,
+    HandlerState, INIT_TIMEOUT, NOTIFICATION_BUFFER_SIZE, NotificationMessage,
+    POST_ACTION_IDLE_TIMEOUT, PendingRequest, SERVER_REQUEST_BUFFER_SIZE,
+    };
 
 // ============================================================================
 // McpClientDriver
@@ -44,9 +45,9 @@ pub struct McpClientDriver {
     /// Multiplexer (spawned on first `drive_phase()`).
     pub(super) mux: Option<MessageMultiplexer>,
     /// Notification receiver from multiplexer.
-    pub(super) notification_rx: Option<mpsc::UnboundedReceiver<NotificationMessage>>,
+    pub(super) notification_rx: Option<mpsc::Receiver<NotificationMessage>>,
     /// Handler event receiver (handler emits events here, driver forwards to `PhaseLoop`).
-    pub(super) handler_event_rx: Option<mpsc::UnboundedReceiver<ProtocolEvent>>,
+    pub(super) handler_event_rx: Option<mpsc::Receiver<ProtocolEvent>>,
     /// Shared handler state.
     pub(super) handler_state: Arc<tokio::sync::RwLock<HandlerState>>,
     /// Handler task join handle.
@@ -77,6 +78,16 @@ pub struct McpClientDriver {
 }
 
 impl McpClientDriver {
+    fn cleanup_pending_request(&self, id_key: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id_key);
+        if let Some(mux) = self.mux.as_ref() {
+            mux.remove_response(id_key);
+        }
+    }
+
     /// Try to read buffered stderr from the child process.
     ///
     /// Consumes the stderr handle. Returns the output (truncated to 4 KB)
@@ -124,7 +135,7 @@ impl McpClientDriver {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
-                id_key,
+                id_key.clone(),
                 PendingRequest {
                     method: method.to_string(),
                     params: params.clone(),
@@ -139,11 +150,28 @@ impl McpClientDriver {
         let response_rx = mux.register_response(&id);
 
         // Send request
-        self.writer
-            .lock()
-            .await
-            .send_request_with_id(method, params.clone(), &id)
-            .await?;
+        match tokio::time::timeout(self.request_timeout, async {
+            self.writer
+                .lock()
+                .await
+                .send_request_with_id(method, params.clone(), &id)
+                .await
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                self.cleanup_pending_request(&id_key);
+                return Err(err);
+            }
+            Err(_) => {
+                self.cleanup_pending_request(&id_key);
+                return Err(EngineError::Driver(format!(
+                    "request timeout while sending '{method}' after {:?}",
+                    self.request_timeout
+                )));
+            }
+        }
 
         // Emit outgoing event
         let _ = event_tx.send(ProtocolEvent {
@@ -156,6 +184,7 @@ impl McpClientDriver {
         let response = match tokio::time::timeout(self.request_timeout, response_rx).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(_)) => {
+                self.cleanup_pending_request(&id_key);
                 let reason = mux.close_reason();
                 let stderr = self.capture_stderr().await;
                 let mut msg = format!("multiplexer closed while awaiting '{method}': {reason}");
@@ -166,6 +195,7 @@ impl McpClientDriver {
                 return Err(EngineError::Driver(msg));
             }
             Err(_) => {
+                self.cleanup_pending_request(&id_key);
                 return Err(EngineError::Driver(format!(
                     "request timeout for '{method}' after {:?}",
                     self.request_timeout
@@ -248,7 +278,7 @@ impl McpClientDriver {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
-                id_key,
+                id_key.clone(),
                 PendingRequest {
                     method: "initialize".to_string(),
                     params: Some(init_params.clone()),
@@ -263,11 +293,25 @@ impl McpClientDriver {
         let response_rx = mux.register_response(&id);
 
         // Send initialize request
-        self.writer
-            .lock()
-            .await
-            .send_request_with_id("initialize", Some(init_params.clone()), &id)
-            .await?;
+        match tokio::time::timeout(INIT_TIMEOUT, async {
+            self.writer
+                .lock()
+                .await
+                .send_request_with_id("initialize", Some(init_params.clone()), &id)
+                .await
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                self.cleanup_pending_request(&id_key);
+                return Err(err);
+            }
+            Err(_) => {
+                self.cleanup_pending_request(&id_key);
+                return Err(EngineError::Driver("initialization timeout".to_string()));
+            }
+        }
 
         // Emit outgoing event
         let _ = event_tx.send(ProtocolEvent {
@@ -280,6 +324,7 @@ impl McpClientDriver {
         let response = match tokio::time::timeout(INIT_TIMEOUT, response_rx).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(_)) => {
+                self.cleanup_pending_request(&id_key);
                 let reason = mux.close_reason();
                 let stderr = self.capture_stderr().await;
                 let mut msg = format!("multiplexer closed during initialization: {reason}");
@@ -290,6 +335,7 @@ impl McpClientDriver {
                 return Err(EngineError::Driver(msg));
             }
             Err(_) => {
+                self.cleanup_pending_request(&id_key);
                 return Err(EngineError::Driver("initialization timeout".to_string()));
             }
         };
@@ -400,8 +446,8 @@ impl McpClientDriver {
 
         // Create channels
         let (server_request_tx, server_request_rx) = mpsc::channel(SERVER_REQUEST_BUFFER_SIZE);
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
-        let (handler_event_tx, handler_event_rx) = mpsc::unbounded_channel();
+        let (notification_tx, notification_rx) = mpsc::channel(NOTIFICATION_BUFFER_SIZE);
+        let (handler_event_tx, handler_event_rx) = mpsc::channel(HANDLER_EVENT_BUFFER_SIZE);
 
         // Create multiplexer shared state
         let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));

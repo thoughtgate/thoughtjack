@@ -152,20 +152,28 @@ async fn a2a_client_streaming_final() {
         format!(
             "data: {}\n\n",
             json!({
-                "kind": "status-update",
-                "taskId": "task-1",
-                "contextId": "ctx-1",
-                "status": {"state": "working"}
+                "jsonrpc": "2.0",
+                "id": "stream-1",
+                "result": {
+                    "kind": "status-update",
+                    "taskId": "task-1",
+                    "contextId": "ctx-1",
+                    "status": {"state": "working"}
+                }
             })
         ),
         format!(
             "data: {}\n\n",
             json!({
-                "kind": "status-update",
-                "taskId": "task-1",
-                "contextId": "ctx-1",
-                "status": {"state": "completed"},
-                "final": true
+                "jsonrpc": "2.0",
+                "id": "stream-1",
+                "result": {
+                    "kind": "status-update",
+                    "taskId": "task-1",
+                    "contextId": "ctx-1",
+                    "status": {"state": "completed"},
+                    "final": true
+                }
             })
         ),
     ]
@@ -243,10 +251,14 @@ async fn a2a_client_stream_never_final() {
     let sse_body = format!(
         "data: {}\n\n",
         json!({
-            "kind": "status-update",
-            "taskId": "task-1",
-            "contextId": "ctx-1",
-            "status": {"state": "working"}
+            "jsonrpc": "2.0",
+            "id": "stream-1",
+            "result": {
+                "kind": "status-update",
+                "taskId": "task-1",
+                "contextId": "ctx-1",
+                "status": {"state": "working"}
+            }
         })
     );
 
@@ -368,11 +380,15 @@ async fn a2a_client_sync_receives_sse() {
     let sse_body = format!(
         "data: {}\n\n",
         json!({
-            "kind": "status-update",
-            "taskId": "task-1",
-            "contextId": "ctx-1",
-            "status": {"state": "completed"},
-            "final": true
+            "jsonrpc": "2.0",
+            "id": "stream-1",
+            "result": {
+                "kind": "status-update",
+                "taskId": "task-1",
+                "contextId": "ctx-1",
+                "status": {"state": "completed"},
+                "final": true
+            }
         })
     );
 
@@ -500,11 +516,15 @@ async fn a2a_client_auth_required_status() {
     let sse_body = [format!(
         "data: {}\n\n",
         json!({
-            "kind": "status-update",
-            "taskId": "task-1",
-            "contextId": "ctx-1",
-            "status": {"state": "auth-required"},
-            "final": true
+            "jsonrpc": "2.0",
+            "id": "stream-1",
+            "result": {
+                "kind": "status-update",
+                "taskId": "task-1",
+                "contextId": "ctx-1",
+                "status": {"state": "auth-required"},
+                "final": true
+            }
         })
     )]
     .join("");
@@ -581,11 +601,15 @@ async fn a2a_client_rejected_status() {
     let sse_body = format!(
         "data: {}\n\n",
         json!({
-            "kind": "status-update",
-            "taskId": "task-1",
-            "contextId": "ctx-1",
-            "status": {"state": "rejected"},
-            "final": true
+            "jsonrpc": "2.0",
+            "id": "stream-1",
+            "result": {
+                "kind": "status-update",
+                "taskId": "task-1",
+                "contextId": "ctx-1",
+                "status": {"state": "rejected"},
+                "final": true
+            }
         })
     );
 
