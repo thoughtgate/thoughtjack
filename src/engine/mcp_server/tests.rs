@@ -241,6 +241,7 @@ fn tools_call_selects_response() {
         request.params.as_ref().unwrap(),
         None,
         false,
+        "tools/call",
     );
 
     let result = resp.result.unwrap();
@@ -332,6 +333,7 @@ fn prompts_get_selects_response() {
         request.params.as_ref().unwrap(),
         None,
         false,
+        "prompts/get",
     );
 
     let result = resp.result.unwrap();
@@ -662,7 +664,15 @@ fn default_capabilities_empty_state() {
 #[test]
 fn dispatch_response_no_responses_returns_empty_content() {
     let item = json!({"name": "test"});
-    let resp = dispatch_response(&json!(1), &item, &HashMap::new(), &Value::Null, None, false);
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "tools/call",
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["content"], json!([]));
 }
@@ -670,9 +680,51 @@ fn dispatch_response_no_responses_returns_empty_content() {
 #[test]
 fn dispatch_response_empty_responses_returns_empty_content() {
     let item = json!({"name": "test", "responses": []});
-    let resp = dispatch_response(&json!(1), &item, &HashMap::new(), &Value::Null, None, false);
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "tools/call",
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["content"], json!([]));
+}
+
+#[test]
+fn dispatch_response_resources_read_empty_fallback() {
+    let item = json!({"name": "test"});
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "resources/read",
+    );
+    let result = resp.result.unwrap();
+    assert_eq!(result["contents"], json!([]));
+    assert!(result.get("content").is_none());
+}
+
+#[test]
+fn dispatch_response_prompts_get_empty_fallback() {
+    let item = json!({"name": "test"});
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "prompts/get",
+    );
+    let result = resp.result.unwrap();
+    assert_eq!(result["messages"], json!([]));
+    assert!(result.get("content").is_none());
 }
 
 #[tokio::test]
@@ -877,7 +929,15 @@ fn select_response_no_match() {
         ]
     });
     let context = json!({"name": "test-tool"});
-    let resp = dispatch_response(&json!(1), &item, &HashMap::new(), &context, None, false);
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &context,
+        None,
+        false,
+        "tools/call",
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["content"], json!([]));
 }
@@ -894,7 +954,15 @@ fn synthesize_no_provider() {
             }
         ]
     });
-    let resp = dispatch_response(&json!(1), &item, &HashMap::new(), &Value::Null, None, false);
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "tools/call",
+    );
     assert!(resp.error.is_some());
     let err = resp.error.unwrap();
     assert!(
@@ -1423,6 +1491,7 @@ fn ec_oatf_018_tool_call_is_error() {
         &json!({"name": "failing_tool"}),
         None,
         false,
+        "tools/call",
     );
     let result = resp.result.unwrap();
     assert_eq!(result["isError"], true);
@@ -1451,6 +1520,7 @@ fn ec_oatf_019_audio_content() {
         &json!({"name": "audio_tool"}),
         None,
         false,
+        "tools/call",
     );
     let result = resp.result.unwrap();
     let content = result["content"].as_array().unwrap();
@@ -1484,6 +1554,7 @@ fn ec_oatf_020_content_annotations() {
         &json!({"name": "annotated_tool"}),
         None,
         false,
+        "tools/call",
     );
     let result = resp.result.unwrap();
     let content = &result["content"][0];

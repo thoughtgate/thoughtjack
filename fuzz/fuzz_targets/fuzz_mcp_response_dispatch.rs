@@ -28,8 +28,8 @@ fuzz_target!(|data: &[u8]| {
     let extractors = HashMap::new();
 
     // Test without output schema
-    let _ = dispatch_response(&request_id, &item, &extractors, &context, None, false);
+    let _ = dispatch_response(&request_id, &item, &extractors, &context, None, false, "tools/call");
 
     // Test with raw_synthesize enabled
-    let _ = dispatch_response(&request_id, &item, &extractors, &context, None, true);
+    let _ = dispatch_response(&request_id, &item, &extractors, &context, None, true, "tools/call");
 });

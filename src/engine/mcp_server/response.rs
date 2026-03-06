@@ -22,10 +22,11 @@ pub fn dispatch_response(
     request_context: &Value,
     output_schema: Option<&Value>,
     raw_synthesize: bool,
+    method: &str,
 ) -> JsonRpcResponse {
     let Some(responses_value) = item.get("responses") else {
-        // No responses defined — return empty content
-        return JsonRpcResponse::success(request_id.clone(), json!({ "content": [] }));
+        // No responses defined — return method-appropriate empty result
+        return JsonRpcResponse::success(request_id.clone(), empty_result_for_method(method));
     };
 
     let entries: Vec<ResponseEntry> = match serde_json::from_value(responses_value.clone()) {
@@ -42,7 +43,7 @@ pub fn dispatch_response(
 
     let Some(entry) = select_response(&entries, request_context) else {
         // No matching response
-        return JsonRpcResponse::success(request_id.clone(), json!({ "content": [] }));
+        return JsonRpcResponse::success(request_id.clone(), empty_result_for_method(method));
     };
 
     // Check for synthesize block
@@ -87,4 +88,22 @@ pub fn dispatch_response(
     }
 
     JsonRpcResponse::success(request_id.clone(), interpolated)
+}
+
+/// Return the correct empty result shape for a given MCP method.
+///
+/// MCP 2025-11-25 requires different result shapes per method:
+/// - `tools/call` → `{"content": []}`
+/// - `resources/read` → `{"contents": []}`
+/// - `prompts/get` → `{"messages": []}`
+/// - everything else → `{}`
+///
+/// Implements: TJ-SPEC-013 F-001
+fn empty_result_for_method(method: &str) -> Value {
+    match method {
+        "tools/call" => json!({ "content": [] }),
+        "resources/read" => json!({ "contents": [] }),
+        "prompts/get" => json!({ "messages": [] }),
+        _ => json!({}),
+    }
 }

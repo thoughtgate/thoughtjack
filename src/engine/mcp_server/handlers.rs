@@ -194,6 +194,7 @@ pub fn handle_resources_read(
         params,
         None,
         raw_synthesize,
+        "resources/read",
     )
 }
 
@@ -310,7 +311,10 @@ pub fn handle_elicitation_response(request: &JsonRpcRequest) -> JsonRpcResponse 
 /// Implements: TJ-SPEC-013 F-001
 pub fn handle_tasks_get(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
-    let task_id = params.get("taskId").and_then(Value::as_str).unwrap_or_default();
+    let task_id = params
+        .get("taskId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
 
     let Some(task) = find_by_field(state, "tasks", "taskId", task_id) else {
         return JsonRpcResponse::error(
@@ -331,7 +335,10 @@ pub fn handle_tasks_get(request: &JsonRpcRequest, state: &Value) -> JsonRpcRespo
 /// Implements: TJ-SPEC-013 F-001
 pub fn handle_tasks_result(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
-    let task_id = params.get("taskId").and_then(Value::as_str).unwrap_or_default();
+    let task_id = params
+        .get("taskId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
 
     let Some(task) = find_by_field(state, "tasks", "taskId", task_id) else {
         return JsonRpcResponse::error(
@@ -368,7 +375,10 @@ pub fn handle_tasks_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResp
 /// Implements: TJ-SPEC-013 F-001
 pub fn handle_tasks_cancel(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
-    let task_id = params.get("taskId").and_then(Value::as_str).unwrap_or_default();
+    let task_id = params
+        .get("taskId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
 
     let Some(_task) = find_by_field(state, "tasks", "taskId", task_id) else {
         return JsonRpcResponse::error(

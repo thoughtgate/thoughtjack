@@ -267,6 +267,7 @@ impl McpServerDriver {
             params,
             tool.get("outputSchema"),
             self.raw_synthesize,
+            "tools/call",
         )
     }
 
@@ -304,6 +305,7 @@ impl McpServerDriver {
             params,
             None,
             self.raw_synthesize,
+            "prompts/get",
         )
     }
 
