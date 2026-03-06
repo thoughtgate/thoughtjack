@@ -19,7 +19,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use axum::Router;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
@@ -307,39 +307,8 @@ async fn handle_jsonrpc(
     }
 }
 
-#[allow(clippy::result_large_err)]
-fn validate_local_peer(addr: SocketAddr) -> Result<(), Response> {
-    if addr.ip().is_loopback() {
-        Ok(())
-    } else {
-        Err((StatusCode::FORBIDDEN, "non-local peer rejected").into_response())
-    }
-}
-
-#[allow(clippy::result_large_err)]
-fn validate_local_origin(headers: &HeaderMap) -> Result<(), Response> {
-    let header_value = headers
-        .get("origin")
-        .or_else(|| headers.get("host"))
-        .and_then(|v| v.to_str().ok());
-
-    let Some(header_value) = header_value else {
-        return Err((StatusCode::FORBIDDEN, "missing Origin or Host header").into_response());
-    };
-
-    let Some(hostname) = extract_hostname_for_origin_check(header_value) else {
-        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
-    };
-
-    if !matches!(
-        hostname.as_str(),
-        "localhost" | "127.0.0.1" | "[::1]" | "::1" | "0.0.0.0"
-    ) {
-        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
-    }
-
-    Ok(())
-}
+// Local-only validation delegates to the shared `transport::local` module.
+use crate::transport::local::{validate_local_origin, validate_local_peer};
 
 /// Router-level local-only guard for all A2A endpoints.
 async fn require_local_only(
@@ -354,36 +323,6 @@ async fn require_local_only(
         return resp;
     }
     next.run(request).await
-}
-
-fn extract_hostname_for_origin_check(header_value: &str) -> Option<String> {
-    let authority = if header_value.contains("://") {
-        header_value
-            .parse::<Uri>()
-            .ok()?
-            .authority()?
-            .as_str()
-            .to_string()
-    } else {
-        header_value.to_string()
-    };
-
-    if authority == "::1" {
-        return Some("::1".to_string());
-    }
-
-    if let Some(stripped) = authority.strip_prefix('[') {
-        let end = stripped.find(']')?;
-        return Some(format!("[{}]", &stripped[..end]).to_ascii_lowercase());
-    }
-
-    Some(
-        authority
-            .split(':')
-            .next()
-            .unwrap_or(authority.as_str())
-            .to_ascii_lowercase(),
-    )
 }
 
 /// Handle `message/send` — synchronous task response.
@@ -451,8 +390,8 @@ async fn handle_message_stream(
     // Get fresh extractors
     let current_extractors = get_extractors(shared).await;
 
-    // Select response entry
-    let (status, history_msgs, artifacts) = resolve_task_content(
+    // Resolve response content (response_type unused for streaming)
+    let (status, history_msgs, artifacts, _response_type) = resolve_task_response(
         &state,
         &request_message,
         &current_extractors,
@@ -878,8 +817,8 @@ async fn dispatch_task_response(
     // Get fresh extractors
     let current_extractors = get_extractors(shared).await;
 
-    // Resolve response content
-    let (status, history_msgs, artifacts) = resolve_task_content(
+    // Resolve response content and type in a single pass
+    let (status, history_msgs, artifacts, response_type) = resolve_task_response(
         &state,
         &request_message,
         &current_extractors,
@@ -899,9 +838,6 @@ async fn dispatch_task_response(
             task.artifacts.clone_from(&artifacts);
         }
     }
-
-    // Check response_type
-    let response_type = resolve_response_type(&state, &request_message, &current_extractors);
 
     let result = if response_type == "message" {
         // Direct Message response
@@ -944,39 +880,62 @@ async fn dispatch_task_response(
     (result, "message/send".to_string())
 }
 
-/// Resolves task content from phase state using `select_response()`.
+/// Resolves task content and response type from phase state in a single pass.
 ///
-/// Returns `(status, history_messages, artifacts)`.
+/// Performs `select_response()` and `interpolate_value()` once, returning
+/// `(status, history_messages, artifacts, response_type)`.
+///
+/// Implements: TJ-SPEC-017 F-003
 // Complexity: task content resolution with response matching, interpolation, and artifact assembly
 #[allow(clippy::cognitive_complexity)]
-fn resolve_task_content(
+fn resolve_task_response(
     state: &Value,
     request_message: &Value,
     extractors: &HashMap<String, String>,
     raw_synthesize: bool,
-) -> (String, Vec<Value>, Vec<Value>) {
+) -> (String, Vec<Value>, Vec<Value>, String) {
     let task_responses = state.get("task_responses");
 
     let Some(responses_value) = task_responses else {
-        return ("completed".to_string(), Vec::new(), Vec::new());
+        return (
+            "completed".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "task".to_string(),
+        );
     };
 
     let entries: Vec<ResponseEntry> = match serde_json::from_value(responses_value.clone()) {
         Ok(entries) => entries,
         Err(err) => {
             tracing::warn!(error = %err, "failed to deserialize task_responses entries");
-            return ("completed".to_string(), Vec::new(), Vec::new());
+            return (
+                "completed".to_string(),
+                Vec::new(),
+                Vec::new(),
+                "task".to_string(),
+            );
         }
     };
 
     let Some(entry) = select_response(&entries, request_message) else {
-        return ("completed".to_string(), Vec::new(), Vec::new());
+        return (
+            "completed".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "task".to_string(),
+        );
     };
 
     // Check for synthesize block
     if entry.synthesize.is_some() && entry.extra.is_empty() {
         tracing::info!("synthesize block encountered but GenerationProvider not available");
-        return ("failed".to_string(), Vec::new(), Vec::new());
+        return (
+            "failed".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "task".to_string(),
+        );
     }
 
     // Build response from extra fields with interpolation
@@ -995,8 +954,20 @@ fn resolve_task_content(
             crate::engine::generation::validate_synthesized_output("a2a", &interpolated, None)
     {
         tracing::warn!(error = %err, "synthesized output validation failed");
-        return ("failed".to_string(), Vec::new(), Vec::new());
+        return (
+            "failed".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "task".to_string(),
+        );
     }
+
+    // Extract response_type (default: "task")
+    let response_type = interpolated
+        .get("response_type")
+        .and_then(Value::as_str)
+        .unwrap_or("task")
+        .to_string();
 
     // Extract status
     let status = interpolated
@@ -1044,37 +1015,7 @@ fn resolve_task_content(
         })
         .collect();
 
-    (status, history, artifacts)
-}
-
-/// Resolves the `response_type` from matching entry.
-fn resolve_response_type(
-    state: &Value,
-    request_message: &Value,
-    extractors: &HashMap<String, String>,
-) -> String {
-    let Some(responses_value) = state.get("task_responses") else {
-        return "task".to_string();
-    };
-
-    let entries: Vec<ResponseEntry> = match serde_json::from_value(responses_value.clone()) {
-        Ok(entries) => entries,
-        Err(_) => return "task".to_string(),
-    };
-
-    let Some(entry) = select_response(&entries, request_message) else {
-        return "task".to_string();
-    };
-
-    let extra_value = serde_json::to_value(&entry.extra).unwrap_or(Value::Null);
-    let (interpolated, _) =
-        interpolate_value(&extra_value, extractors, Some(request_message), None);
-
-    interpolated
-        .get("response_type")
-        .and_then(Value::as_str)
-        .unwrap_or("task")
-        .to_string()
+    (status, history, artifacts, response_type)
 }
 
 /// Gets current extractors from the shared state.
@@ -1437,7 +1378,7 @@ mod tests {
     // ---- Response Dispatch Tests ----
 
     #[test]
-    fn resolve_task_content_with_matching_response() {
+    fn resolve_task_response_with_matching_response() {
         let state = json!({
             "task_responses": [
                 {
@@ -1456,30 +1397,32 @@ mod tests {
             "parts": [{"kind": "text", "text": "Do something"}]
         });
 
-        let (status, history, artifacts) =
-            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+        let (status, history, artifacts, response_type) =
+            resolve_task_response(&state, &request_message, &HashMap::new(), false);
 
         assert_eq!(status, "completed");
+        assert_eq!(response_type, "task");
         // History should contain user message + agent response
         assert!(history.len() >= 2);
         assert!(artifacts.is_empty());
     }
 
     #[test]
-    fn resolve_task_content_no_responses() {
+    fn resolve_task_response_no_responses() {
         let state = json!({});
         let request_message = json!({"role": "user"});
 
-        let (status, history, artifacts) =
-            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+        let (status, history, artifacts, response_type) =
+            resolve_task_response(&state, &request_message, &HashMap::new(), false);
 
         assert_eq!(status, "completed");
+        assert_eq!(response_type, "task");
         assert!(history.is_empty());
         assert!(artifacts.is_empty());
     }
 
     #[test]
-    fn resolve_task_content_with_artifacts() {
+    fn resolve_task_response_with_artifacts() {
         let state = json!({
             "task_responses": [
                 {
@@ -1495,8 +1438,8 @@ mod tests {
         });
         let request_message = json!({"role": "user", "parts": [{"kind": "text", "text": "test"}]});
 
-        let (status, _history, artifacts) =
-            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+        let (status, _history, artifacts, _response_type) =
+            resolve_task_response(&state, &request_message, &HashMap::new(), false);
 
         assert_eq!(status, "completed");
         assert_eq!(artifacts.len(), 1);
@@ -1505,18 +1448,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_response_type_defaults_to_task() {
+    fn resolve_task_response_type_defaults_to_task() {
         let state = json!({
             "task_responses": [
                 {"status": "completed", "messages": []}
             ]
         });
-        let rt = resolve_response_type(&state, &json!({}), &HashMap::new());
+        let (_status, _history, _artifacts, rt) =
+            resolve_task_response(&state, &json!({}), &HashMap::new(), false);
         assert_eq!(rt, "task");
     }
 
     #[test]
-    fn resolve_response_type_message() {
+    fn resolve_task_response_type_message() {
         let state = json!({
             "task_responses": [
                 {
@@ -1526,7 +1470,8 @@ mod tests {
                 }
             ]
         });
-        let rt = resolve_response_type(&state, &json!({}), &HashMap::new());
+        let (_status, _history, _artifacts, rt) =
+            resolve_task_response(&state, &json!({}), &HashMap::new(), false);
         assert_eq!(rt, "message");
     }
 
@@ -1548,8 +1493,8 @@ mod tests {
         let mut extractors = HashMap::new();
         extractors.insert("name".to_string(), "World".to_string());
 
-        let (_, history, _) =
-            resolve_task_content(&state, &json!({"role": "user"}), &extractors, false);
+        let (_, history, _, _) =
+            resolve_task_response(&state, &json!({"role": "user"}), &extractors, false);
 
         // Check that interpolation occurred in agent messages
         let agent_msg = history

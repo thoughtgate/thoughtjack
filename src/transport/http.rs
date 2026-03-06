@@ -645,77 +645,8 @@ fn build_router(shared: Arc<HttpSharedState>) -> Router {
         .with_state(shared)
 }
 
-/// Validates that the request originates from a local address.
-///
-/// Rejects requests with no `Origin` or `Host` header, or with a header
-/// pointing to a non-local hostname. Comparison is case-insensitive.
-///
-/// Implements: TJ-SPEC-002 F-003
-#[allow(clippy::result_large_err)]
-fn validate_local_origin(headers: &axum::http::HeaderMap) -> std::result::Result<(), Response> {
-    let origin = headers
-        .get("origin")
-        .or_else(|| headers.get("host"))
-        .and_then(|v| v.to_str().ok());
-    let Some(header_value) = origin else {
-        return Err((StatusCode::FORBIDDEN, "missing Origin or Host header").into_response());
-    };
-    let Some(hostname) = extract_hostname_for_origin_check(header_value) else {
-        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
-    };
-    if !matches!(
-        hostname.as_str(),
-        "localhost" | "127.0.0.1" | "[::1]" | "::1" | "0.0.0.0"
-    ) {
-        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
-    }
-    Ok(())
-}
-
-/// Validates that the remote peer is loopback.
-#[allow(clippy::result_large_err)]
-fn validate_local_peer(addr: SocketAddr) -> std::result::Result<(), Response> {
-    if addr.ip().is_loopback() {
-        Ok(())
-    } else {
-        Err((StatusCode::FORBIDDEN, "non-local peer rejected").into_response())
-    }
-}
-
-/// Extracts a normalized hostname from Origin/Host values.
-///
-/// Handles both:
-/// - Origin values with scheme (e.g. `http://localhost:3000`, `http://[::1]:3000`)
-/// - Host values without scheme (e.g. `localhost:3000`, `[::1]:3000`)
-fn extract_hostname_for_origin_check(header_value: &str) -> Option<String> {
-    let authority = if header_value.contains("://") {
-        header_value
-            .parse::<axum::http::Uri>()
-            .ok()?
-            .authority()?
-            .as_str()
-            .to_string()
-    } else {
-        header_value.to_string()
-    };
-
-    if authority == "::1" {
-        return Some("::1".to_string());
-    }
-
-    if let Some(stripped) = authority.strip_prefix('[') {
-        let end = stripped.find(']')?;
-        return Some(format!("[{}]", &stripped[..end]).to_ascii_lowercase());
-    }
-
-    Some(
-        authority
-            .split(':')
-            .next()
-            .unwrap_or(authority.as_str())
-            .to_ascii_lowercase(),
-    )
-}
+// Local-only validation delegates to the shared `transport::local` module.
+use super::local::{validate_local_origin, validate_local_peer};
 
 /// `POST /message` handler.
 ///

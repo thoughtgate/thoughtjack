@@ -5,7 +5,7 @@ use std::sync::Mutex as StdMutex;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
@@ -184,11 +184,17 @@ impl StdioWriter {
 
 /// Stdio reader: owns `BufReader<ChildStdout>`, classifies incoming messages.
 ///
+/// Uses bounded line reading (via `fill_buf`/`consume`) to prevent OOM from
+/// a single line without `\n`. Lines exceeding the size limit are skipped.
+///
 /// Implements: TJ-SPEC-018 F-001
 pub(super) struct StdioReader {
     /// Buffered reader over the server process's stdout.
     stdout: BufReader<ChildStdout>,
 }
+
+/// Maximum NDJSON line size for MCP client stdio (10 MB, matching transport default).
+const MAX_LINE_SIZE: usize = crate::transport::DEFAULT_MAX_MESSAGE_SIZE;
 
 #[async_trait]
 impl McpClientTransportReader for StdioReader {
@@ -197,16 +203,11 @@ impl McpClientTransportReader for StdioReader {
         pending: &std::sync::Mutex<HashMap<String, PendingRequest>>,
     ) -> Result<Option<McpClientMessage>, EngineError> {
         loop {
-            let mut line = String::new();
-            let bytes_read = self
-                .stdout
-                .read_line(&mut line)
-                .await
-                .map_err(|e| EngineError::Driver(format!("stdout read failed: {e}")))?;
-
-            if bytes_read == 0 {
-                return Ok(None); // EOF
-            }
+            let line = match read_bounded_line(&mut self.stdout).await {
+                Ok(Some(line)) => line,
+                Ok(None) => return Ok(None), // EOF
+                Err(e) => return Err(EngineError::Driver(format!("stdout read failed: {e}"))),
+            };
 
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -224,6 +225,80 @@ impl McpClientTransportReader for StdioReader {
             };
 
             return Ok(Some(classify_message(msg, pending)));
+        }
+    }
+}
+
+/// Reads a single NDJSON line with bounded memory.
+///
+/// Uses `fill_buf()`/`consume()` to cap memory usage at `MAX_LINE_SIZE + 1`
+/// bytes. Lines exceeding the limit are drained and skipped (returns the
+/// next valid line). Returns `Ok(None)` on EOF.
+async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<String>> {
+    let read_limit = MAX_LINE_SIZE + 1;
+    let mut buf: Vec<u8> = Vec::with_capacity(read_limit.min(64 * 1024));
+
+    loop {
+        buf.clear();
+        let mut overflowed = false;
+
+        // Bounded line read using fill_buf + consume
+        loop {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                // EOF
+                if buf.is_empty() {
+                    return Ok(None);
+                }
+                // Last line without trailing '\n'
+                break;
+            }
+
+            if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+                if !overflowed {
+                    let remaining_cap = read_limit.saturating_sub(buf.len());
+                    let copy_len = pos.min(remaining_cap);
+                    buf.extend_from_slice(&available[..copy_len]);
+                    if pos > remaining_cap {
+                        overflowed = true;
+                    }
+                }
+                reader.consume(pos + 1);
+                break;
+            }
+
+            // No newline in this chunk — append if within limit
+            if !overflowed {
+                let remaining_cap = read_limit.saturating_sub(buf.len());
+                if remaining_cap == 0 {
+                    overflowed = true;
+                } else {
+                    let copy_len = available.len().min(remaining_cap);
+                    buf.extend_from_slice(&available[..copy_len]);
+                    if available.len() > remaining_cap {
+                        overflowed = true;
+                    }
+                }
+            }
+            let consumed = available.len();
+            reader.consume(consumed);
+        }
+
+        if overflowed {
+            tracing::warn!(
+                limit = MAX_LINE_SIZE,
+                "MCP client: message exceeds size limit, skipping"
+            );
+            continue;
+        }
+
+        match std::str::from_utf8(&buf) {
+            Ok(s) => return Ok(Some(s.to_string())),
+            Err(e) => {
+                tracing::warn!("MCP client: invalid UTF-8 in message, skipping: {e}");
+            }
         }
     }
 }
