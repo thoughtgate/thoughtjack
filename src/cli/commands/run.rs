@@ -76,7 +76,7 @@ pub async fn run_from_yaml(
     // 3. Build ActorConfig from shared execution args
     let mut config = build_actor_config(args).map_err(|e| match e {
         EngineError::Driver(msg) => ThoughtJackError::Usage(msg),
-        other => ThoughtJackError::Usage(other.to_string()),
+        other => ThoughtJackError::Engine(other),
     })?;
     let grace_applied = resolve_grace_period(
         args.grace_period.map(Into::into),

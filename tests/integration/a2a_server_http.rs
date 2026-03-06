@@ -17,22 +17,39 @@ use thoughtjack::orchestration::{ActorConfig, run_actor};
 use crate::common::mock_server::reserve_local_port;
 
 /// Return type for the A2A server test helper.
+///
+/// Cancels the server on drop so that assertion panics don't leak tasks.
+/// For clean shutdown with timeout, call `shutdown()` explicitly at the
+/// end of each test — the drop guard is a safety net, not a replacement.
 struct A2aTestServer {
-    handle: tokio::task::JoinHandle<
-        Result<thoughtjack::engine::types::ActorResult, thoughtjack::error::EngineError>,
+    handle: Option<
+        tokio::task::JoinHandle<
+            Result<thoughtjack::engine::types::ActorResult, thoughtjack::error::EngineError>,
+        >,
     >,
     cancel: CancellationToken,
     base_url: String,
 }
 
+impl Drop for A2aTestServer {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 impl A2aTestServer {
     /// Cancel the server and await the task with a timeout so panics and
     /// hangs fail the test instead of leaking.
-    async fn shutdown(self) {
+    async fn shutdown(mut self) {
         self.cancel.cancel();
-        match tokio::time::timeout(Duration::from_secs(5), self.handle).await {
-            Ok(Ok(_) | Err(_)) => {} // success or cancelled — both normal
-            Err(elapsed) => panic!("A2A server task did not shut down within 5 s: {elapsed}"),
+        if let Some(handle) = self.handle.take() {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(Ok(_) | Err(_)) => {} // success or cancelled — both normal
+                Err(elapsed) => panic!("A2A server task did not shut down within 5 s: {elapsed}"),
+            }
         }
     }
 }
@@ -116,7 +133,7 @@ async fn start_a2a_server(yaml: &str) -> A2aTestServer {
     }
 
     A2aTestServer {
-        handle,
+        handle: Some(handle),
         cancel,
         base_url,
     }

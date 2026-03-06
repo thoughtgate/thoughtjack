@@ -221,7 +221,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     pub fn new(driver: D, phase_engine: PhaseEngine, config: PhaseLoopConfig) -> Self {
         let mode = &phase_engine.actor().mode;
         let protocol = extract_protocol(mode).to_string();
-        let is_server_mode = mode.contains("server");
+        let is_server_mode = mode.ends_with("_server");
         let (extractors_tx, _) = watch::channel(HashMap::new());
 
         Self {

@@ -47,12 +47,16 @@ impl ExtractorStore {
 
     /// Sets an extractor value for a given actor.
     ///
-    /// After inserting, bumps the version counter so that any
-    /// subscribers returned by [`subscribe`] are notified.
+    /// The insert and version bump are performed inside a single
+    /// `send_modify` closure so that subscribers always see the new
+    /// value when they wake.
     pub fn set(&self, actor: &str, name: &str, value: String) {
-        self.store
-            .insert((actor.to_string(), name.to_string()), value);
-        self.version_tx.send_modify(|v| *v += 1);
+        let store = Arc::clone(&self.store);
+        let key = (actor.to_string(), name.to_string());
+        self.version_tx.send_modify(move |v| {
+            store.insert(key, value);
+            *v += 1;
+        });
     }
 
     /// Returns a receiver that is notified whenever a value is set.
