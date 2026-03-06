@@ -32,6 +32,19 @@ use crate::engine::actions::EntryActionSender;
 use crate::engine::driver::PhaseDriver;
 use crate::engine::types::{Direction, DriveResult, ProtocolEvent};
 
+/// Maximum number of deferred client requests buffered during slow-stream delivery.
+///
+/// A malicious client can intentionally keep a slow-stream window open and pile
+/// up requests. This cap prevents unbounded memory growth; excess requests are
+/// dropped with a warning.
+const MAX_DEFERRED_REQUESTS: usize = 1_000;
+
+/// Maximum number of buffered responses during server-initiated request waits.
+///
+/// Bounds memory used when a server-initiated request (sampling, elicitation)
+/// receives interleaved responses with non-matching IDs.
+const MAX_BUFFERED_RESPONSES: usize = 100;
+
 // ============================================================================
 // McpServerDriver
 // ============================================================================
@@ -107,7 +120,7 @@ impl McpServerDriver {
     async fn observe_during_delivery(
         &mut self,
         mut handle: JoinHandle<Result<(), EngineError>>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) -> Result<Option<DriveResult>, EngineError> {
         loop {
@@ -133,10 +146,14 @@ impl McpServerDriver {
                                 direction: Direction::Incoming,
                                 method: notif.method.clone(),
                                 content: notif.params.unwrap_or(Value::Null),
-                            });
+                            }).await;
                         }
                         Ok(Some(JsonRpcMessage::Request(req))) => {
-                            self.deferred_requests.push_back(req);
+                            if self.deferred_requests.len() < MAX_DEFERRED_REQUESTS {
+                                self.deferred_requests.push_back(req);
+                            } else {
+                                tracing::warn!(method = %req.method, "deferred request queue full, dropping");
+                            }
                         }
                         Ok(Some(JsonRpcMessage::Response(resp))) => {
                             tracing::debug!(id = ?resp.id, "unexpected response from agent during delivery");
@@ -167,7 +184,7 @@ impl McpServerDriver {
         request: &JsonRpcRequest,
         state: &Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) -> JsonRpcResponse {
         match request.method.as_str() {
@@ -217,7 +234,7 @@ impl McpServerDriver {
         request: &JsonRpcRequest,
         state: &Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) -> JsonRpcResponse {
         let params = request.params.as_ref().unwrap_or(&Value::Null);
@@ -259,7 +276,7 @@ impl McpServerDriver {
         request: &JsonRpcRequest,
         state: &Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) -> JsonRpcResponse {
         let params = request.params.as_ref().unwrap_or(&Value::Null);
@@ -302,7 +319,7 @@ impl McpServerDriver {
     async fn send_server_request(
         &mut self,
         request: &JsonRpcRequest,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) -> Option<JsonRpcResponse> {
         if self.transport.transport_type() == TransportType::Http
@@ -353,8 +370,12 @@ impl McpServerDriver {
                     if response_id == expected_id {
                         return Some(resp);
                     }
-                    tracing::debug!(?resp.id, expected = %expected_id, "buffering unrelated response while awaiting server request");
-                    self.buffered_server_responses.insert(response_id, resp);
+                    if self.buffered_server_responses.len() < MAX_BUFFERED_RESPONSES {
+                        tracing::debug!(?resp.id, expected = %expected_id, "buffering unrelated response while awaiting server request");
+                        self.buffered_server_responses.insert(response_id, resp);
+                    } else {
+                        tracing::warn!(?resp.id, "buffered response map full, dropping");
+                    }
                 }
                 Ok(Some(JsonRpcMessage::Notification(notif))) => {
                     tracing::debug!(
@@ -365,14 +386,18 @@ impl McpServerDriver {
                         direction: Direction::Incoming,
                         method: notif.method.clone(),
                         content: notif.params.unwrap_or(Value::Null),
-                    });
+                    }).await;
                 }
                 Ok(Some(JsonRpcMessage::Request(req))) => {
-                    tracing::debug!(
-                        method = %req.method,
-                        "interleaved request during server request wait, queueing for later dispatch"
-                    );
-                    self.deferred_requests.push_back(req);
+                    if self.deferred_requests.len() < MAX_DEFERRED_REQUESTS {
+                        tracing::debug!(
+                            method = %req.method,
+                            "interleaved request during server request wait, queueing for later dispatch"
+                        );
+                        self.deferred_requests.push_back(req);
+                    } else {
+                        tracing::warn!(method = %req.method, "deferred request queue full, dropping");
+                    }
                 }
                 Ok(None) => {
                     tracing::debug!("transport EOF during server request wait");
@@ -394,7 +419,7 @@ impl McpServerDriver {
         &self,
         state: &Value,
         tool_name: &str,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) {
         let Some(entries) = state.get("logging").and_then(Value::as_array) else {
             return;
@@ -426,7 +451,7 @@ impl McpServerDriver {
                 direction: Direction::Outgoing,
                 method: "notifications/message".to_string(),
                 content: json!({ "level": level, "data": data }),
-            });
+            }).await;
 
             if let Err(err) = self
                 .transport
@@ -447,7 +472,7 @@ impl McpServerDriver {
         state: &Value,
         request_params: &Value,
         tool_name: &str,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) {
         let Some(entries) = state.get("progress").and_then(Value::as_array) else {
             return;
@@ -489,7 +514,7 @@ impl McpServerDriver {
                 direction: Direction::Outgoing,
                 method: "notifications/progress".to_string(),
                 content: notif_params,
-            });
+            }).await;
 
             if let Err(err) = self
                 .transport
@@ -524,7 +549,7 @@ impl McpServerDriver {
         &mut self,
         state: &Value,
         tool_name: &str,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) {
         if !self.client_supports("sampling") {
@@ -575,7 +600,7 @@ impl McpServerDriver {
             direction: Direction::Outgoing,
             method: "sampling/createMessage".to_string(),
             content: serde_json::to_value(&sampling_request).unwrap_or(Value::Null),
-        });
+        }).await;
 
         if let Some(resp) = self
             .send_server_request(&sampling_request, event_tx, cancel)
@@ -585,7 +610,7 @@ impl McpServerDriver {
                 direction: Direction::Incoming,
                 method: "sampling/createMessage".to_string(),
                 content: serde_json::to_value(&resp).unwrap_or(Value::Null),
-            });
+            }).await;
         }
     }
 
@@ -609,7 +634,7 @@ impl McpServerDriver {
         state: &Value,
         request_context: &Value,
         tool_name: &str,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) {
         if !self.client_supports("elicitation") {
@@ -698,7 +723,7 @@ impl McpServerDriver {
             direction: Direction::Outgoing,
             method: "elicitation/create".to_string(),
             content: serde_json::to_value(&elicitation_request).unwrap_or(Value::Null),
-        });
+        }).await;
 
         // Send request and wait for response
         if let Some(resp) = self
@@ -709,7 +734,7 @@ impl McpServerDriver {
                 direction: Direction::Incoming,
                 method: "elicitation/create".to_string(),
                 content: serde_json::to_value(&resp).unwrap_or(Value::Null),
-            });
+            }).await;
         }
     }
 
@@ -718,7 +743,7 @@ impl McpServerDriver {
         request: JsonRpcRequest,
         state: &Value,
         extractors: &watch::Receiver<HashMap<String, String>>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) -> Result<Option<DriveResult>, EngineError> {
         let incoming_content = request.params.clone().unwrap_or(Value::Null);
@@ -726,7 +751,7 @@ impl McpServerDriver {
             direction: Direction::Incoming,
             method: request.method.clone(),
             content: incoming_content,
-        });
+        }).await;
 
         let current_extractors = extractors.borrow().clone();
         let response = self
@@ -755,7 +780,7 @@ impl McpServerDriver {
             direction: Direction::Outgoing,
             method: request.method.clone(),
             content: outgoing_content,
-        });
+        }).await;
 
         self.transport
             .finalize_response()
@@ -786,7 +811,7 @@ impl PhaseDriver for McpServerDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         loop {
@@ -821,7 +846,7 @@ impl PhaseDriver for McpServerDriver {
                                 direction: Direction::Incoming,
                                 method: notif.method.clone(),
                                 content: notif.params.unwrap_or(Value::Null),
-                            });
+                            }).await;
                         }
                         Ok(Some(JsonRpcMessage::Response(resp))) => {
                             // Unexpected response — log and continue

@@ -10,7 +10,7 @@
 //!
 //! See TJ-SPEC-017 for the full A2A protocol support specification.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,6 +94,12 @@ struct StoredTask {
     created_at: Instant,
 }
 
+/// Maximum number of tasks stored per A2A server actor.
+///
+/// Prevents unbounded memory growth from sustained hostile traffic.
+/// Oldest tasks are evicted when the cap is reached.
+const MAX_STORED_TASKS: usize = 10_000;
+
 /// Per-actor task store for A2A server mode.
 ///
 /// Tracks tasks by ID and groups them by context ID.
@@ -104,6 +110,8 @@ struct TaskStore {
     tasks: HashMap<String, StoredTask>,
     /// Context ID → task IDs.
     contexts: HashMap<String, Vec<String>>,
+    /// Insertion-ordered task IDs for eviction.
+    insertion_order: VecDeque<String>,
 }
 
 impl TaskStore {
@@ -112,11 +120,30 @@ impl TaskStore {
         Self {
             tasks: HashMap::new(),
             contexts: HashMap::new(),
+            insertion_order: VecDeque::new(),
         }
     }
 
     /// Creates a new task and returns its ID and context ID.
+    ///
+    /// Evicts the oldest task if the store exceeds `MAX_STORED_TASKS`.
     fn create_task(&mut self, context_id: Option<&str>) -> (String, String) {
+        // Evict oldest tasks if at capacity
+        while self.tasks.len() >= MAX_STORED_TASKS {
+            if let Some(old_id) = self.insertion_order.pop_front() {
+                if let Some(old_task) = self.tasks.remove(&old_id)
+                    && let Some(ctx_tasks) = self.contexts.get_mut(&old_task.context_id)
+                {
+                    ctx_tasks.retain(|id| id != &old_id);
+                    if ctx_tasks.is_empty() {
+                        self.contexts.remove(&old_task.context_id);
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
         let task_id = uuid::Uuid::new_v4().to_string();
         let ctx_id = context_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), String::from);
 
@@ -130,6 +157,7 @@ impl TaskStore {
         };
 
         self.tasks.insert(task_id.clone(), task);
+        self.insertion_order.push_back(task_id.clone());
         self.contexts
             .entry(ctx_id.clone())
             .or_default()
@@ -188,7 +216,7 @@ struct A2aSharedState {
     /// Per-actor task store.
     task_store: RwLock<TaskStore>,
     /// Event channel for emitting `ProtocolEvent`s from handlers.
-    event_tx: RwLock<Option<mpsc::UnboundedSender<ProtocolEvent>>>,
+    event_tx: RwLock<Option<mpsc::Sender<ProtocolEvent>>>,
     /// Extractor watch channel for fresh values per request.
     extractors: RwLock<Option<watch::Receiver<HashMap<String, String>>>>,
     /// Current phase effective state.
@@ -220,18 +248,19 @@ async fn handle_agent_card(State(shared): State<Arc<A2aSharedState>>) -> Respons
 
     let card = shared.agent_card.read().await.clone();
 
-    // Emit events
-    if let Some(tx) = shared.event_tx.read().await.as_ref() {
+    // Emit events (clone sender to avoid holding RwLock guard across .await)
+    let tx = shared.event_tx.read().await.as_ref().cloned();
+    if let Some(tx) = tx {
         let _ = tx.send(ProtocolEvent {
             direction: Direction::Incoming,
             method: "agent_card/get".to_string(),
             content: json!({}),
-        });
+        }).await;
         let _ = tx.send(ProtocolEvent {
             direction: Direction::Outgoing,
             method: "agent_card/get".to_string(),
             content: card.clone(),
-        });
+        }).await;
     }
 
     axum::Json(card).into_response()
@@ -267,13 +296,14 @@ async fn handle_jsonrpc(
         Err(error) => return axum::Json(error).into_response(),
     };
 
-    // Emit incoming event
-    if let Some(tx) = shared.event_tx.read().await.as_ref() {
+    // Emit incoming event (clone sender to avoid holding RwLock guard across .await)
+    let tx = shared.event_tx.read().await.as_ref().cloned();
+    if let Some(tx) = tx {
         let _ = tx.send(ProtocolEvent {
             direction: Direction::Incoming,
             method: method.clone(),
             content: params.clone(),
-        });
+        }).await;
     }
 
     // Route by method
@@ -404,8 +434,9 @@ async fn handle_message_stream(
 
     let req_id = request_id.clone();
 
-    // Emit SSE events for trace
-    if let Some(tx) = shared.event_tx.read().await.as_ref() {
+    // Emit SSE events for trace (clone sender to avoid holding RwLock guard across .await)
+    let tx = shared.event_tx.read().await.as_ref().cloned();
+    if let Some(tx) = tx {
         let _ = tx.send(ProtocolEvent {
             direction: Direction::Outgoing,
             method: "message/stream".to_string(),
@@ -415,7 +446,7 @@ async fn handle_message_stream(
                 "status": status,
                 "artifacts_count": artifacts.len(),
             }),
-        });
+        }).await;
     }
 
     let delay_ms = SSE_EVENT_DELAY_MS;
@@ -1031,12 +1062,13 @@ async fn get_extractors(shared: &Arc<A2aSharedState>) -> HashMap<String, String>
 
 /// Emits an outgoing `ProtocolEvent`.
 async fn emit_outgoing(shared: &Arc<A2aSharedState>, method: &str, content: &Value) {
-    if let Some(tx) = shared.event_tx.read().await.as_ref() {
+    let tx = shared.event_tx.read().await.as_ref().cloned();
+    if let Some(tx) = tx {
         let _ = tx.send(ProtocolEvent {
             direction: Direction::Outgoing,
             method: method.to_string(),
             content: content.clone(),
-        });
+        }).await;
     }
 }
 
@@ -1125,7 +1157,7 @@ impl PhaseDriver for A2aServerDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         self.shared

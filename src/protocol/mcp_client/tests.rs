@@ -1607,7 +1607,7 @@ async fn driver_initialize_sends_handshake() {
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
     driver.bootstrap(ext_rx);
 
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let state = json!({"sampling_responses": []});
 
     driver.initialize(&state, &event_tx).await.unwrap();
@@ -1644,7 +1644,7 @@ async fn driver_initialize_rejects_error_response_ec_mcpc_005() {
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
     driver.bootstrap(ext_rx);
 
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let state = json!({});
 
     let result = driver.initialize(&state, &event_tx).await;
@@ -1694,7 +1694,7 @@ async fn drive_phase_with_actions_uses_short_idle_timeout() {
     driver.phase_timeout = Duration::from_secs(30);
 
     let (_ext_tx, extractors_rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
 
     let state = json!({
         // Unknown action still counts as an explicit action and should not
@@ -1753,7 +1753,7 @@ async fn driver_forward_pending_events_drains_channels() {
         .await
         .unwrap();
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(100);
     driver.forward_pending_events(&event_tx);
 
     // Should have forwarded both

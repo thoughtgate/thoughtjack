@@ -125,7 +125,7 @@ impl McpClientDriver {
         &mut self,
         method: &str,
         params: Option<Value>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) -> Result<CorrelatedResponse, EngineError> {
         let id = json!(self.next_id());
         let id_key = id.to_string();
@@ -178,7 +178,7 @@ impl McpClientDriver {
             direction: Direction::Outgoing,
             method: method.to_string(),
             content: params.unwrap_or(Value::Null),
-        });
+        }).await;
 
         // Await response via oneshot — multiplexer handles concurrent server requests
         let response = match tokio::time::timeout(self.request_timeout, response_rx).await {
@@ -218,7 +218,7 @@ impl McpClientDriver {
             direction: Direction::Incoming,
             method: response.method.clone(),
             content,
-        });
+        }).await;
 
         Ok(response)
     }
@@ -228,16 +228,16 @@ impl McpClientDriver {
     /// Called between actions to minimize event forwarding latency.
     pub(super) fn forward_pending_events(
         &mut self,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) {
         if let Some(ref mut rx) = self.handler_event_rx {
             while let Ok(evt) = rx.try_recv() {
-                let _ = event_tx.send(evt);
+                let _ = event_tx.try_send(evt);
             }
         }
         if let Some(ref mut rx) = self.notification_rx {
             while let Ok(notif) = rx.try_recv() {
-                let _ = event_tx.send(ProtocolEvent {
+                let _ = event_tx.try_send(ProtocolEvent {
                     direction: Direction::Incoming,
                     method: notif.method,
                     content: notif.params.unwrap_or(Value::Null),
@@ -259,7 +259,7 @@ impl McpClientDriver {
     pub(super) async fn initialize(
         &mut self,
         state: &Value,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) -> Result<(), EngineError> {
         let init_params = json!({
             "protocolVersion": "2025-11-25",
@@ -318,7 +318,7 @@ impl McpClientDriver {
             direction: Direction::Outgoing,
             method: "initialize".to_string(),
             content: init_params,
-        });
+        }).await;
 
         // Await response
         let response = match tokio::time::timeout(INIT_TIMEOUT, response_rx).await {
@@ -356,7 +356,7 @@ impl McpClientDriver {
             direction: Direction::Incoming,
             method: "initialize".to_string(),
             content: response.result,
-        });
+        }).await;
 
         // Send initialized notification
         self.writer
@@ -382,7 +382,7 @@ impl McpClientDriver {
         &mut self,
         action: &Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) -> Result<(), EngineError> {
         let action_type = action["type"].as_str().unwrap_or("");
 
@@ -526,7 +526,7 @@ impl PhaseDriver for McpClientDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         // Bootstrap on first call: spawn multiplexer and handler
@@ -608,7 +608,7 @@ impl PhaseDriver for McpClientDriver {
                     }
                 } => {
                     if let Some(evt) = evt {
-                        let _ = event_tx.send(evt);
+                        let _ = event_tx.send(evt).await;
                     } else {
                         break;
                     }
@@ -625,7 +625,7 @@ impl PhaseDriver for McpClientDriver {
                             direction: Direction::Incoming,
                             method: n.method,
                             content: n.params.unwrap_or(Value::Null),
-                        });
+                        }).await;
                     } else {
                         break;
                     }

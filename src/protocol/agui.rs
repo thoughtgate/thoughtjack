@@ -943,7 +943,7 @@ impl PhaseDriver for AgUiDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         // Client-mode: clone extractors once at start
@@ -960,7 +960,7 @@ impl PhaseDriver for AgUiDriver {
             direction: Direction::Outgoing,
             method: "run_agent_input".to_string(),
             content: input_value,
-        });
+        }).await;
 
         // Send request, get SSE stream (or HTTP error per §9.1)
         let mut stream = match self.transport.send_run(&input).await? {
@@ -975,7 +975,7 @@ impl PhaseDriver for AgUiDriver {
                         "message": format!("HTTP {status}: {body}"),
                         "code": format!("HTTP_{status}"),
                     }),
-                });
+                }).await;
                 return Ok(DriveResult::Complete);
             }
         };
@@ -998,7 +998,7 @@ impl PhaseDriver for AgUiDriver {
                                 direction: Direction::Incoming,
                                 method: event.event_type,
                                 content: event.data,
-                            });
+                            }).await;
                         }
                         Ok(Ok(None)) => {
                             // Stream closed — emit accumulated response and complete
@@ -1006,7 +1006,7 @@ impl PhaseDriver for AgUiDriver {
                                 direction: Direction::Incoming,
                                 method: "_accumulated_response".to_string(),
                                 content: self.accumulator.accumulated_response(),
-                            });
+                            }).await;
                             return Ok(DriveResult::Complete);
                         }
                         Ok(Err(SseStreamError::Parse(e))) => {
@@ -1021,7 +1021,7 @@ impl PhaseDriver for AgUiDriver {
                                     direction: Direction::Incoming,
                                     method: "_accumulated_response".to_string(),
                                     content: self.accumulator.accumulated_response(),
-                                });
+                                }).await;
                                 return Ok(DriveResult::Complete);
                             }
                         }
@@ -1035,7 +1035,7 @@ impl PhaseDriver for AgUiDriver {
                                 direction: Direction::Incoming,
                                 method: "_accumulated_response".to_string(),
                                 content: self.accumulator.accumulated_response(),
-                            });
+                            }).await;
                             return Ok(DriveResult::Complete);
                         }
                     }

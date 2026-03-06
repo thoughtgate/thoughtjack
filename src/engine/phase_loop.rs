@@ -30,6 +30,13 @@ use super::types::{
     ActorResult, AwaitExtractor, Direction, PhaseAction, ProtocolEvent, TerminationReason,
 };
 
+/// Maximum number of buffered protocol events per phase.
+///
+/// Provides backpressure: if the phase loop cannot drain events fast
+/// enough, drivers block on `send().await`. The capacity is generous
+/// enough that backpressure should never trigger under normal operation.
+const EVENT_CHANNEL_CAPACITY: usize = 10_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DriveLoopAction {
     Stay,
@@ -104,7 +111,7 @@ fn process_protocol_event(
 /// Stops processing immediately after the first `Advance` to avoid
 /// running extractors in the wrong phase context.
 fn drain_events(
-    event_rx: &mut mpsc::UnboundedReceiver<ProtocolEvent>,
+    event_rx: &mut mpsc::Receiver<ProtocolEvent>,
     phase_engine: &mut PhaseEngine,
     ctx: &EventContext<'_>,
 ) -> PhaseAction {
@@ -257,7 +264,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 return Ok(self.build_result(TerminationReason::Cancelled));
             }
             let effective_state = self.phase_engine.effective_state();
-            let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+            let (event_tx, mut event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
             // Run driver and event consumer concurrently.
             // drive_fut is scoped so its mutable borrow drops before on_phase_advanced.
@@ -459,11 +466,11 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             for event in self.events.drain(..) {
-                let _ = event_tx.send(event);
+                let _ = event_tx.send(event).await;
             }
             Ok(super::super::types::DriveResult::Complete)
         }
@@ -481,7 +488,7 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             extractors: watch::Receiver<HashMap<String, String>>,
-            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             let snapshot = extractors.borrow().clone();
@@ -503,14 +510,14 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             extractors: watch::Receiver<HashMap<String, String>>,
-            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             let _ = event_tx.send(ProtocolEvent {
                 direction: Direction::Incoming,
                 method: "tools/call".to_string(),
                 content: serde_json::json!({"name": "calculator", "empty_field": ""}),
-            });
+            }).await;
             // Small yield to allow event processing
             tokio::task::yield_now().await;
             let snapshot = extractors.borrow().clone();
@@ -529,7 +536,7 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             panic!("driver crashed unexpectedly");
@@ -546,7 +553,7 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             Err(EngineError::Driver("mock driver error".to_string()))
@@ -566,11 +573,11 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             for event in self.events.drain(..) {
-                let _ = event_tx.send(event);
+                let _ = event_tx.send(event).await;
             }
             Ok(super::super::types::DriveResult::Complete)
         }
@@ -733,7 +740,7 @@ attack:
                 _phase_index: usize,
                 _state: &serde_json::Value,
                 _extractors: watch::Receiver<HashMap<String, String>>,
-                _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+                _event_tx: mpsc::Sender<ProtocolEvent>,
                 cancel: CancellationToken,
             ) -> Result<super::super::types::DriveResult, EngineError> {
                 cancel.cancelled().await;
@@ -1015,12 +1022,12 @@ attack:
             phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             if let Some(events) = self.phase_events.get_mut(&phase_index) {
                 for event in events.drain(..) {
-                    let _ = event_tx.send(event);
+                    let _ = event_tx.send(event).await;
                 }
             }
             Ok(super::super::types::DriveResult::Complete)

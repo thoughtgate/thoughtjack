@@ -402,7 +402,7 @@ async fn drive_phase_returns_transport_closed_on_eof() {
 
     let state = test_state();
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     let result = driver
@@ -419,7 +419,7 @@ async fn drive_phase_completes_on_cancel() {
 
     let state = test_state();
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     // Cancel immediately
@@ -440,7 +440,7 @@ async fn drive_phase_emits_events() {
 
     let state = test_state();
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -469,7 +469,7 @@ async fn extractors_refreshed_per_request() {
 
     let state = test_state();
     let (tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     // Update extractors between the two requests being processed
@@ -504,7 +504,7 @@ async fn delayed_delivery_waits() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     let start = tokio::time::Instant::now();
@@ -538,7 +538,7 @@ async fn notification_flood_sends_before_response() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -686,7 +686,7 @@ async fn drive_phase_handles_notification_from_agent() {
 
     let state = test_state();
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -714,7 +714,7 @@ async fn connection_reset_side_effect_returns_error() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     let result = driver.drive_phase(0, &state, rx, event_tx, cancel).await;
@@ -942,7 +942,7 @@ async fn elicitation_agent_declines() {
         }]
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -1061,7 +1061,7 @@ async fn unbounded_delivery_inflates_response() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -1127,7 +1127,7 @@ async fn elicitation_first_match_wins() {
         ]
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -1167,7 +1167,7 @@ async fn id_collision_side_effect_with_count() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -1581,7 +1581,7 @@ async fn ec_oatf_023_elicitation_declined() {
         }]
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     // Should not panic — driver handles decline gracefully

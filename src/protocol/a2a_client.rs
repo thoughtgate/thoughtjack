@@ -530,7 +530,7 @@ impl PhaseDriver for A2aClientDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         // Client-mode: clone extractors once at start
@@ -547,7 +547,7 @@ impl PhaseDriver for A2aClientDriver {
                 direction: Direction::Outgoing,
                 method: "agent_card/get".to_string(),
                 content: json!({}),
-            });
+            }).await;
 
             let card = self.transport.get_agent_card().await?;
 
@@ -555,7 +555,7 @@ impl PhaseDriver for A2aClientDriver {
                 direction: Direction::Incoming,
                 method: "agent_card/get".to_string(),
                 content: card,
-            });
+            }).await;
         }
 
         // Determine streaming mode
@@ -583,7 +583,7 @@ impl PhaseDriver for A2aClientDriver {
             direction: Direction::Outgoing,
             method: method.to_string(),
             content: message.get("params").cloned().unwrap_or(Value::Null),
-        });
+        }).await;
 
         if streaming {
             self.drive_streaming(message, event_tx, cancel).await
@@ -599,7 +599,7 @@ impl A2aClientDriver {
         &mut self,
         message: Value,
         _method: &str,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
     ) -> Result<DriveResult, EngineError> {
         let response = self.transport.message_send(&message).await?;
 
@@ -618,7 +618,7 @@ impl A2aClientDriver {
             direction: Direction::Incoming,
             method: event_type.to_string(),
             content: result,
-        });
+        }).await;
 
         Ok(DriveResult::Complete)
     }
@@ -629,7 +629,7 @@ impl A2aClientDriver {
     async fn drive_streaming(
         &mut self,
         message: Value,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         let mut sse_stream = self.transport.message_stream(&message).await?;
@@ -639,7 +639,7 @@ impl A2aClientDriver {
             direction: Direction::Incoming,
             method: "message/stream".to_string(),
             content: json!({"status": "connected"}),
-        });
+        }).await;
 
         let stream_timeout = DEFAULT_STREAM_TIMEOUT;
         let mut received_final = false;
@@ -663,7 +663,7 @@ impl A2aClientDriver {
                                 direction: Direction::Incoming,
                                 method: qualified,
                                 content: sse_result.clone(),
-                            });
+                            }).await;
 
                             // Check for terminal event (final: true)
                             if sse_result
