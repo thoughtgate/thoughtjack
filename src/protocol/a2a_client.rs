@@ -642,6 +642,7 @@ impl A2aClientDriver {
         });
 
         let stream_timeout = DEFAULT_STREAM_TIMEOUT;
+        let mut received_final = false;
 
         loop {
             tokio::select! {
@@ -670,11 +671,13 @@ impl A2aClientDriver {
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false)
                             {
+                                received_final = true;
                                 break;
                             }
                         }
                         Ok(Ok(None)) => {
-                            // Stream closed
+                            // Stream closed without final event
+                            tracing::warn!("A2A SSE stream closed without final event");
                             break;
                         }
                         Ok(Err(e)) => {
@@ -700,7 +703,11 @@ impl A2aClientDriver {
             }
         }
 
-        Ok(DriveResult::Complete)
+        if received_final {
+            Ok(DriveResult::Complete)
+        } else {
+            Ok(DriveResult::TransportClosed)
+        }
     }
 }
 

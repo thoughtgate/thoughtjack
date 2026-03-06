@@ -325,10 +325,10 @@ attack:
     let mut phase_loop = PhaseLoop::new(driver, engine, config);
 
     let result = phase_loop.run().await.unwrap();
-    // Stream closes without final: true → driver returns Complete → terminal phase
-    assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+    // Stream closes without final: true → driver returns TransportClosed
+    assert_eq!(result.termination, TerminationReason::TransportClosed);
 
-    // Partial trace should be captured
+    // Partial trace should still be captured
     let entries = trace.snapshot();
     assert!(!entries.is_empty());
 }

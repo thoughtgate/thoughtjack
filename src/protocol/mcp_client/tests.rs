@@ -815,10 +815,11 @@ async fn multiplexer_routes_response_to_oneshot() {
     // Register a oneshot for the response
     let rx = mux.register_response(&json!(1));
 
-    // Give multiplexer time to process
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let resp = rx.await.unwrap();
+    // Wait deterministically for the oneshot to resolve
+    let resp = tokio::time::timeout(Duration::from_secs(2), rx)
+        .await
+        .expect("multiplexer should route response within timeout")
+        .unwrap();
     assert_eq!(resp.method, "tools/list");
     assert_eq!(resp.result, json!({"tools": ["calc"]}));
     assert!(!resp.is_error);
@@ -931,13 +932,25 @@ async fn multiplexer_unmatched_response_id_ec_mcpc_001() {
         server_request_tx,
         notification_tx,
         response_senders,
-        close_reason,
+        Arc::clone(&close_reason),
         cancel.clone(),
     );
 
-    // Allow time for processing — should not panic
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Cancel the multiplexer — if processing the unmatched response panicked,
+    // the task would have aborted before reaching the cancel branch.
     cancel.cancel();
+
+    // Wait deterministically for close_reason to be set
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if close_reason.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer should set close_reason after cancel");
 }
 
 #[tokio::test]
@@ -963,8 +976,17 @@ async fn multiplexer_eof_sets_close_reason() {
         cancel,
     );
 
-    // Wait for multiplexer to process EOF
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for multiplexer to process EOF
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if close_reason.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer should set close_reason within timeout");
 
     let reason = close_reason.lock().unwrap().clone();
     assert!(matches!(reason, Some(MultiplexerClosed::TransportEof)));
@@ -997,7 +1019,17 @@ async fn multiplexer_transport_error_sets_close_reason() {
         cancel,
     );
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for multiplexer to process the transport error
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if close_reason.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer should set close_reason within timeout");
 
     let reason = close_reason.lock().unwrap().clone();
     match reason {
@@ -1034,9 +1066,18 @@ async fn multiplexer_cancel_sets_close_reason() {
         cancel.clone(),
     );
 
-    // Cancel and wait for task to process
+    // Cancel and wait deterministically for close_reason to be set
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if close_reason.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer should set close_reason after cancel within timeout");
 
     let reason = close_reason.lock().unwrap().clone();
     assert!(matches!(reason, Some(MultiplexerClosed::Cancelled)));
@@ -1087,15 +1128,18 @@ async fn handler_responds_to_sampling() {
         .await
         .unwrap();
 
-    // Wait for handler to process
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Check events emitted (incoming + outgoing)
-    let evt1 = handler_event_rx.try_recv().unwrap();
+    // Wait deterministically for handler to emit events
+    let evt1 = tokio::time::timeout(Duration::from_secs(2), handler_event_rx.recv())
+        .await
+        .expect("should receive first event within timeout")
+        .unwrap();
     assert_eq!(evt1.method, "sampling/createMessage");
     assert!(matches!(evt1.direction, Direction::Incoming));
 
-    let evt2 = handler_event_rx.try_recv().unwrap();
+    let evt2 = tokio::time::timeout(Duration::from_secs(2), handler_event_rx.recv())
+        .await
+        .expect("should receive second event within timeout")
+        .unwrap();
     assert_eq!(evt2.method, "sampling/createMessage");
     assert!(matches!(evt2.direction, Direction::Outgoing));
 
@@ -1141,7 +1185,17 @@ async fn handler_responds_to_ping() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1186,7 +1240,17 @@ async fn handler_responds_to_roots_list() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1236,7 +1300,17 @@ async fn handler_responds_to_elicitation() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1277,7 +1351,17 @@ async fn handler_unknown_method_returns_empty() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1325,7 +1409,17 @@ async fn handler_sampling_error_sends_error_response() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the error response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send error response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1385,7 +1479,17 @@ async fn handler_uses_fresh_extractors() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages[0]["result"]["content"]["text"], "Hello Alice");

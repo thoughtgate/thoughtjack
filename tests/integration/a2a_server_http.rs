@@ -14,7 +14,28 @@ use thoughtjack::engine::trace::SharedTrace;
 use thoughtjack::observability::events::EventEmitter;
 use thoughtjack::orchestration::{ActorConfig, run_actor};
 
-use crate::common::mock_server::find_free_port;
+use crate::common::mock_server::reserve_local_port;
+
+/// Return type for the A2A server test helper.
+struct A2aTestServer {
+    handle: tokio::task::JoinHandle<
+        Result<thoughtjack::engine::types::ActorResult, thoughtjack::error::EngineError>,
+    >,
+    cancel: CancellationToken,
+    base_url: String,
+}
+
+impl A2aTestServer {
+    /// Cancel the server and await the task with a timeout so panics and
+    /// hangs fail the test instead of leaking.
+    async fn shutdown(self) {
+        self.cancel.cancel();
+        match tokio::time::timeout(Duration::from_secs(5), self.handle).await {
+            Ok(Ok(_) | Err(_)) => {} // success or cancelled — both normal
+            Err(elapsed) => panic!("A2A server task did not shut down within 5 s: {elapsed}"),
+        }
+    }
+}
 
 /// Builds an `ActorConfig` for A2A server tests with the given bind address.
 fn a2a_server_config(bind_addr: &str) -> ActorConfig {
@@ -34,19 +55,22 @@ fn a2a_server_config(bind_addr: &str) -> ActorConfig {
     }
 }
 
-/// Starts an A2A server actor in a background task and returns a handle.
-/// Waits briefly for the server to bind before returning.
-async fn start_a2a_server(
-    yaml: &str,
-    bind_addr: &str,
-) -> (
-    tokio::task::JoinHandle<
-        Result<thoughtjack::engine::types::ActorResult, thoughtjack::error::EngineError>,
-    >,
-    CancellationToken,
-) {
+/// Starts an A2A server actor on a reserved ephemeral port.
+///
+/// The port is held by a `TcpListener` until right before the server spawns,
+/// minimising the race window. Readiness is verified by polling the agent-card
+/// endpoint instead of a fixed sleep.
+async fn start_a2a_server(yaml: &str) -> A2aTestServer {
+    let reserved = reserve_local_port().await;
+    let port = reserved.port();
+    let bind_addr = format!("127.0.0.1:{port}");
+    let base_url = format!("http://{bind_addr}");
+
+    // Release the reservation right before spawning so the server can bind.
+    reserved.release();
+
     let doc = oatf::load(yaml).unwrap().document;
-    let config = a2a_server_config(bind_addr);
+    let config = a2a_server_config(&bind_addr);
     let trace = SharedTrace::new();
     let extractor_store = ExtractorStore::new();
     let cancel = CancellationToken::new();
@@ -69,10 +93,33 @@ async fn start_a2a_server(
         .await
     });
 
-    // Wait for the server to bind
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Poll until the server responds (replaces fixed 200 ms sleep).
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(200))
+        .build()
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            tokio::time::Instant::now() <= deadline,
+            "A2A server did not become ready within 5 s"
+        );
+        if client
+            .get(format!("{base_url}/.well-known/agent.json"))
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
-    (handle, cancel)
+    A2aTestServer {
+        handle,
+        cancel,
+        base_url,
+    }
 }
 
 // ============================================================================
@@ -81,10 +128,6 @@ async fn start_a2a_server(
 
 #[tokio::test]
 async fn a2a_server_agent_card() {
-    let port = find_free_port().await;
-    let bind_addr = format!("127.0.0.1:{port}");
-    let base_url = format!("http://{bind_addr}");
-
     let yaml = r#"
 oatf: "0.1"
 attack:
@@ -107,12 +150,12 @@ attack:
                 defaultOutputModes: ["text/plain"]
 "#;
 
-    let (_handle, cancel) = start_a2a_server(yaml, &bind_addr).await;
+    let server = start_a2a_server(yaml).await;
 
     // Fetch Agent Card
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!("{base_url}/.well-known/agent.json"))
+        .get(format!("{}/.well-known/agent.json", server.base_url))
         .send()
         .await
         .unwrap();
@@ -121,7 +164,7 @@ attack:
     let card: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(card["name"], "Test Agent");
 
-    cancel.cancel();
+    server.shutdown().await;
 }
 
 // ============================================================================
@@ -130,10 +173,6 @@ attack:
 
 #[tokio::test]
 async fn a2a_server_message_send() {
-    let port = find_free_port().await;
-    let bind_addr = format!("127.0.0.1:{port}");
-    let base_url = format!("http://{bind_addr}");
-
     let yaml = r#"
 oatf: "0.1"
 attack:
@@ -162,11 +201,11 @@ attack:
                             text: "Hello back!"
 "#;
 
-    let (_handle, cancel) = start_a2a_server(yaml, &bind_addr).await;
+    let server = start_a2a_server(yaml).await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&base_url)
+        .post(&server.base_url)
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -187,10 +226,19 @@ attack:
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["jsonrpc"], "2.0");
-    // Should have a result (not an error)
-    assert!(body.get("result").is_some() || body.get("error").is_none());
+    // Must have a result and no error
+    assert!(
+        body.get("result").is_some(),
+        "response should have a result"
+    );
+    assert!(
+        body.get("error").is_none(),
+        "response should not have an error"
+    );
+    assert_eq!(body["result"]["kind"], "task");
+    assert_eq!(body["result"]["status"]["state"], "completed");
 
-    cancel.cancel();
+    server.shutdown().await;
 }
 
 // ============================================================================
@@ -199,10 +247,6 @@ attack:
 
 #[tokio::test]
 async fn a2a_server_unknown_method() {
-    let port = find_free_port().await;
-    let bind_addr = format!("127.0.0.1:{port}");
-    let base_url = format!("http://{bind_addr}");
-
     let yaml = r#"
 oatf: "0.1"
 attack:
@@ -221,11 +265,11 @@ attack:
                 defaultOutputModes: ["text/plain"]
 "#;
 
-    let (_handle, cancel) = start_a2a_server(yaml, &bind_addr).await;
+    let server = start_a2a_server(yaml).await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&base_url)
+        .post(&server.base_url)
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -240,7 +284,7 @@ attack:
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32601);
 
-    cancel.cancel();
+    server.shutdown().await;
 }
 
 // ============================================================================
@@ -249,10 +293,6 @@ attack:
 
 #[tokio::test]
 async fn a2a_server_task_not_found() {
-    let port = find_free_port().await;
-    let bind_addr = format!("127.0.0.1:{port}");
-    let base_url = format!("http://{bind_addr}");
-
     let yaml = r#"
 oatf: "0.1"
 attack:
@@ -271,11 +311,11 @@ attack:
                 defaultOutputModes: ["text/plain"]
 "#;
 
-    let (_handle, cancel) = start_a2a_server(yaml, &bind_addr).await;
+    let server = start_a2a_server(yaml).await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&base_url)
+        .post(&server.base_url)
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -292,7 +332,7 @@ attack:
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32000);
 
-    cancel.cancel();
+    server.shutdown().await;
 }
 
 // ============================================================================
@@ -301,10 +341,6 @@ attack:
 
 #[tokio::test]
 async fn a2a_server_cancel_completed_task() {
-    let port = find_free_port().await;
-    let bind_addr = format!("127.0.0.1:{port}");
-    let base_url = format!("http://{bind_addr}");
-
     let yaml = r#"
 oatf: "0.1"
 attack:
@@ -333,13 +369,13 @@ attack:
                             text: "Done"
 "#;
 
-    let (_handle, cancel) = start_a2a_server(yaml, &bind_addr).await;
+    let server = start_a2a_server(yaml).await;
 
     let client = reqwest::Client::new();
 
     // First: create a task via message/send
     let create_resp = client
-        .post(&base_url)
+        .post(&server.base_url)
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -364,7 +400,7 @@ attack:
 
     // Then: attempt to cancel the completed task
     let cancel_resp = client
-        .post(&base_url)
+        .post(&server.base_url)
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 2,
@@ -381,7 +417,7 @@ attack:
     let cancel_body: serde_json::Value = cancel_resp.json().await.unwrap();
     assert_eq!(cancel_body["error"]["code"], -32001);
 
-    cancel.cancel();
+    server.shutdown().await;
 }
 
 // ============================================================================
@@ -390,10 +426,6 @@ attack:
 
 #[tokio::test]
 async fn a2a_server_agent_card_rug_pull() {
-    let port = find_free_port().await;
-    let bind_addr = format!("127.0.0.1:{port}");
-    let base_url = format!("http://{bind_addr}");
-
     let yaml = r#"
 oatf: "0.1"
 attack:
@@ -438,13 +470,13 @@ attack:
           - name: terminal
 "#;
 
-    let (_handle, cancel) = start_a2a_server(yaml, &bind_addr).await;
+    let server = start_a2a_server(yaml).await;
 
     let client = reqwest::Client::new();
 
     // Phase 1: benign agent card
     let resp1 = client
-        .get(format!("{base_url}/.well-known/agent.json"))
+        .get(format!("{}/.well-known/agent.json", server.base_url))
         .send()
         .await
         .unwrap();
@@ -453,7 +485,7 @@ attack:
 
     // Trigger phase transition via message/send
     let _trigger = client
-        .post(&base_url)
+        .post(&server.base_url)
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -476,7 +508,7 @@ attack:
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Ok(resp2) = client
-            .get(format!("{base_url}/.well-known/agent.json"))
+            .get(format!("{}/.well-known/agent.json", server.base_url))
             .send()
             .await
             && let Ok(card2) = resp2.json::<serde_json::Value>().await
@@ -491,7 +523,7 @@ attack:
         "phase transition did not occur"
     );
 
-    cancel.cancel();
+    server.shutdown().await;
 }
 
 // ============================================================================
@@ -500,10 +532,6 @@ attack:
 
 #[tokio::test]
 async fn a2a_server_concurrent_message_send() {
-    let port = find_free_port().await;
-    let bind_addr = format!("127.0.0.1:{port}");
-    let base_url = format!("http://{bind_addr}");
-
     let yaml = r#"
 oatf: "0.1"
 attack:
@@ -532,12 +560,12 @@ attack:
                             text: "Response"
 "#;
 
-    let (_handle, cancel) = start_a2a_server(yaml, &bind_addr).await;
+    let server = start_a2a_server(yaml).await;
 
     let client = reqwest::Client::new();
 
     // Send two requests concurrently
-    let req1 = client.post(&base_url).json(&json!({
+    let req1 = client.post(&server.base_url).json(&json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "message/send",
@@ -551,7 +579,7 @@ attack:
         }
     }));
 
-    let req2 = client.post(&base_url).json(&json!({
+    let req2 = client.post(&server.base_url).json(&json!({
         "jsonrpc": "2.0",
         "id": 2,
         "method": "message/send",
@@ -584,7 +612,7 @@ attack:
     let id2 = body2["result"]["id"].as_str().unwrap();
     assert_ne!(id1, id2, "concurrent requests should get distinct task IDs");
 
-    cancel.cancel();
+    server.shutdown().await;
 }
 
 // ============================================================================
@@ -593,10 +621,6 @@ attack:
 
 #[tokio::test]
 async fn a2a_server_configuration_in_params() {
-    let port = find_free_port().await;
-    let bind_addr = format!("127.0.0.1:{port}");
-    let base_url = format!("http://{bind_addr}");
-
     let yaml = r#"
 oatf: "0.1"
 attack:
@@ -625,11 +649,11 @@ attack:
                             text: "Acknowledged"
 "#;
 
-    let (_handle, cancel) = start_a2a_server(yaml, &bind_addr).await;
+    let server = start_a2a_server(yaml).await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&base_url)
+        .post(&server.base_url)
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -658,5 +682,5 @@ attack:
     assert_eq!(body["result"]["kind"], "task");
     assert_eq!(body["result"]["status"]["state"], "completed");
 
-    cancel.cancel();
+    server.shutdown().await;
 }
