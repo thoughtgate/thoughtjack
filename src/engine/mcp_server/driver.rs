@@ -298,6 +298,7 @@ impl McpServerDriver {
     /// requests that the client may send before its response (e.g.
     /// `notifications/progress`, `notifications/cancelled`). Interleaved
     /// messages are re-emitted on `event_tx` so they are not lost.
+    #[allow(clippy::cognitive_complexity)] // transport branching + select loop is inherently complex
     async fn send_server_request(
         &mut self,
         request: &JsonRpcRequest,
