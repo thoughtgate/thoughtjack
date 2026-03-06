@@ -310,9 +310,9 @@ pub fn handle_elicitation_response(request: &JsonRpcRequest) -> JsonRpcResponse 
 /// Implements: TJ-SPEC-013 F-001
 pub fn handle_tasks_get(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = params.get("taskId").and_then(Value::as_str).unwrap_or_default();
 
-    let Some(task) = find_by_field(state, "tasks", "id", task_id) else {
+    let Some(task) = find_by_field(state, "tasks", "taskId", task_id) else {
         return JsonRpcResponse::error(
             request.id.clone(),
             error_codes::INVALID_PARAMS,
@@ -331,9 +331,9 @@ pub fn handle_tasks_get(request: &JsonRpcRequest, state: &Value) -> JsonRpcRespo
 /// Implements: TJ-SPEC-013 F-001
 pub fn handle_tasks_result(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = params.get("taskId").and_then(Value::as_str).unwrap_or_default();
 
-    let Some(task) = find_by_field(state, "tasks", "id", task_id) else {
+    let Some(task) = find_by_field(state, "tasks", "taskId", task_id) else {
         return JsonRpcResponse::error(
             request.id.clone(),
             error_codes::INVALID_PARAMS,
@@ -368,9 +368,9 @@ pub fn handle_tasks_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResp
 /// Implements: TJ-SPEC-013 F-001
 pub fn handle_tasks_cancel(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let params = request.params.as_ref().unwrap_or(&Value::Null);
-    let task_id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+    let task_id = params.get("taskId").and_then(Value::as_str).unwrap_or_default();
 
-    let Some(_task) = find_by_field(state, "tasks", "id", task_id) else {
+    let Some(_task) = find_by_field(state, "tasks", "taskId", task_id) else {
         return JsonRpcResponse::error(
             request.id.clone(),
             error_codes::INVALID_PARAMS,
@@ -380,6 +380,6 @@ pub fn handle_tasks_cancel(request: &JsonRpcRequest, state: &Value) -> JsonRpcRe
 
     JsonRpcResponse::success(
         request.id.clone(),
-        json!({ "id": task_id, "status": "cancelled" }),
+        json!({ "taskId": task_id, "status": "cancelled" }),
     )
 }

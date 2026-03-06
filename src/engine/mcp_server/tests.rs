@@ -766,18 +766,18 @@ fn elicitation_response_returns_empty_object() {
 fn tasks_get_returns_task() {
     let state = json!({
         "tasks": [
-            {"id": "task-1", "status": "running", "result": {"data": "hello"}}
+            {"taskId": "task-1", "status": "running", "result": {"data": "hello"}}
         ]
     });
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks/get".to_string(),
-        params: Some(json!({"id": "task-1"})),
+        params: Some(json!({"taskId": "task-1"})),
         id: json!(1),
     };
     let resp = handle_tasks_get(&request, &state);
     let result = resp.result.unwrap();
-    assert_eq!(result["id"], "task-1");
+    assert_eq!(result["taskId"], "task-1");
     assert_eq!(result["status"], "running");
 }
 
@@ -787,7 +787,7 @@ fn tasks_get_unknown_returns_error() {
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks/get".to_string(),
-        params: Some(json!({"id": "missing"})),
+        params: Some(json!({"taskId": "missing"})),
         id: json!(1),
     };
     let resp = handle_tasks_get(&request, &state);
@@ -798,13 +798,13 @@ fn tasks_get_unknown_returns_error() {
 fn tasks_result_returns_result() {
     let state = json!({
         "tasks": [
-            {"id": "task-1", "status": "completed", "result": {"output": "done"}}
+            {"taskId": "task-1", "status": "completed", "result": {"output": "done"}}
         ]
     });
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks/result".to_string(),
-        params: Some(json!({"id": "task-1"})),
+        params: Some(json!({"taskId": "task-1"})),
         id: json!(1),
     };
     let resp = handle_tasks_result(&request, &state);
@@ -816,8 +816,8 @@ fn tasks_result_returns_result() {
 fn tasks_list_returns_all_tasks() {
     let state = json!({
         "tasks": [
-            {"id": "task-1", "status": "running"},
-            {"id": "task-2", "status": "completed"}
+            {"taskId": "task-1", "status": "running"},
+            {"taskId": "task-2", "status": "completed"}
         ]
     });
     let request = JsonRpcRequest {
@@ -848,17 +848,17 @@ fn tasks_list_empty_state() {
 #[test]
 fn tasks_cancel_returns_cancelled() {
     let state = json!({
-        "tasks": [{"id": "task-1", "status": "running"}]
+        "tasks": [{"taskId": "task-1", "status": "running"}]
     });
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks/cancel".to_string(),
-        params: Some(json!({"id": "task-1"})),
+        params: Some(json!({"taskId": "task-1"})),
         id: json!(1),
     };
     let resp = handle_tasks_cancel(&request, &state);
     let result = resp.result.unwrap();
-    assert_eq!(result["id"], "task-1");
+    assert_eq!(result["taskId"], "task-1");
     assert_eq!(result["status"], "cancelled");
 }
 
@@ -1496,7 +1496,7 @@ fn ec_oatf_020_content_annotations() {
 fn ec_oatf_021_task_capability() {
     let state = json!({
         "tasks": [
-            {"id": "task-1", "status": "running", "result": {}}
+            {"taskId": "task-1", "status": "running", "result": {}}
         ]
     });
 
