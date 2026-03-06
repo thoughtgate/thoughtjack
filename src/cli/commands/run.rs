@@ -448,18 +448,33 @@ fn summarize_actor_failures(outcomes: &[ActorOutcome]) -> Vec<String> {
         })
         .collect();
 
-    let cancelled = successful
-        .iter()
-        .filter(|result| result.termination == TerminationReason::Cancelled)
-        .count();
-    let timed_out = successful
-        .iter()
-        .filter(|result| result.termination == TerminationReason::MaxSessionExpired)
-        .count();
+    // If at least one actor completed normally (not cancelled/timed-out),
+    // partial failures are expected in multi-actor scenarios (e.g. server
+    // cancelled after client completes, or intentional error-degradation).
+    // Let the verdict exit code take precedence.
+    let any_completed = successful.iter().any(|result| {
+        !matches!(
+            result.termination,
+            TerminationReason::Cancelled | TerminationReason::MaxSessionExpired
+        )
+    });
 
-    if cancelled > 0 || timed_out > 0 {
+    if any_completed {
+        return Vec::new();
+    }
+
+    // No actor completed normally — check if all are cancelled/timed-out.
+    if failures.is_empty() && !successful.is_empty() {
+        let cancelled = successful
+            .iter()
+            .filter(|result| result.termination == TerminationReason::Cancelled)
+            .count();
+        let timed_out = successful
+            .iter()
+            .filter(|result| result.termination == TerminationReason::MaxSessionExpired)
+            .count();
         failures.push(format!(
-            "actors terminated by cancellation/timeout before completion (cancelled: {cancelled}, timeout: {timed_out})"
+            "all actors terminated by cancellation/timeout before completion (cancelled: {cancelled}, timeout: {timed_out})"
         ));
     }
 
@@ -521,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn summarize_actor_failures_mixed_completion_is_failure() {
+    fn summarize_actor_failures_mixed_completion_is_not_failure() {
         let outcomes = vec![
             ActorOutcome::Success(crate::engine::types::ActorResult {
                 actor_name: "server".to_string(),
@@ -538,9 +553,7 @@ mod tests {
                 final_phase: Some("done".to_string()),
             }),
         ];
-        let failures = summarize_actor_failures(&outcomes);
-        assert_eq!(failures.len(), 1);
-        assert!(failures[0].contains("cancellation/timeout"));
+        assert!(summarize_actor_failures(&outcomes).is_empty());
     }
 
     #[tokio::test]

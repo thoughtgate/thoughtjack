@@ -700,9 +700,12 @@ impl McpSseParser {
         self.map_raw_events(raw_events)
     }
 
+    #[allow(clippy::unused_self)]
     fn map_raw_events(
-        &mut self,
-        raw_events: Vec<Result<crate::transport::sse::RawSseEvent, crate::transport::sse::SseParseError>>,
+        &self,
+        raw_events: Vec<
+            Result<crate::transport::sse::RawSseEvent, crate::transport::sse::SseParseError>,
+        >,
     ) -> Vec<Result<JsonRpcMessage, String>> {
         let mut messages = Vec::new();
 

@@ -238,7 +238,8 @@ impl McpServerDriver {
         self.maybe_send_logging(state, tool_name, event_tx).await;
         self.maybe_send_progress(state, params, tool_name, event_tx)
             .await;
-        self.maybe_send_sampling(state, tool_name, event_tx, cancel).await;
+        self.maybe_send_sampling(state, tool_name, event_tx, cancel)
+            .await;
         self.maybe_send_elicitation(state, params, tool_name, event_tx, cancel)
             .await;
 
@@ -737,16 +738,17 @@ impl McpServerDriver {
         let pending = apply_delivery(&self.transport, state, &response_msg).await?;
 
         if let Some(handle) = pending
-            && let Some(result) = self.observe_during_delivery(handle, event_tx, cancel).await?
+            && let Some(result) = self
+                .observe_during_delivery(handle, event_tx, cancel)
+                .await?
         {
             return Ok(Some(result));
         }
 
         let outgoing_content = response.result.clone().unwrap_or_else(|| {
-            response
-                .error
-                .as_ref()
-                .map_or(Value::Null, |e| serde_json::to_value(e).unwrap_or(Value::Null))
+            response.error.as_ref().map_or(Value::Null, |e| {
+                serde_json::to_value(e).unwrap_or(Value::Null)
+            })
         });
         let _ = event_tx.send(ProtocolEvent {
             direction: Direction::Outgoing,

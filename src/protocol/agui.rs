@@ -951,7 +951,7 @@ impl PhaseDriver for AgUiDriver {
 
         // Build RunAgentInput from state + extractors
         let input = build_run_agent_input(state, &current_extractors, self.transport.thread_id())?;
-        self.transport.thread_id = input.thread_id.clone();
+        self.transport.thread_id.clone_from(&input.thread_id);
 
         // Emit outgoing request event
         let input_value = serde_json::to_value(&input)

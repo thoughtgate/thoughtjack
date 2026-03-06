@@ -122,6 +122,7 @@ type TaskMetaMap = HashMap<TaskId, (String, bool)>;
 /// collected in `OrchestratorResult::outcomes`.
 ///
 /// Implements: TJ-SPEC-015 F-004
+#[allow(clippy::too_many_lines)]
 pub async fn orchestrate(
     loaded: &LoadedDocument,
     config: &ActorConfig,

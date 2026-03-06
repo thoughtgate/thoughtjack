@@ -6,9 +6,9 @@
 //!
 //! See TJ-SPEC-013 §7 for the loading pipeline.
 
-use std::collections::{HashMap, HashSet};
 use crate::engine::types::AwaitExtractor;
 use crate::error::LoaderError;
+use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 use std::time::Duration;
@@ -139,10 +139,12 @@ fn extract_from_phases(
 
 /// Parse an `await_extractors` YAML value into `AwaitExtractor` specs.
 ///
-fn parse_await_extractors(value: &serde_yaml::Value) -> Result<Option<Vec<AwaitExtractor>>, LoaderError> {
-    let seq = value
-        .as_sequence()
-        .ok_or_else(|| LoaderError::Preprocess("await_extractors must be a sequence".to_string()))?;
+fn parse_await_extractors(
+    value: &serde_yaml::Value,
+) -> Result<Option<Vec<AwaitExtractor>>, LoaderError> {
+    let seq = value.as_sequence().ok_or_else(|| {
+        LoaderError::Preprocess("await_extractors must be a sequence".to_string())
+    })?;
     let mut result = Vec::with_capacity(seq.len());
 
     for (i, item) in seq.iter().enumerate() {

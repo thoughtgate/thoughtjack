@@ -109,7 +109,7 @@ impl A2aSseParser {
             }
         };
 
-        match extract_jsonrpc_result(parsed) {
+        match extract_jsonrpc_result(&parsed) {
             Ok(result) => {
                 self.consecutive_errors = 0;
                 Ok(result)
@@ -210,7 +210,7 @@ impl A2aSseStream {
     }
 }
 
-fn extract_jsonrpc_result(response: Value) -> Result<Value, String> {
+fn extract_jsonrpc_result(response: &Value) -> Result<Value, String> {
     let Some(obj) = response.as_object() else {
         return Err("invalid A2A JSON-RPC response: expected object".to_string());
     };
@@ -603,7 +603,7 @@ impl A2aClientDriver {
     ) -> Result<DriveResult, EngineError> {
         let response = self.transport.message_send(&message).await?;
 
-        let result = extract_jsonrpc_result(response)
+        let result = extract_jsonrpc_result(&response)
             .map_err(|e| EngineError::Driver(format!("A2A request failed: {e}")))?;
 
         // Detect response type via `kind` discriminator
@@ -808,14 +808,16 @@ mod tests {
         let events1 = parser.feed(b"data: {\"res");
         assert!(events1.is_empty());
 
-        let events2 = parser.feed(b"ult\":{\"kind\":\"task\"},\"jsonrpc\":\"2.0\",\"id\":\"1\"}\n\n");
+        let events2 =
+            parser.feed(b"ult\":{\"kind\":\"task\"},\"jsonrpc\":\"2.0\",\"id\":\"1\"}\n\n");
         assert_eq!(events2.len(), 1);
     }
 
     #[test]
     fn parse_sse_comment_ignored() {
         let mut parser = A2aSseParser::new();
-        let input = b": comment\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"ok\":true}}\n\n";
+        let input =
+            b": comment\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"ok\":true}}\n\n";
         let events = parser.feed(input);
 
         assert_eq!(events.len(), 1);

@@ -24,7 +24,7 @@ use super::{
     CorrelatedResponse, DEFAULT_PHASE_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, HANDLER_EVENT_BUFFER_SIZE,
     HandlerState, INIT_TIMEOUT, NOTIFICATION_BUFFER_SIZE, NotificationMessage,
     POST_ACTION_IDLE_TIMEOUT, PendingRequest, SERVER_REQUEST_BUFFER_SIZE,
-    };
+};
 
 // ============================================================================
 // McpClientDriver

@@ -485,7 +485,7 @@ impl Transport for HttpTransport {
         // Store the response sender for subsequent send_message/send_raw calls
         {
             let mut guard = self.current_response.lock().await;
-            *guard = req.response_tx.clone();
+            (*guard).clone_from(&req.response_tx);
         }
 
         // Track connection here (not in the handler) to avoid a race where the

@@ -162,11 +162,7 @@ impl SseParser {
         events
     }
 
-    fn process_line(
-        &mut self,
-        line: &str,
-        events: &mut Vec<Result<RawSseEvent, SseParseError>>,
-    ) {
+    fn process_line(&mut self, line: &str, events: &mut Vec<Result<RawSseEvent, SseParseError>>) {
         if line.is_empty() {
             if self.discard_current_event {
                 self.discard_current_event = false;

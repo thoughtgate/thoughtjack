@@ -502,7 +502,18 @@ async fn handle_message_stream(
             delay_ms,
             total_steps,
         ),
-        |(shared, task_id, context_id, req_id, final_status, history_msgs, artifacts, step, delay, total_steps)| async move {
+        |(
+            shared,
+            task_id,
+            context_id,
+            req_id,
+            final_status,
+            history_msgs,
+            artifacts,
+            step,
+            delay,
+            total_steps,
+        )| async move {
             if step >= total_steps {
                 return None;
             }
@@ -546,9 +557,9 @@ async fn handle_message_stream(
                 }
                 final_step if final_step == total_steps - 1 => {
                     if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
-                        task.status = final_status.clone();
-                        task.history = history_msgs.as_ref().clone();
-                        task.artifacts = artifacts.as_ref().clone();
+                        task.status.clone_from(&final_status);
+                        task.history.clone_from(history_msgs.as_ref());
+                        task.artifacts.clone_from(artifacts.as_ref());
                     }
                     let final_status = json!({
                         "jsonrpc": "2.0",
@@ -585,7 +596,18 @@ async fn handle_message_stream(
 
             Some((
                 Ok::<_, std::convert::Infallible>(event),
-                (shared, task_id, context_id, req_id, final_status, history_msgs, artifacts, step + 1, delay, total_steps),
+                (
+                    shared,
+                    task_id,
+                    context_id,
+                    req_id,
+                    final_status,
+                    history_msgs,
+                    artifacts,
+                    step + 1,
+                    delay,
+                    total_steps,
+                ),
             ))
         },
     );
