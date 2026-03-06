@@ -78,6 +78,11 @@ pub(super) trait McpClientTransportWriter: Send {
     // Future: graceful close handshake
     #[allow(dead_code)]
     async fn close(&mut self) -> Result<(), EngineError>;
+
+    /// Set the negotiated protocol version for inclusion in subsequent requests.
+    ///
+    /// No-op by default (stdio doesn't need this header).
+    async fn set_protocol_version(&mut self, _version: String) {}
 }
 
 /// Reader half of the split MCP client transport.
@@ -422,6 +427,8 @@ pub(super) struct HttpWriter {
     message_tx: mpsc::Sender<JsonRpcMessage>,
     /// Background response collectors spawned for in-flight HTTP responses.
     response_tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
+    /// Negotiated MCP protocol version (set after init, included in subsequent requests).
+    protocol_version: Option<String>,
 }
 
 /// HTTP reader for MCP Streamable HTTP transport.
@@ -483,6 +490,10 @@ impl McpClientTransportWriter for HttpWriter {
     async fn close(&mut self) -> Result<(), EngineError> {
         // HTTP is stateless — no-op
         Ok(())
+    }
+
+    async fn set_protocol_version(&mut self, version: String) {
+        self.protocol_version = Some(version);
     }
 }
 
@@ -578,6 +589,10 @@ impl HttpWriter {
 
             if let Some(ref sid) = *self.session_id.lock().await {
                 request = request.header("Mcp-Session-Id", sid.as_str());
+            }
+
+            if let Some(ref version) = self.protocol_version {
+                request = request.header("MCP-Protocol-Version", version.as_str());
             }
 
             for (key, value) in &self.headers {
@@ -734,6 +749,7 @@ pub(super) fn create_http_transport(
         headers: headers.to_vec(),
         message_tx,
         response_tasks,
+        protocol_version: None,
     };
 
     let reader = HttpReader { message_rx };

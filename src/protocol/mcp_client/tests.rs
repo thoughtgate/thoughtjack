@@ -1547,6 +1547,7 @@ fn create_test_driver(
         })),
         handler_handle: None,
         server_capabilities: None,
+        negotiated_version: None,
         request_timeout: Duration::from_millis(500),
         phase_timeout: Duration::from_millis(100),
         initialized: false,

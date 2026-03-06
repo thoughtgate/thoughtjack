@@ -54,6 +54,8 @@ pub struct McpClientDriver {
     pub(super) handler_handle: Option<JoinHandle<()>>,
     /// Server capabilities (captured during init).
     pub(super) server_capabilities: Option<Value>,
+    /// Negotiated protocol version from server init response.
+    pub(super) negotiated_version: Option<String>,
     /// Per-request timeout.
     pub(super) request_timeout: std::time::Duration,
     /// Post-action event loop timeout.
@@ -257,6 +259,7 @@ impl McpClientDriver {
     /// Returns `EngineError::Driver` if initialization fails.
     ///
     /// Implements: TJ-SPEC-018 F-005
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn initialize(
         &mut self,
         state: &Value,
@@ -353,6 +356,18 @@ impl McpClientDriver {
 
         // Capture server capabilities
         self.server_capabilities = Some(response.result.clone());
+
+        // Extract negotiated protocol version and propagate to HTTP writer
+        self.negotiated_version = response
+            .result
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .map(String::from);
+        let version = self
+            .negotiated_version
+            .clone()
+            .unwrap_or_else(|| "2025-11-25".to_string());
+        self.writer.lock().await.set_protocol_version(version).await;
 
         // Emit incoming event
         let _ = event_tx
@@ -737,6 +752,7 @@ pub fn create_mcp_client_driver(
         })),
         handler_handle: None,
         server_capabilities: None,
+        negotiated_version: None,
         request_timeout: DEFAULT_REQUEST_TIMEOUT,
         phase_timeout: DEFAULT_PHASE_TIMEOUT,
         initialized: false,
