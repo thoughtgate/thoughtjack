@@ -174,11 +174,13 @@ impl McpClientDriver {
         }
 
         // Emit outgoing event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: method.to_string(),
-            content: params.unwrap_or(Value::Null),
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: method.to_string(),
+                content: params.unwrap_or(Value::Null),
+            })
+            .await;
 
         // Await response via oneshot — multiplexer handles concurrent server requests
         let response = match tokio::time::timeout(self.request_timeout, response_rx).await {
@@ -214,11 +216,13 @@ impl McpClientDriver {
         {
             obj.insert("_request".to_string(), req_params.clone());
         }
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: response.method.clone(),
-            content,
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: response.method.clone(),
+                content,
+            })
+            .await;
 
         Ok(response)
     }
@@ -226,10 +230,7 @@ impl McpClientDriver {
     /// Forward any buffered events from handler and notifications to the `PhaseLoop`.
     ///
     /// Called between actions to minimize event forwarding latency.
-    pub(super) fn forward_pending_events(
-        &mut self,
-        event_tx: &mpsc::Sender<ProtocolEvent>,
-    ) {
+    pub(super) fn forward_pending_events(&mut self, event_tx: &mpsc::Sender<ProtocolEvent>) {
         if let Some(ref mut rx) = self.handler_event_rx {
             while let Ok(evt) = rx.try_recv() {
                 let _ = event_tx.try_send(evt);
@@ -314,11 +315,13 @@ impl McpClientDriver {
         }
 
         // Emit outgoing event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "initialize".to_string(),
-            content: init_params,
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "initialize".to_string(),
+                content: init_params,
+            })
+            .await;
 
         // Await response
         let response = match tokio::time::timeout(INIT_TIMEOUT, response_rx).await {
@@ -352,11 +355,13 @@ impl McpClientDriver {
         self.server_capabilities = Some(response.result.clone());
 
         // Emit incoming event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: "initialize".to_string(),
-            content: response.result,
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "initialize".to_string(),
+                content: response.result,
+            })
+            .await;
 
         // Send initialized notification
         self.writer

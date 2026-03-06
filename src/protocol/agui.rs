@@ -956,26 +956,30 @@ impl PhaseDriver for AgUiDriver {
         // Emit outgoing request event
         let input_value = serde_json::to_value(&input)
             .map_err(|e| EngineError::Driver(format!("failed to serialize RunAgentInput: {e}")))?;
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "run_agent_input".to_string(),
-            content: input_value,
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "run_agent_input".to_string(),
+                content: input_value,
+            })
+            .await;
 
         // Send request, get SSE stream (or HTTP error per §9.1)
         let mut stream = match self.transport.send_run(&input).await? {
             SendResult::Stream(s) => s,
             SendResult::HttpError { status, body } => {
                 tracing::warn!(status, %body, "AG-UI agent returned HTTP error");
-                let _ = event_tx.send(ProtocolEvent {
-                    direction: Direction::Incoming,
-                    method: "run_error".to_string(),
-                    content: json!({
-                        "type": "RUN_ERROR",
-                        "message": format!("HTTP {status}: {body}"),
-                        "code": format!("HTTP_{status}"),
-                    }),
-                }).await;
+                let _ = event_tx
+                    .send(ProtocolEvent {
+                        direction: Direction::Incoming,
+                        method: "run_error".to_string(),
+                        content: json!({
+                            "type": "RUN_ERROR",
+                            "message": format!("HTTP {status}: {body}"),
+                            "code": format!("HTTP_{status}"),
+                        }),
+                    })
+                    .await;
                 return Ok(DriveResult::Complete);
             }
         };

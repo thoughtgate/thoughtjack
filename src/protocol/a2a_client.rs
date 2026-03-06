@@ -543,19 +543,23 @@ impl PhaseDriver for A2aClientDriver {
             .unwrap_or(false)
         {
             // Emit outgoing event for card fetch
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Outgoing,
-                method: "agent_card/get".to_string(),
-                content: json!({}),
-            }).await;
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "agent_card/get".to_string(),
+                    content: json!({}),
+                })
+                .await;
 
             let card = self.transport.get_agent_card().await?;
 
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Incoming,
-                method: "agent_card/get".to_string(),
-                content: card,
-            }).await;
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "agent_card/get".to_string(),
+                    content: card,
+                })
+                .await;
         }
 
         // Determine streaming mode
@@ -579,11 +583,13 @@ impl PhaseDriver for A2aClientDriver {
         };
 
         // Emit outgoing event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: method.to_string(),
-            content: message.get("params").cloned().unwrap_or(Value::Null),
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: method.to_string(),
+                content: message.get("params").cloned().unwrap_or(Value::Null),
+            })
+            .await;
 
         if streaming {
             self.drive_streaming(message, event_tx, cancel).await
@@ -614,11 +620,13 @@ impl A2aClientDriver {
             self.transport.context_id = Some(ctx.to_string());
         }
 
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: event_type.to_string(),
-            content: result,
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: event_type.to_string(),
+                content: result,
+            })
+            .await;
 
         Ok(DriveResult::Complete)
     }
@@ -635,11 +643,13 @@ impl A2aClientDriver {
         let mut sse_stream = self.transport.message_stream(&message).await?;
 
         // Emit stream-opened event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: "message/stream".to_string(),
-            content: json!({"status": "connected"}),
-        }).await;
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "message/stream".to_string(),
+                content: json!({"status": "connected"}),
+            })
+            .await;
 
         let stream_timeout = DEFAULT_STREAM_TIMEOUT;
         let mut received_final = false;

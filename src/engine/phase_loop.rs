@@ -513,11 +513,13 @@ mod tests {
             event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Incoming,
-                method: "tools/call".to_string(),
-                content: serde_json::json!({"name": "calculator", "empty_field": ""}),
-            }).await;
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"name": "calculator", "empty_field": ""}),
+                })
+                .await;
             // Small yield to allow event processing
             tokio::task::yield_now().await;
             let snapshot = extractors.borrow().clone();
