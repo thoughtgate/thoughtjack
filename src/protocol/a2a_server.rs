@@ -10,7 +10,7 @@
 //!
 //! See TJ-SPEC-017 for the full A2A protocol support specification.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +19,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use axum::Router;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
@@ -94,6 +94,12 @@ struct StoredTask {
     created_at: Instant,
 }
 
+/// Maximum number of tasks stored per A2A server actor.
+///
+/// Prevents unbounded memory growth from sustained hostile traffic.
+/// Oldest tasks are evicted when the cap is reached.
+const MAX_STORED_TASKS: usize = 10_000;
+
 /// Per-actor task store for A2A server mode.
 ///
 /// Tracks tasks by ID and groups them by context ID.
@@ -104,6 +110,8 @@ struct TaskStore {
     tasks: HashMap<String, StoredTask>,
     /// Context ID → task IDs.
     contexts: HashMap<String, Vec<String>>,
+    /// Insertion-ordered task IDs for eviction.
+    insertion_order: VecDeque<String>,
 }
 
 impl TaskStore {
@@ -112,11 +120,30 @@ impl TaskStore {
         Self {
             tasks: HashMap::new(),
             contexts: HashMap::new(),
+            insertion_order: VecDeque::new(),
         }
     }
 
     /// Creates a new task and returns its ID and context ID.
+    ///
+    /// Evicts the oldest task if the store exceeds `MAX_STORED_TASKS`.
     fn create_task(&mut self, context_id: Option<&str>) -> (String, String) {
+        // Evict oldest tasks if at capacity
+        while self.tasks.len() >= MAX_STORED_TASKS {
+            if let Some(old_id) = self.insertion_order.pop_front() {
+                if let Some(old_task) = self.tasks.remove(&old_id)
+                    && let Some(ctx_tasks) = self.contexts.get_mut(&old_task.context_id)
+                {
+                    ctx_tasks.retain(|id| id != &old_id);
+                    if ctx_tasks.is_empty() {
+                        self.contexts.remove(&old_task.context_id);
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
         let task_id = uuid::Uuid::new_v4().to_string();
         let ctx_id = context_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), String::from);
 
@@ -130,6 +157,7 @@ impl TaskStore {
         };
 
         self.tasks.insert(task_id.clone(), task);
+        self.insertion_order.push_back(task_id.clone());
         self.contexts
             .entry(ctx_id.clone())
             .or_default()
@@ -188,7 +216,7 @@ struct A2aSharedState {
     /// Per-actor task store.
     task_store: RwLock<TaskStore>,
     /// Event channel for emitting `ProtocolEvent`s from handlers.
-    event_tx: RwLock<Option<mpsc::UnboundedSender<ProtocolEvent>>>,
+    event_tx: RwLock<Option<mpsc::Sender<ProtocolEvent>>>,
     /// Extractor watch channel for fresh values per request.
     extractors: RwLock<Option<watch::Receiver<HashMap<String, String>>>>,
     /// Current phase effective state.
@@ -220,18 +248,23 @@ async fn handle_agent_card(State(shared): State<Arc<A2aSharedState>>) -> Respons
 
     let card = shared.agent_card.read().await.clone();
 
-    // Emit events
-    if let Some(tx) = shared.event_tx.read().await.as_ref() {
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: "agent_card/get".to_string(),
-            content: json!({}),
-        });
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "agent_card/get".to_string(),
-            content: card.clone(),
-        });
+    // Emit events (clone sender to avoid holding RwLock guard across .await)
+    let tx = shared.event_tx.read().await.as_ref().cloned();
+    if let Some(tx) = tx {
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "agent_card/get".to_string(),
+                content: json!({}),
+            })
+            .await;
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "agent_card/get".to_string(),
+                content: card.clone(),
+            })
+            .await;
     }
 
     axum::Json(card).into_response()
@@ -262,28 +295,21 @@ async fn handle_jsonrpc(
         }
     };
 
-    // Validate JSON-RPC structure
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let method = match request.get("method").and_then(Value::as_str) {
-        Some(m) => m.to_string(),
-        None => {
-            return axum::Json(jsonrpc_error(
-                &id,
-                INVALID_REQUEST,
-                "Invalid request: missing 'method'",
-            ))
-            .into_response();
-        }
+    let (id, method, params) = match validate_jsonrpc_request(&request) {
+        Ok(validated) => validated,
+        Err(error) => return axum::Json(error).into_response(),
     };
-    let params = request.get("params").cloned().unwrap_or(Value::Null);
 
-    // Emit incoming event
-    if let Some(tx) = shared.event_tx.read().await.as_ref() {
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: method.clone(),
-            content: params.clone(),
-        });
+    // Emit incoming event (clone sender to avoid holding RwLock guard across .await)
+    let tx = shared.event_tx.read().await.as_ref().cloned();
+    if let Some(tx) = tx {
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: method.clone(),
+                content: params.clone(),
+            })
+            .await;
     }
 
     // Route by method
@@ -317,39 +343,8 @@ async fn handle_jsonrpc(
     }
 }
 
-#[allow(clippy::result_large_err)]
-fn validate_local_peer(addr: SocketAddr) -> Result<(), Response> {
-    if addr.ip().is_loopback() {
-        Ok(())
-    } else {
-        Err((StatusCode::FORBIDDEN, "non-local peer rejected").into_response())
-    }
-}
-
-#[allow(clippy::result_large_err)]
-fn validate_local_origin(headers: &HeaderMap) -> Result<(), Response> {
-    let header_value = headers
-        .get("origin")
-        .or_else(|| headers.get("host"))
-        .and_then(|v| v.to_str().ok());
-
-    let Some(header_value) = header_value else {
-        return Err((StatusCode::FORBIDDEN, "missing Origin or Host header").into_response());
-    };
-
-    let Some(hostname) = extract_hostname_for_origin_check(header_value) else {
-        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
-    };
-
-    if !matches!(
-        hostname.as_str(),
-        "localhost" | "127.0.0.1" | "[::1]" | "::1" | "0.0.0.0"
-    ) {
-        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
-    }
-
-    Ok(())
-}
+// Local-only validation delegates to the shared `transport::local` module.
+use crate::transport::local::{validate_local_origin, validate_local_peer};
 
 /// Router-level local-only guard for all A2A endpoints.
 async fn require_local_only(
@@ -364,36 +359,6 @@ async fn require_local_only(
         return resp;
     }
     next.run(request).await
-}
-
-fn extract_hostname_for_origin_check(header_value: &str) -> Option<String> {
-    let authority = if header_value.contains("://") {
-        header_value
-            .parse::<Uri>()
-            .ok()?
-            .authority()?
-            .as_str()
-            .to_string()
-    } else {
-        header_value.to_string()
-    };
-
-    if authority == "::1" {
-        return Some("::1".to_string());
-    }
-
-    if let Some(stripped) = authority.strip_prefix('[') {
-        let end = stripped.find(']')?;
-        return Some(format!("[{}]", &stripped[..end]).to_ascii_lowercase());
-    }
-
-    Some(
-        authority
-            .split(':')
-            .next()
-            .unwrap_or(authority.as_str())
-            .to_ascii_lowercase(),
-    )
 }
 
 /// Handle `message/send` — synchronous task response.
@@ -461,8 +426,8 @@ async fn handle_message_stream(
     // Get fresh extractors
     let current_extractors = get_extractors(shared).await;
 
-    // Select response entry
-    let (status, history_msgs, artifacts) = resolve_task_content(
+    // Resolve response content (response_type unused for streaming)
+    let (status, history_msgs, artifacts, _response_type) = resolve_task_response(
         &state,
         &request_message,
         &current_extractors,
@@ -473,104 +438,205 @@ async fn handle_message_stream(
     let context_id_hint = request_message.get("contextId").and_then(Value::as_str);
     let (task_id, context_id) = shared.task_store.write().await.create_task(context_id_hint);
 
-    // Store task data
-    {
-        let mut store = shared.task_store.write().await;
-        if let Some(task) = store.get_task_mut(&task_id) {
-            task.status.clone_from(&status);
-            task.history.clone_from(&history_msgs);
-            task.artifacts.clone_from(&artifacts);
-        }
-    }
-
     let req_id = request_id.clone();
 
-    // Build SSE event sequence
-    let mut events: Vec<SseEvent> = Vec::new();
-
-    // 1. Initial Task
-    let initial_task = json!({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {
-            "kind": "task",
-            "id": task_id,
-            "contextId": context_id,
-            "status": { "state": "submitted" },
-            "history": history_msgs,
-        }
-    });
-    events.push(SseEvent::default().data(initial_task.to_string()));
-
-    // 2. Working status update
-    let working = json!({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {
-            "kind": "status-update",
-            "taskId": task_id,
-            "contextId": context_id,
-            "status": { "state": "working" },
-            "final": false,
-        }
-    });
-    events.push(SseEvent::default().data(working.to_string()));
-
-    // 3. Artifact updates
-    for artifact in &artifacts {
-        let artifact_event = json!({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "kind": "artifact-update",
-                "taskId": task_id,
-                "contextId": context_id,
-                "artifact": artifact,
-            }
-        });
-        events.push(SseEvent::default().data(artifact_event.to_string()));
+    // Emit SSE events for trace (clone sender to avoid holding RwLock guard across .await)
+    let tx = shared.event_tx.read().await.as_ref().cloned();
+    if let Some(tx) = tx {
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "message/stream".to_string(),
+                content: json!({
+                    "taskId": task_id,
+                    "contextId": context_id,
+                    "status": status,
+                    "artifacts_count": artifacts.len(),
+                }),
+            })
+            .await;
     }
 
-    // 4. Final status update
-    let final_status = json!({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {
-            "kind": "status-update",
-            "taskId": task_id,
-            "contextId": context_id,
-            "status": { "state": status },
-            "final": true,
-        }
-    });
-    events.push(SseEvent::default().data(final_status.to_string()));
-
-    // Emit SSE events for trace
-    if let Some(tx) = shared.event_tx.read().await.as_ref() {
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "message/stream".to_string(),
-            content: json!({
-                "taskId": task_id,
-                "contextId": context_id,
-                "status": status,
-                "artifacts_count": artifacts.len(),
-            }),
-        });
-    }
-
-    // Build stream with inter-event delays using unfold
     let delay_ms = SSE_EVENT_DELAY_MS;
+    let history_for_stream = Arc::new(history_msgs);
+    let artifacts_for_stream = Arc::new(artifacts);
+    let final_status = status.clone();
+    let shared_for_stream = Arc::clone(shared);
+    let task_id_for_stream = task_id.clone();
+    let context_id_for_stream = context_id.clone();
+    let req_id_for_stream = req_id.clone();
+    let total_steps = artifacts_for_stream.len() + 3;
+
     let sse_stream = futures_util::stream::unfold(
-        (events.into_iter(), delay_ms),
-        |(mut iter, delay)| async move {
-            let event = iter.next()?;
+        (
+            shared_for_stream,
+            task_id_for_stream,
+            context_id_for_stream,
+            req_id_for_stream,
+            final_status,
+            history_for_stream,
+            artifacts_for_stream,
+            0usize,
+            delay_ms,
+            total_steps,
+        ),
+        |(
+            shared,
+            task_id,
+            context_id,
+            req_id,
+            final_status,
+            history_msgs,
+            artifacts,
+            step,
+            delay,
+            total_steps,
+        )| async move {
+            if step >= total_steps {
+                return None;
+            }
+
             tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-            Some((Ok::<_, std::convert::Infallible>(event), (iter, delay)))
+
+            let event = match step {
+                0 => {
+                    if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
+                        task.status = "submitted".to_string();
+                    }
+                    let initial_task = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "kind": "task",
+                            "id": task_id,
+                            "contextId": context_id,
+                            "status": { "state": "submitted" },
+                            "history": history_msgs.as_ref(),
+                        }
+                    });
+                    SseEvent::default().data(initial_task.to_string())
+                }
+                1 => {
+                    if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
+                        task.status = "working".to_string();
+                    }
+                    let working = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "kind": "status-update",
+                            "taskId": task_id,
+                            "contextId": context_id,
+                            "status": { "state": "working" },
+                            "final": false,
+                        }
+                    });
+                    SseEvent::default().data(working.to_string())
+                }
+                final_step if final_step == total_steps - 1 => {
+                    if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
+                        task.status.clone_from(&final_status);
+                        task.history.clone_from(history_msgs.as_ref());
+                        task.artifacts.clone_from(artifacts.as_ref());
+                    }
+                    let final_status = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "kind": "status-update",
+                            "taskId": task_id,
+                            "contextId": context_id,
+                            "status": { "state": final_status },
+                            "final": true,
+                        }
+                    });
+                    SseEvent::default().data(final_status.to_string())
+                }
+                artifact_step => {
+                    let artifact_index = artifact_step - 2;
+                    let artifact = artifacts[artifact_index].clone();
+                    if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
+                        task.artifacts.push(artifact.clone());
+                    }
+                    let artifact_event = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "kind": "artifact-update",
+                            "taskId": task_id,
+                            "contextId": context_id,
+                            "artifact": artifact,
+                        }
+                    });
+                    SseEvent::default().data(artifact_event.to_string())
+                }
+            };
+
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (
+                    shared,
+                    task_id,
+                    context_id,
+                    req_id,
+                    final_status,
+                    history_msgs,
+                    artifacts,
+                    step + 1,
+                    delay,
+                    total_steps,
+                ),
+            ))
         },
     );
 
     Sse::new(sse_stream).into_response()
+}
+
+fn validate_jsonrpc_request(request: &Value) -> Result<(Value, String, Value), Value> {
+    let Some(obj) = request.as_object() else {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: expected JSON-RPC object",
+        ));
+    };
+
+    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: expected jsonrpc='2.0'",
+        ));
+    }
+
+    let Some(method) = obj.get("method").and_then(Value::as_str) else {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: missing 'method'",
+        ));
+    };
+
+    let id = obj.get("id").cloned().unwrap_or(Value::Null);
+    if !matches!(id, Value::Null | Value::String(_) | Value::Number(_)) {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: 'id' must be string, number, or null",
+        ));
+    }
+
+    let params = obj.get("params").cloned().unwrap_or(Value::Null);
+    if !params.is_null() && !params.is_object() && !params.is_array() {
+        return Err(jsonrpc_error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "Invalid request: 'params' must be an object or array",
+        ));
+    }
+
+    Ok((id, method.to_string(), params))
 }
 
 fn required_task_id(params: &Value) -> Result<&str, &'static str> {
@@ -790,8 +856,8 @@ async fn dispatch_task_response(
     // Get fresh extractors
     let current_extractors = get_extractors(shared).await;
 
-    // Resolve response content
-    let (status, history_msgs, artifacts) = resolve_task_content(
+    // Resolve response content and type in a single pass
+    let (status, history_msgs, artifacts, response_type) = resolve_task_response(
         &state,
         &request_message,
         &current_extractors,
@@ -811,9 +877,6 @@ async fn dispatch_task_response(
             task.artifacts.clone_from(&artifacts);
         }
     }
-
-    // Check response_type
-    let response_type = resolve_response_type(&state, &request_message, &current_extractors);
 
     let result = if response_type == "message" {
         // Direct Message response
@@ -856,39 +919,62 @@ async fn dispatch_task_response(
     (result, "message/send".to_string())
 }
 
-/// Resolves task content from phase state using `select_response()`.
+/// Resolves task content and response type from phase state in a single pass.
 ///
-/// Returns `(status, history_messages, artifacts)`.
+/// Performs `select_response()` and `interpolate_value()` once, returning
+/// `(status, history_messages, artifacts, response_type)`.
+///
+/// Implements: TJ-SPEC-017 F-003
 // Complexity: task content resolution with response matching, interpolation, and artifact assembly
 #[allow(clippy::cognitive_complexity)]
-fn resolve_task_content(
+fn resolve_task_response(
     state: &Value,
     request_message: &Value,
     extractors: &HashMap<String, String>,
     raw_synthesize: bool,
-) -> (String, Vec<Value>, Vec<Value>) {
+) -> (String, Vec<Value>, Vec<Value>, String) {
     let task_responses = state.get("task_responses");
 
     let Some(responses_value) = task_responses else {
-        return ("completed".to_string(), Vec::new(), Vec::new());
+        return (
+            "completed".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "task".to_string(),
+        );
     };
 
     let entries: Vec<ResponseEntry> = match serde_json::from_value(responses_value.clone()) {
         Ok(entries) => entries,
         Err(err) => {
             tracing::warn!(error = %err, "failed to deserialize task_responses entries");
-            return ("completed".to_string(), Vec::new(), Vec::new());
+            return (
+                "completed".to_string(),
+                Vec::new(),
+                Vec::new(),
+                "task".to_string(),
+            );
         }
     };
 
     let Some(entry) = select_response(&entries, request_message) else {
-        return ("completed".to_string(), Vec::new(), Vec::new());
+        return (
+            "completed".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "task".to_string(),
+        );
     };
 
     // Check for synthesize block
     if entry.synthesize.is_some() && entry.extra.is_empty() {
         tracing::info!("synthesize block encountered but GenerationProvider not available");
-        return ("failed".to_string(), Vec::new(), Vec::new());
+        return (
+            "failed".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "task".to_string(),
+        );
     }
 
     // Build response from extra fields with interpolation
@@ -907,8 +993,20 @@ fn resolve_task_content(
             crate::engine::generation::validate_synthesized_output("a2a", &interpolated, None)
     {
         tracing::warn!(error = %err, "synthesized output validation failed");
-        return ("failed".to_string(), Vec::new(), Vec::new());
+        return (
+            "failed".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "task".to_string(),
+        );
     }
+
+    // Extract response_type (default: "task")
+    let response_type = interpolated
+        .get("response_type")
+        .and_then(Value::as_str)
+        .unwrap_or("task")
+        .to_string();
 
     // Extract status
     let status = interpolated
@@ -956,37 +1054,7 @@ fn resolve_task_content(
         })
         .collect();
 
-    (status, history, artifacts)
-}
-
-/// Resolves the `response_type` from matching entry.
-fn resolve_response_type(
-    state: &Value,
-    request_message: &Value,
-    extractors: &HashMap<String, String>,
-) -> String {
-    let Some(responses_value) = state.get("task_responses") else {
-        return "task".to_string();
-    };
-
-    let entries: Vec<ResponseEntry> = match serde_json::from_value(responses_value.clone()) {
-        Ok(entries) => entries,
-        Err(_) => return "task".to_string(),
-    };
-
-    let Some(entry) = select_response(&entries, request_message) else {
-        return "task".to_string();
-    };
-
-    let extra_value = serde_json::to_value(&entry.extra).unwrap_or(Value::Null);
-    let (interpolated, _) =
-        interpolate_value(&extra_value, extractors, Some(request_message), None);
-
-    interpolated
-        .get("response_type")
-        .and_then(Value::as_str)
-        .unwrap_or("task")
-        .to_string()
+    (status, history, artifacts, response_type)
 }
 
 /// Gets current extractors from the shared state.
@@ -1002,12 +1070,15 @@ async fn get_extractors(shared: &Arc<A2aSharedState>) -> HashMap<String, String>
 
 /// Emits an outgoing `ProtocolEvent`.
 async fn emit_outgoing(shared: &Arc<A2aSharedState>, method: &str, content: &Value) {
-    if let Some(tx) = shared.event_tx.read().await.as_ref() {
-        let _ = tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: method.to_string(),
-            content: content.clone(),
-        });
+    let tx = shared.event_tx.read().await.as_ref().cloned();
+    if let Some(tx) = tx {
+        let _ = tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: method.to_string(),
+                content: content.clone(),
+            })
+            .await;
     }
 }
 
@@ -1096,7 +1167,7 @@ impl PhaseDriver for A2aServerDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         self.shared
@@ -1349,7 +1420,7 @@ mod tests {
     // ---- Response Dispatch Tests ----
 
     #[test]
-    fn resolve_task_content_with_matching_response() {
+    fn resolve_task_response_with_matching_response() {
         let state = json!({
             "task_responses": [
                 {
@@ -1368,30 +1439,32 @@ mod tests {
             "parts": [{"kind": "text", "text": "Do something"}]
         });
 
-        let (status, history, artifacts) =
-            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+        let (status, history, artifacts, response_type) =
+            resolve_task_response(&state, &request_message, &HashMap::new(), false);
 
         assert_eq!(status, "completed");
+        assert_eq!(response_type, "task");
         // History should contain user message + agent response
         assert!(history.len() >= 2);
         assert!(artifacts.is_empty());
     }
 
     #[test]
-    fn resolve_task_content_no_responses() {
+    fn resolve_task_response_no_responses() {
         let state = json!({});
         let request_message = json!({"role": "user"});
 
-        let (status, history, artifacts) =
-            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+        let (status, history, artifacts, response_type) =
+            resolve_task_response(&state, &request_message, &HashMap::new(), false);
 
         assert_eq!(status, "completed");
+        assert_eq!(response_type, "task");
         assert!(history.is_empty());
         assert!(artifacts.is_empty());
     }
 
     #[test]
-    fn resolve_task_content_with_artifacts() {
+    fn resolve_task_response_with_artifacts() {
         let state = json!({
             "task_responses": [
                 {
@@ -1407,8 +1480,8 @@ mod tests {
         });
         let request_message = json!({"role": "user", "parts": [{"kind": "text", "text": "test"}]});
 
-        let (status, _history, artifacts) =
-            resolve_task_content(&state, &request_message, &HashMap::new(), false);
+        let (status, _history, artifacts, _response_type) =
+            resolve_task_response(&state, &request_message, &HashMap::new(), false);
 
         assert_eq!(status, "completed");
         assert_eq!(artifacts.len(), 1);
@@ -1417,18 +1490,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_response_type_defaults_to_task() {
+    fn resolve_task_response_type_defaults_to_task() {
         let state = json!({
             "task_responses": [
                 {"status": "completed", "messages": []}
             ]
         });
-        let rt = resolve_response_type(&state, &json!({}), &HashMap::new());
+        let (_status, _history, _artifacts, rt) =
+            resolve_task_response(&state, &json!({}), &HashMap::new(), false);
         assert_eq!(rt, "task");
     }
 
     #[test]
-    fn resolve_response_type_message() {
+    fn resolve_task_response_type_message() {
         let state = json!({
             "task_responses": [
                 {
@@ -1438,7 +1512,8 @@ mod tests {
                 }
             ]
         });
-        let rt = resolve_response_type(&state, &json!({}), &HashMap::new());
+        let (_status, _history, _artifacts, rt) =
+            resolve_task_response(&state, &json!({}), &HashMap::new(), false);
         assert_eq!(rt, "message");
     }
 
@@ -1460,8 +1535,8 @@ mod tests {
         let mut extractors = HashMap::new();
         extractors.insert("name".to_string(), "World".to_string());
 
-        let (_, history, _) =
-            resolve_task_content(&state, &json!({"role": "user"}), &extractors, false);
+        let (_, history, _, _) =
+            resolve_task_response(&state, &json!({"role": "user"}), &extractors, false);
 
         // Check that interpolation occurred in agent messages
         let agent_msg = history

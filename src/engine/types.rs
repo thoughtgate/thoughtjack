@@ -87,6 +87,9 @@ pub enum DriveResult {
     /// or cancel token fired (server). The `PhaseLoop` drains any remaining
     /// buffered events after this returns.
     Complete,
+    /// The underlying transport closed while the actor was still in a
+    /// non-terminal phase.
+    TransportClosed,
 }
 
 // ============================================================================

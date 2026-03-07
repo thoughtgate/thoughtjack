@@ -241,6 +241,7 @@ fn tools_call_selects_response() {
         request.params.as_ref().unwrap(),
         None,
         false,
+        "tools/call",
     );
 
     let result = resp.result.unwrap();
@@ -332,6 +333,7 @@ fn prompts_get_selects_response() {
         request.params.as_ref().unwrap(),
         None,
         false,
+        "prompts/get",
     );
 
     let result = resp.result.unwrap();
@@ -396,20 +398,20 @@ fn completion_returns_empty() {
 // ---- PhaseDriver integration tests ----
 
 #[tokio::test]
-async fn drive_phase_completes_on_eof() {
+async fn drive_phase_returns_transport_closed_on_eof() {
     let (transport, _outgoing) = MockTransport::setup(vec![]);
     let mut driver = McpServerDriver::new(transport, false);
 
     let state = test_state();
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     let result = driver
         .drive_phase(0, &state, rx, event_tx, cancel)
         .await
         .unwrap();
-    assert!(matches!(result, DriveResult::Complete));
+    assert!(matches!(result, DriveResult::TransportClosed));
 }
 
 #[tokio::test]
@@ -419,7 +421,7 @@ async fn drive_phase_completes_on_cancel() {
 
     let state = test_state();
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     // Cancel immediately
@@ -440,7 +442,7 @@ async fn drive_phase_emits_events() {
 
     let state = test_state();
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -469,7 +471,7 @@ async fn extractors_refreshed_per_request() {
 
     let state = test_state();
     let (tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     // Update extractors between the two requests being processed
@@ -504,7 +506,7 @@ async fn delayed_delivery_waits() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     let start = tokio::time::Instant::now();
@@ -538,7 +540,7 @@ async fn notification_flood_sends_before_response() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -662,7 +664,15 @@ fn default_capabilities_empty_state() {
 #[test]
 fn dispatch_response_no_responses_returns_empty_content() {
     let item = json!({"name": "test"});
-    let resp = dispatch_response(&json!(1), &item, &HashMap::new(), &Value::Null, None, false);
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "tools/call",
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["content"], json!([]));
 }
@@ -670,9 +680,51 @@ fn dispatch_response_no_responses_returns_empty_content() {
 #[test]
 fn dispatch_response_empty_responses_returns_empty_content() {
     let item = json!({"name": "test", "responses": []});
-    let resp = dispatch_response(&json!(1), &item, &HashMap::new(), &Value::Null, None, false);
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "tools/call",
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["content"], json!([]));
+}
+
+#[test]
+fn dispatch_response_resources_read_empty_fallback() {
+    let item = json!({"name": "test"});
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "resources/read",
+    );
+    let result = resp.result.unwrap();
+    assert_eq!(result["contents"], json!([]));
+    assert!(result.get("content").is_none());
+}
+
+#[test]
+fn dispatch_response_prompts_get_empty_fallback() {
+    let item = json!({"name": "test"});
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "prompts/get",
+    );
+    let result = resp.result.unwrap();
+    assert_eq!(result["messages"], json!([]));
+    assert!(result.get("content").is_none());
 }
 
 #[tokio::test]
@@ -686,7 +738,7 @@ async fn drive_phase_handles_notification_from_agent() {
 
     let state = test_state();
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -714,7 +766,7 @@ async fn connection_reset_side_effect_returns_error() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     let result = driver.drive_phase(0, &state, rx, event_tx, cancel).await;
@@ -766,18 +818,18 @@ fn elicitation_response_returns_empty_object() {
 fn tasks_get_returns_task() {
     let state = json!({
         "tasks": [
-            {"id": "task-1", "status": "running", "result": {"data": "hello"}}
+            {"taskId": "task-1", "status": "running", "result": {"data": "hello"}}
         ]
     });
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks/get".to_string(),
-        params: Some(json!({"id": "task-1"})),
+        params: Some(json!({"taskId": "task-1"})),
         id: json!(1),
     };
     let resp = handle_tasks_get(&request, &state);
     let result = resp.result.unwrap();
-    assert_eq!(result["id"], "task-1");
+    assert_eq!(result["taskId"], "task-1");
     assert_eq!(result["status"], "running");
 }
 
@@ -787,7 +839,7 @@ fn tasks_get_unknown_returns_error() {
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks/get".to_string(),
-        params: Some(json!({"id": "missing"})),
+        params: Some(json!({"taskId": "missing"})),
         id: json!(1),
     };
     let resp = handle_tasks_get(&request, &state);
@@ -798,13 +850,13 @@ fn tasks_get_unknown_returns_error() {
 fn tasks_result_returns_result() {
     let state = json!({
         "tasks": [
-            {"id": "task-1", "status": "completed", "result": {"output": "done"}}
+            {"taskId": "task-1", "status": "completed", "result": {"output": "done"}}
         ]
     });
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks/result".to_string(),
-        params: Some(json!({"id": "task-1"})),
+        params: Some(json!({"taskId": "task-1"})),
         id: json!(1),
     };
     let resp = handle_tasks_result(&request, &state);
@@ -816,8 +868,8 @@ fn tasks_result_returns_result() {
 fn tasks_list_returns_all_tasks() {
     let state = json!({
         "tasks": [
-            {"id": "task-1", "status": "running"},
-            {"id": "task-2", "status": "completed"}
+            {"taskId": "task-1", "status": "running"},
+            {"taskId": "task-2", "status": "completed"}
         ]
     });
     let request = JsonRpcRequest {
@@ -848,17 +900,17 @@ fn tasks_list_empty_state() {
 #[test]
 fn tasks_cancel_returns_cancelled() {
     let state = json!({
-        "tasks": [{"id": "task-1", "status": "running"}]
+        "tasks": [{"taskId": "task-1", "status": "running"}]
     });
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks/cancel".to_string(),
-        params: Some(json!({"id": "task-1"})),
+        params: Some(json!({"taskId": "task-1"})),
         id: json!(1),
     };
     let resp = handle_tasks_cancel(&request, &state);
     let result = resp.result.unwrap();
-    assert_eq!(result["id"], "task-1");
+    assert_eq!(result["taskId"], "task-1");
     assert_eq!(result["status"], "cancelled");
 }
 
@@ -877,7 +929,15 @@ fn select_response_no_match() {
         ]
     });
     let context = json!({"name": "test-tool"});
-    let resp = dispatch_response(&json!(1), &item, &HashMap::new(), &context, None, false);
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &context,
+        None,
+        false,
+        "tools/call",
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["content"], json!([]));
 }
@@ -894,7 +954,15 @@ fn synthesize_no_provider() {
             }
         ]
     });
-    let resp = dispatch_response(&json!(1), &item, &HashMap::new(), &Value::Null, None, false);
+    let resp = dispatch_response(
+        &json!(1),
+        &item,
+        &HashMap::new(),
+        &Value::Null,
+        None,
+        false,
+        "tools/call",
+    );
     assert!(resp.error.is_some());
     let err = resp.error.unwrap();
     assert!(
@@ -942,7 +1010,7 @@ async fn elicitation_agent_declines() {
         }]
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -1061,7 +1129,7 @@ async fn unbounded_delivery_inflates_response() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -1127,7 +1195,7 @@ async fn elicitation_first_match_wins() {
         ]
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -1167,7 +1235,7 @@ async fn id_collision_side_effect_with_count() {
         }
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     driver
@@ -1423,6 +1491,7 @@ fn ec_oatf_018_tool_call_is_error() {
         &json!({"name": "failing_tool"}),
         None,
         false,
+        "tools/call",
     );
     let result = resp.result.unwrap();
     assert_eq!(result["isError"], true);
@@ -1451,6 +1520,7 @@ fn ec_oatf_019_audio_content() {
         &json!({"name": "audio_tool"}),
         None,
         false,
+        "tools/call",
     );
     let result = resp.result.unwrap();
     let content = result["content"].as_array().unwrap();
@@ -1484,6 +1554,7 @@ fn ec_oatf_020_content_annotations() {
         &json!({"name": "annotated_tool"}),
         None,
         false,
+        "tools/call",
     );
     let result = resp.result.unwrap();
     let content = &result["content"][0];
@@ -1496,7 +1567,7 @@ fn ec_oatf_020_content_annotations() {
 fn ec_oatf_021_task_capability() {
     let state = json!({
         "tasks": [
-            {"id": "task-1", "status": "running", "result": {}}
+            {"taskId": "task-1", "status": "running", "result": {}}
         ]
     });
 
@@ -1581,7 +1652,7 @@ async fn ec_oatf_023_elicitation_declined() {
         }]
     });
     let (_tx, rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let cancel = CancellationToken::new();
 
     // Should not panic — driver handles decline gracefully

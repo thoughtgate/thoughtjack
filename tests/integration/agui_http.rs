@@ -537,17 +537,32 @@ attack:
     assert!(methods.contains(&"tool_call_start"));
     assert!(methods.contains(&"tool_call_end"));
 
-    // The _accumulated_response should contain the concatenated tool arguments
-    let acc = entries
+    // Verify tool_call_start contains the expected metadata
+    let tc_start = entries
         .iter()
-        .find(|e| e.method == "_accumulated_response")
-        .expect("_accumulated_response missing");
-    // Tool call arguments should be accumulated: {"a": 1, "b": 2}
-    let messages_val = &acc.content;
-    // The tool call data is nested in the accumulated response
+        .find(|e| e.method == "tool_call_start")
+        .expect("tool_call_start missing");
+    assert_eq!(tc_start.content["toolCallId"], "tc1");
+    assert_eq!(tc_start.content["toolCallName"], "calculator");
+
+    // Verify tool_call_args deltas were captured in the trace
+    let arg_entries: Vec<_> = entries
+        .iter()
+        .filter(|e| e.method == "tool_call_args")
+        .collect();
     assert!(
-        !messages_val.is_null(),
-        "accumulated response should not be null"
+        arg_entries.len() >= 3,
+        "expected at least 3 TOOL_CALL_ARGS events, got {}",
+        arg_entries.len()
+    );
+    // Concatenated deltas should form valid JSON: {"a": 1, "b": 2}
+    let concatenated: String = arg_entries
+        .iter()
+        .filter_map(|e| e.content.get("delta").and_then(|d| d.as_str()))
+        .collect();
+    assert!(
+        concatenated.contains("\"a\"") && concatenated.contains("\"b\""),
+        "concatenated tool-call args should contain a and b, got: {concatenated}"
     );
 }
 

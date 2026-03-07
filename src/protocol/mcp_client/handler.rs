@@ -31,7 +31,7 @@ pub(super) async fn server_request_handler(
     writer: Arc<tokio::sync::Mutex<Box<dyn McpClientTransportWriter>>>,
     handler_state: Arc<tokio::sync::RwLock<HandlerState>>,
     extractors_rx: watch::Receiver<HashMap<String, String>>,
-    handler_event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+    handler_event_tx: mpsc::Sender<ProtocolEvent>,
     raw_synthesize: bool,
     cancel: CancellationToken,
 ) {
@@ -45,11 +45,15 @@ pub(super) async fn server_request_handler(
                 let content = req.params.clone().unwrap_or(Value::Null);
 
                 // Emit incoming event — PhaseLoop handles trace, extractors, triggers
-                let _ = handler_event_tx.send(ProtocolEvent {
+                if handler_event_tx.try_send(ProtocolEvent {
                     direction: Direction::Incoming,
                     method: req.method.clone(),
                     content: content.clone(),
-                });
+                }).is_err() {
+                    tracing::error!("handler event backlog exceeded; cancelling MCP client session");
+                    cancel.cancel();
+                    break;
+                }
 
                 // Build response from current phase state + fresh extractors
                 let hs = handler_state.read().await;
@@ -73,11 +77,15 @@ pub(super) async fn server_request_handler(
                 match result {
                     Ok(result_value) => {
                         // Emit outgoing response event
-                        let _ = handler_event_tx.send(ProtocolEvent {
+                        if handler_event_tx.try_send(ProtocolEvent {
                             direction: Direction::Outgoing,
                             method: req.method.clone(),
                             content: result_value.clone(),
-                        });
+                        }).is_err() {
+                            tracing::error!("handler event backlog exceeded; cancelling MCP client session");
+                            cancel.cancel();
+                            break;
+                        }
                         let _ = writer.lock().await.send_response(&req.id, result_value).await;
                     }
                     Err(e) => {

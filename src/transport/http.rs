@@ -1,9 +1,10 @@
 //! HTTP transport implementation (TJ-SPEC-002 F-003).
 //!
 //! Implements the [`Transport`] trait over HTTP using axum. Incoming JSON-RPC
-//! requests arrive via `POST /message`, responses stream back as chunked HTTP
-//! bodies, and server-initiated notifications/requests are broadcast via
-//! Server-Sent Events on `GET /sse`.
+//! requests arrive via `POST /message` (legacy) or `POST /mcp` (Streamable HTTP),
+//! responses stream back as chunked HTTP bodies, and server-initiated
+//! notifications/requests are broadcast via Server-Sent Events on `GET /sse`
+//! (legacy) or `GET /mcp` (Streamable HTTP).
 
 use std::io;
 use std::net::SocketAddr;
@@ -48,7 +49,7 @@ pub struct HttpConfig {
 /// An incoming request received by the `POST /message` handler.
 struct IncomingRequest {
     message: JsonRpcMessage,
-    response_tx: mpsc::Sender<std::result::Result<Bytes, io::Error>>,
+    response_tx: Option<mpsc::Sender<std::result::Result<Bytes, io::Error>>>,
     connection_id: u64,
     remote_addr: SocketAddr,
     connected_at: Instant,
@@ -250,7 +251,7 @@ impl HttpTransport {
             ConnectionGuard::new(Arc::clone(&self.shared.connections), incoming.connection_id);
 
         let handle = ResponseHandle {
-            response_tx: Some(incoming.response_tx),
+            response_tx: incoming.response_tx,
             context,
             _guard: guard,
         };
@@ -293,9 +294,16 @@ impl HttpTransport {
             guard.as_ref().cloned()
         };
         if let Some(ch) = response_tx {
-            ch.send(Ok(Bytes::from(sse_data)))
-                .await
-                .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))?;
+            if ch.send(Ok(Bytes::from(sse_data))).await.is_err() {
+                self.shared
+                    .pending_server_requests
+                    .lock()
+                    .await
+                    .remove(&request_id);
+                return Err(TransportError::ConnectionClosed(
+                    "response channel closed".into(),
+                ));
+            }
         } else {
             // Fallback to SSE broadcast (shouldn't happen during tool call)
             let _ = self.shared.sse_tx.send(serialized);
@@ -478,7 +486,7 @@ impl Transport for HttpTransport {
         // Store the response sender for subsequent send_message/send_raw calls
         {
             let mut guard = self.current_response.lock().await;
-            *guard = Some(req.response_tx);
+            (*guard).clone_from(&req.response_tx);
         }
 
         // Track connection here (not in the handler) to avoid a race where the
@@ -618,7 +626,13 @@ impl Transport for HttpTransport {
 // Axum Router
 // ============================================================================
 
-/// Builds the axum router with `POST /message` and `GET /sse` routes.
+/// Builds the axum router with legacy and Streamable HTTP routes.
+///
+/// - `POST /message` — legacy MCP 2024-11-05 HTTP+SSE message endpoint
+/// - `GET /sse` — legacy MCP 2024-11-05 SSE stream (endpoint event → `/message`)
+/// - `POST /mcp` + `GET /mcp` — MCP 2025-03-26 Streamable HTTP unified endpoint
+///
+/// Implements: TJ-SPEC-002 F-003
 fn build_router(shared: Arc<HttpSharedState>) -> Router {
     // Override axum's default 2MB body limit with the configured max_message_size
     // (default 10MB). Without this, requests between 2MB and max_message_size
@@ -632,83 +646,17 @@ fn build_router(shared: Arc<HttpSharedState>) -> Router {
     // finishes processing. The timeout is enforced at the server request
     // processing level instead (via request_timeout_secs on HttpSharedState).
     Router::new()
+        // Legacy MCP 2024-11-05 HTTP+SSE endpoints
         .route("/message", post(handle_post_message))
         .route("/sse", get(handle_sse))
+        // Modern MCP 2025-03-26 Streamable HTTP unified endpoint
+        .route("/mcp", get(handle_sse_streamable).post(handle_post_message))
         .layer(body_limit)
         .with_state(shared)
 }
 
-/// Validates that the request originates from a local address.
-///
-/// Rejects requests with no `Origin` or `Host` header, or with a header
-/// pointing to a non-local hostname. Comparison is case-insensitive.
-///
-/// Implements: TJ-SPEC-002 F-003
-#[allow(clippy::result_large_err)]
-fn validate_local_origin(headers: &axum::http::HeaderMap) -> std::result::Result<(), Response> {
-    let origin = headers
-        .get("origin")
-        .or_else(|| headers.get("host"))
-        .and_then(|v| v.to_str().ok());
-    let Some(header_value) = origin else {
-        return Err((StatusCode::FORBIDDEN, "missing Origin or Host header").into_response());
-    };
-    let Some(hostname) = extract_hostname_for_origin_check(header_value) else {
-        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
-    };
-    if !matches!(
-        hostname.as_str(),
-        "localhost" | "127.0.0.1" | "[::1]" | "::1" | "0.0.0.0"
-    ) {
-        return Err((StatusCode::FORBIDDEN, "dns rebinding rejected").into_response());
-    }
-    Ok(())
-}
-
-/// Validates that the remote peer is loopback.
-#[allow(clippy::result_large_err)]
-fn validate_local_peer(addr: SocketAddr) -> std::result::Result<(), Response> {
-    if addr.ip().is_loopback() {
-        Ok(())
-    } else {
-        Err((StatusCode::FORBIDDEN, "non-local peer rejected").into_response())
-    }
-}
-
-/// Extracts a normalized hostname from Origin/Host values.
-///
-/// Handles both:
-/// - Origin values with scheme (e.g. `http://localhost:3000`, `http://[::1]:3000`)
-/// - Host values without scheme (e.g. `localhost:3000`, `[::1]:3000`)
-fn extract_hostname_for_origin_check(header_value: &str) -> Option<String> {
-    let authority = if header_value.contains("://") {
-        header_value
-            .parse::<axum::http::Uri>()
-            .ok()?
-            .authority()?
-            .as_str()
-            .to_string()
-    } else {
-        header_value.to_string()
-    };
-
-    if authority == "::1" {
-        return Some("::1".to_string());
-    }
-
-    if let Some(stripped) = authority.strip_prefix('[') {
-        let end = stripped.find(']')?;
-        return Some(format!("[{}]", &stripped[..end]).to_ascii_lowercase());
-    }
-
-    Some(
-        authority
-            .split(':')
-            .next()
-            .unwrap_or(authority.as_str())
-            .to_ascii_lowercase(),
-    )
-}
+// Local-only validation delegates to the shared `transport::local` module.
+use super::local::{validate_local_origin, validate_local_peer};
 
 /// `POST /message` handler.
 ///
@@ -780,12 +728,10 @@ async fn handle_post_message(
         }
         JsonRpcMessage::Notification(_) => {
             // Push notification for driver to process, but return 202 immediately.
-            let (response_tx, _response_rx) =
-                mpsc::channel::<std::result::Result<Bytes, io::Error>>(1);
             let connection_id = shared.next_connection_id.fetch_add(1, Ordering::SeqCst);
             let incoming = IncomingRequest {
                 message,
-                response_tx,
+                response_tx: None,
                 connection_id,
                 remote_addr: addr,
                 connected_at: Instant::now(),
@@ -812,7 +758,7 @@ async fn handle_post_message(
 
     let incoming = IncomingRequest {
         message,
-        response_tx,
+        response_tx: Some(response_tx),
         connection_id,
         remote_addr: addr,
         connected_at,
@@ -839,15 +785,45 @@ async fn handle_post_message(
     })
 }
 
-/// `GET /sse` handler.
+/// `GET /sse` handler (legacy MCP 2024-11-05).
 ///
-/// Returns a Server-Sent Events stream that broadcasts all server-initiated
-/// notifications and requests. Enforces DNS rebinding protection and limits
-/// the number of concurrent SSE connections.
+/// Returns a Server-Sent Events stream whose initial endpoint event points
+/// to `/message`.
+///
+/// Implements: TJ-SPEC-002 F-003
 async fn handle_sse(
     State(shared): State<Arc<HttpSharedState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
+) -> Response {
+    handle_sse_inner(&shared, addr, &headers, "/message")
+}
+
+/// `GET /mcp` handler (MCP 2025-03-26 Streamable HTTP).
+///
+/// Returns a Server-Sent Events stream whose initial endpoint event points
+/// to `/mcp` (the unified endpoint).
+///
+/// Implements: TJ-SPEC-002 F-003
+async fn handle_sse_streamable(
+    State(shared): State<Arc<HttpSharedState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    handle_sse_inner(&shared, addr, &headers, "/mcp")
+}
+
+/// Shared SSE handler implementation.
+///
+/// Returns a Server-Sent Events stream that broadcasts all server-initiated
+/// notifications and requests. Enforces DNS rebinding protection and limits
+/// the number of concurrent SSE connections. The `endpoint_path` parameter
+/// controls the URL emitted in the initial `endpoint` event.
+fn handle_sse_inner(
+    shared: &Arc<HttpSharedState>,
+    addr: SocketAddr,
+    headers: &axum::http::HeaderMap,
+    endpoint_path: &'static str,
 ) -> Response {
     // Restrict to loopback peers (prevents forged Host/Origin bypass).
     if let Err(resp) = validate_local_peer(addr) {
@@ -855,7 +831,7 @@ async fn handle_sse(
     }
 
     // DNS rebinding protection (same check as POST /message)
-    if let Err(resp) = validate_local_origin(&headers) {
+    if let Err(resp) = validate_local_origin(headers) {
         return resp;
     }
 
@@ -875,7 +851,7 @@ async fn handle_sse(
 
     // MCP Streamable HTTP: initial endpoint event tells the client where to POST
     let endpoint_event: std::result::Result<SseEvent, std::convert::Infallible> =
-        Ok(SseEvent::default().event("endpoint").data("/message"));
+        Ok(SseEvent::default().event("endpoint").data(endpoint_path));
 
     let broadcast_stream = tokio_stream::wrappers::BroadcastStream::new(rx)
         .take_while(move |_| !cancel.is_cancelled())
@@ -895,7 +871,7 @@ async fn handle_sse(
     let stream = tokio_stream::once(endpoint_event).chain(broadcast_stream);
 
     // Wrap in a stream that decrements the counter on drop
-    let shared_for_drop = Arc::clone(&shared);
+    let shared_for_drop = Arc::clone(shared);
     let stream = SseCountedStream {
         inner: Box::pin(stream),
         shared: shared_for_drop,
@@ -1125,7 +1101,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
                 // Drop sender to close the stream
             }
         });
@@ -1265,7 +1243,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1300,7 +1280,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1335,7 +1317,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1370,7 +1354,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1555,7 +1541,9 @@ mod tests {
         tokio::spawn(async move {
             while let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1607,7 +1595,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(incoming) = incoming_rx.recv().await {
                 let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                incoming.response_tx.send(Ok(response)).await.ok();
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
             }
         });
 
@@ -1699,6 +1689,131 @@ mod tests {
         }
         // Connection should be removed after guard drop
         assert_eq!(connections.len(), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Streamable HTTP /mcp endpoint
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn mcp_post_returns_sse_response() {
+        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            sse_connections: AtomicUsize::new(0),
+            cancel: CancellationToken::new(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+        let app = test_router(shared);
+
+        tokio::spawn(async move {
+            if let Some(incoming) = incoming_rx.recv().await {
+                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
+                if let Some(tx) = incoming.response_tx {
+                    tx.send(Ok(response)).await.ok();
+                }
+            }
+        });
+
+        let body = r#"{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("host", "localhost:3000")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("text/event-stream"),
+            "Expected text/event-stream on POST /mcp, got: {content_type}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_get_returns_200() {
+        let shared = test_shared_state();
+        let app = test_router(shared);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/mcp")
+            .header("host", "localhost:3000")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Helper: verifies the endpoint event data in an SSE stream response.
+    ///
+    /// Cancels the token and sends a dummy broadcast after a yield point
+    /// so the SSE stream terminates and `to_bytes` can complete.
+    async fn assert_endpoint_event(uri: &str, expected_data: &str) {
+        let cancel = CancellationToken::new();
+        let (incoming_tx, _incoming_rx) = mpsc::channel(32);
+        let (sse_tx, _) = broadcast::channel(256);
+        let shared = Arc::new(HttpSharedState {
+            incoming_tx,
+            sse_tx,
+            connections: Arc::new(DashMap::new()),
+            next_connection_id: AtomicU64::new(1),
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            sse_connections: AtomicUsize::new(0),
+            cancel: cancel.clone(),
+            session_id: "test-session".to_string(),
+            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+        let app = test_router(shared.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("host", "localhost:3000")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Cancel and send a dummy broadcast so take_while terminates the stream.
+        cancel.cancel();
+        let _ = shared.sse_tx.send(String::new());
+
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        let expected = format!("event: endpoint\ndata: {expected_data}");
+        assert!(
+            text.contains(&expected),
+            "Expected '{expected}' in SSE body, got:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_get_endpoint_event_points_to_mcp() {
+        assert_endpoint_event("/mcp", "/mcp").await;
+    }
+
+    #[tokio::test]
+    async fn sse_get_endpoint_event_points_to_message() {
+        assert_endpoint_event("/sse", "/message").await;
     }
 
     #[tokio::test]

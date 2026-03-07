@@ -21,8 +21,9 @@ use super::transport::{
     spawn_stdio_transport,
 };
 use super::{
-    CorrelatedResponse, DEFAULT_PHASE_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, HandlerState, INIT_TIMEOUT,
-    NotificationMessage, POST_ACTION_IDLE_TIMEOUT, PendingRequest, SERVER_REQUEST_BUFFER_SIZE,
+    CorrelatedResponse, DEFAULT_PHASE_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, HANDLER_EVENT_BUFFER_SIZE,
+    HandlerState, INIT_TIMEOUT, NOTIFICATION_BUFFER_SIZE, NotificationMessage,
+    POST_ACTION_IDLE_TIMEOUT, PendingRequest, SERVER_REQUEST_BUFFER_SIZE,
 };
 
 // ============================================================================
@@ -44,15 +45,17 @@ pub struct McpClientDriver {
     /// Multiplexer (spawned on first `drive_phase()`).
     pub(super) mux: Option<MessageMultiplexer>,
     /// Notification receiver from multiplexer.
-    pub(super) notification_rx: Option<mpsc::UnboundedReceiver<NotificationMessage>>,
+    pub(super) notification_rx: Option<mpsc::Receiver<NotificationMessage>>,
     /// Handler event receiver (handler emits events here, driver forwards to `PhaseLoop`).
-    pub(super) handler_event_rx: Option<mpsc::UnboundedReceiver<ProtocolEvent>>,
+    pub(super) handler_event_rx: Option<mpsc::Receiver<ProtocolEvent>>,
     /// Shared handler state.
     pub(super) handler_state: Arc<tokio::sync::RwLock<HandlerState>>,
     /// Handler task join handle.
     pub(super) handler_handle: Option<JoinHandle<()>>,
     /// Server capabilities (captured during init).
     pub(super) server_capabilities: Option<Value>,
+    /// Negotiated protocol version from server init response.
+    pub(super) negotiated_version: Option<String>,
     /// Per-request timeout.
     pub(super) request_timeout: std::time::Duration,
     /// Post-action event loop timeout.
@@ -77,6 +80,16 @@ pub struct McpClientDriver {
 }
 
 impl McpClientDriver {
+    fn cleanup_pending_request(&self, id_key: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id_key);
+        if let Some(mux) = self.mux.as_ref() {
+            mux.remove_response(id_key);
+        }
+    }
+
     /// Try to read buffered stderr from the child process.
     ///
     /// Consumes the stderr handle. Returns the output (truncated to 4 KB)
@@ -114,7 +127,7 @@ impl McpClientDriver {
         &mut self,
         method: &str,
         params: Option<Value>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) -> Result<CorrelatedResponse, EngineError> {
         let id = json!(self.next_id());
         let id_key = id.to_string();
@@ -124,7 +137,7 @@ impl McpClientDriver {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
-                id_key,
+                id_key.clone(),
                 PendingRequest {
                     method: method.to_string(),
                     params: params.clone(),
@@ -139,23 +152,43 @@ impl McpClientDriver {
         let response_rx = mux.register_response(&id);
 
         // Send request
-        self.writer
-            .lock()
-            .await
-            .send_request_with_id(method, params.clone(), &id)
-            .await?;
+        match tokio::time::timeout(self.request_timeout, async {
+            self.writer
+                .lock()
+                .await
+                .send_request_with_id(method, params.clone(), &id)
+                .await
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                self.cleanup_pending_request(&id_key);
+                return Err(err);
+            }
+            Err(_) => {
+                self.cleanup_pending_request(&id_key);
+                return Err(EngineError::Driver(format!(
+                    "request timeout while sending '{method}' after {:?}",
+                    self.request_timeout
+                )));
+            }
+        }
 
         // Emit outgoing event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: method.to_string(),
-            content: params.unwrap_or(Value::Null),
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: method.to_string(),
+                content: params.unwrap_or(Value::Null),
+            })
+            .await;
 
         // Await response via oneshot — multiplexer handles concurrent server requests
         let response = match tokio::time::timeout(self.request_timeout, response_rx).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(_)) => {
+                self.cleanup_pending_request(&id_key);
                 let reason = mux.close_reason();
                 let stderr = self.capture_stderr().await;
                 let mut msg = format!("multiplexer closed while awaiting '{method}': {reason}");
@@ -166,6 +199,7 @@ impl McpClientDriver {
                 return Err(EngineError::Driver(msg));
             }
             Err(_) => {
+                self.cleanup_pending_request(&id_key);
                 return Err(EngineError::Driver(format!(
                     "request timeout for '{method}' after {:?}",
                     self.request_timeout
@@ -184,11 +218,13 @@ impl McpClientDriver {
         {
             obj.insert("_request".to_string(), req_params.clone());
         }
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: response.method.clone(),
-            content,
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: response.method.clone(),
+                content,
+            })
+            .await;
 
         Ok(response)
     }
@@ -196,18 +232,15 @@ impl McpClientDriver {
     /// Forward any buffered events from handler and notifications to the `PhaseLoop`.
     ///
     /// Called between actions to minimize event forwarding latency.
-    pub(super) fn forward_pending_events(
-        &mut self,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
-    ) {
+    pub(super) fn forward_pending_events(&mut self, event_tx: &mpsc::Sender<ProtocolEvent>) {
         if let Some(ref mut rx) = self.handler_event_rx {
             while let Ok(evt) = rx.try_recv() {
-                let _ = event_tx.send(evt);
+                let _ = event_tx.try_send(evt);
             }
         }
         if let Some(ref mut rx) = self.notification_rx {
             while let Ok(notif) = rx.try_recv() {
-                let _ = event_tx.send(ProtocolEvent {
+                let _ = event_tx.try_send(ProtocolEvent {
                     direction: Direction::Incoming,
                     method: notif.method,
                     content: notif.params.unwrap_or(Value::Null),
@@ -226,10 +259,11 @@ impl McpClientDriver {
     /// Returns `EngineError::Driver` if initialization fails.
     ///
     /// Implements: TJ-SPEC-018 F-005
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn initialize(
         &mut self,
         state: &Value,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) -> Result<(), EngineError> {
         let init_params = json!({
             "protocolVersion": "2025-11-25",
@@ -248,7 +282,7 @@ impl McpClientDriver {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
-                id_key,
+                id_key.clone(),
                 PendingRequest {
                     method: "initialize".to_string(),
                     params: Some(init_params.clone()),
@@ -263,23 +297,40 @@ impl McpClientDriver {
         let response_rx = mux.register_response(&id);
 
         // Send initialize request
-        self.writer
-            .lock()
-            .await
-            .send_request_with_id("initialize", Some(init_params.clone()), &id)
-            .await?;
+        match tokio::time::timeout(INIT_TIMEOUT, async {
+            self.writer
+                .lock()
+                .await
+                .send_request_with_id("initialize", Some(init_params.clone()), &id)
+                .await
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                self.cleanup_pending_request(&id_key);
+                return Err(err);
+            }
+            Err(_) => {
+                self.cleanup_pending_request(&id_key);
+                return Err(EngineError::Driver("initialization timeout".to_string()));
+            }
+        }
 
         // Emit outgoing event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "initialize".to_string(),
-            content: init_params,
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "initialize".to_string(),
+                content: init_params,
+            })
+            .await;
 
         // Await response
         let response = match tokio::time::timeout(INIT_TIMEOUT, response_rx).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(_)) => {
+                self.cleanup_pending_request(&id_key);
                 let reason = mux.close_reason();
                 let stderr = self.capture_stderr().await;
                 let mut msg = format!("multiplexer closed during initialization: {reason}");
@@ -290,6 +341,7 @@ impl McpClientDriver {
                 return Err(EngineError::Driver(msg));
             }
             Err(_) => {
+                self.cleanup_pending_request(&id_key);
                 return Err(EngineError::Driver("initialization timeout".to_string()));
             }
         };
@@ -305,12 +357,26 @@ impl McpClientDriver {
         // Capture server capabilities
         self.server_capabilities = Some(response.result.clone());
 
+        // Extract negotiated protocol version and propagate to HTTP writer
+        self.negotiated_version = response
+            .result
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .map(String::from);
+        let version = self
+            .negotiated_version
+            .clone()
+            .unwrap_or_else(|| "2025-11-25".to_string());
+        self.writer.lock().await.set_protocol_version(version).await;
+
         // Emit incoming event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: "initialize".to_string(),
-            content: response.result,
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "initialize".to_string(),
+                content: response.result,
+            })
+            .await;
 
         // Send initialized notification
         self.writer
@@ -336,7 +402,7 @@ impl McpClientDriver {
         &mut self,
         action: &Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) -> Result<(), EngineError> {
         let action_type = action["type"].as_str().unwrap_or("");
 
@@ -400,8 +466,8 @@ impl McpClientDriver {
 
         // Create channels
         let (server_request_tx, server_request_rx) = mpsc::channel(SERVER_REQUEST_BUFFER_SIZE);
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
-        let (handler_event_tx, handler_event_rx) = mpsc::unbounded_channel();
+        let (notification_tx, notification_rx) = mpsc::channel(NOTIFICATION_BUFFER_SIZE);
+        let (handler_event_tx, handler_event_rx) = mpsc::channel(HANDLER_EVENT_BUFFER_SIZE);
 
         // Create multiplexer shared state
         let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -480,7 +546,7 @@ impl PhaseDriver for McpClientDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         // Bootstrap on first call: spawn multiplexer and handler
@@ -562,7 +628,7 @@ impl PhaseDriver for McpClientDriver {
                     }
                 } => {
                     if let Some(evt) = evt {
-                        let _ = event_tx.send(evt);
+                        let _ = event_tx.send(evt).await;
                     } else {
                         break;
                     }
@@ -579,7 +645,7 @@ impl PhaseDriver for McpClientDriver {
                             direction: Direction::Incoming,
                             method: n.method,
                             content: n.params.unwrap_or(Value::Null),
-                        });
+                        }).await;
                     } else {
                         break;
                     }
@@ -686,6 +752,7 @@ pub fn create_mcp_client_driver(
         })),
         handler_handle: None,
         server_capabilities: None,
+        negotiated_version: None,
         request_timeout: DEFAULT_REQUEST_TIMEOUT,
         phase_timeout: DEFAULT_PHASE_TIMEOUT,
         initialized: false,

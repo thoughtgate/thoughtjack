@@ -11,24 +11,57 @@ use tokio_util::sync::CancellationToken;
 
 use thoughtjack::cli::args::{Cli, LogFormatChoice};
 use thoughtjack::cli::commands;
-use thoughtjack::error::ExitCode;
+use thoughtjack::error::{ExitCode, ThoughtJackError};
 use thoughtjack::observability::{LogFormat, init_logging};
 
 #[cfg(unix)]
-fn register_unix_signals() -> Option<(tokio::signal::unix::Signal, tokio::signal::unix::Signal)> {
+struct UnixSignals {
+    sigint: Option<tokio::signal::unix::Signal>,
+    sigterm: Option<tokio::signal::unix::Signal>,
+}
+
+#[cfg(unix)]
+impl UnixSignals {
+    const fn is_empty(&self) -> bool {
+        self.sigint.is_none() && self.sigterm.is_none()
+    }
+}
+
+#[cfg(unix)]
+fn register_unix_signals() -> UnixSignals {
     let sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
-    match (sigint, sigterm) {
-        (Ok(sigint), Ok(sigterm)) => Some((sigint, sigterm)),
-        (sigint_result, sigterm_result) => {
-            if let Err(e) = sigint_result {
-                eprintln!("warning: failed to register SIGINT handler: {e}");
-            }
-            if let Err(e) = sigterm_result {
-                eprintln!("warning: failed to register SIGTERM handler: {e}");
-            }
+
+    let sigint = match sigint {
+        Ok(signal) => Some(signal),
+        Err(e) => {
+            eprintln!("warning: failed to register SIGINT handler: {e}");
             None
         }
+    };
+    let sigterm = match sigterm {
+        Ok(signal) => Some(signal),
+        Err(e) => {
+            eprintln!("warning: failed to register SIGTERM handler: {e}");
+            None
+        }
+    };
+
+    UnixSignals { sigint, sigterm }
+}
+
+#[cfg(unix)]
+async fn recv_unix_signal(signals: &mut UnixSignals) -> Option<i32> {
+    match (&mut signals.sigint, &mut signals.sigterm) {
+        (Some(sigint), Some(sigterm)) => {
+            tokio::select! {
+                received = sigint.recv() => received.map(|()| ExitCode::INTERRUPTED),
+                received = sigterm.recv() => received.map(|()| ExitCode::TERMINATED),
+            }
+        }
+        (Some(sigint), None) => sigint.recv().await.map(|()| ExitCode::INTERRUPTED),
+        (None, Some(sigterm)) => sigterm.recv().await.map(|()| ExitCode::TERMINATED),
+        (None, None) => None,
     }
 }
 
@@ -68,32 +101,22 @@ async fn main() {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            if let Some((mut sigint, mut sigterm)) = unix_signals {
-                tokio::select! {
-                    _ = sigint.recv() => {
-                        signal_exit_code_for_handler
-                            .store(ExitCode::INTERRUPTED, Ordering::SeqCst);
-                    }
-                    _ = sigterm.recv() => {
-                        signal_exit_code_for_handler
-                            .store(ExitCode::TERMINATED, Ordering::SeqCst);
-                    }
-                }
-
-                cancel_for_signal.cancel();
-                eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
-
-                tokio::select! {
-                    _ = sigint.recv() => std::process::exit(ExitCode::INTERRUPTED),
-                    _ = sigterm.recv() => std::process::exit(ExitCode::TERMINATED),
-                }
-            } else if tokio::signal::ctrl_c().await.is_ok() {
-                // Fallback path if Unix handlers could not be installed.
-                signal_exit_code_for_handler.store(ExitCode::INTERRUPTED, Ordering::SeqCst);
-                cancel_for_signal.cancel();
-                eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
+            let mut unix_signals = unix_signals;
+            if unix_signals.is_empty() {
                 if tokio::signal::ctrl_c().await.is_ok() {
-                    std::process::exit(ExitCode::INTERRUPTED);
+                    signal_exit_code_for_handler.store(ExitCode::INTERRUPTED, Ordering::SeqCst);
+                    cancel_for_signal.cancel();
+                    eprintln!("\nShutting down gracefully... (press Ctrl+C again to force)");
+                    if tokio::signal::ctrl_c().await.is_ok() {
+                        std::process::exit(ExitCode::INTERRUPTED);
+                    }
+                }
+            } else if let Some(exit_code) = recv_unix_signal(&mut unix_signals).await {
+                signal_exit_code_for_handler.store(exit_code, Ordering::SeqCst);
+                cancel_for_signal.cancel();
+                eprintln!("\nShutting down gracefully... (send signal again to force)");
+                if let Some(force_exit_code) = recv_unix_signal(&mut unix_signals).await {
+                    std::process::exit(force_exit_code);
                 }
             }
         }
@@ -122,6 +145,7 @@ async fn main() {
 
     match result {
         Ok(()) => std::process::exit(ExitCode::SUCCESS),
+        Err(ThoughtJackError::Verdict { code, .. }) => std::process::exit(code),
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(e.exit_code());

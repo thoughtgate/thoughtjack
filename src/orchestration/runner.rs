@@ -14,7 +14,7 @@ use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::args::RunArgs;
+use crate::cli::args::ExecutionArgs;
 use crate::engine::mcp_server::McpServerDriver;
 use crate::engine::phase::PhaseEngine;
 use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
@@ -96,7 +96,7 @@ pub struct ActorConfig {
     pub transport_factory: Option<TransportFactory>,
 }
 
-/// Builds an `ActorConfig` from CLI `RunArgs`.
+/// Builds an `ActorConfig` from shared CLI execution options.
 ///
 /// # Errors
 ///
@@ -104,7 +104,7 @@ pub struct ActorConfig {
 /// (missing `:`, invalid header name, or invalid header value).
 ///
 /// Implements: TJ-SPEC-015 F-003
-pub fn build_actor_config(args: &RunArgs) -> Result<ActorConfig, EngineError> {
+pub fn build_actor_config(args: &ExecutionArgs) -> Result<ActorConfig, EngineError> {
     let mut headers: Vec<(String, String)> = Vec::with_capacity(args.header.len());
     for (idx, raw) in args.header.iter().enumerate() {
         headers.push(parse_cli_header(raw, idx + 1)?);
@@ -747,8 +747,28 @@ async fn run_mcp_client_actor(
         gate_rx,
         events,
     } = ctx;
-    // Determine transport from CLI flags
-    let (driver, bind_address) = match (
+    let bind_address = config
+        .mcp_client_command
+        .as_deref()
+        .map(|command| format!("stdio:{command}"))
+        .or_else(|| config.mcp_client_endpoint.clone())
+        .ok_or_else(|| {
+            EngineError::Driver(
+                "mcp_client mode requires --mcp-client-command (stdio) \
+                 or --mcp-client-endpoint (HTTP)"
+                    .to_string(),
+            )
+        })?;
+
+    // Client actors signal readiness immediately (they don't bind a port)
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(());
+    }
+
+    wait_for_readiness_gate(actor_name, gate_rx).await?;
+
+    // Determine transport from CLI flags only after startup is allowed.
+    let driver = match (
         config.mcp_client_command.as_deref(),
         config.mcp_client_endpoint.as_deref(),
     ) {
@@ -761,42 +781,26 @@ async fn run_mcp_client_actor(
                 .transpose()?
                 .unwrap_or_default();
             args.extend(extra_args);
-            let driver = mcp_client::create_mcp_client_driver(
+            mcp_client::create_mcp_client_driver(
                 Some(command.as_str()),
                 &args,
                 None,
                 &[],
                 config.raw_synthesize,
-            )?;
-            (driver, format!("stdio:{command_raw}"))
+            )?
         }
         (None, Some(endpoint)) => {
-            // Merge mode-specific auth env vars with --header
             let headers = resolve_headers_for_mode(&config.headers, "mcp_client");
-            let driver = mcp_client::create_mcp_client_driver(
+            mcp_client::create_mcp_client_driver(
                 None,
                 &[],
                 Some(endpoint),
                 &headers,
                 config.raw_synthesize,
-            )?;
-            (driver, endpoint.to_string())
+            )?
         }
-        (None, None) => {
-            return Err(EngineError::Driver(
-                "mcp_client mode requires --mcp-client-command (stdio) \
-                 or --mcp-client-endpoint (HTTP)"
-                    .to_string(),
-            ));
-        }
+        (None, None) => unreachable!("validated above"),
     };
-
-    // Client actors signal readiness immediately (they don't bind a port)
-    if let Some(tx) = ready_tx {
-        let _ = tx.send(());
-    }
-
-    wait_for_readiness_gate(actor_name, gate_rx).await?;
 
     events.emit(ThoughtJackEvent::ActorReady {
         actor_name: actor_name.to_string(),
@@ -844,8 +848,7 @@ mod tests {
 
     #[test]
     fn build_actor_config_maps_flags() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: Some("0.0.0.0:8080".to_string()),
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1432,8 +1435,7 @@ attack:
 
     #[test]
     fn build_actor_config_parses_multiple_headers() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1471,8 +1473,7 @@ attack:
 
     #[test]
     fn build_actor_config_header_without_colon_rejected() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1500,8 +1501,7 @@ attack:
 
     #[test]
     fn build_actor_config_invalid_header_name_rejected() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1529,8 +1529,7 @@ attack:
 
     #[test]
     fn build_actor_config_invalid_header_value_rejected() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -1558,8 +1557,7 @@ attack:
 
     #[test]
     fn build_actor_config_defaults() {
-        let args = RunArgs {
-            config: Some(std::path::PathBuf::from("test.yaml")),
+        let args = ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,

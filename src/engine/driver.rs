@@ -66,7 +66,7 @@ pub trait PhaseDriver: Send {
         phase_index: usize,
         state: &serde_json::Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError>;
 
