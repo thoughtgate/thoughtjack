@@ -1,34 +1,20 @@
 ---
-title: Generating Documentation
+title: Building the Docs Site
 sidebar_position: 5
-description: Build the scenario documentation site from built-in attack scenarios
+description: Build and preview the ThoughtJack documentation site locally
 ---
 
-# Generating Documentation
+# Building the Docs Site
 
-In this tutorial you'll build ThoughtJack's attack scenario catalog site. The `docgen` module reads built-in scenarios and produces Docusaurus-compatible MDX pages with metadata cards, Mermaid diagrams, and YAML source toggles.
+The ThoughtJack documentation site uses [Docusaurus](https://docusaurus.io/) and follows the [Diataxis](https://diataxis.fr/) framework — tutorials, how-to guides, reference, and explanation.
 
 :::info
-The `docgen` module exists in source (`src/docgen/`) but is not yet exposed as a CLI command. Documentation generation is done as part of the docs site build process.
+Attack scenarios and their documentation now live on [oatf.dev](https://oatf.dev). This site covers ThoughtJack usage, configuration, and architecture.
 :::
 
-## 1. Understand what gets generated
+## Build the docs site
 
-Each scenario page includes:
-
-- **Frontmatter** — title, sidebar position, description for SEO
-- **Attack metadata card** — severity, MITRE ATT&CK IDs, OWASP MCP Top 10 mapping, tags
-- **Description** — what the scenario does and what to observe
-- **Phase diagram** — Mermaid state diagram showing phase transitions
-- **YAML source** — toggleable full scenario configuration
-
-The generator also creates:
-- `sidebars.js` — sidebar navigation grouped by category
-- Coverage pages linking scenarios to security framework mappings
-
-## 2. Build the docs site
-
-The documentation site uses Docusaurus. Install dependencies and build:
+Install dependencies and build:
 
 ```bash
 cd docs-site
@@ -36,30 +22,17 @@ npm install
 npm run build
 ```
 
-The generated site includes:
-- **Documentation** — tutorials, how-to guides, reference, and explanation pages
-- **Coverage** — MITRE ATT&CK and OWASP MCP Top 10 matrices
-
-## 3. Preview locally
+## Preview locally
 
 ```bash
 cd docs-site
 npm start
 ```
 
-This starts a local development server at `http://localhost:3000/thoughtjack/`.
-
-## How static and generated pages coexist
-
-The docs site has two sidebar configurations:
-
-- **`docs`** — static Diataxis pages (tutorials, how-to, reference, explanation) defined in `sidebars.ts`
-- **`scenarios`** — scenario sidebar from `sidebars.js`
-
-The `sidebars.ts` file conditionally loads the `sidebars.js`. If the scenarios sidebar hasn't been generated yet, the site builds without the scenario catalog — the static documentation pages still work.
+This starts a local development server at `http://localhost:3000/`.
 
 ## Next steps
 
-- [Add a Scenario to the Library](/docs/how-to/add-scenario) — create scenarios that appear in the catalog
+- [Add a Scenario](/docs/how-to/add-scenario) — author OATF scenarios for use with ThoughtJack
 - [Configuration Schema](/docs/reference/config-schema) — complete YAML reference
 - [Documentation Structure](/docs/explanation/diataxis) — why the docs follow the Diataxis framework

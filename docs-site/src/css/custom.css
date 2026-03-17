@@ -1,232 +1,224 @@
-/* ThoughtJack — Custom CSS for scenario components */
+/* ThoughtJack — Dark-only theme matching OATF design system */
+
+@import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:wght@400;600&family=JetBrains+Mono:wght@400;700&display=swap');
 
 /* ============================================================
-   CSS Custom Properties
+   CSS Custom Properties — dark-only, no light mode
    ============================================================ */
 
 :root {
-  /* Docusaurus theme colors */
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
-  --ifm-code-font-size: 95%;
+  /* OATF palette */
+  --tj-bg: #0f1117;
+  --tj-surface: #1a1d27;
+  --tj-surface-2: #13151d;
+  --tj-border: #2a2d37;
+  --tj-border-hover: #3a3d47;
+  --tj-text: #e4e4e7;
+  --tj-text-muted: #a1a1aa;
+  --tj-accent: #b02a2a;
+  --tj-accent-hover: #c73333;
+  --tj-radius: 6px;
 
-  /* Severity badge colors (WCAG AA 4.5:1 contrast with white text) */
-  --tj-severity-low: #2e7d32;
-  --tj-severity-medium: #b56b00;
-  --tj-severity-high: #c62828;
-  --tj-severity-critical: #7b1fa2;
-
-  /* Framework pill colors */
-  --tj-pill-mitre-bg: #e3f2fd;
-  --tj-pill-mitre-text: #1565c0;
-  --tj-pill-owasp-bg: #e8f5e9;
-  --tj-pill-owasp-text: #2e7d32;
-  --tj-pill-tag-bg: #f5f5f5;
-  --tj-pill-tag-text: #616161;
-
-  /* Coverage matrix colors */
-  --tj-coverage-covered: #c8e6c9;
-  --tj-coverage-gap: #ffe0b2;
-  --tj-coverage-out-of-scope: #e0e0e0;
-
-  /* Metadata card */
-  --tj-card-border: #e0e0e0;
-  --tj-card-bg: #fafafa;
-}
-
-[data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-
-  --tj-severity-low: #388e3c;
-  --tj-severity-medium: #b56b00;
-  --tj-severity-high: #d32f2f;
-  --tj-severity-critical: #8e24aa;
-
-  --tj-pill-mitre-bg: #1a237e;
-  --tj-pill-mitre-text: #90caf9;
-  --tj-pill-owasp-bg: #1b5e20;
-  --tj-pill-owasp-text: #a5d6a7;
-  --tj-pill-tag-bg: #424242;
-  --tj-pill-tag-text: #bdbdbd;
-
-  --tj-coverage-covered: #2e7d32;
-  --tj-coverage-gap: #e65100;
-  --tj-coverage-out-of-scope: #424242;
-
-  --tj-card-border: #424242;
-  --tj-card-bg: #1e1e1e;
+  /* Docusaurus overrides */
+  --ifm-background-color: var(--tj-bg);
+  --ifm-background-surface-color: var(--tj-surface);
+  --ifm-color-primary: var(--tj-accent);
+  --ifm-color-primary-dark: #9e2626;
+  --ifm-color-primary-darker: #922323;
+  --ifm-color-primary-darkest: #781d1d;
+  --ifm-color-primary-light: #c23030;
+  --ifm-color-primary-lighter: #c83434;
+  --ifm-color-primary-lightest: #d64444;
+  --ifm-font-family-base: 'Source Sans 3', system-ui, -apple-system, sans-serif;
+  --ifm-heading-font-family: 'Source Serif 4', Georgia, serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', 'Fira Code', monospace;
+  --ifm-code-font-size: 0.875rem;
+  --ifm-font-color-base: var(--tj-text);
+  --ifm-font-color-secondary: var(--tj-text-muted);
+  --ifm-hero-background-color: transparent;
+  --ifm-link-color: var(--tj-accent-hover);
+  --ifm-menu-color: var(--tj-text-muted);
+  --ifm-menu-color-active: var(--tj-text);
+  --ifm-menu-color-background-active: rgba(176, 42, 42, 0.1);
+  --ifm-toc-link-color: var(--tj-text-muted);
+  --ifm-footer-background-color: var(--tj-surface-2);
+  --ifm-card-background-color: var(--tj-surface);
+  --docusaurus-highlighted-code-line-bg: rgba(176, 42, 42, 0.15);
 }
 
 /* ============================================================
-   Severity Badge
+   Global
    ============================================================ */
 
-.tj-severity-badge {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: #fff;
-  letter-spacing: 0.5px;
+html {
+  background: var(--tj-bg);
 }
 
-.tj-severity-badge--low {
-  background-color: var(--tj-severity-low);
-}
-
-.tj-severity-badge--medium {
-  background-color: var(--tj-severity-medium);
-}
-
-.tj-severity-badge--high {
-  background-color: var(--tj-severity-high);
-}
-
-.tj-severity-badge--critical {
-  background-color: var(--tj-severity-critical);
+body {
+  background: var(--tj-bg);
 }
 
 /* ============================================================
-   Mermaid Diagram Container
+   Navbar
    ============================================================ */
 
-.tj-mermaid-container {
-  margin: 1.5rem 0;
-  padding: 1rem;
-  border: 1px solid var(--tj-card-border);
-  border-radius: 8px;
-  overflow-x: auto;
+.navbar {
+  background: rgba(15, 17, 23, 0.96);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--tj-border);
+  box-shadow: none;
 }
 
-.tj-mermaid-title {
+.navbar__title {
+  color: var(--tj-text);
+  font-family: var(--ifm-heading-font-family);
   font-weight: 600;
-  margin-bottom: 0.75rem;
-  font-size: 0.9rem;
-  color: var(--ifm-color-emphasis-700);
+}
+
+.navbar__link {
+  color: var(--tj-text-muted);
+  font-weight: 400;
+}
+
+.navbar__link:hover,
+.navbar__link--active {
+  color: var(--tj-text);
 }
 
 /* ============================================================
-   Framework Mapping Pills
+   Sidebar
    ============================================================ */
 
-.tj-mapping {
-  margin: 0.5rem 0;
+.menu {
+  background: var(--tj-bg);
 }
 
-.tj-mapping-section {
-  margin-bottom: 0.5rem;
+.menu__link {
+  border-radius: var(--tj-radius);
 }
 
-.tj-pill {
-  display: inline-block;
-  padding: 2px 8px;
-  margin: 2px 4px;
-  border-radius: 10px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  text-decoration: none;
-  transition: opacity 0.15s;
-}
-
-.tj-pill:hover {
-  opacity: 0.8;
-  text-decoration: none;
-}
-
-.tj-pill--mitre {
-  background-color: var(--tj-pill-mitre-bg);
-  color: var(--tj-pill-mitre-text);
-}
-
-.tj-pill--owasp {
-  background-color: var(--tj-pill-owasp-bg);
-  color: var(--tj-pill-owasp-text);
-}
-
-.tj-pill--tag {
-  background-color: var(--tj-pill-tag-bg);
-  color: var(--tj-pill-tag-text);
+.menu__link--active:not(.menu__link--sublist) {
+  background: rgba(176, 42, 42, 0.1);
+  color: var(--tj-text);
 }
 
 /* ============================================================
-   Attack Metadata Card
+   Content area
    ============================================================ */
 
-.tj-metadata-card {
-  border: 1px solid var(--tj-card-border);
-  border-radius: 8px;
-  padding: 1rem 1.25rem;
-  margin: 1rem 0 1.5rem;
-  background: var(--tj-card-bg);
+.main-wrapper {
+  background: var(--tj-bg);
 }
 
-.tj-metadata-card__header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
+article {
+  color: var(--tj-text);
 }
 
-.tj-metadata-card__id {
-  font-size: 1rem;
-  font-weight: 700;
-}
-
-.tj-metadata-card__section {
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--tj-card-border);
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--ifm-heading-font-family);
+  color: var(--tj-text);
 }
 
 /* ============================================================
-   Coverage Matrix
+   Code blocks
    ============================================================ */
 
-.tj-coverage-matrix {
-  overflow-x: auto;
-  margin: 1rem 0;
+.prism-code {
+  background: #0d0f14 !important;
+  border: 1px solid var(--tj-border);
+  border-radius: var(--tj-radius);
 }
 
-.tj-coverage-matrix table {
+code {
+  background: var(--tj-surface);
+  border: 1px solid var(--tj-border);
+  border-radius: 3px;
+  color: var(--tj-text);
+}
+
+/* ============================================================
+   Table of contents
+   ============================================================ */
+
+.table-of-contents__link:hover,
+.table-of-contents__link--active {
+  color: var(--tj-text);
+}
+
+/* ============================================================
+   Footer
+   ============================================================ */
+
+.footer {
+  background: var(--tj-surface-2);
+  border-top: 1px solid var(--tj-border);
+}
+
+.footer__title {
+  color: var(--tj-text);
+}
+
+.footer__link-item {
+  color: var(--tj-text-muted);
+}
+
+.footer__link-item:hover {
+  color: var(--tj-text);
+}
+
+/* ============================================================
+   Admonitions / alerts
+   ============================================================ */
+
+.alert {
+  background: var(--tj-surface);
+  border-color: var(--tj-border);
+  color: var(--tj-text);
+}
+
+/* ============================================================
+   Markdown tables
+   ============================================================ */
+
+table {
   border-collapse: collapse;
-  width: 100%;
-  font-size: 0.85rem;
 }
 
-.tj-coverage-matrix th,
-.tj-coverage-matrix td {
-  border: 1px solid var(--tj-card-border);
-  padding: 6px 10px;
-  text-align: center;
+table th {
+  background: var(--tj-surface);
 }
 
-.tj-coverage-matrix th {
-  background: var(--tj-card-bg);
-  font-weight: 600;
+table td,
+table th {
+  border-color: var(--tj-border);
 }
 
-.tj-coverage-cell--covered {
-  background-color: var(--tj-coverage-covered);
-  font-weight: 700;
+/* ============================================================
+   GitHub header link icon
+   ============================================================ */
+
+.header-github-link::before {
+  content: '';
+  width: 24px;
+  height: 24px;
+  display: flex;
+  background: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%23a1a1aa' d='M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12'/%3E%3C/svg%3E") no-repeat;
 }
 
-.tj-coverage-cell--gap {
-  background-color: var(--tj-coverage-gap);
+.header-github-link:hover::before {
+  background: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%23e4e4e7' d='M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12'/%3E%3C/svg%3E") no-repeat;
 }
 
-.tj-coverage-cell--out_of_scope {
-  background-color: var(--tj-coverage-out-of-scope);
-  font-style: italic;
+/* ============================================================
+   Pagination
+   ============================================================ */
+
+.pagination-nav__link {
+  background: var(--tj-surface);
+  border-color: var(--tj-border);
+  border-radius: var(--tj-radius);
+}
+
+.pagination-nav__link:hover {
+  border-color: var(--tj-border-hover);
 }
