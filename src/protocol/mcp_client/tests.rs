@@ -787,7 +787,7 @@ async fn multiplexer_routes_response_to_oneshot() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -815,10 +815,11 @@ async fn multiplexer_routes_response_to_oneshot() {
     // Register a oneshot for the response
     let rx = mux.register_response(&json!(1));
 
-    // Give multiplexer time to process
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let resp = rx.await.unwrap();
+    // Wait deterministically for the oneshot to resolve
+    let resp = tokio::time::timeout(Duration::from_secs(2), rx)
+        .await
+        .expect("multiplexer should route response within timeout")
+        .unwrap();
     assert_eq!(resp.method, "tools/list");
     assert_eq!(resp.result, json!({"tools": ["calc"]}));
     assert!(!resp.is_error);
@@ -833,7 +834,7 @@ async fn multiplexer_routes_server_request_to_handler() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, mut server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -872,7 +873,7 @@ async fn multiplexer_routes_notification() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, mut notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, mut notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -910,7 +911,7 @@ async fn multiplexer_unmatched_response_id_ec_mcpc_001() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -931,13 +932,25 @@ async fn multiplexer_unmatched_response_id_ec_mcpc_001() {
         server_request_tx,
         notification_tx,
         response_senders,
-        close_reason,
+        Arc::clone(&close_reason),
         cancel.clone(),
     );
 
-    // Allow time for processing — should not panic
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Cancel the multiplexer — if processing the unmatched response panicked,
+    // the task would have aborted before reaching the cancel branch.
     cancel.cancel();
+
+    // Wait deterministically for close_reason to be set
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if close_reason.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer should set close_reason after cancel");
 }
 
 #[tokio::test]
@@ -947,7 +960,7 @@ async fn multiplexer_eof_sets_close_reason() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -963,8 +976,17 @@ async fn multiplexer_eof_sets_close_reason() {
         cancel,
     );
 
-    // Wait for multiplexer to process EOF
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for multiplexer to process EOF
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if close_reason.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer should set close_reason within timeout");
 
     let reason = close_reason.lock().unwrap().clone();
     assert!(matches!(reason, Some(MultiplexerClosed::TransportEof)));
@@ -977,7 +999,7 @@ async fn multiplexer_transport_error_sets_close_reason() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -997,7 +1019,17 @@ async fn multiplexer_transport_error_sets_close_reason() {
         cancel,
     );
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for multiplexer to process the transport error
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if close_reason.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer should set close_reason within timeout");
 
     let reason = close_reason.lock().unwrap().clone();
     match reason {
@@ -1015,7 +1047,7 @@ async fn multiplexer_cancel_sets_close_reason() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (server_request_tx, _server_request_rx) = mpsc::channel(64);
-    let (notification_tx, _notification_rx) = mpsc::unbounded_channel();
+    let (notification_tx, _notification_rx) = mpsc::channel(64);
     let response_senders = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let close_reason = Arc::new(std::sync::Mutex::new(None));
     let cancel = CancellationToken::new();
@@ -1034,9 +1066,18 @@ async fn multiplexer_cancel_sets_close_reason() {
         cancel.clone(),
     );
 
-    // Cancel and wait for task to process
+    // Cancel and wait deterministically for close_reason to be set
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if close_reason.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("multiplexer should set close_reason after cancel within timeout");
 
     let reason = close_reason.lock().unwrap().clone();
     assert!(matches!(reason, Some(MultiplexerClosed::Cancelled)));
@@ -1061,7 +1102,7 @@ async fn handler_responds_to_sampling() {
     }));
     let (ext_tx, ext_rx) = watch::channel(HashMap::new());
     let _ = ext_tx; // keep sender alive
-    let (handler_event_tx, mut handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, mut handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1087,15 +1128,18 @@ async fn handler_responds_to_sampling() {
         .await
         .unwrap();
 
-    // Wait for handler to process
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Check events emitted (incoming + outgoing)
-    let evt1 = handler_event_rx.try_recv().unwrap();
+    // Wait deterministically for handler to emit events
+    let evt1 = tokio::time::timeout(Duration::from_secs(2), handler_event_rx.recv())
+        .await
+        .expect("should receive first event within timeout")
+        .unwrap();
     assert_eq!(evt1.method, "sampling/createMessage");
     assert!(matches!(evt1.direction, Direction::Incoming));
 
-    let evt2 = handler_event_rx.try_recv().unwrap();
+    let evt2 = tokio::time::timeout(Duration::from_secs(2), handler_event_rx.recv())
+        .await
+        .expect("should receive second event within timeout")
+        .unwrap();
     assert_eq!(evt2.method, "sampling/createMessage");
     assert!(matches!(evt2.direction, Direction::Outgoing));
 
@@ -1117,7 +1161,7 @@ async fn handler_responds_to_ping() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let handler_state = Arc::new(tokio::sync::RwLock::new(HandlerState { state: json!({}) }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1141,7 +1185,17 @@ async fn handler_responds_to_ping() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1162,7 +1216,7 @@ async fn handler_responds_to_roots_list() {
         }),
     }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1186,7 +1240,17 @@ async fn handler_responds_to_roots_list() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1212,7 +1276,7 @@ async fn handler_responds_to_elicitation() {
         }),
     }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1236,7 +1300,17 @@ async fn handler_responds_to_elicitation() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1253,7 +1327,7 @@ async fn handler_unknown_method_returns_empty() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let handler_state = Arc::new(tokio::sync::RwLock::new(HandlerState { state: json!({}) }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1277,7 +1351,17 @@ async fn handler_unknown_method_returns_empty() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1301,7 +1385,7 @@ async fn handler_sampling_error_sends_error_response() {
         }),
     }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1325,7 +1409,17 @@ async fn handler_sampling_error_sends_error_response() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the error response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send error response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages.len(), 1);
@@ -1356,7 +1450,7 @@ async fn handler_uses_fresh_extractors() {
         }),
     }));
     let (ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1385,7 +1479,17 @@ async fn handler_uses_fresh_extractors() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for handler to write the response
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !sent.lock().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handler should send response within timeout");
 
     let messages = sent.lock().await;
     assert_eq!(messages[0]["result"]["content"]["text"], "Hello Alice");
@@ -1401,7 +1505,7 @@ async fn handler_stops_on_cancel() {
         Arc::new(tokio::sync::Mutex::new(Box::new(mock_writer)));
     let handler_state = Arc::new(tokio::sync::RwLock::new(HandlerState { state: json!({}) }));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    let (handler_event_tx, _handler_event_rx) = mpsc::unbounded_channel();
+    let (handler_event_tx, _handler_event_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
 
     let (_server_request_tx, server_request_rx) = mpsc::channel(64);
@@ -1443,6 +1547,7 @@ fn create_test_driver(
         })),
         handler_handle: None,
         server_capabilities: None,
+        negotiated_version: None,
         request_timeout: Duration::from_millis(500),
         phase_timeout: Duration::from_millis(100),
         initialized: false,
@@ -1503,7 +1608,7 @@ async fn driver_initialize_sends_handshake() {
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
     driver.bootstrap(ext_rx);
 
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let state = json!({"sampling_responses": []});
 
     driver.initialize(&state, &event_tx).await.unwrap();
@@ -1540,7 +1645,7 @@ async fn driver_initialize_rejects_error_response_ec_mcpc_005() {
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
     driver.bootstrap(ext_rx);
 
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
     let state = json!({});
 
     let result = driver.initialize(&state, &event_tx).await;
@@ -1590,7 +1695,7 @@ async fn drive_phase_with_actions_uses_short_idle_timeout() {
     driver.phase_timeout = Duration::from_secs(30);
 
     let (_ext_tx, extractors_rx) = watch::channel(HashMap::new());
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(100);
 
     let state = json!({
         // Unknown action still counts as an explicit action and should not
@@ -1627,8 +1732,8 @@ async fn driver_forward_pending_events_drains_channels() {
     let mut driver = create_test_driver(writer, reader);
 
     // Set up channels manually
-    let (handler_tx, handler_rx) = mpsc::unbounded_channel();
-    let (notif_tx, notif_rx) = mpsc::unbounded_channel();
+    let (handler_tx, handler_rx) = mpsc::channel(8);
+    let (notif_tx, notif_rx) = mpsc::channel(8);
     driver.handler_event_rx = Some(handler_rx);
     driver.notification_rx = Some(notif_rx);
 
@@ -1639,15 +1744,17 @@ async fn driver_forward_pending_events_drains_channels() {
             method: "sampling/createMessage".to_string(),
             content: json!({}),
         })
+        .await
         .unwrap();
     notif_tx
         .send(NotificationMessage {
             method: "notifications/progress".to_string(),
             params: Some(json!({"progress": 50})),
         })
+        .await
         .unwrap();
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(100);
     driver.forward_pending_events(&event_tx);
 
     // Should have forwarded both

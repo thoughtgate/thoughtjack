@@ -30,6 +30,20 @@ use super::types::{
     ActorResult, AwaitExtractor, Direction, PhaseAction, ProtocolEvent, TerminationReason,
 };
 
+/// Maximum number of buffered protocol events per phase.
+///
+/// Provides backpressure: if the phase loop cannot drain events fast
+/// enough, drivers block on `send().await`. The capacity is generous
+/// enough that backpressure should never trigger under normal operation.
+const EVENT_CHANNEL_CAPACITY: usize = 10_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DriveLoopAction {
+    Stay,
+    Advance,
+    TransportClosed,
+}
+
 // ============================================================================
 // Free functions for event processing
 // ============================================================================
@@ -97,7 +111,7 @@ fn process_protocol_event(
 /// Stops processing immediately after the first `Advance` to avoid
 /// running extractors in the wrong phase context.
 fn drain_events(
-    event_rx: &mut mpsc::UnboundedReceiver<ProtocolEvent>,
+    event_rx: &mut mpsc::Receiver<ProtocolEvent>,
     phase_engine: &mut PhaseEngine,
     ctx: &EventContext<'_>,
 ) -> PhaseAction {
@@ -214,7 +228,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     pub fn new(driver: D, phase_engine: PhaseEngine, config: PhaseLoopConfig) -> Self {
         let mode = &phase_engine.actor().mode;
         let protocol = extract_protocol(mode).to_string();
-        let is_server_mode = mode.contains("server");
+        let is_server_mode = mode.ends_with("_server");
         let (extractors_tx, _) = watch::channel(HashMap::new());
 
         Self {
@@ -246,9 +260,11 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     pub async fn run(&mut self) -> Result<ActorResult, EngineError> {
         loop {
             let phase_index = self.phase_engine.current_phase;
-            self.prepare_phase(phase_index).await;
+            if self.prepare_phase(phase_index).await {
+                return Ok(self.build_result(TerminationReason::Cancelled));
+            }
             let effective_state = self.phase_engine.effective_state();
-            let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+            let (event_tx, mut event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
             // Run driver and event consumer concurrently.
             // drive_fut is scoped so its mutable borrow drops before on_phase_advanced.
@@ -274,11 +290,24 @@ impl<D: PhaseDriver> PhaseLoop<D> {
 
                 tokio::pin!(drive_fut);
 
+                let mut phase_advancing = false;
                 loop {
                     tokio::select! {
                         result = &mut drive_fut => {
-                            result?;
-                            break drain_events(&mut event_rx, &mut self.phase_engine, &ctx);
+                            let drive_result = result?;
+                            let drained_action = drain_events(&mut event_rx, &mut self.phase_engine, &ctx);
+                            break match drive_result {
+                                super::types::DriveResult::Complete => {
+                                    if phase_advancing || drained_action == PhaseAction::Advance {
+                                        DriveLoopAction::Advance
+                                    } else {
+                                        DriveLoopAction::Stay
+                                    }
+                                }
+                                super::types::DriveResult::TransportClosed => {
+                                    DriveLoopAction::TransportClosed
+                                }
+                            };
                         }
                         event = event_rx.recv() => {
                             match event {
@@ -286,12 +315,16 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                                     if process_protocol_event(evt, &mut self.phase_engine, &ctx)
                                         == PhaseAction::Advance
                                     {
+                                        phase_advancing = true;
                                         phase_cancel.cancel();
-                                        break PhaseAction::Advance;
                                     }
                                 }
                                 None => {
-                                    break PhaseAction::Stay;
+                                    break if phase_advancing {
+                                        DriveLoopAction::Advance
+                                    } else {
+                                        DriveLoopAction::Stay
+                                    };
                                 }
                             }
                         }
@@ -315,7 +348,11 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 }
             };
 
-            if action == PhaseAction::Advance {
+            if action == DriveLoopAction::TransportClosed {
+                return Ok(self.build_result(TerminationReason::TransportClosed));
+            }
+
+            if action == DriveLoopAction::Advance {
                 let to = self.phase_engine.advance_phase();
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
@@ -328,7 +365,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     /// Prepare a phase: await cross-actor extractors, publish initial
     /// extractor values, and execute `on_enter` actions.
     #[allow(clippy::needless_pass_by_ref_mut, clippy::cognitive_complexity)]
-    async fn prepare_phase(&mut self, phase_index: usize) {
+    async fn prepare_phase(&mut self, phase_index: usize) -> bool {
         if let Some(await_specs) = self.await_extractors_config.get(&phase_index) {
             for spec in await_specs {
                 tracing::debug!(
@@ -366,6 +403,9 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                                 );
                                 break;
                             }
+                            () = self.cancel.cancelled() => {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -385,6 +425,8 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             )
             .await;
         }
+
+        false
     }
 
     /// Build a completion result for this actor with the given termination reason.
@@ -424,11 +466,11 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             for event in self.events.drain(..) {
-                let _ = event_tx.send(event);
+                let _ = event_tx.send(event).await;
             }
             Ok(super::super::types::DriveResult::Complete)
         }
@@ -446,7 +488,7 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             extractors: watch::Receiver<HashMap<String, String>>,
-            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             let snapshot = extractors.borrow().clone();
@@ -468,14 +510,16 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             extractors: watch::Receiver<HashMap<String, String>>,
-            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Incoming,
-                method: "tools/call".to_string(),
-                content: serde_json::json!({"name": "calculator", "empty_field": ""}),
-            });
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"name": "calculator", "empty_field": ""}),
+                })
+                .await;
             // Small yield to allow event processing
             tokio::task::yield_now().await;
             let snapshot = extractors.borrow().clone();
@@ -494,7 +538,7 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             panic!("driver crashed unexpectedly");
@@ -511,7 +555,7 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            _event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             Err(EngineError::Driver("mock driver error".to_string()))
@@ -531,11 +575,11 @@ mod tests {
             _phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             for event in self.events.drain(..) {
-                let _ = event_tx.send(event);
+                let _ = event_tx.send(event).await;
             }
             Ok(super::super::types::DriveResult::Complete)
         }
@@ -698,7 +742,7 @@ attack:
                 _phase_index: usize,
                 _state: &serde_json::Value,
                 _extractors: watch::Receiver<HashMap<String, String>>,
-                _event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+                _event_tx: mpsc::Sender<ProtocolEvent>,
                 cancel: CancellationToken,
             ) -> Result<super::super::types::DriveResult, EngineError> {
                 cancel.cancelled().await;
@@ -980,12 +1024,12 @@ attack:
             phase_index: usize,
             _state: &serde_json::Value,
             _extractors: watch::Receiver<HashMap<String, String>>,
-            event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
             _cancel: CancellationToken,
         ) -> Result<super::super::types::DriveResult, EngineError> {
             if let Some(events) = self.phase_events.get_mut(&phase_index) {
                 for event in events.drain(..) {
-                    let _ = event_tx.send(event);
+                    let _ = event_tx.send(event).await;
                 }
             }
             Ok(super::super::types::DriveResult::Complete)

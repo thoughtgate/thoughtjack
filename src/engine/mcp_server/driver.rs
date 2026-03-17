@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -32,6 +32,19 @@ use crate::engine::actions::EntryActionSender;
 use crate::engine::driver::PhaseDriver;
 use crate::engine::types::{Direction, DriveResult, ProtocolEvent};
 
+/// Maximum number of deferred client requests buffered during slow-stream delivery.
+///
+/// A malicious client can intentionally keep a slow-stream window open and pile
+/// up requests. This cap prevents unbounded memory growth; excess requests are
+/// dropped with a warning.
+const MAX_DEFERRED_REQUESTS: usize = 1_000;
+
+/// Maximum number of buffered responses during server-initiated request waits.
+///
+/// Bounds memory used when a server-initiated request (sampling, elicitation)
+/// receives interleaved responses with non-matching IDs.
+const MAX_BUFFERED_RESPONSES: usize = 100;
+
 // ============================================================================
 // McpServerDriver
 // ============================================================================
@@ -54,6 +67,10 @@ pub struct McpServerDriver {
     /// Client capabilities captured from the `initialize` request.
     /// Used to gate elicitation and sampling requests per MCP spec.
     client_capabilities: Option<Value>,
+    /// Client requests received while a slow-stream response is still in flight.
+    deferred_requests: VecDeque<JsonRpcRequest>,
+    /// Responses received while waiting for a specific server-initiated request.
+    buffered_server_responses: HashMap<String, JsonRpcResponse>,
 }
 
 impl McpServerDriver {
@@ -71,6 +88,8 @@ impl McpServerDriver {
             transport,
             raw_synthesize,
             client_capabilities: None,
+            deferred_requests: VecDeque::new(),
+            buffered_server_responses: HashMap::new(),
         }
     }
 
@@ -99,9 +118,9 @@ impl McpServerDriver {
     ///
     /// Returns `EngineError::Driver` on transport or delivery task failure.
     async fn observe_during_delivery(
-        &self,
+        &mut self,
         mut handle: JoinHandle<Result<(), EngineError>>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
         cancel: &CancellationToken,
     ) -> Result<Option<DriveResult>, EngineError> {
         loop {
@@ -127,21 +146,21 @@ impl McpServerDriver {
                                 direction: Direction::Incoming,
                                 method: notif.method.clone(),
                                 content: notif.params.unwrap_or(Value::Null),
-                            });
+                            }).await;
                         }
                         Ok(Some(JsonRpcMessage::Request(req))) => {
-                            let _ = event_tx.send(ProtocolEvent {
-                                direction: Direction::Incoming,
-                                method: req.method.clone(),
-                                content: req.params.clone().unwrap_or(Value::Null),
-                            });
+                            if self.deferred_requests.len() < MAX_DEFERRED_REQUESTS {
+                                self.deferred_requests.push_back(req);
+                            } else {
+                                tracing::warn!(method = %req.method, "deferred request queue full, dropping");
+                            }
                         }
                         Ok(Some(JsonRpcMessage::Response(resp))) => {
                             tracing::debug!(id = ?resp.id, "unexpected response from agent during delivery");
                         }
                         Ok(None) => {
                             handle.abort();
-                            return Ok(Some(DriveResult::Complete));
+                            return Ok(Some(DriveResult::TransportClosed));
                         }
                         Err(err) => {
                             handle.abort();
@@ -165,7 +184,8 @@ impl McpServerDriver {
         request: &JsonRpcRequest,
         state: &Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
+        cancel: &CancellationToken,
     ) -> JsonRpcResponse {
         match request.method.as_str() {
             "initialize" => {
@@ -177,7 +197,7 @@ impl McpServerDriver {
             }
             "tools/list" => handle_tools_list(request, state),
             "tools/call" => {
-                self.handle_tools_call(request, state, extractors, event_tx)
+                self.handle_tools_call(request, state, extractors, event_tx, cancel)
                     .await
             }
             "resources/list" => handle_resources_list(request, state),
@@ -187,7 +207,7 @@ impl McpServerDriver {
             "resources/templates/list" => handle_resources_templates_list(request, state),
             "prompts/list" => handle_prompts_list(request, state),
             "prompts/get" => {
-                self.handle_prompts_get(request, state, extractors, event_tx)
+                self.handle_prompts_get(request, state, extractors, event_tx, cancel)
                     .await
             }
             "resources/subscribe" | "resources/unsubscribe" => handle_subscribe(request),
@@ -210,11 +230,12 @@ impl McpServerDriver {
 
     /// Handle `tools/call` with response dispatch and optional elicitation.
     async fn handle_tools_call(
-        &self,
+        &mut self,
         request: &JsonRpcRequest,
         state: &Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
+        cancel: &CancellationToken,
     ) -> JsonRpcResponse {
         let params = request.params.as_ref().unwrap_or(&Value::Null);
         let tool_name = params
@@ -234,8 +255,9 @@ impl McpServerDriver {
         self.maybe_send_logging(state, tool_name, event_tx).await;
         self.maybe_send_progress(state, params, tool_name, event_tx)
             .await;
-        self.maybe_send_sampling(state, tool_name, event_tx).await;
-        self.maybe_send_elicitation(state, params, tool_name, event_tx)
+        self.maybe_send_sampling(state, tool_name, event_tx, cancel)
+            .await;
+        self.maybe_send_elicitation(state, params, tool_name, event_tx, cancel)
             .await;
 
         dispatch_response(
@@ -245,16 +267,18 @@ impl McpServerDriver {
             params,
             tool.get("outputSchema"),
             self.raw_synthesize,
+            "tools/call",
         )
     }
 
     /// Handle `prompts/get` with response dispatch and optional elicitation.
     async fn handle_prompts_get(
-        &self,
+        &mut self,
         request: &JsonRpcRequest,
         state: &Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
+        cancel: &CancellationToken,
     ) -> JsonRpcResponse {
         let params = request.params.as_ref().unwrap_or(&Value::Null);
         let prompt_name = params
@@ -271,7 +295,7 @@ impl McpServerDriver {
         };
 
         // Elicitation interleaving (before response)
-        self.maybe_send_elicitation(state, params, "", event_tx)
+        self.maybe_send_elicitation(state, params, "", event_tx, cancel)
             .await;
 
         dispatch_response(
@@ -281,6 +305,7 @@ impl McpServerDriver {
             params,
             None,
             self.raw_synthesize,
+            "prompts/get",
         )
     }
 
@@ -292,10 +317,12 @@ impl McpServerDriver {
     /// requests that the client may send before its response (e.g.
     /// `notifications/progress`, `notifications/cancelled`). Interleaved
     /// messages are re-emitted on `event_tx` so they are not lost.
+    #[allow(clippy::cognitive_complexity)] // transport branching + select loop is inherently complex
     async fn send_server_request(
-        &self,
+        &mut self,
         request: &JsonRpcRequest,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
+        cancel: &CancellationToken,
     ) -> Option<JsonRpcResponse> {
         if self.transport.transport_type() == TransportType::Http
             && let Some(http) = self.transport.as_any().downcast_ref::<HttpTransport>()
@@ -319,30 +346,62 @@ impl McpServerDriver {
             return None;
         }
 
+        let expected_id =
+            serde_json::to_string(&request.id).unwrap_or_else(|_| request.id.to_string());
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+
         loop {
-            match self.transport.receive_message().await {
-                Ok(Some(JsonRpcMessage::Response(resp))) => return Some(resp),
+            if let Some(resp) = self.buffered_server_responses.remove(&expected_id) {
+                return Some(resp);
+            }
+
+            let receive = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return None,
+                () = tokio::time::sleep_until(deadline) => {
+                    tracing::warn!(method = %request.method, "server request timed out waiting for client response");
+                    return None;
+                }
+                msg = self.transport.receive_message() => msg,
+            };
+
+            match receive {
+                Ok(Some(JsonRpcMessage::Response(resp))) => {
+                    let response_id =
+                        serde_json::to_string(&resp.id).unwrap_or_else(|_| resp.id.to_string());
+                    if response_id == expected_id {
+                        return Some(resp);
+                    }
+                    if self.buffered_server_responses.len() < MAX_BUFFERED_RESPONSES {
+                        tracing::debug!(?resp.id, expected = %expected_id, "buffering unrelated response while awaiting server request");
+                        self.buffered_server_responses.insert(response_id, resp);
+                    } else {
+                        tracing::warn!(?resp.id, "buffered response map full, dropping");
+                    }
+                }
                 Ok(Some(JsonRpcMessage::Notification(notif))) => {
                     tracing::debug!(
                         method = %notif.method,
                         "interleaved notification during server request wait, re-emitting"
                     );
-                    let _ = event_tx.send(ProtocolEvent {
-                        direction: Direction::Incoming,
-                        method: notif.method.clone(),
-                        content: notif.params.unwrap_or(Value::Null),
-                    });
+                    let _ = event_tx
+                        .send(ProtocolEvent {
+                            direction: Direction::Incoming,
+                            method: notif.method.clone(),
+                            content: notif.params.unwrap_or(Value::Null),
+                        })
+                        .await;
                 }
                 Ok(Some(JsonRpcMessage::Request(req))) => {
-                    tracing::debug!(
-                        method = %req.method,
-                        "interleaved request during server request wait, re-emitting"
-                    );
-                    let _ = event_tx.send(ProtocolEvent {
-                        direction: Direction::Incoming,
-                        method: req.method.clone(),
-                        content: req.params.unwrap_or(Value::Null),
-                    });
+                    if self.deferred_requests.len() < MAX_DEFERRED_REQUESTS {
+                        tracing::debug!(
+                            method = %req.method,
+                            "interleaved request during server request wait, queueing for later dispatch"
+                        );
+                        self.deferred_requests.push_back(req);
+                    } else {
+                        tracing::warn!(method = %req.method, "deferred request queue full, dropping");
+                    }
                 }
                 Ok(None) => {
                     tracing::debug!("transport EOF during server request wait");
@@ -364,7 +423,7 @@ impl McpServerDriver {
         &self,
         state: &Value,
         tool_name: &str,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) {
         let Some(entries) = state.get("logging").and_then(Value::as_array) else {
             return;
@@ -392,11 +451,13 @@ impl McpServerDriver {
                 })),
             );
 
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Outgoing,
-                method: "notifications/message".to_string(),
-                content: json!({ "level": level, "data": data }),
-            });
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "notifications/message".to_string(),
+                    content: json!({ "level": level, "data": data }),
+                })
+                .await;
 
             if let Err(err) = self
                 .transport
@@ -417,7 +478,7 @@ impl McpServerDriver {
         state: &Value,
         request_params: &Value,
         tool_name: &str,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
     ) {
         let Some(entries) = state.get("progress").and_then(Value::as_array) else {
             return;
@@ -455,11 +516,13 @@ impl McpServerDriver {
             let notif =
                 JsonRpcNotification::new("notifications/progress", Some(notif_params.clone()));
 
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Outgoing,
-                method: "notifications/progress".to_string(),
-                content: notif_params,
-            });
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "notifications/progress".to_string(),
+                    content: notif_params,
+                })
+                .await;
 
             if let Err(err) = self
                 .transport
@@ -491,10 +554,11 @@ impl McpServerDriver {
     /// Reads `state["sampling_requests"]` array, sends `sampling/createMessage`
     /// request. Uses first-match-wins with optional `tool` filter.
     async fn maybe_send_sampling(
-        &self,
+        &mut self,
         state: &Value,
         tool_name: &str,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
+        cancel: &CancellationToken,
     ) {
         if !self.client_supports("sampling") {
             if state.get("sampling_requests").is_some() {
@@ -540,18 +604,25 @@ impl McpServerDriver {
             )),
         };
 
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "sampling/createMessage".to_string(),
-            content: serde_json::to_value(&sampling_request).unwrap_or(Value::Null),
-        });
-
-        if let Some(resp) = self.send_server_request(&sampling_request, event_tx).await {
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Incoming,
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
                 method: "sampling/createMessage".to_string(),
-                content: serde_json::to_value(&resp).unwrap_or(Value::Null),
-            });
+                content: serde_json::to_value(&sampling_request).unwrap_or(Value::Null),
+            })
+            .await;
+
+        if let Some(resp) = self
+            .send_server_request(&sampling_request, event_tx, cancel)
+            .await
+        {
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "sampling/createMessage".to_string(),
+                    content: serde_json::to_value(&resp).unwrap_or(Value::Null),
+                })
+                .await;
         }
     }
 
@@ -571,11 +642,12 @@ impl McpServerDriver {
     // Complexity: elicitation matching with mode/url/validation branching per MCP spec
     #[allow(clippy::cognitive_complexity)]
     async fn maybe_send_elicitation(
-        &self,
+        &mut self,
         state: &Value,
         request_context: &Value,
         tool_name: &str,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
+        cancel: &CancellationToken,
     ) {
         if !self.client_supports("elicitation") {
             if state.get("elicitations").is_some() {
@@ -659,23 +731,83 @@ impl McpServerDriver {
         };
 
         // Emit outgoing elicitation event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "elicitation/create".to_string(),
-            content: serde_json::to_value(&elicitation_request).unwrap_or(Value::Null),
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "elicitation/create".to_string(),
+                content: serde_json::to_value(&elicitation_request).unwrap_or(Value::Null),
+            })
+            .await;
 
         // Send request and wait for response
         if let Some(resp) = self
-            .send_server_request(&elicitation_request, event_tx)
+            .send_server_request(&elicitation_request, event_tx, cancel)
             .await
         {
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Incoming,
-                method: "elicitation/create".to_string(),
-                content: serde_json::to_value(&resp).unwrap_or(Value::Null),
-            });
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "elicitation/create".to_string(),
+                    content: serde_json::to_value(&resp).unwrap_or(Value::Null),
+                })
+                .await;
         }
+    }
+
+    async fn handle_request_message(
+        &mut self,
+        request: JsonRpcRequest,
+        state: &Value,
+        extractors: &watch::Receiver<HashMap<String, String>>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<DriveResult>, EngineError> {
+        let incoming_content = request.params.clone().unwrap_or(Value::Null);
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: request.method.clone(),
+                content: incoming_content,
+            })
+            .await;
+
+        let current_extractors = extractors.borrow().clone();
+        let response = self
+            .dispatch_request(&request, state, &current_extractors, event_tx, cancel)
+            .await;
+
+        apply_side_effects(&self.transport, state, &request.id).await?;
+
+        let response_msg = JsonRpcMessage::Response(response.clone());
+        let pending = apply_delivery(&self.transport, state, &response_msg).await?;
+
+        if let Some(handle) = pending
+            && let Some(result) = self
+                .observe_during_delivery(handle, event_tx, cancel)
+                .await?
+        {
+            return Ok(Some(result));
+        }
+
+        let outgoing_content = response.result.clone().unwrap_or_else(|| {
+            response.error.as_ref().map_or(Value::Null, |e| {
+                serde_json::to_value(e).unwrap_or(Value::Null)
+            })
+        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: request.method.clone(),
+                content: outgoing_content,
+            })
+            .await;
+
+        self.transport
+            .finalize_response()
+            .await
+            .map_err(|e| EngineError::Driver(format!("finalize error: {e}")))?;
+
+        Ok(None)
     }
 }
 
@@ -699,10 +831,20 @@ impl PhaseDriver for McpServerDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         loop {
+            if let Some(request) = self.deferred_requests.pop_front() {
+                if let Some(result) = self
+                    .handle_request_message(request, state, &extractors, &event_tx, &cancel)
+                    .await?
+                {
+                    return Ok(result);
+                }
+                continue;
+            }
+
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
@@ -711,55 +853,12 @@ impl PhaseDriver for McpServerDriver {
                 msg = self.transport.receive_message() => {
                     match msg {
                         Ok(Some(JsonRpcMessage::Request(request))) => {
-                            // Emit incoming event
-                            let incoming_content = request.params.clone().unwrap_or(Value::Null);
-                            let _ = event_tx.send(ProtocolEvent {
-                                direction: Direction::Incoming,
-                                method: request.method.clone(),
-                                content: incoming_content,
-                            });
-
-                            // Get fresh extractors
-                            let current_extractors = extractors.borrow().clone();
-
-                            // Dispatch request
-                            let response = self.dispatch_request(
-                                &request, state, &current_extractors, &event_tx,
-                            ).await;
-
-                            // Apply side effects
-                            apply_side_effects(
-                                &self.transport, state, &request.id,
-                            ).await?;
-
-                            // Apply delivery
-                            let response_msg = JsonRpcMessage::Response(response.clone());
-                            let pending = apply_delivery(&self.transport, state, &response_msg).await?;
-
-                            // If delivery was spawned (slow_stream), observe
-                            // interleaved messages while waiting for it to finish.
-                            if let Some(handle) = pending
-                                && let Some(result) = self.observe_during_delivery(
-                                    handle, &event_tx, &cancel,
-                                ).await?
+                            if let Some(result) = self
+                                .handle_request_message(request, state, &extractors, &event_tx, &cancel)
+                                .await?
                             {
                                 return Ok(result);
                             }
-
-                            // Emit outgoing event
-                            let outgoing_content = response.result.clone().unwrap_or_else(||
-                                response.error.as_ref()
-                                    .map_or(Value::Null, |e| serde_json::to_value(e).unwrap_or(Value::Null))
-                            );
-                            let _ = event_tx.send(ProtocolEvent {
-                                direction: Direction::Outgoing,
-                                method: request.method.clone(),
-                                content: outgoing_content,
-                            });
-
-                            // Finalize
-                            self.transport.finalize_response().await
-                                .map_err(|e| EngineError::Driver(format!("finalize error: {e}")))?;
                         }
                         Ok(Some(JsonRpcMessage::Notification(notif))) => {
                             // Notifications have no response — just emit event
@@ -767,15 +866,14 @@ impl PhaseDriver for McpServerDriver {
                                 direction: Direction::Incoming,
                                 method: notif.method.clone(),
                                 content: notif.params.unwrap_or(Value::Null),
-                            });
+                            }).await;
                         }
                         Ok(Some(JsonRpcMessage::Response(resp))) => {
                             // Unexpected response — log and continue
                             tracing::debug!(id = ?resp.id, "unexpected response from agent");
                         }
                         Ok(None) => {
-                            // EOF — clean shutdown
-                            return Ok(DriveResult::Complete);
+                            return Ok(DriveResult::TransportClosed);
                         }
                         Err(err) => {
                             tracing::warn!(error = %err, "transport receive error");

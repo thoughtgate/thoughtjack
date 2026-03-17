@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::args::RunArgs;
+use crate::cli::args::{ExecutionArgs, RunArgs};
 use crate::engine::trace::SharedTrace;
 use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
 use crate::error::{EngineError, ThoughtJackError};
@@ -42,13 +42,8 @@ pub async fn run(
     quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
-    let config = args
-        .config
-        .clone()
-        .or_else(|| std::env::var_os("THOUGHTJACK_CONFIG").map(std::path::PathBuf::from))
-        .ok_or_else(|| ThoughtJackError::Usage("--config <path> is required for `run`".into()))?;
-    let yaml = std::fs::read_to_string(config)?;
-    run_from_yaml(&yaml, args, quiet, cancel).await
+    let yaml = std::fs::read_to_string(&args.config)?;
+    run_from_yaml(&yaml, &args.execution, quiet, cancel).await
 }
 
 /// Execute an OATF scenario from raw YAML content.
@@ -63,7 +58,7 @@ pub async fn run(
 /// Implements: TJ-SPEC-007 F-002
 pub async fn run_from_yaml(
     yaml: &str,
-    args: &RunArgs,
+    args: &ExecutionArgs,
     quiet: bool,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
@@ -78,11 +73,16 @@ pub async fn run_from_yaml(
     // 2. Load document
     let loaded = loader::load_document(yaml)?;
 
-    // 3. Build ActorConfig from RunArgs
-    let config = build_actor_config(args).map_err(|e| match e {
+    // 3. Build ActorConfig from shared execution args
+    let mut config = build_actor_config(args).map_err(|e| match e {
         EngineError::Driver(msg) => ThoughtJackError::Usage(msg),
-        other => ThoughtJackError::Usage(other.to_string()),
+        other => ThoughtJackError::Engine(other),
     })?;
+    let grace_applied = resolve_grace_period(
+        args.grace_period.map(Into::into),
+        loaded.document.attack.grace_period.as_deref(),
+    );
+    config.grace_period = Some(grace_applied);
 
     // 4. Set up EventEmitter
     let events: Arc<EventEmitter> = match &args.events_file {
@@ -142,13 +142,7 @@ pub async fn run_from_yaml(
     // 9. Build actor statuses from outcomes
     let actor_statuses = build_actor_statuses(&outcomes, actors);
 
-    // 10. Resolve grace period
-    let grace_applied = resolve_grace_period(
-        args.grace_period.map(Into::into),
-        loaded.document.attack.grace_period.as_deref(),
-    );
-
-    // 11. Build output
+    // 10. Build output
     let output = build_verdict_output(
         &loaded.document.attack,
         &verdict,
@@ -158,17 +152,17 @@ pub async fn run_from_yaml(
         duration_ms,
     );
 
-    // 12. Write JSON verdict if --output
+    // 11. Write JSON verdict if --output
     if let Some(ref path) = args.output {
         write_json_verdict(&output, path)?;
     }
 
-    // 13. Print human summary
+    // 12. Print human summary
     if !quiet {
         print_human_summary(&output);
     }
 
-    // 14. Runtime actor failures are treated as orchestration errors.
+    // 13. Runtime actor failures are treated as orchestration errors.
     let actor_failures = summarize_actor_failures(&outcomes);
     if !actor_failures.is_empty() {
         return Err(ThoughtJackError::Orchestration(format!(
@@ -177,7 +171,7 @@ pub async fn run_from_yaml(
         )));
     }
 
-    // 15. Exit code
+    // 14. Exit code
     let code = verdict_exit_code(&verdict.result);
     if code != 0 {
         return Err(ThoughtJackError::Verdict {
@@ -306,6 +300,9 @@ async fn run_single_actor(
         ActorOutcome::Panic { actor_name } => {
             format!("single actor '{actor_name}' panicked")
         }
+        ActorOutcome::Aborted { actor_name } => {
+            format!("single actor '{actor_name}' was aborted")
+        }
     };
     events.emit(ThoughtJackEvent::OrchestratorCompleted { summary });
 
@@ -315,7 +312,7 @@ async fn run_single_actor(
 fn unpack_single_actor_join(
     join_result: Result<Result<ActorResult, crate::error::EngineError>, tokio::task::JoinError>,
     actor_name: &str,
-    total_phases: usize,
+    _total_phases: usize,
 ) -> ActorOutcome {
     match join_result {
         Ok(Ok(result)) => ActorOutcome::Success(result),
@@ -323,9 +320,9 @@ fn unpack_single_actor_join(
             actor_name: actor_name.to_string(),
             error: err.to_string(),
         },
-        Err(join_err) if join_err.is_cancelled() => {
-            ActorOutcome::Success(cancelled_actor_result(actor_name, total_phases))
-        }
+        Err(join_err) if join_err.is_cancelled() => ActorOutcome::Aborted {
+            actor_name: actor_name.to_string(),
+        },
         Err(_join_err) => ActorOutcome::Panic {
             actor_name: actor_name.to_string(),
         },
@@ -342,7 +339,9 @@ async fn wait_for_single_actor_shutdown(
         Ok(join_result) => unpack_single_actor_join(join_result, actor_name, total_phases),
         Err(_elapsed) => {
             handle.abort();
-            ActorOutcome::Success(cancelled_actor_result(actor_name, total_phases))
+            ActorOutcome::Aborted {
+                actor_name: actor_name.to_string(),
+            }
         }
     }
 }
@@ -356,16 +355,6 @@ fn mark_timeout_outcome(outcome: ActorOutcome) -> ActorOutcome {
             ActorOutcome::Success(result)
         }
         other => other,
-    }
-}
-
-fn cancelled_actor_result(actor_name: &str, total_phases: usize) -> ActorResult {
-    ActorResult {
-        actor_name: actor_name.to_string(),
-        termination: TerminationReason::Cancelled,
-        phases_completed: 0,
-        total_phases,
-        final_phase: None,
     }
 }
 
@@ -414,6 +403,20 @@ fn build_actor_statuses(outcomes: &[ActorOutcome], actors: &[oatf::Actor]) -> Ve
                     error: Some("task panicked".to_string()),
                 }
             }
+            ActorOutcome::Aborted { actor_name } => {
+                let total_phases = actors
+                    .iter()
+                    .find(|a| &a.name == actor_name)
+                    .map_or(0, |a| a.phases.len());
+                ActorStatus {
+                    name: actor_name.clone(),
+                    status: "error".to_string(),
+                    phases_completed: 0,
+                    total_phases,
+                    terminal_phase: None,
+                    error: Some("task aborted".to_string()),
+                }
+            }
         })
         .collect()
 }
@@ -425,39 +428,49 @@ fn summarize_actor_failures(outcomes: &[ActorOutcome]) -> Vec<String> {
         .filter_map(|outcome| match outcome {
             ActorOutcome::Error { actor_name, error } => Some(format!("{actor_name}: {error}")),
             ActorOutcome::Panic { actor_name } => Some(format!("{actor_name}: task panicked")),
+            ActorOutcome::Aborted { actor_name } => Some(format!("{actor_name}: task aborted")),
             ActorOutcome::Success(_) => None,
         })
         .collect();
 
-    if failures.is_empty() {
-        let successful: Vec<&ActorResult> = outcomes
+    let successful: Vec<&ActorResult> = outcomes
+        .iter()
+        .filter_map(|outcome| match outcome {
+            ActorOutcome::Success(result) => Some(result),
+            ActorOutcome::Error { .. }
+            | ActorOutcome::Panic { .. }
+            | ActorOutcome::Aborted { .. } => None,
+        })
+        .collect();
+
+    // If at least one actor completed normally (not cancelled/timed-out),
+    // partial failures are expected in multi-actor scenarios (e.g. server
+    // cancelled after client completes, or intentional error-degradation).
+    // Let the verdict exit code take precedence.
+    let any_completed = successful.iter().any(|result| {
+        !matches!(
+            result.termination,
+            TerminationReason::Cancelled | TerminationReason::MaxSessionExpired
+        )
+    });
+
+    if any_completed {
+        return Vec::new();
+    }
+
+    // No actor completed normally — check if all are cancelled/timed-out.
+    if failures.is_empty() && !successful.is_empty() {
+        let cancelled = successful
             .iter()
-            .filter_map(|outcome| match outcome {
-                ActorOutcome::Success(result) => Some(result),
-                ActorOutcome::Error { .. } | ActorOutcome::Panic { .. } => None,
-            })
-            .collect();
-
-        let any_completed = successful.iter().any(|result| {
-            !matches!(
-                result.termination,
-                TerminationReason::Cancelled | TerminationReason::MaxSessionExpired
-            )
-        });
-
-        if !successful.is_empty() && !any_completed {
-            let cancelled = successful
-                .iter()
-                .filter(|result| result.termination == TerminationReason::Cancelled)
-                .count();
-            let timed_out = successful
-                .iter()
-                .filter(|result| result.termination == TerminationReason::MaxSessionExpired)
-                .count();
-            failures.push(format!(
-                "all actors terminated by cancellation/timeout before completion (cancelled: {cancelled}, timeout: {timed_out})"
-            ));
-        }
+            .filter(|result| result.termination == TerminationReason::Cancelled)
+            .count();
+        let timed_out = successful
+            .iter()
+            .filter(|result| result.termination == TerminationReason::MaxSessionExpired)
+            .count();
+        failures.push(format!(
+            "all actors terminated by cancellation/timeout before completion (cancelled: {cancelled}, timeout: {timed_out})"
+        ));
     }
 
     failures
@@ -469,9 +482,8 @@ mod tests {
 
     use super::*;
 
-    fn test_run_args(max_session: Duration) -> RunArgs {
-        RunArgs {
-            config: None,
+    fn test_run_args(max_session: Duration) -> ExecutionArgs {
+        ExecutionArgs {
             mcp_server: None,
             mcp_client_command: None,
             mcp_client_args: None,
@@ -605,7 +617,8 @@ attack:
       - name: terminal
 "#;
 
-        let args = test_run_args(Duration::from_millis(250));
+        let mut args = test_run_args(Duration::from_millis(250));
+        args.mcp_server = Some("127.0.0.1:0".to_string());
 
         let result = tokio::time::timeout(
             Duration::from_secs(2),

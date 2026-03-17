@@ -109,17 +109,40 @@ impl A2aSseParser {
             }
         };
 
-        self.consecutive_errors = 0;
-
-        // Extract the `result` field from the JSON-RPC response envelope
-        let result = parsed.get("result").cloned().unwrap_or(parsed);
-
-        Ok(result)
+        match extract_jsonrpc_result(&parsed) {
+            Ok(result) => {
+                self.consecutive_errors = 0;
+                Ok(result)
+            }
+            Err(err) => {
+                self.consecutive_errors += 1;
+                Err(err)
+            }
+        }
     }
 
     /// Returns the current consecutive error count.
     const fn consecutive_errors(&self) -> usize {
         self.consecutive_errors
+    }
+
+    fn finish(&mut self) -> Vec<Result<Value, String>> {
+        let raw_events = self.inner.finish();
+        let mut events = Vec::new();
+
+        for raw in raw_events {
+            match raw {
+                Err(e) => {
+                    self.consecutive_errors += 1;
+                    events.push(Err(format!("A2A SSE parse error: {e}")));
+                }
+                Ok(raw_event) => {
+                    events.push(self.dispatch_raw_event(&raw_event.data));
+                }
+            }
+        }
+
+        events
     }
 }
 
@@ -175,11 +198,34 @@ impl A2aSseStream {
                     return Err(EngineError::Driver(format!("A2A SSE stream error: {e}")));
                 }
                 None => {
-                    return Ok(None);
+                    let mut events = self.parser.finish();
+                    if events.is_empty() {
+                        return Ok(None);
+                    }
+                    events.reverse();
+                    self.pending = events;
                 }
             }
         }
     }
+}
+
+fn extract_jsonrpc_result(response: &Value) -> Result<Value, String> {
+    let Some(obj) = response.as_object() else {
+        return Err("invalid A2A JSON-RPC response: expected object".to_string());
+    };
+
+    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err("invalid A2A JSON-RPC response: expected jsonrpc='2.0'".to_string());
+    }
+
+    if let Some(error) = obj.get("error") {
+        return Err(format!("A2A JSON-RPC error: {error}"));
+    }
+
+    obj.get("result")
+        .cloned()
+        .ok_or_else(|| "invalid A2A JSON-RPC response: missing result".to_string())
 }
 
 // ============================================================================
@@ -484,7 +530,7 @@ impl PhaseDriver for A2aClientDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         // Client-mode: clone extractors once at start
@@ -497,19 +543,23 @@ impl PhaseDriver for A2aClientDriver {
             .unwrap_or(false)
         {
             // Emit outgoing event for card fetch
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Outgoing,
-                method: "agent_card/get".to_string(),
-                content: json!({}),
-            });
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "agent_card/get".to_string(),
+                    content: json!({}),
+                })
+                .await;
 
             let card = self.transport.get_agent_card().await?;
 
-            let _ = event_tx.send(ProtocolEvent {
-                direction: Direction::Incoming,
-                method: "agent_card/get".to_string(),
-                content: card,
-            });
+            let _ = event_tx
+                .send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "agent_card/get".to_string(),
+                    content: card,
+                })
+                .await;
         }
 
         // Determine streaming mode
@@ -533,11 +583,13 @@ impl PhaseDriver for A2aClientDriver {
         };
 
         // Emit outgoing event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: method.to_string(),
-            content: message.get("params").cloned().unwrap_or(Value::Null),
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: method.to_string(),
+                content: message.get("params").cloned().unwrap_or(Value::Null),
+            })
+            .await;
 
         if streaming {
             self.drive_streaming(message, event_tx, cancel).await
@@ -553,12 +605,12 @@ impl A2aClientDriver {
         &mut self,
         message: Value,
         _method: &str,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
     ) -> Result<DriveResult, EngineError> {
         let response = self.transport.message_send(&message).await?;
 
-        // Extract result from JSON-RPC response
-        let result = response.get("result").cloned().unwrap_or(response);
+        let result = extract_jsonrpc_result(&response)
+            .map_err(|e| EngineError::Driver(format!("A2A request failed: {e}")))?;
 
         // Detect response type via `kind` discriminator
         let event_type = detect_event_type(&result);
@@ -568,11 +620,13 @@ impl A2aClientDriver {
             self.transport.context_id = Some(ctx.to_string());
         }
 
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: event_type.to_string(),
-            content: result,
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: event_type.to_string(),
+                content: result,
+            })
+            .await;
 
         Ok(DriveResult::Complete)
     }
@@ -583,19 +637,22 @@ impl A2aClientDriver {
     async fn drive_streaming(
         &mut self,
         message: Value,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         let mut sse_stream = self.transport.message_stream(&message).await?;
 
         // Emit stream-opened event
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Incoming,
-            method: "message/stream".to_string(),
-            content: json!({"status": "connected"}),
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Incoming,
+                method: "message/stream".to_string(),
+                content: json!({"status": "connected"}),
+            })
+            .await;
 
         let stream_timeout = DEFAULT_STREAM_TIMEOUT;
+        let mut received_final = false;
 
         loop {
             tokio::select! {
@@ -616,7 +673,7 @@ impl A2aClientDriver {
                                 direction: Direction::Incoming,
                                 method: qualified,
                                 content: sse_result.clone(),
-                            });
+                            }).await;
 
                             // Check for terminal event (final: true)
                             if sse_result
@@ -624,11 +681,13 @@ impl A2aClientDriver {
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false)
                             {
+                                received_final = true;
                                 break;
                             }
                         }
                         Ok(Ok(None)) => {
-                            // Stream closed
+                            // Stream closed without final event
+                            tracing::warn!("A2A SSE stream closed without final event");
                             break;
                         }
                         Ok(Err(e)) => {
@@ -654,7 +713,11 @@ impl A2aClientDriver {
             }
         }
 
-        Ok(DriveResult::Complete)
+        if received_final {
+            Ok(DriveResult::Complete)
+        } else {
+            Ok(DriveResult::TransportClosed)
+        }
     }
 }
 
@@ -740,14 +803,14 @@ mod tests {
         assert_eq!(parser.consecutive_errors(), 5);
 
         // Success resets the counter
-        parser.feed(b"data: {\"result\":{\"ok\":true}}\n\n");
+        parser.feed(b"data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"ok\":true}}\n\n");
         assert_eq!(parser.consecutive_errors(), 0);
     }
 
     #[test]
     fn parse_multiple_events_one_chunk() {
         let mut parser = A2aSseParser::new();
-        let input = b"data: {\"result\":{\"kind\":\"task\"}}\n\ndata: {\"result\":{\"kind\":\"status-update\"}}\n\n";
+        let input = b"data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"task\"}}\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"2\",\"result\":{\"kind\":\"status-update\"}}\n\n";
         let events = parser.feed(input);
 
         assert_eq!(events.len(), 2);
@@ -762,14 +825,16 @@ mod tests {
         let events1 = parser.feed(b"data: {\"res");
         assert!(events1.is_empty());
 
-        let events2 = parser.feed(b"ult\":{\"kind\":\"task\"}}\n\n");
+        let events2 =
+            parser.feed(b"ult\":{\"kind\":\"task\"},\"jsonrpc\":\"2.0\",\"id\":\"1\"}\n\n");
         assert_eq!(events2.len(), 1);
     }
 
     #[test]
     fn parse_sse_comment_ignored() {
         let mut parser = A2aSseParser::new();
-        let input = b": comment\ndata: {\"result\":{\"ok\":true}}\n\n";
+        let input =
+            b": comment\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"ok\":true}}\n\n";
         let events = parser.feed(input);
 
         assert_eq!(events.len(), 1);
@@ -1143,14 +1208,13 @@ mod tests {
 
                 let events = parser.feed(input.as_bytes());
                 prop_assert_eq!(events.len(), 1);
-                let val = events[0].as_ref().unwrap();
 
                 if has_result {
+                    let val = events[0].as_ref().unwrap();
                     // Should have extracted the `result` field
                     prop_assert_eq!(val.get("extracted").and_then(Value::as_bool), Some(true));
                 } else {
-                    // Should return the full value (no `result` field to extract)
-                    prop_assert_eq!(val.get("noResult").and_then(Value::as_bool), Some(true));
+                    prop_assert!(events[0].is_err());
                 }
             }
         }

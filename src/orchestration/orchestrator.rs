@@ -14,7 +14,7 @@ use tokio::task::{Id as TaskId, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::engine::trace::SharedTrace;
-use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
+use crate::engine::types::{ActorResult, AwaitExtractor};
 use crate::error::EngineError;
 use crate::loader::{LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
@@ -24,6 +24,8 @@ use crate::orchestration::store::ExtractorStore;
 
 /// Default timeout for waiting for server readiness (fallback if not configured).
 const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum time to wait for cooperative shutdown before force-aborting tasks.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 // ============================================================================
 // Types
@@ -58,6 +60,11 @@ pub enum ActorOutcome {
         /// Actor name.
         actor_name: String,
     },
+    /// Actor task was force-aborted before it returned an `ActorResult`.
+    Aborted {
+        /// Actor name.
+        actor_name: String,
+    },
 }
 
 impl ActorOutcome {
@@ -66,7 +73,9 @@ impl ActorOutcome {
     pub fn actor_name(&self) -> &str {
         match self {
             Self::Success(r) => &r.actor_name,
-            Self::Error { actor_name, .. } | Self::Panic { actor_name } => actor_name,
+            Self::Error { actor_name, .. }
+            | Self::Panic { actor_name }
+            | Self::Aborted { actor_name } => actor_name,
         }
     }
 }
@@ -113,6 +122,7 @@ type TaskMetaMap = HashMap<TaskId, (String, bool)>;
 /// collected in `OrchestratorResult::outcomes`.
 ///
 /// Implements: TJ-SPEC-015 F-004
+#[allow(clippy::too_many_lines)]
 pub async fn orchestrate(
     loaded: &LoadedDocument,
     config: &ActorConfig,
@@ -158,7 +168,7 @@ pub async fn orchestrate(
         ready_txs.into_iter().collect();
 
     // 4. Spawn all actor tasks into a JoinSet
-    let (mut join_set, task_meta) = spawn_actor_tasks(
+    let (join_set, task_meta) = spawn_actor_tasks(
         loaded,
         config,
         &trace,
@@ -177,7 +187,22 @@ pub async fn orchestrate(
         } else {
             config.readiness_timeout
         };
-        match gate.wait_all_ready(readiness_timeout).await {
+        match tokio::select! {
+            result = gate.wait_all_ready(readiness_timeout) => result,
+            () = cancel.cancelled() => {
+                events.emit(ThoughtJackEvent::OrchestratorShutdown {
+                    reason: "cancelled_during_startup".to_string(),
+                });
+                let outcomes =
+                    drain_join_set_with_timeout(join_set, &task_meta, events, SHUTDOWN_DRAIN_TIMEOUT)
+                        .await;
+                emit_completion_summary(&outcomes, events);
+                return Ok(OrchestratorResult {
+                    outcomes,
+                    trace,
+                });
+            }
+        } {
             Ok(()) => {
                 events.emit(ThoughtJackEvent::ReadinessGateOpen {
                     server_count,
@@ -200,8 +225,8 @@ pub async fn orchestrate(
                     }
                 }
                 cancel.cancel();
-                join_set.abort_all();
-                drain_join_set(join_set, &task_meta, events).await;
+                drain_join_set_with_timeout(join_set, &task_meta, events, SHUTDOWN_DRAIN_TIMEOUT)
+                    .await;
                 return Err(EngineError::Phase(format!(
                     "readiness gate failed: {gate_err}"
                 )));
@@ -314,7 +339,7 @@ async fn wait_for_completion(
     let mut outcomes: Vec<ActorOutcome> = Vec::with_capacity(join_set.len());
     let mut clients_done = 0;
     let mut grace_started = false;
-    let mut max_session_expired = false;
+    let mut shutdown_requested = false;
     let max_session_sleep =
         tokio::time::sleep_until(tokio::time::Instant::now() + config.max_session);
     tokio::pin!(max_session_sleep);
@@ -346,26 +371,32 @@ async fn wait_for_completion(
                     spawn_grace_task(config, cancel, events);
                 }
             }
-            () = &mut max_session_sleep, if !max_session_expired => {
-                max_session_expired = true;
+            () = &mut max_session_sleep => {
                 tracing::warn!("max session expired, cancelling all actors");
                 events.emit(ThoughtJackEvent::OrchestratorShutdown {
                     reason: "max_session_expired".to_string(),
                 });
                 cancel.cancel();
+                shutdown_requested = true;
+                break;
             }
             () = &mut cancelled => {
                 tracing::info!("orchestrator cancelled");
+                shutdown_requested = true;
                 break;
             }
         }
     }
 
-    // Drain any remaining tasks (after cancel or max session)
-    join_set.abort_all();
-    while let Some(join_result) = join_set.join_next().await {
-        let (outcome, _) = unpack_join_result(join_result, task_meta, events);
-        outcomes.push(outcome);
+    if shutdown_requested && !join_set.is_empty() {
+        outcomes.extend(
+            drain_join_set_with_timeout(join_set, task_meta, events, SHUTDOWN_DRAIN_TIMEOUT).await,
+        );
+    } else {
+        while let Some(join_result) = join_set.join_next().await {
+            let (outcome, _) = unpack_join_result(join_result, task_meta, events);
+            outcomes.push(outcome);
+        }
     }
 
     emit_completion_summary(&outcomes, events);
@@ -411,15 +442,11 @@ fn unpack_join_result(
             );
 
             if join_err.is_cancelled() {
-                // Task was aborted (e.g., after max_session or grace period).
-                // This is expected lifecycle, not a failure.
-                let outcome = ActorOutcome::Success(ActorResult {
-                    actor_name,
-                    termination: TerminationReason::Cancelled,
-                    phases_completed: 0,
-                    total_phases: 0,
-                    final_phase: None,
+                events.emit(ThoughtJackEvent::ActorError {
+                    actor_name: actor_name.clone(),
+                    error: "task aborted before cooperative shutdown completed".to_string(),
                 });
+                let outcome = ActorOutcome::Aborted { actor_name };
                 (outcome, is_server)
             } else {
                 // Task panicked — genuine failure.
@@ -482,15 +509,37 @@ fn spawn_grace_task(config: &ActorConfig, cancel: &CancellationToken, events: &A
     });
 }
 
-/// Drains all tasks from a `JoinSet` after an early abort (e.g., gate timeout).
-async fn drain_join_set(
+/// Drains tasks cooperatively for a bounded interval, then force-aborts any stragglers.
+async fn drain_join_set_with_timeout(
     mut join_set: JoinSet<ActorTaskResult>,
     task_meta: &TaskMetaMap,
     events: &EventEmitter,
-) {
-    while let Some(join_result) = join_set.join_next().await {
-        let _ = unpack_join_result(join_result, task_meta, events);
+    timeout: Duration,
+) -> Vec<ActorOutcome> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut outcomes = Vec::with_capacity(join_set.len());
+
+    while !join_set.is_empty() {
+        match tokio::time::timeout_at(deadline, join_set.join_next()).await {
+            Ok(Some(join_result)) => {
+                let (outcome, _) = unpack_join_result(join_result, task_meta, events);
+                outcomes.push(outcome);
+            }
+            Ok(None) => break,
+            Err(_) => {
+                tracing::warn!("shutdown drain timed out; aborting remaining actor tasks");
+                join_set.abort_all();
+                break;
+            }
+        }
     }
+
+    while let Some(join_result) = join_set.join_next().await {
+        let (outcome, _) = unpack_join_result(join_result, task_meta, events);
+        outcomes.push(outcome);
+    }
+
+    outcomes
 }
 
 // ============================================================================
@@ -500,6 +549,7 @@ async fn drain_join_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::types::TerminationReason;
 
     #[test]
     fn actor_outcome_name() {

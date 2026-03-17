@@ -223,6 +223,25 @@ impl SseParser {
     const fn consecutive_errors(&self) -> usize {
         self.consecutive_errors
     }
+
+    fn finish(&mut self) -> Vec<Result<AgUiEvent, String>> {
+        let raw_events = self.inner.finish();
+        let mut events = Vec::new();
+
+        for raw in raw_events {
+            match raw {
+                Err(e) => {
+                    self.consecutive_errors += 1;
+                    events.push(Err(format!("SSE parse error: {e}")));
+                }
+                Ok(raw_event) => {
+                    events.push(self.dispatch_raw_event(raw_event));
+                }
+            }
+        }
+
+        events
+    }
 }
 
 // ============================================================================
@@ -237,6 +256,11 @@ struct SseStream {
     stream: Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     /// Buffered events from the parser (multiple events can come from one chunk).
     pending: Vec<Result<AgUiEvent, String>>,
+}
+
+enum SseStreamError {
+    Parse(String),
+    Transport(String),
 }
 
 impl SseStream {
@@ -256,13 +280,13 @@ impl SseStream {
     /// # Errors
     ///
     /// Returns an error on HTTP stream errors or malformed SSE data.
-    async fn next_event(&mut self) -> Result<Option<AgUiEvent>, EngineError> {
+    async fn next_event(&mut self) -> Result<Option<AgUiEvent>, SseStreamError> {
         loop {
             // Drain any buffered events first
             if let Some(result) = self.pending.pop() {
                 return match result {
                     Ok(event) => Ok(Some(event)),
-                    Err(msg) => Err(EngineError::Driver(msg)),
+                    Err(msg) => Err(SseStreamError::Parse(msg)),
                 };
             }
 
@@ -276,11 +300,15 @@ impl SseStream {
                     // Continue loop to drain pending
                 }
                 Some(Err(e)) => {
-                    return Err(EngineError::Driver(format!("SSE stream error: {e}")));
+                    return Err(SseStreamError::Transport(format!("SSE stream error: {e}")));
                 }
                 None => {
-                    // Stream exhausted
-                    return Ok(None);
+                    let mut events = self.parser.finish();
+                    if events.is_empty() {
+                        return Ok(None);
+                    }
+                    events.reverse();
+                    self.pending = events;
                 }
             }
         }
@@ -915,7 +943,7 @@ impl PhaseDriver for AgUiDriver {
         _phase_index: usize,
         state: &Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,
         cancel: CancellationToken,
     ) -> Result<DriveResult, EngineError> {
         // Client-mode: clone extractors once at start
@@ -923,30 +951,35 @@ impl PhaseDriver for AgUiDriver {
 
         // Build RunAgentInput from state + extractors
         let input = build_run_agent_input(state, &current_extractors, self.transport.thread_id())?;
+        self.transport.thread_id.clone_from(&input.thread_id);
 
         // Emit outgoing request event
         let input_value = serde_json::to_value(&input)
             .map_err(|e| EngineError::Driver(format!("failed to serialize RunAgentInput: {e}")))?;
-        let _ = event_tx.send(ProtocolEvent {
-            direction: Direction::Outgoing,
-            method: "run_agent_input".to_string(),
-            content: input_value,
-        });
+        let _ = event_tx
+            .send(ProtocolEvent {
+                direction: Direction::Outgoing,
+                method: "run_agent_input".to_string(),
+                content: input_value,
+            })
+            .await;
 
         // Send request, get SSE stream (or HTTP error per §9.1)
         let mut stream = match self.transport.send_run(&input).await? {
             SendResult::Stream(s) => s,
             SendResult::HttpError { status, body } => {
                 tracing::warn!(status, %body, "AG-UI agent returned HTTP error");
-                let _ = event_tx.send(ProtocolEvent {
-                    direction: Direction::Incoming,
-                    method: "run_error".to_string(),
-                    content: json!({
-                        "type": "RUN_ERROR",
-                        "message": format!("HTTP {status}: {body}"),
-                        "code": format!("HTTP_{status}"),
-                    }),
-                });
+                let _ = event_tx
+                    .send(ProtocolEvent {
+                        direction: Direction::Incoming,
+                        method: "run_error".to_string(),
+                        content: json!({
+                            "type": "RUN_ERROR",
+                            "message": format!("HTTP {status}: {body}"),
+                            "code": format!("HTTP_{status}"),
+                        }),
+                    })
+                    .await;
                 return Ok(DriveResult::Complete);
             }
         };
@@ -969,7 +1002,7 @@ impl PhaseDriver for AgUiDriver {
                                 direction: Direction::Incoming,
                                 method: event.event_type,
                                 content: event.data,
-                            });
+                            }).await;
                         }
                         Ok(Ok(None)) => {
                             // Stream closed — emit accumulated response and complete
@@ -977,10 +1010,10 @@ impl PhaseDriver for AgUiDriver {
                                 direction: Direction::Incoming,
                                 method: "_accumulated_response".to_string(),
                                 content: self.accumulator.accumulated_response(),
-                            });
+                            }).await;
                             return Ok(DriveResult::Complete);
                         }
-                        Ok(Err(e)) => {
+                        Ok(Err(SseStreamError::Parse(e))) => {
                             // Parse error — warn and continue (up to MAX_CONSECUTIVE_ERRORS)
                             tracing::warn!("SSE parse error: {e}");
                             if stream.parser.consecutive_errors() >= MAX_CONSECUTIVE_ERRORS {
@@ -992,9 +1025,12 @@ impl PhaseDriver for AgUiDriver {
                                     direction: Direction::Incoming,
                                     method: "_accumulated_response".to_string(),
                                     content: self.accumulator.accumulated_response(),
-                                });
+                                }).await;
                                 return Ok(DriveResult::Complete);
                             }
+                        }
+                        Ok(Err(SseStreamError::Transport(e))) => {
+                            return Err(EngineError::Driver(e));
                         }
                         Err(_) => {
                             // Timeout
@@ -1003,7 +1039,7 @@ impl PhaseDriver for AgUiDriver {
                                 direction: Direction::Incoming,
                                 method: "_accumulated_response".to_string(),
                                 content: self.accumulator.accumulated_response(),
-                            });
+                            }).await;
                             return Ok(DriveResult::Complete);
                         }
                     }
