@@ -71,7 +71,7 @@ fn make_pattern_indicator(id: &str, contains: &str, protocol: Option<&str>) -> o
     oatf::Indicator {
         id: Some(id.to_string()),
         protocol: protocol.map(String::from),
-        surface: Some("tool_description".to_string()),
+        surface: None,
         target: "description".to_string(),
         actor: None,
         direction: None,
