@@ -1,102 +1,34 @@
 ---
-title: Add a Scenario to the Library
+title: Add a Scenario
 sidebar_position: 2
-description: Create and register a new attack scenario in ThoughtJack's library
+description: Author and publish OATF attack scenarios for use with ThoughtJack
 ---
 
-# Add a Scenario to the Library
+# Add a Scenario
 
-This guide walks you through creating a new attack scenario and adding it to ThoughtJack's library so it appears in `scenarios list` and the generated documentation.
+Attack scenarios are authored as OATF (Open Agentic Testing Framework) documents. The official scenario library and authoring guide live on [oatf.dev](https://oatf.dev).
 
-## 1. Create the YAML file
+## Writing a scenario
 
-Create a new file in the `scenarios/` directory:
+OATF documents are declarative YAML files that describe multi-phase adversarial tests. See the [OATF scenario authoring guide](https://oatf.dev/docs/authoring) for the full specification, including:
 
-```yaml title="scenarios/my_attack.yaml"
-server:
-  name: "helpful-assistant"
-  version: "1.0.0"
+- Document structure (actors, phases, triggers, responses)
+- Extractor and interpolation syntax
+- Indicator definitions and verdict criteria
+- Security framework mappings (MITRE ATT&CK, OWASP MCP Top 10)
 
-metadata:
-  id: "my-attack"
-  name: "My Custom Attack"
-  description: "Brief description of the attack pattern"
-  category: "injection"
-  severity: "high"
-  tags:
-    - prompt-injection
-    - tool-manipulation
+## Running a scenario with ThoughtJack
 
-tools:
-  - tool:
-      name: "assistant"
-      description: "A helpful assistant tool."
-      inputSchema:
-        type: object
-        properties:
-          query:
-            type: string
-        required: ["query"]
-    response:
-      content:
-        - type: text
-          text: "Response to: ${args.query}"
-```
-
-## 2. Add metadata
-
-The `metadata` block controls how the scenario appears in listings and documentation:
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `id` | Yes | Unique kebab-case identifier |
-| `name` | Yes | Human-readable display name |
-| `description` | Yes | One-line description |
-| `category` | Yes | One of: `injection`, `dos`, `temporal`, `resource`, `protocol` |
-| `severity` | No | `low`, `medium`, `high`, or `critical` |
-| `tags` | No | Array of tags for filtering |
-| `mitre_attack` | No | MITRE ATT&CK technique IDs |
-| `owasp_mcp` | No | OWASP MCP Top 10 IDs |
-| `detection_guidance` | No | How defenders can detect this attack |
-
-## 3. Add MITRE ATT&CK and OWASP mappings
-
-For security framework coverage tracking, add taxonomy references:
-
-```yaml
-metadata:
-  id: "my-attack"
-  name: "My Custom Attack"
-  description: "Brief description"
-  category: "injection"
-  mitre_attack:
-    - "T1059.004"    # Command and Scripting Interpreter: Unix Shell
-    - "T1552.001"    # Unsecured Credentials: Credentials In Files
-  owasp_mcp:
-    - "MCP-01"       # Tool Injection
-  detection_guidance: >
-    Monitor for tool definitions containing file path references
-    or system command instructions in their descriptions.
-```
-
-## 4. Validate
+Once you have an OATF document, run it with ThoughtJack:
 
 ```bash
+# Validate the document
 thoughtjack validate scenarios/my_attack.yaml
-```
 
-## 5. Test the scenario
-
-```bash
+# Execute the scenario
 thoughtjack run --config scenarios/my_attack.yaml -vv
 ```
 
-## 6. Regenerate the docs site
+## Publishing to the OATF library
 
-After adding the scenario, verify it works:
-
-```bash
-thoughtjack scenarios list
-```
-
-Your scenario should appear in the listing with its metadata.
+To contribute scenarios to the official library, follow the [OATF contribution guide](https://oatf.dev/docs/contributing). Published scenarios are available to all OATF-compatible tools, including ThoughtJack.

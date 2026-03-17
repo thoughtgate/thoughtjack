@@ -9,12 +9,12 @@ import styles from './index.module.css';
 function Hero(): React.ReactElement {
   const {siteConfig} = useDocusaurusContext();
   return (
-    <header className={clsx('hero hero--primary', styles.heroBanner)}>
+    <header className={styles.heroBanner}>
       <div className="container">
-        <h1 className="hero__title">{siteConfig.title}</h1>
-        <p className="hero__subtitle">{siteConfig.tagline}</p>
+        <h1 className={styles.heroTitle}>{siteConfig.title}</h1>
+        <p className={styles.heroSubtitle}>{siteConfig.tagline}</p>
         <div className={styles.buttons}>
-          <Link className="button button--secondary button--lg" to="/docs/tutorials">
+          <Link className={styles.ctaButton} to="/docs/tutorials">
             Get Started
           </Link>
         </div>
@@ -31,7 +31,7 @@ interface QuickLinkProps {
 
 function QuickLink({title, description, to}: QuickLinkProps): React.ReactElement {
   return (
-    <div className={clsx('col col--4', styles.quickLink)}>
+    <div className={clsx('col col--3', styles.quickLink)}>
       <Link to={to} className={styles.quickLinkCard}>
         <h3>{title}</h3>
         <p>{description}</p>
@@ -53,18 +53,13 @@ const quickLinks: QuickLinkProps[] = [
   },
   {
     title: 'Reference',
-    description: 'Configuration schema, CLI, and metadata format.',
+    description: 'Configuration schema, CLI, and API reference.',
     to: '/docs/reference',
   },
   {
     title: 'Explanation',
-    description: 'Architecture, phase engine, and attack surface concepts.',
+    description: 'Architecture, engine design, and attack concepts.',
     to: '/docs/explanation',
-  },
-  {
-    title: 'Coverage Matrices',
-    description: 'MITRE ATT&CK, OWASP MCP, and attack surface coverage.',
-    to: '/docs/coverage/mitre-matrix',
   },
 ];
 

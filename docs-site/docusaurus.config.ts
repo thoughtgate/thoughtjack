@@ -54,31 +54,14 @@ const config: Config = {
     navbar: {
       title: 'ThoughtJack',
       items: [
-        {
-          type: 'dropdown',
-          label: 'Documentation',
-          position: 'left',
-          items: [
-            {label: 'Tutorials', to: '/docs/tutorials'},
-            {label: 'How-To Guides', to: '/docs/how-to'},
-            {label: 'Reference', to: '/docs/reference'},
-            {label: 'Explanation', to: '/docs/explanation'},
-          ],
-        },
-        {
-          type: 'dropdown',
-          label: 'Coverage',
-          position: 'left',
-          items: [
-            {label: 'MITRE ATT&CK', to: '/docs/coverage/mitre-matrix'},
-            {label: 'OWASP MCP Top 10', to: '/docs/coverage/owasp-mcp'},
-            {label: 'Attack Surface', to: '/docs/coverage/mcp-attack-surface'},
-          ],
-        },
+        {label: 'Documentation', to: '/docs/tutorials', position: 'left'},
+        {label: 'Reference', to: '/docs/reference', position: 'left'},
+        {label: 'About', to: '/docs/explanation', position: 'left'},
         {
           href: 'https://github.com/thoughtgate/thoughtjack',
-          label: 'GitHub',
           position: 'right',
+          className: 'header-github-link',
+          'aria-label': 'GitHub repository',
         },
       ],
     },
@@ -103,7 +86,8 @@ const config: Config = {
     },
     colorMode: {
       defaultMode: 'dark',
-      respectPrefersColorScheme: true,
+      disableSwitch: true,
+      respectPrefersColorScheme: false,
     },
     prism: {
       theme: prismThemes.github,

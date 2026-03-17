@@ -6,9 +6,9 @@ description: Install ThoughtJack, run your first scenario, and understand the ou
 
 # Getting Started
 
-In this tutorial you'll install ThoughtJack, run a built-in attack scenario, and learn to read the output. By the end you'll understand the core workflow for testing MCP clients.
+In this tutorial you'll install ThoughtJack, run a built-in attack scenario, and learn to read the output. By the end you'll understand the core workflow for testing AI agents across MCP, A2A, and AG-UI protocols.
 
-ThoughtJack executes attack scenarios authored as [OATF](https://oatf.io) (Open Agent Threat Format) documents — a declarative YAML format for describing adversarial agent test cases.
+ThoughtJack executes attack scenarios authored as [OATF](https://oatf.dev) (Open Agentic Testing Framework) documents — a declarative YAML format for describing adversarial agent test cases.
 
 ## 1. Install ThoughtJack
 
@@ -94,6 +94,16 @@ When testing your MCP client against this scenario, watch for:
 - Does the client detect the prompt injection in the `read_file` description?
 - Does the agent follow the injected instructions?
 
+ThoughtJack also evaluates indicators from the OATF document and produces a **verdict** — a structured assessment of whether the agent was compromised:
+
+```bash
+# After the test completes, check the verdict
+cat verdict.json | jq '.verdict'
+# "compromised" or "resilient"
+```
+
+Exit code `0` means the agent resisted the attack. Exit code `1` means at least one indicator matched.
+
 ## 4. Add verbose logging
 
 Run the same scenario with debug-level logging to see internal state transitions:
@@ -108,7 +118,8 @@ With `-vv` (debug level), you'll see log lines for:
 - Each incoming JSON-RPC request
 - Phase trigger evaluation (`tools/call count: 3/5`)
 - Phase transitions (`trust_building → exploit`)
-- Entry actions firing (`send_notification: notifications/tools/list_changed`)
+- Entry actions firing (`send: notifications/tools/list_changed`)
+- Indicator evaluation results
 
 For machine-parseable logs, use JSON format:
 
@@ -136,32 +147,51 @@ Always validate configs before running:
 thoughtjack validate scenarios/rug-pull.yaml
 ```
 
-## 6. Test an MCP server (client mode)
+## 6. Test across protocols
 
-The examples above run ThoughtJack as a **server** to test MCP clients. ThoughtJack can also run as an MCP **client** to test servers — useful for verifying that a server handles adversarial client requests correctly.
+The examples above run ThoughtJack as an MCP **server** to test MCP clients. ThoughtJack supports five execution modes across three protocols:
 
-### Connect to a running server
+### MCP client mode — test MCP servers
 
-If the target MCP server is already listening on HTTP:
+ThoughtJack can run as an MCP **client** to test servers with adversarial requests:
 
 ```bash
+# Connect to a running MCP server over HTTP
 thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:3000/message
-```
 
-### Spawn the server as a subprocess
-
-ThoughtJack can launch the server process and connect over stdio:
-
-```bash
+# Or spawn the server as a subprocess (stdio transport)
 thoughtjack run --config scenario.yaml \
   --mcp-client-command "npx" \
   --mcp-client-args "-y @modelcontextprotocol/server-everything"
 ```
 
-In client mode, ThoughtJack sends requests defined in the OATF scenario (tool calls, resource reads, etc.) and evaluates the server's responses against the configured indicators.
+### A2A modes — test agent-to-agent communication
+
+```bash
+# Run as a malicious A2A server (advertise a spoofed Agent Card)
+thoughtjack run --config a2a-scenario.yaml
+
+# Run as an A2A client to test A2A agents
+thoughtjack run --config scenario.yaml --a2a-client-endpoint http://localhost:4000
+```
+
+### AG-UI client mode — test AG-UI agents
+
+```bash
+# Test an AG-UI agent with injected message history
+thoughtjack run --config agui-scenario.yaml --agui-client-endpoint http://localhost:5000
+```
+
+### Multi-actor scenarios
+
+OATF documents can define multiple actors that run concurrently. For example, a scenario might run both a legitimate A2A agent and a spoofed one simultaneously to test whether the orchestrator selects the right one:
+
+```bash
+thoughtjack run --config scenarios/library/a2a/OATF-009_agent-card-spoofing.yaml
+```
 
 ## Next steps
 
-- [Writing a Custom Scenario](./custom-scenario) — create your own YAML configuration
+- [Writing a Custom Scenario](./custom-scenario) — create your own OATF document
 - [Building Phased Attacks](./phased-attacks) — multi-phase state machines with advanced triggers
 - [CLI Reference](/docs/reference/cli) — all commands and flags
