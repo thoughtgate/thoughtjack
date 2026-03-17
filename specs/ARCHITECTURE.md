@@ -44,7 +44,7 @@ ThoughtJack is a configurable adversarial testing framework for AI agent securit
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                    OATF SDK — oatf v0.2.0 (crates.io)                │   │
+│  │                    OATF SDK — oatf v0.3 (crates.io)                  │   │
 │  │   load() │ evaluate_trigger() │ select_response() │ interpolate()    │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -269,7 +269,7 @@ ThoughtJack is a single crate (no workspace).
 
 ```
 thoughtjack/
-├── Cargo.toml                 # Single crate, oatf = "0.2.0"
+├── Cargo.toml                 # Single crate, oatf = "0.3"
 ├── ARCHITECTURE.md
 ├── CLAUDE.md
 ├── specs/

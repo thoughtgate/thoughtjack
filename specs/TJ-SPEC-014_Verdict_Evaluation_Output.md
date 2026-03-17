@@ -1025,6 +1025,8 @@ The system SHALL filter the protocol trace by protocol before indicator evaluati
 
 ### F-006: Semantic Evaluator
 
+> **Status: Experimental / Deferred to v0.6.** OATF v0.1 defines `semantic` indicators as experimental. In v0.5, no `SemanticEvaluator` implementation is provided — semantic indicators produce `skipped` verdicts. The plumbing (`EvaluationConfig.semantic_evaluator`, `--no-semantic` flag) is in place for v0.6 integration. See TJ-SPEC-013 §16 (Conformance Declaration).
+
 The system SHALL implement the SDK's `SemanticEvaluator` extension point using LLM-as-judge.
 
 **Acceptance Criteria:**

@@ -6,7 +6,6 @@
 
 pub mod http;
 pub mod jsonrpc;
-pub mod local;
 pub mod sse;
 pub mod stdio;
 

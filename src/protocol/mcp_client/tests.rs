@@ -1574,7 +1574,7 @@ async fn driver_bootstrap_spawns_multiplexer_and_handler() {
     assert!(driver.handler_event_rx.is_none());
     assert!(driver.notification_rx.is_none());
 
-    driver.bootstrap(ext_rx);
+    driver.bootstrap(ext_rx).unwrap();
 
     assert!(driver.mux.is_some());
     assert!(driver.handler_event_rx.is_some());
@@ -1606,7 +1606,7 @@ async fn driver_initialize_sends_handshake() {
 
     let mut driver = create_test_driver(Arc::clone(&writer), Box::new(reader));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    driver.bootstrap(ext_rx);
+    driver.bootstrap(ext_rx).unwrap();
 
     let (event_tx, _event_rx) = mpsc::channel(100);
     let state = json!({"sampling_responses": []});
@@ -1643,7 +1643,7 @@ async fn driver_initialize_rejects_error_response_ec_mcpc_005() {
 
     let mut driver = create_test_driver(Arc::clone(&writer), Box::new(reader));
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    driver.bootstrap(ext_rx);
+    driver.bootstrap(ext_rx).unwrap();
 
     let (event_tx, _event_rx) = mpsc::channel(100);
     let state = json!({});
@@ -1818,7 +1818,7 @@ async fn driver_drop_stops_bootstrapped_multiplexer() {
 
     let mut driver = create_test_driver(writer, reader);
     let (_ext_tx, ext_rx) = watch::channel(HashMap::new());
-    driver.bootstrap(ext_rx);
+    driver.bootstrap(ext_rx).unwrap();
 
     drop(driver);
 

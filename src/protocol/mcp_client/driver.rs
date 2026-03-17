@@ -458,11 +458,20 @@ impl McpClientDriver {
     }
 
     /// Bootstrap the multiplexer and handler on first `drive_phase()` call.
-    pub(super) fn bootstrap(&mut self, extractors: watch::Receiver<HashMap<String, String>>) {
-        let reader = self
-            .reader
-            .take()
-            .expect("reader should be available on first drive_phase");
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngineError::Driver` if the reader has already been consumed
+    /// (i.e., bootstrap was called twice).
+    pub(super) fn bootstrap(
+        &mut self,
+        extractors: watch::Receiver<HashMap<String, String>>,
+    ) -> Result<(), EngineError> {
+        let reader = self.reader.take().ok_or_else(|| {
+            EngineError::Driver(
+                "MCP client reader already consumed (bootstrap called twice?)".into(),
+            )
+        })?;
 
         // Create channels
         let (server_request_tx, server_request_rx) = mpsc::channel(SERVER_REQUEST_BUFFER_SIZE);
@@ -500,6 +509,8 @@ impl McpClientDriver {
         self.notification_rx = Some(notification_rx);
         self.handler_event_rx = Some(handler_event_rx);
         self.handler_handle = Some(handler_handle);
+
+        Ok(())
     }
 }
 
@@ -551,7 +562,7 @@ impl PhaseDriver for McpClientDriver {
     ) -> Result<DriveResult, EngineError> {
         // Bootstrap on first call: spawn multiplexer and handler
         if self.mux.is_none() {
-            self.bootstrap(extractors.clone());
+            self.bootstrap(extractors.clone())?;
         }
 
         // Initialize on first call
