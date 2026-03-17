@@ -30,8 +30,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use super::{
-    ConnectionContext, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Result, Transport,
-    TransportType,
+    ConnectionContext, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, RawResponseWriter, Result,
+    Transport, TransportType,
 };
 use crate::error::TransportError;
 
@@ -605,6 +605,11 @@ impl Transport for HttpTransport {
         drop(guard);
 
         Ok(())
+    }
+
+    async fn capture_raw_writer(&self) -> Result<Option<RawResponseWriter>> {
+        let guard = self.current_response.lock().await;
+        Ok(guard.as_ref().map(|tx| RawResponseWriter::new(tx.clone())))
     }
 
     fn connection_context(&self) -> ConnectionContext {

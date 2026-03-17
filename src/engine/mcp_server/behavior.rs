@@ -57,20 +57,41 @@ pub(super) async fn apply_delivery(
                 .and_then(|p| p.get("byte_delay_ms"))
                 .and_then(Value::as_u64)
                 .unwrap_or(50);
+            // Capture the per-request response channel before spawning so that
+            // interleaved receive_message() calls (which overwrite the shared
+            // current_response slot) don't redirect our bytes to a different client.
+            let captured_writer = transport
+                .capture_raw_writer()
+                .await
+                .map_err(|e| EngineError::Driver(format!("capture writer: {e}")))?;
             let transport = Arc::clone(transport);
             Ok(Some(tokio::spawn(async move {
                 for byte in &bytes {
-                    transport
-                        .send_raw(&[*byte])
-                        .await
-                        .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
+                    if let Some(ref writer) = captured_writer {
+                        writer
+                            .send_raw(&[*byte])
+                            .await
+                            .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
+                    } else {
+                        transport
+                            .send_raw(&[*byte])
+                            .await
+                            .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
+                    }
                     tokio::time::sleep(Duration::from_millis(byte_delay_ms)).await;
                 }
                 // Send newline terminator for NDJSON framing
-                transport
-                    .send_raw(b"\n")
-                    .await
-                    .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
+                if let Some(ref writer) = captured_writer {
+                    writer
+                        .send_raw(b"\n")
+                        .await
+                        .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
+                } else {
+                    transport
+                        .send_raw(b"\n")
+                        .await
+                        .map_err(|e| EngineError::Driver(format!("send_raw error: {e}")))?;
+                }
                 Ok(())
             })))
         }
