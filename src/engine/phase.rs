@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use oatf::primitives::{compute_effective_state, evaluate_trigger, extract_protocol};
+use oatf::primitives::{compute_effective_state, evaluate_trigger};
 use oatf::{Document, Phase, TriggerState};
 
 use crate::loader::document_actors;
@@ -99,14 +99,12 @@ impl PhaseEngine {
             return PhaseAction::Stay; // Terminal phase — no trigger
         };
 
-        let protocol = extract_protocol(&actors[self.actor_index].mode);
         let elapsed = self.phase_start_time.elapsed();
         let result = evaluate_trigger(
             trigger,
             Some(event),
             elapsed,
             &mut self.trigger_state,
-            protocol,
         );
 
         match result {
@@ -309,7 +307,6 @@ attack:
         // Send an event that doesn't match the trigger
         let event = oatf::ProtocolEvent {
             event_type: "resources/read".to_string(),
-            qualifier: None,
             content: serde_json::json!({}),
         };
 
@@ -324,7 +321,6 @@ attack:
 
         let event = oatf::ProtocolEvent {
             event_type: "tools/call".to_string(),
-            qualifier: None,
             content: serde_json::json!({}),
         };
 
@@ -344,7 +340,6 @@ attack:
 
         let event = oatf::ProtocolEvent {
             event_type: "tools/call".to_string(),
-            qualifier: None,
             content: serde_json::json!({}),
         };
 
@@ -437,16 +432,14 @@ attack:
 
         // Non-matching qualifier should stay
         let non_match = oatf::ProtocolEvent {
-            event_type: "tools/call".to_string(),
-            qualifier: Some("other_tool".to_string()),
+            event_type: "tools/call:other_tool".to_string(),
             content: serde_json::json!({"name": "other_tool"}),
         };
         assert_eq!(engine.process_event(&non_match), PhaseAction::Stay);
 
         // Matching qualifier should advance
         let matching = oatf::ProtocolEvent {
-            event_type: "tools/call".to_string(),
-            qualifier: Some("calculator".to_string()),
+            event_type: "tools/call:calculator".to_string(),
             content: serde_json::json!({"name": "calculator"}),
         };
         assert_eq!(engine.process_event(&matching), PhaseAction::Advance);
@@ -479,7 +472,6 @@ attack:
         let mut engine = PhaseEngine::new(doc, 0);
         let event = oatf::ProtocolEvent {
             event_type: "tools/call".to_string(),
-            qualifier: None,
             content: serde_json::json!({}),
         };
 
@@ -523,7 +515,6 @@ attack:
         // Terminal phase — process_event should Stay (no trigger)
         let event = oatf::ProtocolEvent {
             event_type: "tools/call".to_string(),
-            qualifier: None,
             content: serde_json::json!({}),
         };
         assert_eq!(engine.process_event(&event), PhaseAction::Stay);

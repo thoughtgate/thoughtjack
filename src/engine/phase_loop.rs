@@ -13,9 +13,7 @@
 use std::collections::HashMap;
 
 use oatf::enums::ExtractorSource;
-use oatf::primitives::{
-    evaluate_extractor, extract_protocol, parse_event_qualifier, resolve_event_qualifier,
-};
+use oatf::primitives::evaluate_extractor;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -61,7 +59,6 @@ struct EventContext<'a> {
     extractor_store: &'a ExtractorStore,
     extractors_tx: &'a watch::Sender<HashMap<String, String>>,
     actor_name: &'a str,
-    protocol: &'a str,
     is_server_mode: bool,
 }
 
@@ -96,11 +93,8 @@ fn process_protocol_event(
     ));
 
     // 3. Check trigger — build SDK ProtocolEvent
-    let (base_event, _) = parse_event_qualifier(&evt.method);
-    let qualifier = resolve_event_qualifier(ctx.protocol, base_event, &evt.content);
     let oatf_event = oatf::ProtocolEvent {
         event_type: evt.method,
-        qualifier,
         content: evt.content,
     };
     phase_engine.process_event(&oatf_event)
@@ -210,7 +204,6 @@ pub struct PhaseLoop<D: PhaseDriver> {
     trace: SharedTrace,
     extractor_store: ExtractorStore,
     actor_name: String,
-    protocol: String,
     is_server_mode: bool,
     await_extractors_config: HashMap<usize, Vec<AwaitExtractor>>,
     cancel: CancellationToken,
@@ -227,7 +220,6 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     #[must_use]
     pub fn new(driver: D, phase_engine: PhaseEngine, config: PhaseLoopConfig) -> Self {
         let mode = &phase_engine.actor().mode;
-        let protocol = extract_protocol(mode).to_string();
         let is_server_mode = mode.ends_with("_server");
         let (extractors_tx, _) = watch::channel(HashMap::new());
 
@@ -237,7 +229,6 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             trace: config.trace,
             extractor_store: config.extractor_store,
             actor_name: config.actor_name,
-            protocol,
             is_server_mode,
             await_extractors_config: config.await_extractors_config,
             cancel: config.cancel,
@@ -274,7 +265,6 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 extractor_store: &self.extractor_store,
                 extractors_tx: &self.extractors_tx,
                 actor_name: &self.actor_name,
-                protocol: &self.protocol,
                 is_server_mode: self.is_server_mode,
             };
             let action = {

@@ -123,6 +123,7 @@ attack:
     - id: semantic_only
       protocol: mcp
       surface: tool_description
+      target: description
       semantic:
         target: description
         intent: data exfiltration

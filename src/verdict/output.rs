@@ -741,11 +741,11 @@ mod tests {
                 state: None,
                 phases: None,
                 actors: None,
-                extensions: std::collections::HashMap::new(),
+                extensions: indexmap::IndexMap::new(),
             },
             indicators: None,
             correlation: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         };
 
         let verdict = oatf::AttackVerdict {
@@ -812,13 +812,13 @@ mod tests {
                 state: None,
                 phases: None,
                 actors: None,
-                extensions: std::collections::HashMap::new(),
+                extensions: indexmap::IndexMap::new(),
             },
             indicators: None,
             correlation: Some(oatf::Correlation {
                 logic: Some(CorrelationLogic::All),
             }),
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         };
 
         let verdict = oatf::AttackVerdict {
@@ -861,11 +861,11 @@ mod tests {
                 state: None,
                 phases: None,
                 actors: None,
-                extensions: std::collections::HashMap::new(),
+                extensions: indexmap::IndexMap::new(),
             },
             indicators: None,
             correlation: Some(oatf::Correlation { logic: None }),
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         };
 
         let verdict = oatf::AttackVerdict {

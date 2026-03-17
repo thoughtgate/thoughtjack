@@ -295,15 +295,15 @@ dependencies = [
 
 [[package]]
 name = "cel"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca1e5eda1b0f8476181bed1bfc9232a91d62ff0b9f1bc0e48afff3cbcb5b0b5c"
+checksum = "47a40f338a8c3505921000b609279775792c07cc21f97a3011578c0c5e1738ae"
 dependencies = [
  "antlr4rust",
  "chrono",
  "lazy_static",
  "nom",
- "paste",
+ "pastey",
  "regex",
  "serde",
  "thiserror 1.0.69",
@@ -1270,11 +1270,12 @@ dependencies = [
 
 [[package]]
 name = "oatf"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e203e5f1c954ef0d950d177257267a3171368012bfea45ae3eb3178ce2ab4f0c"
+checksum = "d7f917e883332950b153eefd8309a68b5885329adce119d7674cdca4c3412f5f"
 dependencies = [
  "cel",
+ "indexmap",
  "regex",
  "serde",
  "serde-saphyr",
@@ -1324,10 +1325,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "paste"
-version = "1.0.15"
+name = "pastey"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+checksum = "b867cad97c0791bbd3aaa6472142568c6c9e8f71937e98379f584cfb0cf35bec"
 
 [[package]]
 name = "percent-encoding"
@@ -1852,9 +1853,9 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "0.0.20"
+version = "0.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfcaa44cda9e21eaf5fefc86175d544a359d4de9bcd1f3a90be7bbf77dfc3492"
+checksum = "4a6fc4aa0da972ba0f51cf5c1bb16e9dba35334adc6831b09b3ffb0ec20bb264"
 dependencies = [
  "ahash",
  "annotate-snippets",
@@ -2179,6 +2180,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "humantime",
+ "indexmap",
  "metrics",
  "metrics-exporter-prometheus",
  "oatf",

@@ -329,11 +329,11 @@ mod tests {
                 state: None,
                 phases: None,
                 actors: None,
-                extensions: std::collections::HashMap::new(),
+                extensions: indexmap::IndexMap::new(),
             },
             indicators,
             correlation: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         }
     }
 
@@ -341,7 +341,11 @@ mod tests {
         oatf::Indicator {
             id: Some(id.to_string()),
             protocol: None,
-            surface: "tool_description".to_string(),
+            surface: Some("tool_description".to_string()),
+            target: "description".to_string(),
+            actor: None,
+            direction: None,
+            method: None,
             description: None,
             pattern: Some(oatf::PatternMatch {
                 target: Some("description".to_string()),
@@ -372,7 +376,7 @@ mod tests {
             confidence: None,
             severity: None,
             false_positives: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         }
     }
 
@@ -380,7 +384,11 @@ mod tests {
         oatf::Indicator {
             id: Some(id.to_string()),
             protocol: None,
-            surface: "tool_description".to_string(),
+            surface: Some("tool_description".to_string()),
+            target: "description".to_string(),
+            actor: None,
+            direction: None,
+            method: None,
             description: None,
             pattern: None,
             expression: None,
@@ -394,7 +402,7 @@ mod tests {
             confidence: None,
             severity: None,
             false_positives: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         }
     }
 
@@ -833,7 +841,11 @@ mod tests {
         oatf::Indicator {
             id: Some(id.to_string()),
             protocol: None,
-            surface: "tool_description".to_string(),
+            surface: Some("tool_description".to_string()),
+            target: "description".to_string(),
+            actor: None,
+            direction: None,
+            method: None,
             description: None,
             pattern: None,
             expression: Some(oatf::ExpressionMatch {
@@ -844,7 +856,7 @@ mod tests {
             confidence: None,
             severity: None,
             false_positives: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         }
     }
 
