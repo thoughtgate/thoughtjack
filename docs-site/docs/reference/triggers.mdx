@@ -1,7 +1,7 @@
 ---
 title: Phase Triggers
 sidebar_position: 7
-description: Trigger types, field matchers, and content matching syntax
+description: "Reference for ThoughtJack phase triggers: event-count, time-based, and content-matching triggers with field matchers and timeout behavior."
 ---
 
 # Phase Triggers
@@ -223,3 +223,9 @@ Each phase can modify the server's tool, resource, and prompt sets:
 | `replace_prompts` | Replace prompts by name |
 
 Diff operations are applied atomically when the phase is entered.
+
+## See also
+
+- [Phase Engine Design](/docs/explanation/phase-engine) — how the state machine and trigger system work under the hood
+- [Building Phased Attacks](/docs/tutorials/phased-attacks) — tutorial on using triggers to build multi-phase temporal attacks
+- [OATF Document Schema](/docs/reference/config-schema) — full YAML reference including phase configuration

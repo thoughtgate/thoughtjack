@@ -1,7 +1,7 @@
 ---
 title: Security Framework Mappings
 sidebar_position: 5
-description: How ThoughtJack scenarios map to MITRE ATT&CK and OWASP MCP Top 10
+description: Learn how ThoughtJack attack scenarios map to MITRE ATT&CK techniques and OWASP MCP Top 10 risks for structured security reporting.
 ---
 
 # Security Framework Mappings
@@ -62,13 +62,6 @@ The OWASP MCP Top 10 is a categorization of risks specific to Model Context Prot
 | MCP-09 | Trust Boundary Violation | `rug-pull`, `escalation-ladder` |
 | MCP-10 | Credential Theft | `credential-harvester` |
 
-### Coverage matrix
-
-The coverage matrix helps identify:
-- Which risks have scenario coverage
-- Which risks need additional scenarios
-- How thoroughly each risk is tested
-
 ## Using mappings in reports
 
 When reporting test results, reference both frameworks:
@@ -85,17 +78,19 @@ This provides context that security teams can act on regardless of which framewo
 
 ## Adding mappings to custom scenarios
 
-When creating custom scenarios, include framework mappings in the `metadata` block:
+When creating custom scenarios, include framework mappings in the OATF `attack` block:
 
 ```yaml
-metadata:
+attack:
   id: "my-scenario"
   name: "My Custom Attack"
-  category: "injection"
-  mitre_attack:
-    - "T1059.004"
-  owasp_mcp:
-    - "MCP-04"
+  severity: high
+  classification:
+    mappings:
+      - framework: mitre_attack
+        id: "T1059.004"
+      - framework: owasp_mcp
+        id: "MCP-04"
 ```
 
-See [Scenario Metadata Schema](/docs/reference/scenarios-metadata) for the complete field reference.
+See [OATF Document Schema](/docs/reference/config-schema) for the complete field reference.

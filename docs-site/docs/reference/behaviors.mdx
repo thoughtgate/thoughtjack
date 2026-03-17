@@ -1,7 +1,7 @@
 ---
 title: Behavioral Modes
 sidebar_position: 5
-description: Delivery behaviors and side effects with complete parameter reference
+description: "Complete reference for ThoughtJack behavioral modes: slow-loris, unbounded-line, nested JSON delivery, and notification flood side effects."
 ---
 
 # Behavioral Modes
@@ -235,3 +235,9 @@ Each side effect execution produces a `SideEffectOutcome`:
 |---------|-------------|
 | `Completed` | Side effect ran to completion |
 | `CloseConnection { graceful }` | Connection should be closed |
+
+## See also
+
+- [Configure Delivery Behaviors](/docs/how-to/configure-behaviors) — practical guide to setting up delivery modes
+- [Configure Side Effects](/docs/how-to/configure-side-effects) — practical guide to notification floods, pipe deadlocks, etc.
+- [OATF Document Schema](/docs/reference/config-schema) — full YAML reference including behavior blocks

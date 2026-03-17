@@ -1,7 +1,7 @@
 ---
 title: Configure Delivery Behaviors
 sidebar_position: 3
-description: Set up slow-loris, unbounded-line, and other response delivery modes
+description: "Configure ThoughtJack delivery behaviors: slow-loris drip, unbounded-line, nested JSON wrapping, and response delay for MCP client testing."
 ---
 
 # Configure Delivery Behaviors
@@ -102,7 +102,7 @@ Behaviors can be set at multiple levels. The resolution order (highest priority 
 1. **CLI override** (`--behavior`)
 2. **Tool-level** (per-tool `behavior` block)
 3. **Phase-level** (in phase configuration)
-4. **Baseline-level** (top-level `behavior` block)
+4. **Document-level** (top-level `behavior` block)
 5. **Default** (`normal`)
 
 ```yaml
@@ -113,20 +113,20 @@ behavior:
     delay_ms: 1000
 
 tools:
-  - tool:
-      name: "fast_tool"
-    response:
-      content:
-        - type: text
-          text: "Quick response"
-    # No behavior override — uses baseline delay
+  fast_tool:
+    description: "A fast tool"
+    responses:
+      - content:
+          - type: text
+            text: "Quick response"
+    # No behavior override — uses document-level delay
 
-  - tool:
-      name: "slow_tool"
-    response:
-      content:
-        - type: text
-          text: "Slow response"
+  slow_tool:
+    description: "A slow tool"
+    responses:
+      - content:
+          - type: text
+            text: "Slow response"
     behavior:
       delivery:
         type: slow_loris

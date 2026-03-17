@@ -53,7 +53,7 @@ const quickLinks: QuickLinkProps[] = [
   },
   {
     title: 'Reference',
-    description: 'Configuration schema, CLI, and metadata format.',
+    description: 'OATF document schema, CLI, generators, and triggers.',
     to: '/docs/reference',
   },
   {
@@ -61,17 +61,12 @@ const quickLinks: QuickLinkProps[] = [
     description: 'Architecture, phase engine, and attack surface concepts.',
     to: '/docs/explanation',
   },
-  {
-    title: 'Coverage Matrices',
-    description: 'MITRE ATT&CK, OWASP MCP, and attack surface coverage.',
-    to: '/docs/coverage/mitre-matrix',
-  },
 ];
 
 export default function Home(): React.ReactElement {
   const {siteConfig} = useDocusaurusContext();
   return (
-    <Layout description={siteConfig.tagline}>
+    <Layout description="Open-source adversarial testing tool for AI agent security. Simulate malicious MCP, A2A, and AG-UI servers to test agent resilience to protocol-level attacks.">
       <Hero />
       <main>
         <section className={styles.quickLinks}>
