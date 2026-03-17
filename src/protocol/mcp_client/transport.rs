@@ -567,10 +567,13 @@ impl HttpWriter {
             }
         });
 
-        self.response_tasks
+        let mut tasks = self
+            .response_tasks
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(handle);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Drop handles for tasks that have already finished to avoid unbounded growth.
+        tasks.retain(|h| !h.is_finished());
+        tasks.push(handle);
     }
 
     /// Send an HTTP POST with retry on connection-level errors.

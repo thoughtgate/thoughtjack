@@ -539,18 +539,18 @@ async fn handle_message_stream(
                         task.history.clone_from(history_msgs.as_ref());
                         task.artifacts.clone_from(artifacts.as_ref());
                     }
-                    let final_status = json!({
+                    let final_status_msg = json!({
                         "jsonrpc": "2.0",
                         "id": req_id,
                         "result": {
                             "kind": "status-update",
                             "taskId": task_id,
                             "contextId": context_id,
-                            "status": { "state": final_status },
+                            "status": { "state": &final_status },
                             "final": true,
                         }
                     });
-                    SseEvent::default().data(final_status.to_string())
+                    SseEvent::default().data(final_status_msg.to_string())
                 }
                 artifact_step => {
                     let artifact_index = artifact_step - 2;

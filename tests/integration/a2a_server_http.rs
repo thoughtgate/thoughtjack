@@ -47,7 +47,11 @@ impl A2aTestServer {
         self.cancel.cancel();
         if let Some(handle) = self.handle.take() {
             match tokio::time::timeout(Duration::from_secs(5), handle).await {
-                Ok(Ok(_) | Err(_)) => {} // success or cancelled — both normal
+                Ok(Ok(_)) => {}
+                Ok(Err(join_err)) if join_err.is_cancelled() => {}
+                Ok(Err(join_err)) => {
+                    std::panic::resume_unwind(join_err.into_panic());
+                }
                 Err(elapsed) => panic!("A2A server task did not shut down within 5 s: {elapsed}"),
             }
         }
