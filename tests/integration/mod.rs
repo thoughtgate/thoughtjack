@@ -9,4 +9,5 @@ mod agui_http;
 mod cli_exit_codes;
 mod mcp_client_stdio;
 mod orchestration;
+mod scenario_indicators;
 mod verdict_pipeline;

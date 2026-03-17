@@ -162,6 +162,14 @@ pub async fn run_from_yaml(
         print_human_summary(&output);
     }
 
+    // 12b. Warn if verdict is based on an empty trace
+    if trace_snapshot.is_empty() {
+        tracing::warn!(
+            "verdict based on empty trace (0 protocol messages exchanged). \
+             Ensure a client or agent connects to the server during execution."
+        );
+    }
+
     // 13. Runtime actor failures are treated as orchestration errors.
     let actor_failures = summarize_actor_failures(&outcomes);
     if !actor_failures.is_empty() {
@@ -209,6 +217,13 @@ fn validate_transport_flags(
                     "actor '{}' (a2a_client) requires --a2a-client-endpoint",
                     actor.name
                 ));
+            }
+            "mcp_server" if config.mcp_server_bind.is_none() => {
+                tracing::warn!(
+                    actor = actor.name.as_str(),
+                    "mcp_server actor using stdio transport (no --mcp-server provided). \
+                     Use --mcp-server <ADDR:PORT> for HTTP transport."
+                );
             }
             _ => {}
         }
@@ -443,33 +458,29 @@ fn summarize_actor_failures(outcomes: &[ActorOutcome]) -> Vec<String> {
         })
         .collect();
 
-    // If at least one actor completed normally (not cancelled/timed-out),
+    // If at least one actor completed normally or via --max-session timeout,
     // partial failures are expected in multi-actor scenarios (e.g. server
     // cancelled after client completes, or intentional error-degradation).
     // Let the verdict exit code take precedence.
-    let any_completed = successful.iter().any(|result| {
-        !matches!(
-            result.termination,
-            TerminationReason::Cancelled | TerminationReason::MaxSessionExpired
-        )
-    });
+    //
+    // MaxSessionExpired is a valid exit path — the user explicitly set a time
+    // limit, and the verdict pipeline evaluates whatever trace was collected.
+    // Only Cancelled (cooperative shutdown without any work) is suspect.
+    let any_completed = successful
+        .iter()
+        .any(|result| !matches!(result.termination, TerminationReason::Cancelled));
 
     if any_completed {
         return Vec::new();
     }
 
-    // No actor completed normally — check if all are cancelled/timed-out.
+    // No actor completed or timed out — all were cancelled via cooperative
+    // shutdown without any actor reaching completion. This typically means
+    // an external signal (Ctrl-C) or an infrastructure issue.
     if failures.is_empty() && !successful.is_empty() {
-        let cancelled = successful
-            .iter()
-            .filter(|result| result.termination == TerminationReason::Cancelled)
-            .count();
-        let timed_out = successful
-            .iter()
-            .filter(|result| result.termination == TerminationReason::MaxSessionExpired)
-            .count();
+        let cancelled = successful.len();
         failures.push(format!(
-            "all actors terminated by cancellation/timeout before completion (cancelled: {cancelled}, timeout: {timed_out})"
+            "all actors terminated by cancellation before completion (cancelled: {cancelled})"
         ));
     }
 
@@ -526,7 +537,22 @@ mod tests {
         })];
         let failures = summarize_actor_failures(&outcomes);
         assert_eq!(failures.len(), 1);
-        assert!(failures[0].contains("cancellation/timeout"));
+        assert!(failures[0].contains("cancellation"));
+    }
+
+    #[test]
+    fn summarize_actor_failures_max_session_expired_is_not_failure() {
+        let outcomes = vec![ActorOutcome::Success(crate::engine::types::ActorResult {
+            actor_name: "server".to_string(),
+            termination: crate::engine::types::TerminationReason::MaxSessionExpired,
+            phases_completed: 0,
+            total_phases: 1,
+            final_phase: None,
+        })];
+        assert!(
+            summarize_actor_failures(&outcomes).is_empty(),
+            "MaxSessionExpired is a valid exit path — verdict should decide exit code"
+        );
     }
 
     #[test]
@@ -626,18 +652,12 @@ attack:
         )
         .await;
         assert!(result.is_ok(), "single-actor run exceeded timeout window");
-        let err = result
-            .unwrap()
-            .expect_err("single-actor timeout should be reported as a runtime failure");
-        match err {
-            ThoughtJackError::Orchestration(msg) => {
-                assert!(
-                    msg.contains("cancellation/timeout"),
-                    "unexpected error: {msg}"
-                );
-            }
-            other => panic!("expected orchestration error, got {other}"),
-        }
+        // MaxSessionExpired is a valid exit path — verdict decides the exit code.
+        // With no trace events, the verdict is not_exploited (exit 0 = Ok(())).
+        assert!(
+            result.unwrap().is_ok(),
+            "single-actor max-session timeout should produce verdict, not runtime error"
+        );
     }
 
     #[tokio::test]

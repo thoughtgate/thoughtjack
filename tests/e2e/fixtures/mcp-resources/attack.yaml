@@ -14,6 +14,7 @@ attack:
       protocol: mcp
       surface: resource_uri
       description: "Resource URI appeared in resources/list response"
+      target: "resources[*].uri"
       pattern:
         target: "resources[*].uri"
         condition:
@@ -22,6 +23,7 @@ attack:
       protocol: mcp
       surface: resource_content
       description: "Resource content returned by resources/read"
+      target: "contents[*].text"
       pattern:
         target: "contents[*].text"
         condition:

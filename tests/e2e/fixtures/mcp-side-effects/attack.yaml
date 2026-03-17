@@ -15,6 +15,7 @@ attack:
       protocol: mcp
       surface: tool_response
       description: "MCP server sent logging notification with exfiltration payload"
+      target: "data"
       pattern:
         target: "data"
         condition:
@@ -23,6 +24,7 @@ attack:
       protocol: mcp
       surface: tool_response
       description: "MCP server sent sampling request to manipulate client LLM"
+      target: "params.messages[*].content.text"
       pattern:
         target: "params.messages[*].content.text"
         condition:

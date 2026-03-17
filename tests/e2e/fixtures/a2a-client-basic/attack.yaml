@@ -13,6 +13,7 @@ attack:
       protocol: a2a
       surface: task_status
       description: "A2A client sent task message to server"
+      target: "message.role"
       pattern:
         target: "message.role"
         condition:
@@ -21,6 +22,7 @@ attack:
       protocol: a2a
       surface: task_status
       description: "A2A server returned completed task"
+      target: "status.state"
       pattern:
         target: "status.state"
         condition:

@@ -14,6 +14,7 @@ attack:
       protocol: mcp
       surface: prompt_description
       description: "Prompt description appeared in prompts/list response"
+      target: "prompts[*].description"
       pattern:
         target: "prompts[*].description"
         condition:
@@ -22,6 +23,7 @@ attack:
       protocol: mcp
       surface: prompt_content
       description: "Prompt content returned by prompts/get"
+      target: "messages[*].content.text"
       pattern:
         target: "messages[*].content.text"
         condition:

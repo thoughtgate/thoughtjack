@@ -15,6 +15,7 @@ attack:
       protocol: ag_ui
       surface: agent_event
       description: "AG-UI trigger sent run request to framework agent"
+      target: "messages[*].role"
       pattern:
         target: "messages[*].role"
         condition:

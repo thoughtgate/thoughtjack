@@ -82,7 +82,7 @@ ThoughtJack is a configurable adversarial testing framework for AI agent securit
 
 | Spec | Name | Status |
 |------|------|--------|
-| [TJ-SPEC-010](./TJ-SPEC-010_Builtin_Scenarios.md) | Built-in Scenarios | Needs rewrite as OATF documents |
+| [TJ-SPEC-010](./TJ-SPEC-010_Builtin_Scenarios.md) | Built-in Scenarios | **v2** — OATF official library, build-time auto-discovery |
 | [TJ-SPEC-011](./TJ-SPEC-011_Documentation_Site.md) | Documentation Site | Needs reference updates |
 
 ---

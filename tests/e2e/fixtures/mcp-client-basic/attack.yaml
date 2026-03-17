@@ -13,6 +13,7 @@ attack:
       protocol: mcp
       surface: server_info
       description: "MCP server responded to initialize with configured server info"
+      target: "serverInfo.name"
       pattern:
         target: "serverInfo.name"
         condition:
@@ -21,6 +22,7 @@ attack:
       protocol: mcp
       surface: tool_response
       description: "Echo tool returned expected response"
+      target: "content[*].text"
       pattern:
         target: "content[*].text"
         condition:
