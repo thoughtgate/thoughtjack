@@ -29,9 +29,12 @@ struct ScenarioEntry {
 fn discover_scenarios() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    let library_dir = Path::new(&manifest_dir).join("scenarios").join("library");
+    let library_dir = Path::new(&manifest_dir)
+        .join("scenarios")
+        .join("library")
+        .join("library");
 
-    println!("cargo:rerun-if-changed=scenarios/library");
+    println!("cargo:rerun-if-changed=scenarios/library/library");
 
     let mut scenarios = Vec::new();
 

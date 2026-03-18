@@ -46,13 +46,12 @@ pub struct ActorInfo {
 
 /// Filters trace entries to those relevant for a given indicator.
 ///
-/// Applies four successive filters from the indicator's optional fields:
+/// Applies three successive filters from the indicator's optional fields:
 ///
 /// 1. **`protocol`** (default `"mcp"`): selects actors whose mode maps to
 ///    the target protocol.
-/// 2. **`surface`**: if set, only entries whose `method` matches.
-/// 3. **`actor`**: if set, only entries from that specific actor.
-/// 4. **`direction`**: if set, maps the trace entry's `Incoming`/`Outgoing`
+/// 2. **`actor`**: if set, only entries from that specific actor.
+/// 3. **`direction`**: if set, maps the trace entry's `Incoming`/`Outgoing`
 ///    to the OATF `Request`/`Response` based on the actor's server/client
 ///    mode.
 ///
@@ -76,12 +75,6 @@ pub fn filter_trace_for_indicator<'a>(
     trace
         .iter()
         .filter(|entry| matching_actors.contains(entry.actor.as_str()))
-        .filter(|entry| {
-            indicator
-                .surface
-                .as_ref()
-                .is_none_or(|s| entry.method == *s)
-        })
         .filter(|entry| indicator.actor.as_ref().is_none_or(|a| entry.actor == *a))
         .filter(|entry| {
             indicator.direction.as_ref().is_none_or(|dir| {
@@ -1070,23 +1063,7 @@ mod tests {
         );
     }
 
-    // ── Fix 1: Surface / Actor / Direction Filtering ───────────────────
-
-    #[test]
-    fn filter_by_surface_matches_method() {
-        let trace = vec![
-            make_trace_entry("actor1", "tools/call", serde_json::json!({})),
-            make_trace_entry("actor1", "tools/list", serde_json::json!({})),
-            make_trace_entry("actor1", "tools/call", serde_json::json!({})),
-        ];
-        let actors = vec![make_actor("actor1", "mcp_server")];
-        let mut indicator = make_pattern_indicator("ind-1", "test");
-        indicator.surface = Some("tools/call".to_string());
-
-        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered.iter().all(|e| e.method == "tools/call"));
-    }
+    // ── Actor / Direction Filtering ─────────────────────────────────────
 
     #[test]
     fn filter_by_actor_scopes_to_actor() {
