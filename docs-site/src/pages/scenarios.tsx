@@ -15,7 +15,7 @@ export default function Scenarios(): React.ReactElement {
           <header className={styles.header}>
             <h1>Scenario Library</h1>
             <p className={styles.subtitle}>
-              ThoughtJack ships with 11 built-in attack scenarios across MCP, A2A, and AG-UI
+              ThoughtJack ships with 10 built-in attack scenarios across MCP, A2A, and AG-UI
               protocols. Each scenario is an{' '}
               <a href="https://oatf.dev" target="_blank" rel="noopener noreferrer">
                 OATF
@@ -31,9 +31,9 @@ export default function Scenarios(): React.ReactElement {
                 {'# List all built-in scenarios\n'}
                 {'thoughtjack scenarios list\n\n'}
                 {'# Run a scenario against your agent\n'}
-                {'thoughtjack scenarios run rug-pull --mcp-server 127.0.0.1:3000\n\n'}
+                {'thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080\n\n'}
                 {'# View the YAML for customization\n'}
-                {'thoughtjack scenarios show rug-pull > my-scenario.yaml'}
+                {'thoughtjack scenarios show oatf-002 > my-scenario.yaml'}
               </code>
             </pre>
 

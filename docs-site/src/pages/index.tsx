@@ -55,33 +55,35 @@ function TerminalDemo(): React.ReactElement {
           <pre className={styles.terminalBody}>
             <code>
               <span className={styles.termPrompt}>$</span>{' '}
-              <span className={styles.termCmd}>thoughtjack scenarios run rug-pull</span>
+              <span className={styles.termCmd}>thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080</span>
               {'\n\n'}
               <span className={styles.termMeta}>{'  '}Scenario: OATF-002 Tool Definition Rug Pull</span>
               {'\n'}
-              <span className={styles.termMeta}>{'  '}Protocol: MCP (stdio server)   Severity: CRITICAL</span>
+              <span className={styles.termMeta}>{'  '}Protocol: MCP (server)   Severity: CRITICAL</span>
               {'\n'}
-              <span className={styles.termMeta}>{'  '}Phases:   trust_building {'→'} exploit</span>
+              <span className={styles.termMeta}>{'  '}Phases:   trust_building {'→'} swap_definition {'→'} exploit</span>
               {'\n\n'}
-              <span className={styles.termPhase}>{'  '}Phase: trust_building</span>
+              <span className={styles.termPhase}>{'  '}Phase: trust_building [tools/call {'×'}3]</span>
               {'\n'}
-              <span className={styles.termIn}>{'    ← tools/call'}{' '}<span className={styles.termWarn}>calculator</span></span>
+              <span className={styles.termIn}>{'    ← tools/call'}{' '}<span className={styles.termWarn}>calculator</span>{'  [1/3]'}</span>
               {'\n'}
               <span className={styles.termOut}>{'    → tools/call'}</span>
               {'\n'}
-              <span className={styles.termIn}>{'    ← tools/call'}{' '}<span className={styles.termWarn}>calculator</span></span>
+              <span className={styles.termIn}>{'    ← tools/call'}{' '}<span className={styles.termWarn}>calculator</span>{'  [2/3]'}</span>
               {'\n'}
               <span className={styles.termOut}>{'    → tools/call'}</span>
+              {'\n'}
+              <span className={styles.termIn}>{'    ← tools/call'}{' '}<span className={styles.termWarn}>calculator</span>{'  [3/3]'}</span>
+              {'\n'}
+              <span className={styles.termOut}>{'    → tools/call'}</span>
+              {'\n'}
+              <span className={styles.termDim}>{'    (4.2s, 8 messages)'}</span>
               {'\n\n'}
-              <span className={styles.termPhase}>{'  '}Phase: exploit</span>
+              <span className={styles.termPhase}>{'  '}Phase: swap_definition [tools/list {'×'}1]</span>
               {'\n'}
-              <span className={styles.termOut}>{'    → notifications/tools/list_changed'}</span>
+              <span className={styles.termDim}>{'    ▸ notify notifications/tools/list_changed'}</span>
               {'\n'}
-              <span className={styles.termIn}>{'    ← tools/list'}</span>
-              {'\n'}
-              <span className={styles.termOut}>{'    → tools/list'}</span>
-              {'\n'}
-              <span className={styles.termIn}>{'    ← tools/call'}{' '}<span className={styles.termWarn}>read_file</span></span>
+              <span className={styles.termIn}>{'    ← tools/call'}{' '}<span className={styles.termWarn}>calculator</span>{'  [0/1]'}</span>
               {'\n'}
               <span className={styles.termOut}>{'    → tools/call'}</span>
               {'\n\n'}

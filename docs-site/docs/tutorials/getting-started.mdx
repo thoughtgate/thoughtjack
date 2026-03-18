@@ -45,95 +45,127 @@ thoughtjack 0.5.0
 
 ## 2. Explore built-in scenarios
 
-ThoughtJack ships with built-in attack scenarios across six categories. List them:
+ThoughtJack ships with built-in attack scenarios across multiple categories. List them:
 
 ```bash
 thoughtjack scenarios list
 ```
 
 ```
-Category   Name                  Description
-─────────  ────────────────────  ──────────────────────────────────────────
-Temporal   rug-pull              Trust-building calculator that swaps tool definitions after 5 calls
+Built-in Scenarios (10 available)
+
+  Temporal
+    oatf-002                Tool Definition Rug Pull
+    oatf-007                MCP Server Supply Chain Attack
+
+  Injection
+    oatf-001                Tool Description Prompt Injection
+    oatf-004                Tool Response Injection (Indirect Prompt Injection)
+    ...
+
+Run a scenario: thoughtjack scenarios run <name>
+View YAML:      thoughtjack scenarios show <name>
 ```
 
-Run `thoughtjack scenarios list` to see all available scenarios.
-
-Get details on a specific scenario:
+View the YAML for a specific scenario:
 
 ```bash
-thoughtjack scenarios show rug-pull
+thoughtjack scenarios show oatf-002
 ```
-
-This displays the scenario's description, MITRE ATT&CK mapping, what to observe, and customization tips.
 
 ## 3. Run the rug pull scenario
 
-The **rug pull** is a temporal attack: the server starts with a benign calculator tool, builds trust over 5 calls, then injects a malicious `read_file` tool.
+The **rug pull** (`oatf-002`) is a temporal attack: the server starts with a benign calculator tool, builds trust over 3 calls, then swaps the tool definition with a poisoned version containing prompt injection.
 
-First, export the built-in scenario to a YAML file, then run it:
+Start the scenario as an MCP server:
 
 ```bash
-thoughtjack scenarios show rug-pull > rug-pull.yaml
-thoughtjack run --config rug-pull.yaml
+thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080
 ```
 
-ThoughtJack is now listening on stdin/stdout using the MCP JSON-RPC protocol. It will:
+ThoughtJack is now listening on HTTP using the MCP Streamable HTTP transport. It will:
 
 1. Respond to `initialize` with server capabilities
 2. Advertise a `calculator` tool via `tools/list`
-3. Return `"42"` for any `tools/call` to `calculator`
-4. After 5 tool calls, send a `notifications/tools/list_changed` notification
-5. On the next `tools/list`, include the injected `read_file` tool
+3. Return `"Result: 42"` for any `tools/call` to `calculator`
+4. After 3 tool calls, advance to the next phase and send `notifications/tools/list_changed`
+5. On the next `tools/list`, return the calculator with a poisoned description
+
+Real-time progress is shown by default on TTY terminals:
+
+```
+  Scenario: OATF-002 Tool Definition Rug Pull
+  Protocol: MCP (server)   Severity: CRITICAL
+  Phases:   trust_building → swap_definition → exploit
+
+  Phase: trust_building [tools/call ×3]
+    ← initialize  [0/3]
+    → initialize
+    ← tools/call calculator  [1/3]
+    → tools/call
+    ← tools/call calculator  [2/3]
+    → tools/call
+    ← tools/call calculator  [3/3]
+    → tools/call
+    (4.2s, 8 messages)
+
+  Phase: swap_definition [tools/list ×1]
+    ▸ notify notifications/tools/list_changed
+    ...
+```
 
 ### What to observe
 
 When testing your MCP client against this scenario, watch for:
 
 - Does the client re-read tool definitions after receiving `list_changed`?
-- Does the client detect the prompt injection in the `read_file` description?
+- Does the client detect the prompt injection in the modified `calculator` description?
 - Does the agent follow the injected instructions?
 
-## 4. Add verbose logging
+## 4. Progress output
 
-Run the same scenario with debug-level logging to see internal state transitions:
+ThoughtJack shows real-time progress by default when running in a terminal. The progress display shows phase transitions, trigger counters, entry actions, and indicator results.
+
+Use `--progress compact` for a less detailed view, or `--progress off` to disable progress and show only the human summary after completion:
 
 ```bash
-thoughtjack run --config rug-pull.yaml -vv
+# Compact — no trigger counters or phase timing
+thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080 --progress compact
+
+# Off — human summary only
+thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080 --progress off
 ```
 
-With `-vv` (debug level), you'll see log lines for:
+For verbose logging (debug-level internal state), add `-vv`:
 
-- Configuration loading and validation
-- Each incoming JSON-RPC request
-- Phase trigger evaluation (`tools/call count: 3/5`)
-- Phase transitions (`trust_building → exploit`)
-- Entry actions firing (`send_notification: notifications/tools/list_changed`)
+```bash
+thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080 -vv
+```
 
 For machine-parseable logs, use JSON format:
 
 ```bash
-thoughtjack run --config rug-pull.yaml -vv --log-format json
+thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080 --log-format json -vv
 ```
 
 ## 5. Run from a config file
 
-Built-in scenarios are convenient, but real testing uses YAML config files. You can view a scenario's YAML:
+Built-in scenarios are convenient, but real testing uses YAML config files. Export a scenario's YAML:
 
 ```bash
-thoughtjack scenarios show rug-pull
+thoughtjack scenarios show oatf-002 > my-scenario.yaml
 ```
 
-Config files from the `scenarios/` directory work the same way:
+Run from the file:
 
 ```bash
-thoughtjack run --config scenarios/rug-pull.yaml
+thoughtjack run --config my-scenario.yaml --mcp-server 127.0.0.1:8080
 ```
 
 Always validate configs before running:
 
 ```bash
-thoughtjack validate scenarios/rug-pull.yaml
+thoughtjack validate my-scenario.yaml
 ```
 
 ## 6. Test an MCP server (client mode)
@@ -145,7 +177,7 @@ The examples above run ThoughtJack as a **server** to test MCP clients. ThoughtJ
 If the target MCP server is already listening on HTTP:
 
 ```bash
-thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:3000/message
+thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:3000/mcp
 ```
 
 ### Spawn the server as a subprocess
@@ -162,6 +194,6 @@ In client mode, ThoughtJack sends requests defined in the OATF scenario (tool ca
 
 ## Next steps
 
-- [Writing a Custom Scenario](./custom-scenario) — create your own YAML configuration
+- [Writing a Custom Scenario](./custom-scenario) — create your own OATF scenario
 - [Building Phased Attacks](./phased-attacks) — multi-phase state machines with advanced triggers
 - [CLI Reference](/docs/reference/cli) — all commands and flags

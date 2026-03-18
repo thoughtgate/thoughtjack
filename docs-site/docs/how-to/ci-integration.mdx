@@ -72,10 +72,10 @@ After the run, parse `events.jsonl`:
 
 ```bash
 # Count phase transitions
-jq 'select(.event == "PhaseEntered")' events.jsonl | wc -l
+jq 'select(.type == "PhaseEntered")' events.jsonl | wc -l
 
-# Get run summary
-jq 'select(.event == "ServerStopped") | .summary' events.jsonl
+# Get verdict
+jq 'select(.type == "VerdictComputed")' events.jsonl
 ```
 
 ## Exit codes
