@@ -1,19 +1,207 @@
-.heroBanner {
-  padding: 4rem 0;
+/* ── Hero ─────────────────────────────────────────────── */
+
+.hero {
+  padding: 5rem 0 3rem;
   text-align: center;
-  position: relative;
-  overflow: hidden;
+  background: linear-gradient(170deg, rgba(79, 70, 229, 0.06) 0%, transparent 60%);
 }
 
-.buttons {
+[data-theme='dark'] .hero {
+  background: linear-gradient(170deg, rgba(129, 140, 248, 0.08) 0%, transparent 60%);
+}
+
+.heroTitle {
+  font-size: 3.5rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.75rem;
+}
+
+[data-theme='dark'] .heroTitle {
+  background: linear-gradient(135deg, #818cf8, #a78bfa);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.heroTagline {
+  font-size: 1.35rem;
+  color: var(--ifm-color-emphasis-800);
+  margin-bottom: 0.75rem;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.heroDescription {
+  font-size: 1.05rem;
+  color: var(--ifm-color-emphasis-600);
+  max-width: 640px;
+  margin: 0 auto 1rem;
+  line-height: 1.6;
+}
+
+.heroStat {
+  font-size: 0.95rem;
+  color: var(--ifm-color-emphasis-700);
+  margin-bottom: 1.5rem;
+}
+
+.heroStat strong {
+  color: var(--ifm-color-primary);
+}
+
+.heroButtons {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 1rem;
+  margin-bottom: 1.5rem;
 }
 
+.protocolBadges {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.protocolBadge {
+  display: inline-block;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2em 0.65em;
+  border-radius: 4px;
+  background: rgba(79, 70, 229, 0.1);
+  color: var(--ifm-color-primary);
+  border: 1px solid rgba(79, 70, 229, 0.2);
+  letter-spacing: 0.04em;
+}
+
+[data-theme='dark'] .protocolBadge {
+  background: rgba(129, 140, 248, 0.12);
+  border-color: rgba(129, 140, 248, 0.25);
+}
+
+/* ── Terminal Demo ───────────────────────────────────── */
+
+.terminalSection {
+  padding: 3rem 0;
+}
+
+.sectionTitle {
+  text-align: center;
+  font-size: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.sectionSubtitle {
+  text-align: center;
+  color: var(--ifm-color-emphasis-600);
+  margin-bottom: 2rem;
+  font-size: 1.05rem;
+}
+
+.terminal {
+  max-width: 700px;
+  margin: 0 auto;
+  border-radius: 10px;
+  border: 1px solid rgba(79, 70, 229, 0.25);
+  box-shadow: 0 4px 24px rgba(79, 70, 229, 0.08);
+  overflow: hidden;
+}
+
+.terminalHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.6rem 1rem;
+  background: var(--tj-terminal-header);
+}
+
+.terminalDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.terminalDotRed {
+  background: #ff5f57;
+}
+
+.terminalDotYellow {
+  background: #febc2e;
+}
+
+.terminalDotGreen {
+  background: #28c840;
+}
+
+.terminalTitle {
+  margin-left: 0.5rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--ifm-font-family-monospace);
+}
+
+.terminalBody {
+  margin: 0;
+  padding: 1.25rem 1.5rem;
+  background: var(--tj-terminal-bg);
+  color: var(--tj-terminal-fg);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  overflow-x: auto;
+}
+
+.termPrompt {
+  color: #6b7280;
+}
+
+.termCmd {
+  color: #93c5fd;
+}
+
+.termMeta {
+  color: #9ca3af;
+}
+
+.termPhase {
+  color: #c084fc;
+  font-weight: 700;
+}
+
+.termIn {
+  color: #5eead4;
+}
+
+.termOut {
+  color: #9ca3af;
+}
+
+.termWarn {
+  color: #fbbf24;
+}
+
+.termDim {
+  color: #6b7280;
+}
+
+.termFail {
+  color: #f87171;
+  font-weight: 700;
+}
+
+.termRule {
+  color: #374151;
+}
+
+/* ── Quick Links ─────────────────────────────────────── */
+
 .quickLinks {
-  padding: 2rem 0;
+  padding: 2rem 0 3rem;
 }
 
 .quickLink {
@@ -24,15 +212,17 @@
   display: block;
   padding: 1.25rem;
   border: 1px solid var(--ifm-color-emphasis-300);
+  border-left: 3px solid var(--card-accent, var(--ifm-color-primary));
   border-radius: 8px;
   text-decoration: none;
   color: inherit;
   transition: border-color 0.15s, box-shadow 0.15s;
+  height: 100%;
 }
 
 .quickLinkCard:hover {
   border-color: var(--ifm-color-primary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 12px rgba(79, 70, 229, 0.1);
   text-decoration: none;
   color: inherit;
 }
@@ -45,4 +235,71 @@
   margin: 0;
   color: var(--ifm-color-emphasis-700);
   font-size: 0.9rem;
+}
+
+.quickLinkHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.quickLinkBadge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1em 0.5em;
+  border-radius: 9999px;
+  background: rgba(79, 70, 229, 0.1);
+  color: var(--ifm-color-primary);
+  white-space: nowrap;
+}
+
+/* ── Responsive ──────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .hero {
+    padding: 3rem 0 2rem;
+  }
+
+  .heroTitle {
+    font-size: 2.5rem;
+  }
+
+  .heroTagline {
+    font-size: 1.15rem;
+  }
+
+  .heroButtons {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .terminal {
+    max-width: 100%;
+    border-radius: 8px;
+  }
+
+  .terminalBody {
+    font-size: 0.75rem;
+    padding: 1rem;
+  }
+}
+
+@media (max-width: 375px) {
+  .heroTitle {
+    font-size: 2rem;
+  }
+
+  .heroTagline {
+    font-size: 1rem;
+  }
+
+  .heroDescription {
+    font-size: 0.92rem;
+  }
+
+  .terminalBody {
+    font-size: 0.7rem;
+    padding: 0.75rem;
+  }
 }

@@ -1,20 +1,224 @@
+/* ── Docusaurus Color Palette (Tailwind Indigo) ────────── */
+
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
+  --ifm-color-primary: #4f46e5;
+  --ifm-color-primary-dark: #4338ca;
+  --ifm-color-primary-darker: #3730a3;
+  --ifm-color-primary-darkest: #312e81;
+  --ifm-color-primary-light: #6366f1;
+  --ifm-color-primary-lighter: #818cf8;
+  --ifm-color-primary-lightest: #a5b4fc;
   --ifm-code-font-size: 95%;
+
+  /* TJ custom tokens */
+  --tj-accent-amber: #f59e0b;
+  --tj-accent-red: #ef4444;
+  --tj-accent-orange: #f97316;
+  --tj-accent-yellow: #eab308;
+  --tj-accent-blue: #3b82f6;
+
+  --tj-terminal-bg: #1e1b4b;
+  --tj-terminal-fg: #e0e7ff;
+  --tj-terminal-header: #312e81;
 }
 
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
+  --ifm-color-primary: #818cf8;
+  --ifm-color-primary-dark: #6366f1;
+  --ifm-color-primary-darker: #4f46e5;
+  --ifm-color-primary-darkest: #4338ca;
+  --ifm-color-primary-light: #a5b4fc;
+  --ifm-color-primary-lighter: #c7d2fe;
+  --ifm-color-primary-lightest: #e0e7ff;
+
+  --tj-terminal-bg: #0f0d1a;
+  --tj-terminal-fg: #c7d2fe;
+  --tj-terminal-header: #1e1b4b;
+}
+
+/* ── Severity Badges ──────────────────────────────────── */
+
+.tj-severity-badge {
+  display: inline-block;
+  padding: 0.15em 0.55em;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  line-height: 1.4;
+}
+
+.tj-severity-badge--critical {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--tj-accent-red);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.tj-severity-badge--high {
+  background: rgba(249, 115, 22, 0.12);
+  color: var(--tj-accent-orange);
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
+.tj-severity-badge--medium {
+  background: rgba(234, 179, 8, 0.12);
+  color: var(--tj-accent-yellow);
+  border-color: rgba(234, 179, 8, 0.3);
+}
+
+.tj-severity-badge--low {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--tj-accent-blue);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+/* ── Metadata Card ────────────────────────────────────── */
+
+.tj-metadata-card {
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.tj-metadata-card__header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.tj-metadata-card__id {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.85rem;
+  color: var(--ifm-color-emphasis-600);
+}
+
+.tj-metadata-card__section {
+  margin-bottom: 0.75rem;
+}
+
+.tj-metadata-card__section:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Mapping Pills ────────────────────────────────────── */
+
+.tj-mapping {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.tj-pill {
+  display: inline-block;
+  padding: 0.15em 0.5em;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+
+.tj-pill--mitre {
+  background: rgba(79, 70, 229, 0.1);
+  color: var(--ifm-color-primary);
+  border-color: rgba(79, 70, 229, 0.25);
+}
+
+.tj-pill--owasp {
+  background: rgba(249, 115, 22, 0.1);
+  color: var(--tj-accent-orange);
+  border-color: rgba(249, 115, 22, 0.25);
+}
+
+/* ── Coverage Matrix ──────────────────────────────────── */
+
+.tj-coverage-matrix {
+  display: grid;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+
+.tj-coverage-cell {
+  padding: 0.4rem 0.6rem;
+  text-align: center;
+  border-radius: 4px;
+}
+
+.tj-coverage-cell--covered {
+  background: rgba(79, 70, 229, 0.15);
+  color: var(--ifm-color-primary);
+}
+
+.tj-coverage-cell--gap {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--tj-accent-red);
+}
+
+.tj-coverage-cell--out_of_scope {
+  background: var(--ifm-color-emphasis-100);
+  color: var(--ifm-color-emphasis-500);
+}
+
+/* ── Mermaid Container ────────────────────────────────── */
+
+.tj-mermaid-container {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.tj-mermaid-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ifm-color-emphasis-600);
+  margin-bottom: 0.75rem;
+  text-align: center;
+}
+
+/* ── Tutorial Progress ────────────────────────────────── */
+
+.tutorial-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: var(--ifm-color-emphasis-100);
+}
+
+.tutorial-progress__label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ifm-color-emphasis-700);
+  white-space: nowrap;
+}
+
+.tutorial-progress__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.tutorial-progress__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ifm-color-emphasis-300);
+  transition: background 0.2s;
+}
+
+.tutorial-progress__dot--complete {
+  background: var(--ifm-color-primary);
+}
+
+.tutorial-progress__dot--current {
+  background: var(--ifm-color-primary-light);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
 }

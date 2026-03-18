@@ -19,6 +19,9 @@ function Hero(): React.ReactElement {
           servers. Run rug pulls, prompt injections, and protocol-level attacks against
           your agents in a controlled environment.
         </p>
+        <p className={styles.heroStat}>
+          <strong>10 attack scenarios</strong> across <strong>3 protocols</strong> — ready to run.
+        </p>
         <div className={styles.heroButtons}>
           <Link className="button button--primary button--lg" to="/docs/tutorials/getting-started">
             Get Started
@@ -114,7 +117,7 @@ interface QuickLinkProps {
 
 function QuickLink({title, description, to, accent, badge}: QuickLinkProps): React.ReactElement {
   return (
-    <div className={clsx('col col--3', styles.quickLink)}>
+    <div className={clsx('col col--6', styles.quickLink)}>
       <Link to={to} className={styles.quickLinkCard} style={{'--card-accent': accent} as React.CSSProperties}>
         <div className={styles.quickLinkHeader}>
           <h3>{title}</h3>
@@ -128,29 +131,18 @@ function QuickLink({title, description, to, accent, badge}: QuickLinkProps): Rea
 
 const quickLinks: QuickLinkProps[] = [
   {
-    title: 'Tutorials',
-    description: 'Install ThoughtJack, run your first attack scenario, and learn to read verdict output.',
-    to: '/docs/tutorials',
-    accent: '#25c2a0',
-    badge: 'Start here',
+    title: 'Evaluate your agents',
+    description: 'Install ThoughtJack, run built-in attack scenarios against your AI agents, and interpret verdict output to assess resilience.',
+    to: '/docs/tutorials/getting-started',
+    accent: '#4f46e5',
+    badge: 'Security teams',
   },
   {
-    title: 'How-To Guides',
-    description: 'Task-oriented recipes: delivery behaviors, payload generators, CI integration, HTTP transport.',
+    title: 'Build custom attacks',
+    description: 'Author OATF scenarios, configure delivery behaviors, payload generators, and multi-actor orchestration for your own attack research.',
     to: '/docs/how-to',
-    accent: '#e8a838',
-  },
-  {
-    title: 'Reference',
-    description: 'Complete OATF schema, CLI flags, generator parameters, trigger syntax, and behavioral modes.',
-    to: '/docs/reference',
-    accent: '#6c7ae0',
-  },
-  {
-    title: 'Explanation',
-    description: 'Architecture deep-dives, phase engine design, MCP/A2A/AG-UI attack surfaces, MITRE mappings.',
-    to: '/docs/explanation',
-    accent: '#e06c9f',
+    accent: '#f59e0b',
+    badge: 'Researchers',
   },
 ];
 

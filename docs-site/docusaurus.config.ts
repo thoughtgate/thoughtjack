@@ -11,6 +11,7 @@ const config: Config = {
   organizationName: 'thoughtgate',
   projectName: 'thoughtjack',
 
+  favicon: 'img/favicon.svg',
   onBrokenLinks: 'throw',
   trailingSlash: false,
 
@@ -83,17 +84,9 @@ const config: Config = {
     navbar: {
       title: 'ThoughtJack',
       items: [
-        {
-          type: 'dropdown',
-          label: 'Documentation',
-          position: 'left',
-          items: [
-            {label: 'Tutorials', to: '/docs/tutorials'},
-            {label: 'How-To Guides', to: '/docs/how-to'},
-            {label: 'Reference', to: '/docs/reference'},
-            {label: 'Explanation', to: '/docs/explanation'},
-          ],
-        },
+        {label: 'Tutorials', to: '/docs/tutorials', position: 'left'},
+        {label: 'Reference', to: '/docs/reference', position: 'left'},
+        {label: 'Scenarios', to: '/scenarios', position: 'left'},
         {
           href: 'https://github.com/thoughtgate/thoughtjack',
           label: 'GitHub',
@@ -105,16 +98,28 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'Docs',
+          title: 'Documentation',
           items: [
-            {label: 'Tutorials', to: '/docs/tutorials'},
+            {label: 'Getting Started', to: '/docs/tutorials/getting-started'},
+            {label: 'How-To Guides', to: '/docs/how-to'},
             {label: 'Reference', to: '/docs/reference'},
+            {label: 'Architecture', to: '/docs/explanation'},
           ],
         },
         {
-          title: 'More',
+          title: 'Project',
+          items: [
+            {label: 'Scenarios', to: '/scenarios'},
+            {label: 'OATF Spec', href: 'https://oatf.dev'},
+            {label: 'ThoughtGate', href: 'https://github.com/thoughtgate/thoughtgate'},
+          ],
+        },
+        {
+          title: 'Community',
           items: [
             {label: 'GitHub', href: 'https://github.com/thoughtgate/thoughtjack'},
+            {label: 'Issues', href: 'https://github.com/thoughtgate/thoughtjack/issues'},
+            {label: 'Discussions', href: 'https://github.com/thoughtgate/thoughtjack/discussions'},
           ],
         },
       ],
