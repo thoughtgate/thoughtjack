@@ -311,16 +311,20 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     /// Implements: TJ-SPEC-013 F-001
     #[allow(clippy::too_many_lines)]
     pub async fn run(&mut self) -> Result<ActorResult, EngineError> {
+        let mut last_emitted_phase: Option<usize> = None;
         loop {
             let phase_index = self.phase_engine.current_phase;
 
-            // Emit PhaseEntered event
-            let phase_name = self.phase_engine.current_phase_name().to_string();
-            self.events.emit(ThoughtJackEvent::PhaseEntered {
-                actor: self.actor_name.clone(),
-                phase_name,
-                phase_index,
-            });
+            // Emit PhaseEntered only on actual phase changes
+            if last_emitted_phase != Some(phase_index) {
+                last_emitted_phase = Some(phase_index);
+                let phase_name = self.phase_engine.current_phase_name().to_string();
+                self.events.emit(ThoughtJackEvent::PhaseEntered {
+                    actor: self.actor_name.clone(),
+                    phase_name,
+                    phase_index,
+                });
+            }
 
             if self.prepare_phase(phase_index).await {
                 return Ok(self.build_result(TerminationReason::Cancelled));
