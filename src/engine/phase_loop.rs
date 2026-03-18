@@ -13,9 +13,7 @@
 use std::collections::HashMap;
 
 use oatf::enums::ExtractorSource;
-use oatf::primitives::{
-    evaluate_extractor, extract_protocol, parse_event_qualifier, resolve_event_qualifier,
-};
+use oatf::primitives::evaluate_extractor;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -61,7 +59,6 @@ struct EventContext<'a> {
     extractor_store: &'a ExtractorStore,
     extractors_tx: &'a watch::Sender<HashMap<String, String>>,
     actor_name: &'a str,
-    protocol: &'a str,
     is_server_mode: bool,
 }
 
@@ -95,15 +92,21 @@ fn process_protocol_event(
         ctx.extractor_store,
     ));
 
-    // 3. Check trigger — build SDK ProtocolEvent
-    let (base_event, _) = parse_event_qualifier(&evt.method);
-    let qualifier = resolve_event_qualifier(ctx.protocol, base_event, &evt.content);
-    let oatf_event = oatf::ProtocolEvent {
-        event_type: evt.method,
-        qualifier,
-        content: evt.content,
-    };
-    phase_engine.process_event(&oatf_event)
+    // 3. Check trigger — incoming events only.
+    //
+    // Outgoing events are ThoughtJack's own responses/requests. Counting
+    // them would double-count each interaction (e.g., `count: 5` on
+    // `tools/call` would fire after ~3 requests because each generates
+    // both an incoming request and an outgoing response event).
+    if evt.direction == Direction::Incoming {
+        let oatf_event = oatf::ProtocolEvent {
+            event_type: evt.method,
+            content: evt.content,
+        };
+        phase_engine.process_event(&oatf_event)
+    } else {
+        PhaseAction::Stay
+    }
 }
 
 /// Drain any remaining buffered events after driver completes.
@@ -210,7 +213,6 @@ pub struct PhaseLoop<D: PhaseDriver> {
     trace: SharedTrace,
     extractor_store: ExtractorStore,
     actor_name: String,
-    protocol: String,
     is_server_mode: bool,
     await_extractors_config: HashMap<usize, Vec<AwaitExtractor>>,
     cancel: CancellationToken,
@@ -227,7 +229,6 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     #[must_use]
     pub fn new(driver: D, phase_engine: PhaseEngine, config: PhaseLoopConfig) -> Self {
         let mode = &phase_engine.actor().mode;
-        let protocol = extract_protocol(mode).to_string();
         let is_server_mode = mode.ends_with("_server");
         let (extractors_tx, _) = watch::channel(HashMap::new());
 
@@ -237,7 +238,6 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             trace: config.trace,
             extractor_store: config.extractor_store,
             actor_name: config.actor_name,
-            protocol,
             is_server_mode,
             await_extractors_config: config.await_extractors_config,
             cancel: config.cancel,
@@ -274,7 +274,6 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 extractor_store: &self.extractor_store,
                 extractors_tx: &self.extractors_tx,
                 actor_name: &self.actor_name,
-                protocol: &self.protocol,
                 is_server_mode: self.is_server_mode,
             };
             let action = {
@@ -1460,5 +1459,159 @@ attack:
                 .get("other_actor.session_id"),
             Some(&"sess-42".to_string())
         );
+    }
+
+    /// A driver that sends events then waits for cancellation.
+    struct SendThenWaitDriver {
+        events: Vec<ProtocolEvent>,
+    }
+
+    #[async_trait::async_trait]
+    impl PhaseDriver for SendThenWaitDriver {
+        async fn drive_phase(
+            &mut self,
+            _phase_index: usize,
+            _state: &serde_json::Value,
+            _extractors: watch::Receiver<HashMap<String, String>>,
+            event_tx: mpsc::Sender<ProtocolEvent>,
+            cancel: CancellationToken,
+        ) -> Result<super::super::types::DriveResult, EngineError> {
+            for event in self.events.drain(..) {
+                let _ = event_tx.send(event).await;
+            }
+            cancel.cancelled().await;
+            Ok(super::super::types::DriveResult::Complete)
+        }
+    }
+
+    #[tokio::test]
+    async fn outgoing_events_do_not_count_toward_trigger() {
+        // Trigger requires count: 2. Send 1 incoming + 1 outgoing.
+        // Only the incoming event should count, so the trigger should NOT fire.
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calc
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 2
+      - name: phase_two
+"#,
+        );
+
+        let driver = SendThenWaitDriver {
+            events: vec![
+                ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"name": "a"}),
+                },
+                ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"result": "42"}),
+                },
+            ],
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let cancel = CancellationToken::new();
+        let config = PhaseLoopConfig {
+            trace: trace.clone(),
+            extractor_store: ExtractorStore::new(),
+            actor_name: "default".to_string(),
+            await_extractors_config: HashMap::new(),
+            cancel: cancel.clone(),
+            entry_action_sender: None,
+        };
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        // Cancel after events are processed — trigger should not have fired
+        let c = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            c.cancel();
+        });
+
+        let result = phase_loop.run().await.unwrap();
+        // Only 1 incoming event (count < 2) → trigger stays, cancelled
+        assert_eq!(result.phases_completed, 0);
+        assert_eq!(result.termination, TerminationReason::Cancelled);
+        // Both events captured in trace
+        assert_eq!(trace.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn only_incoming_events_advance_trigger() {
+        // Trigger requires count: 2. Send 2 incoming + 2 outgoing.
+        // Only the 2 incoming events should count → trigger fires.
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: calc
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 2
+      - name: phase_two
+"#,
+        );
+
+        let driver = MockDriver {
+            events: vec![
+                ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"name": "a"}),
+                },
+                ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"result": "1"}),
+                },
+                ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"name": "b"}),
+                },
+                ProtocolEvent {
+                    direction: Direction::Outgoing,
+                    method: "tools/call".to_string(),
+                    content: serde_json::json!({"result": "2"}),
+                },
+            ],
+        };
+        let engine = PhaseEngine::new(doc, 0);
+        let trace = SharedTrace::new();
+        let config = test_config(trace.clone());
+        let mut phase_loop = PhaseLoop::new(driver, engine, config);
+
+        let result = phase_loop.run().await.unwrap();
+        assert_eq!(result.phases_completed, 1);
+        assert_eq!(result.termination, TerminationReason::TerminalPhaseReached);
+        // drain_events stops after the Advance (2nd incoming), so
+        // the trailing outgoing event may not be processed.
+        assert!(trace.len() >= 3);
     }
 }

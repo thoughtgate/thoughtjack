@@ -9,9 +9,11 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
+use oatf::enums::Direction as OatfDirection;
 use oatf::enums::{AttackResult, IndicatorResult};
 
 use crate::engine::trace::TraceEntry;
+use crate::engine::types::Direction;
 
 // ============================================================================
 // Trace Filtering
@@ -42,13 +44,18 @@ pub struct ActorInfo {
     pub mode: String,
 }
 
-/// Filters trace entries to those relevant for a given indicator's protocol.
+/// Filters trace entries to those relevant for a given indicator.
 ///
-/// Uses the indicator's `protocol` field (defaulting to `"mcp"`) to select
-/// actors whose mode maps to that protocol. Returns references to matching
-/// trace entries.
+/// Applies three successive filters from the indicator's optional fields:
 ///
-/// In single-actor execution, all entries pass (filtering is a no-op).
+/// 1. **`protocol`** (default `"mcp"`): selects actors whose mode maps to
+///    the target protocol.
+/// 2. **`actor`**: if set, only entries from that specific actor.
+/// 3. **`direction`**: if set, maps the trace entry's `Incoming`/`Outgoing`
+///    to the OATF `Request`/`Response` based on the actor's server/client
+///    mode.
+///
+/// In single-actor execution with no extra filters, all entries pass.
 ///
 /// Implements: TJ-SPEC-014 F-005
 #[must_use]
@@ -68,6 +75,24 @@ pub fn filter_trace_for_indicator<'a>(
     trace
         .iter()
         .filter(|entry| matching_actors.contains(entry.actor.as_str()))
+        .filter(|entry| indicator.actor.as_ref().is_none_or(|a| entry.actor == *a))
+        .filter(|entry| {
+            indicator.direction.as_ref().is_none_or(|dir| {
+                let is_server = actors
+                    .iter()
+                    .find(|a| a.name == entry.actor)
+                    .is_some_and(|a| a.mode.ends_with("_server"));
+                let trace_as_oatf = match (entry.direction, is_server) {
+                    (Direction::Incoming, true) | (Direction::Outgoing, false) => {
+                        OatfDirection::Request
+                    }
+                    (Direction::Outgoing, true) | (Direction::Incoming, false) => {
+                        OatfDirection::Response
+                    }
+                };
+                trace_as_oatf == *dir
+            })
+        })
         .collect()
 }
 
@@ -127,10 +152,29 @@ impl std::fmt::Debug for EvaluationConfig<'_> {
     }
 }
 
+/// Maximum nesting depth for JSON values passed to indicator evaluation.
+///
+/// Protects both `JSONPath` traversal and CEL expression evaluation from
+/// stack exhaustion on deeply nested input (OATF §12). Entries exceeding
+/// this depth are skipped with a warning.
+const MAX_JSON_DEPTH: usize = 64;
+
+/// Computes the maximum nesting depth of a JSON value.
+///
+/// Arrays and objects each add one level. Scalars have depth 0.
+fn json_depth(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(arr) => 1 + arr.iter().map(json_depth).max().unwrap_or(0),
+        serde_json::Value::Object(obj) => 1 + obj.values().map(json_depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
 /// Evaluates a single indicator against relevant trace entries.
 ///
 /// Returns the best verdict across all messages (first match wins,
-/// otherwise worst non-match propagated).
+/// otherwise worst non-match propagated). Trace entries whose JSON
+/// content exceeds [`MAX_JSON_DEPTH`] are skipped with a warning.
 fn evaluate_single_indicator(
     indicator: &oatf::Indicator,
     entries: &[&TraceEntry],
@@ -166,6 +210,14 @@ fn evaluate_single_indicator(
     let mut best: Option<oatf::IndicatorVerdict> = None;
 
     for entry in entries {
+        if json_depth(&entry.content) > MAX_JSON_DEPTH {
+            tracing::warn!(
+                indicator_id = %ind_id,
+                seq = entry.seq,
+                "trace entry exceeds max JSON depth ({MAX_JSON_DEPTH}) — skipping"
+            );
+            continue;
+        }
         let v = oatf::evaluate::evaluate_indicator(
             indicator,
             &entry.content,
@@ -195,7 +247,16 @@ fn evaluate_single_indicator(
         });
     }
 
-    best.expect("entries is non-empty")
+    best.unwrap_or_else(|| {
+        // All entries were skipped (e.g. depth guard) — treat as not matched.
+        oatf::IndicatorVerdict {
+            indicator_id: ind_id,
+            result: IndicatorResult::NotMatched,
+            timestamp: Some(Utc::now().to_rfc3339()),
+            evidence: None,
+            source: Some(source.to_string()),
+        }
+    })
 }
 
 /// Evaluates all indicators against the protocol trace and computes
@@ -329,11 +390,11 @@ mod tests {
                 state: None,
                 phases: None,
                 actors: None,
-                extensions: std::collections::HashMap::new(),
+                extensions: indexmap::IndexMap::new(),
             },
             indicators,
             correlation: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         }
     }
 
@@ -341,7 +402,11 @@ mod tests {
         oatf::Indicator {
             id: Some(id.to_string()),
             protocol: None,
-            surface: "tool_description".to_string(),
+            surface: None,
+            target: "description".to_string(),
+            actor: None,
+            direction: None,
+            method: None,
             description: None,
             pattern: Some(oatf::PatternMatch {
                 target: Some("description".to_string()),
@@ -372,7 +437,7 @@ mod tests {
             confidence: None,
             severity: None,
             false_positives: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         }
     }
 
@@ -380,7 +445,11 @@ mod tests {
         oatf::Indicator {
             id: Some(id.to_string()),
             protocol: None,
-            surface: "tool_description".to_string(),
+            surface: None,
+            target: "description".to_string(),
+            actor: None,
+            direction: None,
+            method: None,
             description: None,
             pattern: None,
             expression: None,
@@ -394,7 +463,7 @@ mod tests {
             confidence: None,
             severity: None,
             false_positives: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         }
     }
 
@@ -833,7 +902,11 @@ mod tests {
         oatf::Indicator {
             id: Some(id.to_string()),
             protocol: None,
-            surface: "tool_description".to_string(),
+            surface: None,
+            target: "description".to_string(),
+            actor: None,
+            direction: None,
+            method: None,
             description: None,
             pattern: None,
             expression: Some(oatf::ExpressionMatch {
@@ -844,7 +917,7 @@ mod tests {
             confidence: None,
             severity: None,
             false_positives: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         }
     }
 
@@ -988,5 +1061,78 @@ mod tests {
                 .any(|v| v.indicator_id == "ind-3"
                     && v.result == oatf::enums::IndicatorResult::NotMatched)
         );
+    }
+
+    // ── Actor / Direction Filtering ─────────────────────────────────────
+
+    #[test]
+    fn filter_by_actor_scopes_to_actor() {
+        let trace = vec![
+            make_trace_entry("actor1", "tools/call", serde_json::json!({})),
+            make_trace_entry("actor2", "tools/call", serde_json::json!({})),
+            make_trace_entry("actor1", "tools/list", serde_json::json!({})),
+        ];
+        let actors = vec![
+            make_actor("actor1", "mcp_server"),
+            make_actor("actor2", "mcp_server"),
+        ];
+        let mut indicator = make_pattern_indicator("ind-1", "test");
+        indicator.actor = Some("actor1".to_string());
+
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|e| e.actor == "actor1"));
+    }
+
+    #[test]
+    fn filter_by_direction_request_only() {
+        let mut entry_incoming = make_trace_entry("srv", "tools/call", serde_json::json!({}));
+        entry_incoming.direction = Direction::Incoming;
+        let mut entry_outgoing = make_trace_entry("srv", "tools/call", serde_json::json!({}));
+        entry_outgoing.direction = Direction::Outgoing;
+
+        let trace = vec![entry_incoming, entry_outgoing];
+        let actors = vec![make_actor("srv", "mcp_server")];
+        let mut indicator = make_pattern_indicator("ind-1", "test");
+        indicator.direction = Some(OatfDirection::Request);
+
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
+        // Server mode: Incoming = Request → should match
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].direction, Direction::Incoming);
+    }
+
+    // ── Fix 4: JSON Depth Guard ────────────────────────────────────────
+
+    #[test]
+    fn deep_json_skipped_with_warning() {
+        // Build JSON nested beyond MAX_JSON_DEPTH
+        let mut deep = serde_json::json!("leaf");
+        for _ in 0..=MAX_JSON_DEPTH {
+            deep = serde_json::json!({ "nested": deep });
+        }
+        assert!(json_depth(&deep) > MAX_JSON_DEPTH);
+
+        let indicator = make_pattern_indicator("ind-1", "leaf");
+        let attack = make_attack(Some(vec![indicator]));
+        let trace = vec![make_trace_entry("actor1", "tools/call", deep)];
+        let actors = vec![make_actor("actor1", "mcp_server")];
+
+        let verdict = evaluate_verdict(&attack, &trace, &actors, &default_config(), "test/1.0");
+        // Entry was skipped → not_matched (no entries evaluated)
+        assert_eq!(verdict.result, AttackResult::NotExploited);
+        assert_eq!(verdict.evaluation_summary.not_matched, 1);
+    }
+
+    #[test]
+    fn json_depth_shallow_values() {
+        assert_eq!(json_depth(&serde_json::json!(null)), 0);
+        assert_eq!(json_depth(&serde_json::json!("hello")), 0);
+        assert_eq!(json_depth(&serde_json::json!(42)), 0);
+        assert_eq!(json_depth(&serde_json::json!({})), 1);
+        assert_eq!(json_depth(&serde_json::json!({"a": 1})), 1);
+        assert_eq!(json_depth(&serde_json::json!({"a": {"b": 1}})), 2);
+        assert_eq!(json_depth(&serde_json::json!([1, 2, 3])), 1);
+        assert_eq!(json_depth(&serde_json::json!([[1]])), 2);
     }
 }

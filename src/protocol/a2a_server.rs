@@ -18,9 +18,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use axum::Router;
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::State;
 use axum::http::StatusCode;
-use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -341,24 +340,6 @@ async fn handle_jsonrpc(
             axum::Json(error).into_response()
         }
     }
-}
-
-// Local-only validation delegates to the shared `transport::local` module.
-use crate::transport::local::{validate_local_origin, validate_local_peer};
-
-/// Router-level local-only guard for all A2A endpoints.
-async fn require_local_only(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    request: Request,
-    next: Next,
-) -> Response {
-    if let Err(resp) = validate_local_peer(addr) {
-        return resp;
-    }
-    if let Err(resp) = validate_local_origin(request.headers()) {
-        return resp;
-    }
-    next.run(request).await
 }
 
 /// Handle `message/send` — synchronous task response.
@@ -725,7 +706,15 @@ async fn handle_tasks_cancel(
         let mut store = shared.task_store.write().await;
         match store.cancel_task(task_id) {
             Ok(()) => {
-                let task = store.get_task(task_id).unwrap();
+                let Some(task) = store.get_task(task_id) else {
+                    drop(store);
+                    return axum::Json(jsonrpc_error(
+                        request_id,
+                        -32603,
+                        "task cancelled but retrieval failed",
+                    ))
+                    .into_response();
+                };
                 let task_result = json!({
                     "kind": "task",
                     "id": task.id,
@@ -1120,7 +1109,6 @@ fn build_router(shared: Arc<A2aSharedState>) -> Router {
         .route("/.well-known/agent.json", get(handle_agent_card))
         .route("/", post(handle_jsonrpc))
         .layer(body_limit)
-        .route_layer(middleware::from_fn(require_local_only))
         .with_state(shared)
 }
 
@@ -1583,60 +1571,6 @@ mod tests {
             .unwrap();
         let card: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(card["name"], "Test Agent");
-    }
-
-    #[tokio::test]
-    async fn rejects_non_loopback_peer() {
-        use axum::body::Body;
-        use tower::ServiceExt;
-
-        let shared = Arc::new(A2aSharedState {
-            agent_card: RwLock::new(json!({})),
-            task_store: RwLock::new(TaskStore::new()),
-            event_tx: RwLock::new(None),
-            extractors: RwLock::new(None),
-            state: RwLock::new(json!({})),
-            accepting_requests: AtomicBool::new(true),
-            raw_synthesize: false,
-        });
-
-        let router =
-            build_router(shared).layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 2], 9999))));
-
-        let request = local_request_builder("GET", "/.well-known/agent.json")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = router.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn rejects_non_local_origin() {
-        use axum::body::Body;
-        use tower::ServiceExt;
-
-        let shared = Arc::new(A2aSharedState {
-            agent_card: RwLock::new(json!({})),
-            task_store: RwLock::new(TaskStore::new()),
-            event_tx: RwLock::new(None),
-            extractors: RwLock::new(None),
-            state: RwLock::new(json!({})),
-            accepting_requests: AtomicBool::new(true),
-            raw_synthesize: false,
-        });
-
-        let router = test_router(shared);
-        let request = local_request_builder("POST", "/")
-            .header("origin", "https://evil.example")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{}}"#,
-            ))
-            .unwrap();
-
-        let response = router.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

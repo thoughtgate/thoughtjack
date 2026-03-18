@@ -7,6 +7,7 @@
 //! See TJ-SPEC-015 §3 for the orchestration lifecycle.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -247,11 +248,35 @@ pub async fn orchestrate(
     .await
 }
 
+/// Increment the port in a `"host:port"` bind address string.
+///
+/// Returns the original string unchanged if parsing fails or the port
+/// is 0 (OS-assigned). Used to auto-assign unique ports when multiple
+/// actors of the same server mode share a single CLI bind address.
+fn increment_bind_port(addr: &str, offset: u16) -> String {
+    if offset == 0 {
+        return addr.to_string();
+    }
+    let Ok(socket) = addr.parse::<SocketAddr>() else {
+        return addr.to_string();
+    };
+    if socket.port() == 0 {
+        // Port 0 = OS-assigned; no need to increment
+        return addr.to_string();
+    }
+    let new_port = socket.port().wrapping_add(offset);
+    SocketAddr::new(socket.ip(), new_port).to_string()
+}
+
 /// Spawns one task per actor into a `JoinSet`.
 ///
 /// Returns the `JoinSet` and a `TaskMetaMap` that maps each spawned
 /// tokio task ID to `(actor_name, is_server)`. The map is used by
 /// `unpack_join_result` to recover actor identity when a task panics.
+///
+/// When multiple actors share the same server mode (e.g., two `a2a_server`
+/// actors), each actor beyond the first gets an auto-incremented port
+/// to avoid bind conflicts.
 #[allow(clippy::implicit_hasher, clippy::too_many_arguments)]
 fn spawn_actor_tasks(
     loaded: &LoadedDocument,
@@ -267,6 +292,10 @@ fn spawn_actor_tasks(
 
     let mut join_set: JoinSet<ActorTaskResult> = JoinSet::new();
     let mut task_meta = TaskMetaMap::new();
+
+    // Track how many actors of each server mode we've seen so far,
+    // so the Nth actor of the same mode gets port + (N-1).
+    let mut mode_server_count: HashMap<String, u16> = HashMap::new();
 
     for (i, actor) in actors.iter().enumerate() {
         let is_server = actor.mode.ends_with("_server");
@@ -287,7 +316,28 @@ fn spawn_actor_tasks(
         };
 
         let doc = loaded.document.clone();
-        let cfg = config.clone();
+        let mut cfg = config.clone();
+
+        // Auto-increment port for duplicate server modes
+        if is_server {
+            let count = mode_server_count.entry(actor.mode.clone()).or_insert(0);
+            let offset = *count;
+            *count += 1;
+
+            match actor.mode.as_str() {
+                "mcp_server" => {
+                    if let Some(ref addr) = cfg.mcp_server_bind {
+                        cfg.mcp_server_bind = Some(increment_bind_port(addr, offset));
+                    }
+                }
+                "a2a_server" => {
+                    if let Some(ref addr) = cfg.a2a_server_bind {
+                        cfg.a2a_server_bind = Some(increment_bind_port(addr, offset));
+                    }
+                }
+                _ => {}
+            }
+        }
         let tr = trace.clone();
         let es = extractor_store.clone();
         let actor_cancel = cancel.child_token();
@@ -1243,5 +1293,37 @@ attack:
         assert_eq!(is_server, Some(true));
         assert_eq!(outcome.actor_name(), "test_actor");
         assert!(matches!(outcome, ActorOutcome::Success(_)));
+    }
+
+    // ---- increment_bind_port tests ----
+
+    #[test]
+    fn increment_bind_port_zero_offset() {
+        assert_eq!(increment_bind_port("127.0.0.1:9090", 0), "127.0.0.1:9090");
+    }
+
+    #[test]
+    fn increment_bind_port_basic() {
+        assert_eq!(increment_bind_port("127.0.0.1:9090", 1), "127.0.0.1:9091");
+        assert_eq!(increment_bind_port("127.0.0.1:9090", 3), "127.0.0.1:9093");
+    }
+
+    #[test]
+    fn increment_bind_port_ipv6() {
+        assert_eq!(increment_bind_port("[::1]:8080", 2), "[::1]:8082");
+    }
+
+    #[test]
+    fn increment_bind_port_zero_port_unchanged() {
+        // Port 0 = OS-assigned; don't increment
+        assert_eq!(increment_bind_port("127.0.0.1:0", 5), "127.0.0.1:0");
+    }
+
+    #[test]
+    fn increment_bind_port_unparseable_unchanged() {
+        assert_eq!(
+            increment_bind_port("not-a-socket-addr", 1),
+            "not-a-socket-addr"
+        );
     }
 }

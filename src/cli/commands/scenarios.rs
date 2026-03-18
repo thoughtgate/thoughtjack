@@ -36,9 +36,7 @@ pub async fn list(args: &ScenariosListArgs, quiet: bool) -> Result<(), ThoughtJa
                         "name": s.name,
                         "description": s.description,
                         "category": s.category.to_string(),
-                        "taxonomy": s.taxonomy,
                         "tags": s.tags,
-                        "features": s.features,
                     })
                 })
                 .collect();
@@ -66,8 +64,7 @@ pub async fn list(args: &ScenariosListArgs, quiet: bool) -> Result<(), ThoughtJa
 
                 println!("  {}", cat.label());
                 for s in in_cat {
-                    let taxonomy = format!("[{}]", s.taxonomy.join(", "));
-                    println!("    {:<24}{:<56}{taxonomy}", s.name, s.description);
+                    println!("    {:<24}{}", s.name, s.description);
                 }
                 println!();
             }

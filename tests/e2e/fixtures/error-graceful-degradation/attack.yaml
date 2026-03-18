@@ -15,6 +15,7 @@ attack:
       protocol: mcp
       surface: tool_response
       description: "MCP echo tool returned expected value despite A2A actor failure"
+      target: "content[*].text"
       pattern:
         target: "content[*].text"
         condition:
@@ -23,6 +24,7 @@ attack:
       protocol: a2a
       surface: task_status
       description: "A2A indicator not matched because client actor errored"
+      target: "status.state"
       pattern:
         target: "status.state"
         condition:

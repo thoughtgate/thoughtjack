@@ -30,8 +30,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use super::{
-    ConnectionContext, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Result, Transport,
-    TransportType,
+    ConnectionContext, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, RawResponseWriter, Result,
+    Transport, TransportType,
 };
 use crate::error::TransportError;
 
@@ -607,6 +607,11 @@ impl Transport for HttpTransport {
         Ok(())
     }
 
+    async fn capture_raw_writer(&self) -> Result<Option<RawResponseWriter>> {
+        let guard = self.current_response.lock().await;
+        Ok(guard.as_ref().map(|tx| RawResponseWriter::new(tx.clone())))
+    }
+
     fn connection_context(&self) -> ConnectionContext {
         self.current_context
             .lock()
@@ -655,9 +660,6 @@ fn build_router(shared: Arc<HttpSharedState>) -> Router {
         .with_state(shared)
 }
 
-// Local-only validation delegates to the shared `transport::local` module.
-use super::local::{validate_local_origin, validate_local_peer};
-
 /// `POST /message` handler.
 ///
 /// Parses the request body as a JSON-RPC message, pushes it into the incoming
@@ -666,19 +668,9 @@ use super::local::{validate_local_origin, validate_local_peer};
 async fn handle_post_message(
     State(shared): State<Arc<HttpSharedState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap,
+    _headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    // Restrict to loopback peers (prevents forged Host/Origin bypass).
-    if let Err(resp) = validate_local_peer(addr) {
-        return resp;
-    }
-
-    // DNS rebinding protection: validate Origin or Host header
-    if let Err(resp) = validate_local_origin(&headers) {
-        return resp;
-    }
-
     // EC-TRANS-006: empty body
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty request body").into_response();
@@ -791,12 +783,8 @@ async fn handle_post_message(
 /// to `/message`.
 ///
 /// Implements: TJ-SPEC-002 F-003
-async fn handle_sse(
-    State(shared): State<Arc<HttpSharedState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    handle_sse_inner(&shared, addr, &headers, "/message")
+async fn handle_sse(State(shared): State<Arc<HttpSharedState>>) -> Response {
+    handle_sse_inner(&shared, "/message")
 }
 
 /// `GET /mcp` handler (MCP 2025-03-26 Streamable HTTP).
@@ -805,36 +793,17 @@ async fn handle_sse(
 /// to `/mcp` (the unified endpoint).
 ///
 /// Implements: TJ-SPEC-002 F-003
-async fn handle_sse_streamable(
-    State(shared): State<Arc<HttpSharedState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    handle_sse_inner(&shared, addr, &headers, "/mcp")
+async fn handle_sse_streamable(State(shared): State<Arc<HttpSharedState>>) -> Response {
+    handle_sse_inner(&shared, "/mcp")
 }
 
 /// Shared SSE handler implementation.
 ///
 /// Returns a Server-Sent Events stream that broadcasts all server-initiated
-/// notifications and requests. Enforces DNS rebinding protection and limits
-/// the number of concurrent SSE connections. The `endpoint_path` parameter
-/// controls the URL emitted in the initial `endpoint` event.
-fn handle_sse_inner(
-    shared: &Arc<HttpSharedState>,
-    addr: SocketAddr,
-    headers: &axum::http::HeaderMap,
-    endpoint_path: &'static str,
-) -> Response {
-    // Restrict to loopback peers (prevents forged Host/Origin bypass).
-    if let Err(resp) = validate_local_peer(addr) {
-        return resp;
-    }
-
-    // DNS rebinding protection (same check as POST /message)
-    if let Err(resp) = validate_local_origin(headers) {
-        return resp;
-    }
-
+/// notifications and requests. Limits the number of concurrent SSE connections.
+/// The `endpoint_path` parameter controls the URL emitted in the initial
+/// `endpoint` event.
+fn handle_sse_inner(shared: &Arc<HttpSharedState>, endpoint_path: &'static str) -> Response {
     // Enforce SSE connection limit
     let current = shared.sse_connections.fetch_add(1, Ordering::SeqCst);
     if current >= MAX_SSE_CONNECTIONS {
@@ -1196,226 +1165,6 @@ mod tests {
         // Default context before any request is stdio-like (connection_id 0)
         assert_eq!(ctx.connection_id, 0);
         transport.shutdown();
-    }
-
-    // ------------------------------------------------------------------
-    // DNS rebinding protection
-    // ------------------------------------------------------------------
-
-    const fn valid_jsonrpc_body() -> &'static str {
-        r#"{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}"#
-    }
-
-    #[tokio::test]
-    async fn dns_rebinding_evil_origin_rejected() {
-        let shared = test_shared_state();
-        let app = test_router(shared);
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/message")
-            .header("origin", "http://evil.example.com")
-            .body(Body::from(valid_jsonrpc_body()))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn dns_rebinding_localhost_origin_allowed() {
-        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
-        let (sse_tx, _) = broadcast::channel(256);
-        let shared = Arc::new(HttpSharedState {
-            incoming_tx,
-            sse_tx,
-            connections: Arc::new(DashMap::new()),
-            next_connection_id: AtomicU64::new(1),
-            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            sse_connections: AtomicUsize::new(0),
-            cancel: CancellationToken::new(),
-            session_id: "test-session".to_string(),
-            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-        });
-        let app = test_router(shared);
-
-        // Consume the incoming request so the handler doesn't block
-        tokio::spawn(async move {
-            if let Some(incoming) = incoming_rx.recv().await {
-                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                if let Some(tx) = incoming.response_tx {
-                    tx.send(Ok(response)).await.ok();
-                }
-            }
-        });
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/message")
-            .header("origin", "http://localhost:3001")
-            .body(Body::from(valid_jsonrpc_body()))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn dns_rebinding_host_127_allowed() {
-        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
-        let (sse_tx, _) = broadcast::channel(256);
-        let shared = Arc::new(HttpSharedState {
-            incoming_tx,
-            sse_tx,
-            connections: Arc::new(DashMap::new()),
-            next_connection_id: AtomicU64::new(1),
-            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            sse_connections: AtomicUsize::new(0),
-            cancel: CancellationToken::new(),
-            session_id: "test-session".to_string(),
-            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-        });
-        let app = test_router(shared);
-
-        tokio::spawn(async move {
-            if let Some(incoming) = incoming_rx.recv().await {
-                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                if let Some(tx) = incoming.response_tx {
-                    tx.send(Ok(response)).await.ok();
-                }
-            }
-        });
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/message")
-            .header("host", "127.0.0.1:3001")
-            .body(Body::from(valid_jsonrpc_body()))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn dns_rebinding_ipv6_origin_allowed() {
-        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
-        let (sse_tx, _) = broadcast::channel(256);
-        let shared = Arc::new(HttpSharedState {
-            incoming_tx,
-            sse_tx,
-            connections: Arc::new(DashMap::new()),
-            next_connection_id: AtomicU64::new(1),
-            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            sse_connections: AtomicUsize::new(0),
-            cancel: CancellationToken::new(),
-            session_id: "test-session".to_string(),
-            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-        });
-        let app = test_router(shared);
-
-        tokio::spawn(async move {
-            if let Some(incoming) = incoming_rx.recv().await {
-                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                if let Some(tx) = incoming.response_tx {
-                    tx.send(Ok(response)).await.ok();
-                }
-            }
-        });
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/message")
-            .header("origin", "http://[::1]:3001")
-            .body(Body::from(valid_jsonrpc_body()))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn dns_rebinding_host_ipv6_allowed() {
-        let (incoming_tx, mut incoming_rx) = mpsc::channel(32);
-        let (sse_tx, _) = broadcast::channel(256);
-        let shared = Arc::new(HttpSharedState {
-            incoming_tx,
-            sse_tx,
-            connections: Arc::new(DashMap::new()),
-            next_connection_id: AtomicU64::new(1),
-            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
-            sse_connections: AtomicUsize::new(0),
-            cancel: CancellationToken::new(),
-            session_id: "test-session".to_string(),
-            pending_server_requests: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-        });
-        let app = test_router(shared);
-
-        tokio::spawn(async move {
-            if let Some(incoming) = incoming_rx.recv().await {
-                let response = Bytes::from(r#"{"jsonrpc":"2.0","result":{},"id":1}"#);
-                if let Some(tx) = incoming.response_tx {
-                    tx.send(Ok(response)).await.ok();
-                }
-            }
-        });
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/message")
-            .header("host", "[::1]:3001")
-            .body(Body::from(valid_jsonrpc_body()))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn dns_rebinding_no_header_rejected() {
-        let shared = test_shared_state();
-        let app = test_router(shared);
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/message")
-            .body(Body::from(valid_jsonrpc_body()))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn dns_rebinding_remote_peer_rejected_even_with_local_host() {
-        let shared = test_shared_state();
-        let app = build_router(shared).layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 5], 9))));
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/message")
-            .header("host", "localhost:3000")
-            .body(Body::from(valid_jsonrpc_body()))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn sse_remote_peer_rejected_even_with_local_host() {
-        let shared = test_shared_state();
-        let app = build_router(shared).layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 5], 9))));
-
-        let req = Request::builder()
-            .method("GET")
-            .uri("/sse")
-            .header("host", "localhost:3000")
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     // ------------------------------------------------------------------

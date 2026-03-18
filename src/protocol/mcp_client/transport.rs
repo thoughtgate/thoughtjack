@@ -627,6 +627,7 @@ impl HttpWriter {
             }
         }
 
+        // SAFETY: loop 0..=N always sets last_err on non-Ok path
         Err(EngineError::Driver(format!(
             "HTTP POST to {} failed after {} attempts: {}",
             self.endpoint,

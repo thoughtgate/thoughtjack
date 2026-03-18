@@ -123,6 +123,7 @@ attack:
     - id: semantic_only
       protocol: mcp
       surface: tool_description
+      target: description
       semantic:
         target: description
         intent: data exfiltration
@@ -204,7 +205,7 @@ attack:
     let scenarios_config = run_thoughtjack(&[
         "scenarios",
         "run",
-        "rug-pull",
+        "oatf-002",
         "--config",
         "tests/fixtures/smoke_test.yaml",
     ]);
@@ -217,7 +218,7 @@ attack:
     let scenarios_run = run_thoughtjack(&[
         "scenarios",
         "run",
-        "rug-pull",
+        "oatf-002",
         "--mcp-server",
         "127.0.0.1:0",
         "--max-session",
@@ -226,8 +227,8 @@ attack:
     ]);
     assert_exit_code(
         &scenarios_run,
-        10,
-        "scenarios run should return runtime error when no actor completes",
+        0,
+        "scenarios run with --max-session should produce verdict (not runtime error)",
     );
 }
 
@@ -237,9 +238,11 @@ fn scenarios_run_ignores_thoughtjack_config_env() {
         &[
             "scenarios",
             "run",
-            "rug-pull",
+            "oatf-002",
+            "--mcp-server",
+            "127.0.0.1:0",
             "--max-session",
-            "300ms",
+            "1s",
             "--quiet",
         ],
         &[("THOUGHTJACK_CONFIG", "tests/fixtures/smoke_test.yaml")],

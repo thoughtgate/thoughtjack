@@ -18,6 +18,7 @@ attack:
       protocol: mcp
       surface: server_info
       description: "Server name contains e2e (matches)"
+      target: "serverInfo.name"
       pattern:
         target: "serverInfo.name"
         condition:
@@ -26,6 +27,7 @@ attack:
       protocol: mcp
       surface: tool_description
       description: "Tool description contains injection text (does not match)"
+      target: "tools[*].description"
       pattern:
         target: "tools[*].description"
         condition:

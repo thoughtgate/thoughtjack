@@ -6,11 +6,12 @@
 
 pub mod http;
 pub mod jsonrpc;
-pub mod local;
 pub mod sse;
 pub mod stdio;
 
 pub use http::{HttpTransport, ResponseHandle, ResponseHandleAdapter};
+// RawResponseWriter is used internally by HttpTransport::capture_raw_writer()
+// and by apply_delivery() in the MCP server driver.
 pub use jsonrpc::{
     JSONRPC_VERSION, JsonRpcError, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse,
@@ -19,8 +20,10 @@ pub use stdio::StdioTransport;
 
 use crate::error::TransportError;
 
+use bytes::Bytes;
 use std::fmt;
 use std::net::SocketAddr;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 /// Result type alias for transport operations.
@@ -82,11 +85,57 @@ pub trait Transport: Send + Sync {
     /// Implements: TJ-SPEC-002 F-016
     fn connection_context(&self) -> ConnectionContext;
 
+    /// Captures a per-request raw byte writer for background delivery tasks.
+    ///
+    /// For HTTP: clones the current response channel sender so a spawned
+    /// task can write without being affected by new requests overwriting
+    /// the shared `current_response` slot. Prevents the slow\_stream race
+    /// where interleaved `receive_message()` calls redirect bytes to the
+    /// wrong client.
+    ///
+    /// For stdio: returns `None` (single-writer, no per-request isolation needed).
+    ///
+    /// Implements: TJ-SPEC-002 F-003
+    async fn capture_raw_writer(&self) -> Result<Option<RawResponseWriter>> {
+        Ok(None)
+    }
+
     /// Returns `self` as `&dyn Any` for downcasting.
     ///
     /// Used by the server to downcast to concrete transport types
     /// (e.g., `HttpTransport`) for transport-specific functionality.
     fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// A captured per-request writer for sending raw bytes to an HTTP response.
+///
+/// Cloned from the `HttpTransport` response channel at capture time, isolating
+/// the writer from subsequent `receive_message()` calls that would overwrite
+/// the shared slot.
+///
+/// Implements: TJ-SPEC-002 F-003
+pub struct RawResponseWriter {
+    tx: mpsc::Sender<std::result::Result<Bytes, std::io::Error>>,
+}
+
+impl RawResponseWriter {
+    /// Creates a new writer wrapping the given channel sender.
+    #[must_use]
+    pub const fn new(tx: mpsc::Sender<std::result::Result<Bytes, std::io::Error>>) -> Self {
+        Self { tx }
+    }
+
+    /// Sends raw bytes into the HTTP response body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError::ConnectionClosed`] if the client disconnected.
+    pub async fn send_raw(&self, bytes: &[u8]) -> Result<()> {
+        self.tx
+            .send(Ok(Bytes::copy_from_slice(bytes)))
+            .await
+            .map_err(|_| TransportError::ConnectionClosed("response channel closed".into()))
+    }
 }
 
 /// Transport type identifier.

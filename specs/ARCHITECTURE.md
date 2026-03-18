@@ -44,7 +44,7 @@ ThoughtJack is a configurable adversarial testing framework for AI agent securit
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                    OATF SDK — oatf v0.2.0 (crates.io)                │   │
+│  │                    OATF SDK — oatf v0.3 (crates.io)                  │   │
 │  │   load() │ evaluate_trigger() │ select_response() │ interpolate()    │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -82,7 +82,7 @@ ThoughtJack is a configurable adversarial testing framework for AI agent securit
 
 | Spec | Name | Status |
 |------|------|--------|
-| [TJ-SPEC-010](./TJ-SPEC-010_Builtin_Scenarios.md) | Built-in Scenarios | Needs rewrite as OATF documents |
+| [TJ-SPEC-010](./TJ-SPEC-010_Builtin_Scenarios.md) | Built-in Scenarios | **v2** — OATF official library, build-time auto-discovery |
 | [TJ-SPEC-011](./TJ-SPEC-011_Documentation_Site.md) | Documentation Site | Needs reference updates |
 
 ---
@@ -269,7 +269,7 @@ ThoughtJack is a single crate (no workspace).
 
 ```
 thoughtjack/
-├── Cargo.toml                 # Single crate, oatf = "0.2.0"
+├── Cargo.toml                 # Single crate, oatf = "0.3"
 ├── ARCHITECTURE.md
 ├── CLAUDE.md
 ├── specs/

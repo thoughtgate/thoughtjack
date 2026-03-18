@@ -219,7 +219,7 @@ pub(super) fn normalize_action(value: &Value) -> Value {
             json!({"type": s})
         }
         Value::Object(map) if map.len() == 1 && !map.contains_key("type") => {
-            // Single-key object → {"type": "<key>", ...value_fields}
+            // SAFETY: len() == 1 guard above guarantees next() is Some
             let (key, val) = map.iter().next().expect("single-key object");
             let mut normalized = json!({"type": key});
             if let Value::Object(inner) = val {

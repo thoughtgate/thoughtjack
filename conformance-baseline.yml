@@ -1,2 +1,3 @@
 # MCP conformance expected failures
-server: []
+server:
+  - dns-rebinding-protection

@@ -59,11 +59,11 @@ fn make_attack(indicators: Option<Vec<oatf::Indicator>>) -> oatf::Attack {
             state: None,
             phases: None,
             actors: None,
-            extensions: std::collections::HashMap::new(),
+            extensions: indexmap::IndexMap::new(),
         },
         indicators,
         correlation: None,
-        extensions: std::collections::HashMap::new(),
+        extensions: indexmap::IndexMap::new(),
     }
 }
 
@@ -71,7 +71,11 @@ fn make_pattern_indicator(id: &str, contains: &str, protocol: Option<&str>) -> o
     oatf::Indicator {
         id: Some(id.to_string()),
         protocol: protocol.map(String::from),
-        surface: "tool_description".to_string(),
+        surface: None,
+        target: "description".to_string(),
+        actor: None,
+        direction: None,
+        method: None,
         description: None,
         pattern: Some(oatf::PatternMatch {
             target: Some("description".to_string()),
@@ -102,7 +106,7 @@ fn make_pattern_indicator(id: &str, contains: &str, protocol: Option<&str>) -> o
         confidence: None,
         severity: None,
         false_positives: None,
-        extensions: std::collections::HashMap::new(),
+        extensions: indexmap::IndexMap::new(),
     }
 }
 

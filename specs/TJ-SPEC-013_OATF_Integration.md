@@ -277,8 +277,6 @@ oatf = { version = "0.1", features = ["default"] }
 | `evaluate_indicator(indicator, message, cel, semantic)` | Self-check: did the attack succeed? |
 | `evaluate_pattern(pattern, message)` | Pattern matching for indicators |
 | `evaluate_predicate(predicate, value)` | Match predicate evaluation |
-| `parse_event_qualifier(event)` | Split `tools/call:calculator` → `("tools/call", "calculator")` |
-| `resolve_event_qualifier(protocol, base_event, content)` | Resolve qualifier from event content via registry (SDK §5.9a) |
 | `extract_protocol(mode)` | `"mcp_server"` → `"mcp"` |
 | `serialize(document)` | Emit normalized YAML (for `inspect` CLI command) |
 
@@ -1176,7 +1174,7 @@ trait PhaseDriver: Send {
         phase_index: usize,
         state: &serde_json::Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,  // bounded channel
         cancel: CancellationToken,
     ) -> Result<DriveResult, Error>;
 
@@ -1260,7 +1258,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             self.execute_entry_actions(&phase.on_enter, &interpolation_extractors);
 
             // Create event channel
-            let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+            let (event_tx, mut event_rx) = mpsc::channel();
 
             // Run driver and event consumer concurrently.
             //
@@ -1337,16 +1335,12 @@ impl<D: PhaseDriver> PhaseLoop<D> {
 
         // 3. Check trigger
         // SDK §2.8a: ProtocolEvent has event_type, qualifier, content.
-        // The qualifier is resolved from event content using the SDK's
-        // resolve_event_qualifier (§5.9a), which looks up the content field
-        // path in the Qualifier Resolution Registry (§2.25). The protocol
-        // string determines which registry entries apply (e.g., MCP:
-        // tools/call → params.name; A2A: task/status → status.state).
-        let (base_event, _) = oatf::parse_event_qualifier(&evt.method);
-        let qualifier = oatf::resolve_event_qualifier(&self.protocol, &base_event, &evt.content);
+        // Qualifier resolution is SDK-internal (§5.9a) — the SDK's
+        // evaluate_trigger() handles qualifier lookup from the Qualifier
+        // Resolution Registry (§2.25) based on the protocol string.
         let oatf_event = oatf::ProtocolEvent {
             event_type: evt.method.clone(),
-            qualifier,
+            qualifier: None,  // SDK resolves internally
             content: evt.content,
         };
         self.phase_engine.process_event(oatf_event)
@@ -1467,7 +1461,7 @@ impl PhaseDriver for McpServerDriver {
         phase_index: usize,
         state: &serde_json::Value,
         extractors: watch::Receiver<HashMap<String, String>>,
-        event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: mpsc::Sender<ProtocolEvent>,  // bounded channel
         cancel: CancellationToken,
     ) -> Result<DriveResult, Error> {
         // MCP server listens — events arrive asynchronously
@@ -1536,7 +1530,7 @@ impl McpServerDriver {
         request: &JsonRpcRequest,
         state: &serde_json::Value,
         extractors: &HashMap<String, String>,
-        event_tx: &mpsc::UnboundedSender<ProtocolEvent>,
+        event_tx: &mpsc::Sender<ProtocolEvent>,  // bounded channel
     ) -> Result<JsonRpcResponse, Error> {
         // ... method routing (tools/call, prompts/get, resources/read, etc.)
 

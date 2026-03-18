@@ -507,6 +507,7 @@ impl McpServerDriver {
                 "progress": progress,
             });
             if let Some(total_val) = total {
+                // SAFETY: json! macro always creates an Object
                 notif_params
                     .as_object_mut()
                     .unwrap()

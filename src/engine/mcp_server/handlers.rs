@@ -38,6 +38,7 @@ pub fn handle_initialize(request: &JsonRpcRequest, state: &Value) -> JsonRpcResp
         "version": env!("CARGO_PKG_VERSION"),
     });
     if let Some(si) = state.get("server_info").and_then(Value::as_object) {
+        // SAFETY: json! macro always creates an Object
         let obj = server_info.as_object_mut().unwrap();
         for (key, value) in si {
             obj.insert(key.clone(), value.clone());
@@ -52,6 +53,7 @@ pub fn handle_initialize(request: &JsonRpcRequest, state: &Value) -> JsonRpcResp
 
     // Optional instructions (prompt injection attack vector)
     if let Some(instructions) = state.get("instructions") {
+        // SAFETY: json! macro always creates an Object
         result
             .as_object_mut()
             .unwrap()

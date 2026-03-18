@@ -421,7 +421,8 @@ thoughtjack/
 │   │   └── ...
 │   └── observability/     # TJ-SPEC-008
 │       └── ...
-├── scenarios/             # Built-in attack scenarios (TJ-SPEC-010)
+├── scenarios/             # Built-in OATF attack scenarios (TJ-SPEC-010)
+│   └── library/           # Git submodule: github.com/oatf-spec/scenarios
 ├── library/               # Attack pattern library
 │   ├── tools/
 │   ├── servers/

@@ -16,6 +16,7 @@ attack:
       protocol: mcp
       surface: tool_name
       description: "Calculator tool appeared in tools/list"
+      target: "tools[*].name"
       pattern:
         target: "tools[*].name"
         condition:
@@ -24,6 +25,7 @@ attack:
       protocol: mcp
       surface: tool_description
       description: "Malicious description present after phase swap"
+      target: "tools[*].description"
       pattern:
         target: "tools[*].description"
         condition:

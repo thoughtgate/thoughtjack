@@ -187,8 +187,6 @@ The system SHALL implement the `Transport` trait for HTTP+SSE.
 
 The HTTP transport includes security measures to prevent common web-based attacks:
 
-- **DNS rebinding protection (B7)**: The `validate_local_origin()` function checks the `Origin` or `Host` header against an allowlist of local addresses (`localhost`, `127.0.0.1`, `[::1]`, `::1`, `0.0.0.0`). This prevents DNS rebinding attacks where an attacker's webpage could use a malicious DNS entry that resolves to `127.0.0.1` to send requests to the local MCP server. Requests with missing headers or non-local origins are rejected with HTTP 403.
-
 - **SSE connection limit (B8)**: A `MAX_SSE_CONNECTIONS = 16` constant limits the number of concurrent Server-Sent Events connections. This prevents resource exhaustion attacks where a malicious client opens many SSE streams to consume server resources. The limit is enforced in the `GET /sse` handler, returning HTTP 503 when the limit is reached.
 
 **Message Flow:**

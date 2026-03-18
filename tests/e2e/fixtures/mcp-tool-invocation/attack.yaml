@@ -14,6 +14,7 @@ attack:
       protocol: mcp
       surface: server_info
       description: "MCP server responded to initialize with configured server info"
+      target: "serverInfo.name"
       pattern:
         target: "serverInfo.name"
         condition:
@@ -22,6 +23,7 @@ attack:
       protocol: ag_ui
       surface: agent_event
       description: "AG-UI client sent run request to framework agent"
+      target: "messages[*].role"
       pattern:
         target: "messages[*].role"
         condition:

@@ -15,6 +15,7 @@ attack:
       protocol: mcp
       surface: tool_response
       description: "MCP echo tool returned the secret value"
+      target: "content[*].text"
       pattern:
         target: "content[*].text"
         condition:
@@ -26,6 +27,7 @@ attack:
       protocol: a2a
       surface: task_status
       description: "A2A task completed successfully"
+      target: "status.state"
       pattern:
         target: "status.state"
         condition:

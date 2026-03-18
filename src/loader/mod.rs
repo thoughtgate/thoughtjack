@@ -255,6 +255,22 @@ pub fn load_document(yaml: &str) -> Result<LoadedDocument, LoaderError> {
     // Check for circular await_extractors dependencies (EC-ORCH-003)
     detect_await_cycles(&await_by_index)?;
 
+    // Validate await_extractors reference existing actors (OATF §5.5)
+    let actor_names: HashSet<&str> = document_actors(&document)
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    for ((_, _), specs) in &await_by_index {
+        for spec in specs {
+            if !actor_names.contains(spec.actor.as_str()) {
+                return Err(LoaderError::OatfLoad(format!(
+                    "await_extractors references non-existent actor: '{}'",
+                    spec.actor
+                )));
+            }
+        }
+    }
+
     Ok(LoadedDocument {
         document,
         await_extractors: await_by_index,
@@ -721,6 +737,51 @@ attack:
                 assert!(
                     !msg.is_empty(),
                     "OatfLoad error should have a descriptive message, got empty"
+                );
+            }
+            other => panic!("Expected LoaderError::OatfLoad, got: {other:?}"),
+        }
+    }
+
+    /// OATF §5.5: `await_extractors` referencing a non-existent actor is rejected.
+    #[test]
+    fn await_extractors_nonexistent_actor_rejected() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: bad-await-ref
+  execution:
+    actors:
+      - name: server
+        mode: mcp_server
+        phases:
+          - name: serve
+            await_extractors:
+              - actor: ghost
+                extractors:
+                  - token
+                timeout: "5s"
+            state:
+              tools:
+                - name: test_tool
+                  description: "test"
+                  inputSchema:
+                    type: object
+      - name: client
+        mode: mcp_client
+        phases:
+          - name: probe
+            state:
+              actions:
+                - list_tools
+"#;
+
+        let err = load_document(yaml).expect_err("should reject non-existent actor reference");
+        match &err {
+            LoaderError::OatfLoad(msg) => {
+                assert!(
+                    msg.contains("ghost"),
+                    "error should mention the bad actor name, got: {msg}"
                 );
             }
             other => panic!("Expected LoaderError::OatfLoad, got: {other:?}"),

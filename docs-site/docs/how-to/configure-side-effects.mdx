@@ -1,7 +1,7 @@
 ---
 title: Configure Side Effects
 sidebar_position: 4
-description: Set up notification floods, pipe deadlocks, and other side effects
+description: "Configure ThoughtJack side effects: notification floods, batch amplification, pipe deadlocks, and connection termination for MCP resilience testing."
 ---
 
 # Configure Side Effects
@@ -140,8 +140,8 @@ Side effects can be scoped to specific phases:
 ```yaml
 phases:
   - name: benign
-    advance:
-      on: tools/call
+    trigger:
+      event: tools/call
       count: 3
 
   - name: attack

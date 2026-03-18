@@ -14,6 +14,7 @@ attack:
       protocol: mcp
       surface: server_info
       description: "MCP server injected malicious instructions in initialize response"
+      target: "instructions"
       pattern:
         target: "instructions"
         condition:
