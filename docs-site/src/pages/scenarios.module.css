@@ -1,0 +1,58 @@
+/* ── Page Layout ──────────────────────────────────────── */
+
+.page {
+  padding: 3rem 0 4rem;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 2.5rem;
+}
+
+.header h1 {
+  font-size: 2.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.subtitle {
+  color: var(--ifm-color-emphasis-600);
+  font-size: 1.05rem;
+  max-width: 640px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* ── CTA Section ─────────────────────────────────────── */
+
+.cta {
+  text-align: center;
+  padding: 2.5rem 0 0;
+}
+
+.cta h2 {
+  margin-bottom: 1.5rem;
+}
+
+.ctaCode {
+  max-width: 600px;
+  margin: 0 auto 2rem;
+  text-align: left;
+  padding: 1.25rem 1.5rem;
+  border-radius: 8px;
+  background: #11111b;
+  font-size: 0.85rem;
+}
+
+.ctaCode code {
+  background: none;
+  padding: 0;
+  color: #cdd6f4;
+}
+
+.ctaLinks {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 2rem;
+}

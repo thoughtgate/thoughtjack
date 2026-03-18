@@ -10,21 +10,22 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::args::{ExecutionArgs, RunArgs};
+use crate::cli::args::{ColorChoice, ExecutionArgs, RunArgs};
 use crate::engine::trace::SharedTrace;
 use crate::engine::types::{ActorResult, AwaitExtractor, TerminationReason};
 use crate::error::{EngineError, ThoughtJackError};
 use crate::loader::{self, LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
 use crate::observability::init_metrics;
+use crate::observability::progress::{ProgressRenderer, resolve_color};
 use crate::orchestration::orchestrator::{ActorOutcome, orchestrate};
 use crate::orchestration::runner::{ActorConfig, build_actor_config, run_actor};
 use crate::orchestration::store::ExtractorStore;
 use crate::verdict::evaluation::{ActorInfo, EvaluationConfig, evaluate_verdict};
 use crate::verdict::grace::resolve_grace_period;
 use crate::verdict::output::{
-    ActorStatus, build_verdict_output, print_human_summary, termination_to_status,
-    verdict_exit_code, write_json_verdict,
+    ActorStatus, attack_result_to_string, build_verdict_output, indicator_result_to_string,
+    print_human_summary, termination_to_status, verdict_exit_code, write_json_verdict,
 };
 
 /// Execute an OATF scenario.
@@ -40,10 +41,11 @@ use crate::verdict::output::{
 pub async fn run(
     args: &RunArgs,
     quiet: bool,
+    color: ColorChoice,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
     let yaml = std::fs::read_to_string(&args.config)?;
-    run_from_yaml(&yaml, &args.execution, quiet, cancel).await
+    run_from_yaml(&yaml, &args.execution, quiet, color, cancel).await
 }
 
 /// Execute an OATF scenario from raw YAML content.
@@ -56,10 +58,12 @@ pub async fn run(
 /// Returns an error if scenario loading, execution, or verdict output fails.
 ///
 /// Implements: TJ-SPEC-007 F-002
+#[allow(clippy::too_many_lines)]
 pub async fn run_from_yaml(
     yaml: &str,
     args: &ExecutionArgs,
     quiet: bool,
+    color: ColorChoice,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
     // EC-CLI-010: warn when synthesize validation is bypassed
@@ -84,11 +88,31 @@ pub async fn run_from_yaml(
     );
     config.grace_period = Some(grace_applied);
 
-    // 4. Set up EventEmitter
-    let events: Arc<EventEmitter> = match &args.events_file {
-        Some(path) => Arc::new(EventEmitter::from_file(path)?),
-        None => Arc::new(EventEmitter::noop()),
-    };
+    // 4. Set up EventEmitter + progress renderer
+    let show_progress = !quiet && resolve_color(color);
+    let (events, progress_handle): (Arc<EventEmitter>, Option<tokio::task::JoinHandle<()>>) =
+        if show_progress {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let writer: Box<dyn std::io::Write + Send> = match &args.events_file {
+                Some(path) => Box::new(
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)?,
+                ),
+                None => Box::new(std::io::sink()),
+            };
+            let emitter = Arc::new(EventEmitter::with_progress(writer, tx));
+            let color_enabled = resolve_color(color);
+            let renderer = ProgressRenderer::new(rx, &loaded.document, color_enabled);
+            (emitter, Some(tokio::spawn(renderer.run())))
+        } else {
+            let emitter: Arc<EventEmitter> = match &args.events_file {
+                Some(path) => Arc::new(EventEmitter::from_file(path)?),
+                None => Arc::new(EventEmitter::noop()),
+            };
+            (emitter, None)
+        };
 
     // 5. Get actors
     let actors = loaded
@@ -122,47 +146,73 @@ pub async fn run_from_yaml(
         })
         .collect();
 
-    // 8. Evaluate verdict
+    // 8. Evaluate verdict + build output (scoped to drop non-Send cel evaluator)
     let trace_snapshot = trace.snapshot();
-    let cel = oatf::evaluate::default_cel_evaluator();
-    let eval_config = EvaluationConfig {
-        cel_evaluator: Some(&cel),
-        semantic_evaluator: None,
-        no_semantic: args.no_semantic,
+    let output = {
+        let cel = oatf::evaluate::default_cel_evaluator();
+        let eval_config = EvaluationConfig {
+            cel_evaluator: Some(&cel),
+            semantic_evaluator: None,
+            no_semantic: args.no_semantic,
+        };
+        let source = format!("thoughtjack/{}", env!("CARGO_PKG_VERSION"));
+        let verdict = evaluate_verdict(
+            &loaded.document.attack,
+            &trace_snapshot,
+            &actor_infos,
+            &eval_config,
+            &source,
+        );
+
+        // Emit verdict events for progress renderer
+        for iv in &verdict.indicator_verdicts {
+            events.emit(ThoughtJackEvent::IndicatorEvaluated {
+                indicator_id: iv.indicator_id.clone(),
+                method: String::new(),
+                result: indicator_result_to_string(&iv.result),
+                duration_ms: 0,
+            });
+        }
+        events.emit(ThoughtJackEvent::VerdictComputed {
+            result: attack_result_to_string(&verdict.result),
+            matched: verdict
+                .indicator_verdicts
+                .iter()
+                .filter(|iv| matches!(iv.result, oatf::enums::IndicatorResult::Matched))
+                .count(),
+            total: verdict.indicator_verdicts.len(),
+        });
+
+        let actor_statuses = build_actor_statuses(&outcomes, actors);
+        let output = build_verdict_output(
+            &loaded.document.attack,
+            &verdict,
+            actor_statuses,
+            Some(grace_applied),
+            trace_snapshot.len(),
+            duration_ms,
+        );
+        (output, verdict.result)
     };
-    let source = format!("thoughtjack/{}", env!("CARGO_PKG_VERSION"));
-    let verdict = evaluate_verdict(
-        &loaded.document.attack,
-        &trace_snapshot,
-        &actor_infos,
-        &eval_config,
-        &source,
-    );
-
-    // 9. Build actor statuses from outcomes
-    let actor_statuses = build_actor_statuses(&outcomes, actors);
-
-    // 10. Build output
-    let output = build_verdict_output(
-        &loaded.document.attack,
-        &verdict,
-        actor_statuses,
-        Some(grace_applied),
-        trace_snapshot.len(),
-        duration_ms,
-    );
+    let (output, verdict_result) = output;
 
     // 11. Write JSON verdict if --output
     if let Some(ref path) = args.output {
         write_json_verdict(&output, path)?;
     }
 
-    // 12. Print human summary
-    if !quiet {
+    // 12. Shut down progress renderer (drop emitter to close channel)
+    drop(events);
+    if let Some(handle) = progress_handle {
+        let _ = handle.await;
+    }
+
+    // 12b. Print human summary (after progress renderer finishes)
+    if !quiet && !show_progress {
         print_human_summary(&output);
     }
 
-    // 12b. Warn if verdict is based on an empty trace
+    // 12c. Warn if verdict is based on an empty trace
     if trace_snapshot.is_empty() {
         tracing::warn!(
             "verdict based on empty trace (0 protocol messages exchanged). \
@@ -180,7 +230,7 @@ pub async fn run_from_yaml(
     }
 
     // 14. Exit code
-    let code = verdict_exit_code(&verdict.result);
+    let code = verdict_exit_code(&verdict_result);
     if code != 0 {
         return Err(ThoughtJackError::Verdict {
             message: output.verdict.result,
@@ -608,9 +658,15 @@ attack:
         let mut args = test_run_args(Duration::from_millis(500));
         args.mcp_server = Some("127.0.0.1:0".to_string());
 
-        let err = run_from_yaml(yaml, &args, true, CancellationToken::new())
-            .await
-            .expect_err("missing client transport should fail with usage error");
+        let err = run_from_yaml(
+            yaml,
+            &args,
+            true,
+            ColorChoice::Never,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("missing client transport should fail with usage error");
 
         match err {
             ThoughtJackError::Usage(msg) => {
@@ -648,7 +704,13 @@ attack:
 
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            run_from_yaml(yaml, &args, true, CancellationToken::new()),
+            run_from_yaml(
+                yaml,
+                &args,
+                true,
+                ColorChoice::Never,
+                CancellationToken::new(),
+            ),
         )
         .await;
         assert!(result.is_ok(), "single-actor run exceeded timeout window");
@@ -679,9 +741,15 @@ attack:
         let mut args = test_run_args(Duration::from_secs(1));
         args.header = vec!["MissingColon".to_string()];
 
-        let err = run_from_yaml(yaml, &args, true, CancellationToken::new())
-            .await
-            .expect_err("invalid --header should fail with usage error");
+        let err = run_from_yaml(
+            yaml,
+            &args,
+            true,
+            ColorChoice::Never,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("invalid --header should fail with usage error");
 
         match err {
             ThoughtJackError::Usage(msg) => {

@@ -11,6 +11,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use oatf::enums::ExtractorSource;
 use oatf::primitives::evaluate_extractor;
@@ -18,6 +19,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::EngineError;
+use crate::observability::events::{EventEmitter, ThoughtJackEvent};
 use crate::orchestration::store::ExtractorStore;
 
 use super::actions::{self, EntryActionSender};
@@ -59,7 +61,9 @@ struct EventContext<'a> {
     extractor_store: &'a ExtractorStore,
     extractors_tx: &'a watch::Sender<HashMap<String, String>>,
     actor_name: &'a str,
+    protocol: &'a str,
     is_server_mode: bool,
+    events: &'a EventEmitter,
 }
 
 /// Process a single event: trace append, extractor capture, trigger check.
@@ -68,6 +72,25 @@ fn process_protocol_event(
     phase_engine: &mut PhaseEngine,
     ctx: &EventContext<'_>,
 ) -> PhaseAction {
+    // 0. Emit observability event
+    let qualifier = extract_qualifier(&evt.method, &evt.content);
+    let obs_event = match evt.direction {
+        Direction::Incoming => ThoughtJackEvent::ProtocolMessageReceived {
+            actor: ctx.actor_name.to_string(),
+            method: evt.method.clone(),
+            protocol: ctx.protocol.to_string(),
+            qualifier,
+        },
+        Direction::Outgoing => ThoughtJackEvent::ProtocolMessageSent {
+            actor: ctx.actor_name.to_string(),
+            method: evt.method.clone(),
+            protocol: ctx.protocol.to_string(),
+            duration_ms: 0,
+            qualifier,
+        },
+    };
+    ctx.events.emit(obs_event);
+
     // 1. Append to trace
     ctx.trace.append(
         ctx.actor_name,
@@ -106,6 +129,28 @@ fn process_protocol_event(
         phase_engine.process_event(&oatf_event)
     } else {
         PhaseAction::Stay
+    }
+}
+
+/// Extracts a qualifier (tool name, resource URI, etc.) from event content.
+fn extract_qualifier(method: &str, content: &serde_json::Value) -> Option<String> {
+    match method {
+        "tools/call" => content
+            .pointer("/name")
+            .or_else(|| content.pointer("/params/name"))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        "resources/read" => content
+            .pointer("/uri")
+            .or_else(|| content.pointer("/params/uri"))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        "prompts/get" => content
+            .pointer("/name")
+            .or_else(|| content.pointer("/params/name"))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        _ => None,
     }
 }
 
@@ -198,6 +243,8 @@ pub struct PhaseLoopConfig {
     pub cancel: CancellationToken,
     /// Optional sender for entry actions (notifications, elicitations).
     pub entry_action_sender: Option<Box<dyn EntryActionSender>>,
+    /// Event emitter for structured observability events.
+    pub events: Arc<EventEmitter>,
 }
 
 /// Core execution loop for a single actor.
@@ -213,11 +260,13 @@ pub struct PhaseLoop<D: PhaseDriver> {
     trace: SharedTrace,
     extractor_store: ExtractorStore,
     actor_name: String,
+    protocol: String,
     is_server_mode: bool,
     await_extractors_config: HashMap<usize, Vec<AwaitExtractor>>,
     cancel: CancellationToken,
     extractors_tx: watch::Sender<HashMap<String, String>>,
     entry_action_sender: Option<Box<dyn EntryActionSender>>,
+    events: Arc<EventEmitter>,
 }
 
 impl<D: PhaseDriver> PhaseLoop<D> {
@@ -229,6 +278,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     #[must_use]
     pub fn new(driver: D, phase_engine: PhaseEngine, config: PhaseLoopConfig) -> Self {
         let mode = &phase_engine.actor().mode;
+        let protocol = crate::verdict::evaluation::extract_protocol(mode).to_string();
         let is_server_mode = mode.ends_with("_server");
         let (extractors_tx, _) = watch::channel(HashMap::new());
 
@@ -238,11 +288,13 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             trace: config.trace,
             extractor_store: config.extractor_store,
             actor_name: config.actor_name,
+            protocol,
             is_server_mode,
             await_extractors_config: config.await_extractors_config,
             cancel: config.cancel,
             extractors_tx,
             entry_action_sender: config.entry_action_sender,
+            events: config.events,
         }
     }
 
@@ -257,9 +309,19 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     /// Returns `EngineError` if the driver or event processing fails.
     ///
     /// Implements: TJ-SPEC-013 F-001
+    #[allow(clippy::too_many_lines)]
     pub async fn run(&mut self) -> Result<ActorResult, EngineError> {
         loop {
             let phase_index = self.phase_engine.current_phase;
+
+            // Emit PhaseEntered event
+            let phase_name = self.phase_engine.current_phase_name().to_string();
+            self.events.emit(ThoughtJackEvent::PhaseEntered {
+                actor: self.actor_name.clone(),
+                phase_name,
+                phase_index,
+            });
+
             if self.prepare_phase(phase_index).await {
                 return Ok(self.build_result(TerminationReason::Cancelled));
             }
@@ -274,7 +336,9 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 extractor_store: &self.extractor_store,
                 extractors_tx: &self.extractors_tx,
                 actor_name: &self.actor_name,
+                protocol: &self.protocol,
                 is_server_mode: self.is_server_mode,
+                events: &self.events,
             };
             let action = {
                 let extractors_rx = self.extractors_tx.subscribe();
@@ -603,6 +667,7 @@ mod tests {
             await_extractors_config: HashMap::new(),
             cancel: CancellationToken::new(),
             entry_action_sender: None,
+            events: Arc::new(EventEmitter::noop()),
         }
     }
 
@@ -779,6 +844,7 @@ attack:
             await_extractors_config: HashMap::new(),
             cancel: cancel.clone(),
             entry_action_sender: None,
+            events: Arc::new(EventEmitter::noop()),
         };
 
         let engine = PhaseEngine::new(doc, 0);
@@ -895,6 +961,7 @@ attack:
             await_extractors_config: HashMap::new(),
             cancel: CancellationToken::new(),
             entry_action_sender: None,
+            events: Arc::new(EventEmitter::noop()),
         };
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
 
@@ -1445,6 +1512,7 @@ attack:
             await_extractors_config: await_config,
             cancel: CancellationToken::new(),
             entry_action_sender: None,
+            events: Arc::new(EventEmitter::noop()),
         };
 
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
@@ -1534,6 +1602,7 @@ attack:
             await_extractors_config: HashMap::new(),
             cancel: cancel.clone(),
             entry_action_sender: None,
+            events: Arc::new(EventEmitter::noop()),
         };
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
 

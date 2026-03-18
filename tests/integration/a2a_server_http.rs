@@ -96,7 +96,7 @@ async fn start_a2a_server(yaml: &str) -> A2aTestServer {
     let extractor_store = ExtractorStore::new();
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
-    let events = EventEmitter::noop();
+    let events = std::sync::Arc::new(EventEmitter::noop());
 
     let handle = tokio::spawn(async move {
         run_actor(
