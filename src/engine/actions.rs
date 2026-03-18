@@ -103,10 +103,7 @@ pub async fn execute_entry_actions(
                         );
                     }
                 } else {
-                    tracing::warn!(
-                        method,
-                        "no entry action sender available — skipping send"
-                    );
+                    tracing::warn!(method, "no entry action sender available — skipping send");
                 }
             }
             oatf::Action::Log {

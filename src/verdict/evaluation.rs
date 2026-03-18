@@ -9,8 +9,8 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
-use oatf::enums::{AttackResult, IndicatorResult};
 use oatf::enums::Direction as OatfDirection;
+use oatf::enums::{AttackResult, IndicatorResult};
 
 use crate::engine::trace::TraceEntry;
 use crate::engine::types::Direction;
@@ -82,12 +82,7 @@ pub fn filter_trace_for_indicator<'a>(
                 .as_ref()
                 .is_none_or(|s| entry.method == *s)
         })
-        .filter(|entry| {
-            indicator
-                .actor
-                .as_ref()
-                .is_none_or(|a| entry.actor == *a)
-        })
+        .filter(|entry| indicator.actor.as_ref().is_none_or(|a| entry.actor == *a))
         .filter(|entry| {
             indicator.direction.as_ref().is_none_or(|dir| {
                 let is_server = actors

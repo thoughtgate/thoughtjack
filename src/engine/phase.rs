@@ -100,12 +100,7 @@ impl PhaseEngine {
         };
 
         let elapsed = self.phase_start_time.elapsed();
-        let result = evaluate_trigger(
-            trigger,
-            Some(event),
-            elapsed,
-            &mut self.trigger_state,
-        );
+        let result = evaluate_trigger(trigger, Some(event), elapsed, &mut self.trigger_state);
 
         match result {
             oatf::TriggerResult::Advanced { .. } => PhaseAction::Advance,
