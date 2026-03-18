@@ -4,7 +4,6 @@
 //! running in a terminal. Events flow through the `EventEmitter`
 //! progress channel and are formatted with ANSI colors.
 
-use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 
 use tokio::sync::mpsc;
@@ -104,7 +103,8 @@ pub struct ProgressRenderer {
     severity: Option<String>,
     phase_names: Vec<String>,
     actor_modes: Vec<(String, String)>,
-    message_counts: HashMap<String, usize>,
+    multi_actor: bool,
+    last_actor: Option<String>,
     header_printed: bool,
     verdict_seen: bool,
 }
@@ -140,8 +140,8 @@ impl ProgressRenderer {
             .as_ref()
             .map_or_else(Vec::new, Clone::clone);
 
+        // Collect ALL phase names across ALL actors (deduplicated, preserving order)
         let phase_names: Vec<String> = if actors.is_empty() {
-            // Single-actor shorthand: phases on execution directly
             attack
                 .execution
                 .phases
@@ -150,20 +150,18 @@ impl ProgressRenderer {
                     phases.iter().filter_map(|p| p.name.clone()).collect()
                 })
         } else {
-            // Multi-actor: use first actor's phases (representative)
-            actors
-                .first()
-                .and_then(|a| a.phases.first())
-                .and_then(|p| p.name.clone())
-                .into_iter()
-                .chain(actors.first().map_or_else(Vec::new, |a| {
-                    a.phases
-                        .iter()
-                        .skip(1)
-                        .filter_map(|p| p.name.clone())
-                        .collect()
-                }))
-                .collect()
+            let mut names = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for actor in &actors {
+                for phase in &actor.phases {
+                    if let Some(name) = &phase.name
+                        && seen.insert(name.clone())
+                    {
+                        names.push(name.clone());
+                    }
+                }
+            }
+            names
         };
 
         let actor_modes: Vec<(String, String)> = if actors.is_empty() {
@@ -176,6 +174,8 @@ impl ProgressRenderer {
                 .collect()
         };
 
+        let multi_actor = actor_modes.len() > 1;
+
         Self {
             colors: AnsiColors::new(color_enabled),
             rx,
@@ -184,7 +184,8 @@ impl ProgressRenderer {
             severity,
             phase_names,
             actor_modes,
-            message_counts: HashMap::new(),
+            multi_actor,
+            last_actor: None,
             header_printed: false,
             verdict_seen: false,
         }
@@ -210,65 +211,88 @@ impl ProgressRenderer {
         }
     }
 
+    /// Prints an actor separator when the emitting actor changes.
+    fn maybe_print_actor_change(
+        &mut self,
+        actor: &str,
+        out: &mut std::io::StderrLock<'_>,
+    ) {
+        if !self.multi_actor {
+            return;
+        }
+        let changed = self
+            .last_actor
+            .as_ref()
+            .is_none_or(|prev| prev != actor);
+        if changed {
+            self.last_actor = Some(actor.to_string());
+            let mode = self
+                .actor_modes
+                .iter()
+                .find(|(n, _)| n == actor)
+                .map_or("", |(_, m)| m.as_str());
+            let label = format!("  [{actor} ({mode})]");
+            let _ = writeln!(out, "{}", self.colors.dim(&label));
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn render_event(&mut self, event: &ThoughtJackEvent) {
         let mut out = std::io::stderr().lock();
         match event {
-            ThoughtJackEvent::ActorStarted { actor_name, .. } => {
+            ThoughtJackEvent::ActorStarted { .. } => {
                 if !self.header_printed {
                     self.print_header(&mut out);
                     self.header_printed = true;
                 }
-                if self.actor_modes.len() > 1 {
-                    let mode = self
-                        .actor_modes
-                        .iter()
-                        .find(|(n, _)| n == actor_name)
-                        .map_or("", |(_, m)| m.as_str());
-                    let label = format!("Actor: {actor_name} ({mode})");
-                    let _ = writeln!(out, "\n  {}", self.colors.dim(&label));
-                }
             }
 
-            ThoughtJackEvent::PhaseEntered { phase_name, .. } => {
+            ThoughtJackEvent::PhaseEntered {
+                actor, phase_name, ..
+            } => {
+                if self.multi_actor {
+                    self.last_actor = Some(actor.clone());
+                }
                 let label = format!("Phase: {phase_name}");
                 let _ = writeln!(out, "\n  {}", self.colors.magenta(&label));
             }
 
             ThoughtJackEvent::ProtocolMessageReceived {
-                method, qualifier, ..
+                actor,
+                method,
+                qualifier,
+                ..
             } => {
-                let key = format!("recv:{method}");
-                *self.message_counts.entry(key).or_insert(0) += 1;
-                let mut line = format!("    \u{2190} {method}");
-                if let Some(q) = qualifier {
-                    line.push(' ');
-                    line.push_str(q);
-                }
-                // Color the base arrow+method cyan, qualifier yellow
+                self.maybe_print_actor_change(actor, &mut out);
                 if let Some(q) = qualifier {
                     let base = format!("    \u{2190} {method}");
-                    let _ = write!(out, "{} {}", self.colors.cyan(&base), self.colors.yellow(q));
-                    let _ = writeln!(out);
+                    let _ = writeln!(
+                        out,
+                        "{} {}",
+                        self.colors.cyan(&base),
+                        self.colors.yellow(q)
+                    );
                 } else {
+                    let line = format!("    \u{2190} {method}");
                     let _ = writeln!(out, "{}", self.colors.cyan(&line));
                 }
             }
 
             ThoughtJackEvent::ProtocolMessageSent {
-                method, qualifier, ..
+                actor,
+                method,
+                qualifier,
+                ..
             } => {
-                let key = format!("sent:{method}");
-                *self.message_counts.entry(key).or_insert(0) += 1;
+                self.maybe_print_actor_change(actor, &mut out);
                 if let Some(q) = qualifier {
                     let base = format!("    \u{2192} {method}");
-                    let _ = write!(
+                    let _ = writeln!(
                         out,
                         "{} {}",
                         self.colors.green(&base),
                         self.colors.yellow(q)
                     );
-                    let _ = writeln!(out);
                 } else {
                     let line = format!("    \u{2192} {method}");
                     let _ = writeln!(out, "{}", self.colors.green(&line));
@@ -355,13 +379,18 @@ impl ProgressRenderer {
         let scenario_line = format!("  Scenario: {id_prefix}{}", self.scenario_name);
         let _ = writeln!(out, "{}", self.colors.bold(&scenario_line));
 
-        // Protocol + severity
-        let protocol = self
-            .actor_modes
-            .first()
-            .map_or("unknown", |(_, m)| m.as_str());
-        let protocol_display = format_mode_display(protocol);
-        let mut meta = format!("  Protocol: {protocol_display}");
+        // Protocol line: list unique protocols from all actors
+        let protocols: Vec<String> = {
+            let mut seen = Vec::new();
+            for (_, mode) in &self.actor_modes {
+                let display = format_mode_display(mode);
+                if !seen.contains(&display) {
+                    seen.push(display);
+                }
+            }
+            seen
+        };
+        let mut meta = format!("  Protocol: {}", protocols.join(", "));
         if let Some(sev) = &self.severity {
             use std::fmt::Write as _;
             let _ = write!(meta, "   Severity: {sev}");
@@ -377,10 +406,12 @@ impl ProgressRenderer {
     }
 }
 
-/// Format an actor mode for display (e.g., `"mcp_server"` → `"MCP (stdio server)"`).
+/// Format an actor mode for display.
+///
+/// Does not assume transport — that depends on CLI flags, not mode.
 fn format_mode_display(mode: &str) -> String {
     match mode {
-        "mcp_server" => "MCP (stdio server)".to_string(),
+        "mcp_server" => "MCP (server)".to_string(),
         "mcp_client" => "MCP (client)".to_string(),
         "a2a_server" => "A2A (server)".to_string(),
         "a2a_client" => "A2A (client)".to_string(),
@@ -452,7 +483,7 @@ mod tests {
 
     #[test]
     fn format_mode_display_known_modes() {
-        assert_eq!(format_mode_display("mcp_server"), "MCP (stdio server)");
+        assert_eq!(format_mode_display("mcp_server"), "MCP (server)");
         assert_eq!(format_mode_display("mcp_client"), "MCP (client)");
         assert_eq!(format_mode_display("a2a_server"), "A2A (server)");
         assert_eq!(format_mode_display("a2a_client"), "A2A (client)");
