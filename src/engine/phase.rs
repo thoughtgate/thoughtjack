@@ -160,6 +160,17 @@ impl PhaseEngine {
         self.current_phase
     }
 
+    /// Returns a reference to the current phase's trigger, if any.
+    ///
+    /// Implements: TJ-SPEC-013 F-001
+    #[must_use]
+    pub fn current_trigger(&self) -> Option<&oatf::Trigger> {
+        self.actor()
+            .phases
+            .get(self.current_phase)
+            .and_then(|p| p.trigger.as_ref())
+    }
+
     /// Returns the name of the current phase, or `"unnamed"` if none.
     ///
     /// Implements: TJ-SPEC-013 F-001

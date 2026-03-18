@@ -72,24 +72,7 @@ fn process_protocol_event(
     phase_engine: &mut PhaseEngine,
     ctx: &EventContext<'_>,
 ) -> PhaseAction {
-    // 0. Emit observability event
     let qualifier = extract_qualifier(&evt.method, &evt.content);
-    let obs_event = match evt.direction {
-        Direction::Incoming => ThoughtJackEvent::ProtocolMessageReceived {
-            actor: ctx.actor_name.to_string(),
-            method: evt.method.clone(),
-            protocol: ctx.protocol.to_string(),
-            qualifier,
-        },
-        Direction::Outgoing => ThoughtJackEvent::ProtocolMessageSent {
-            actor: ctx.actor_name.to_string(),
-            method: evt.method.clone(),
-            protocol: ctx.protocol.to_string(),
-            duration_ms: 0,
-            qualifier,
-        },
-    };
-    ctx.events.emit(obs_event);
 
     // 1. Append to trace
     ctx.trace.append(
@@ -115,7 +98,7 @@ fn process_protocol_event(
         ctx.extractor_store,
     ));
 
-    // 3. Check trigger — incoming events only.
+    // 3. Check trigger (incoming only) then emit observability event with trigger progress.
     //
     // Outgoing events are ThoughtJack's own responses/requests. Counting
     // them would double-count each interaction (e.g., `count: 5` on
@@ -123,11 +106,31 @@ fn process_protocol_event(
     // both an incoming request and an outgoing response event).
     if evt.direction == Direction::Incoming {
         let oatf_event = oatf::ProtocolEvent {
-            event_type: evt.method,
-            content: evt.content,
+            event_type: evt.method.clone(),
+            content: evt.content.clone(),
         };
-        phase_engine.process_event(&oatf_event)
+        let result = phase_engine.process_event(&oatf_event);
+
+        // Emit with trigger progress after evaluation
+        let trigger = phase_engine.current_trigger();
+        ctx.events.emit(ThoughtJackEvent::ProtocolMessageReceived {
+            actor: ctx.actor_name.to_string(),
+            method: evt.method,
+            protocol: ctx.protocol.to_string(),
+            qualifier,
+            trigger_current: Some(phase_engine.trigger_state.event_count),
+            trigger_total: trigger.and_then(|t| t.count),
+        });
+
+        result
     } else {
+        ctx.events.emit(ThoughtJackEvent::ProtocolMessageSent {
+            actor: ctx.actor_name.to_string(),
+            method: evt.method,
+            protocol: ctx.protocol.to_string(),
+            duration_ms: 0,
+            qualifier,
+        });
         PhaseAction::Stay
     }
 }
@@ -315,14 +318,19 @@ impl<D: PhaseDriver> PhaseLoop<D> {
         loop {
             let phase_index = self.phase_engine.current_phase;
 
+            let mut phase_message_count: usize = 0;
+
             // Emit PhaseEntered only on actual phase changes
             if last_emitted_phase != Some(phase_index) {
                 last_emitted_phase = Some(phase_index);
                 let phase_name = self.phase_engine.current_phase_name().to_string();
+                let trigger = self.phase_engine.current_trigger();
                 self.events.emit(ThoughtJackEvent::PhaseEntered {
                     actor: self.actor_name.clone(),
                     phase_name,
                     phase_index,
+                    trigger_event: trigger.and_then(|t| t.event.clone()),
+                    trigger_count: trigger.and_then(|t| t.count),
                 });
             }
 
@@ -379,6 +387,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                         event = event_rx.recv() => {
                             match event {
                                 Some(evt) => {
+                                    phase_message_count += 1;
                                     if process_protocol_event(evt, &mut self.phase_engine, &ctx)
                                         == PhaseAction::Advance
                                     {
@@ -420,6 +429,15 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             }
 
             if action == DriveLoopAction::Advance {
+                #[allow(clippy::cast_possible_truncation)]
+                let phase_elapsed_ms =
+                    self.phase_engine.phase_start_time.elapsed().as_millis() as u64;
+                self.events.emit(ThoughtJackEvent::PhaseCompleted {
+                    actor: self.actor_name.clone(),
+                    phase_name: self.phase_engine.current_phase_name().to_string(),
+                    duration_ms: phase_elapsed_ms,
+                    message_count: phase_message_count,
+                });
                 let to = self.phase_engine.advance_phase();
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
@@ -485,6 +503,19 @@ impl<D: PhaseDriver> PhaseLoop<D> {
 
         let phase = self.phase_engine.get_phase(phase_index);
         if let Some(on_enter) = &phase.on_enter {
+            // Emit entry action events for progress display
+            for action in on_enter {
+                let action_type = match action {
+                    oatf::Action::Send { method, .. } => format!("notify {method}"),
+                    oatf::Action::Log { .. } => "log".to_string(),
+                    oatf::Action::BindingSpecific { key, .. } => key.clone(),
+                };
+                self.events.emit(ThoughtJackEvent::EntryActionExecuted {
+                    actor: self.actor_name.clone(),
+                    action_type,
+                });
+            }
+
             actions::execute_entry_actions(
                 on_enter,
                 &interpolation_extractors,

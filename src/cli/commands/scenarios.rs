@@ -147,7 +147,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::cli::args::ExecutionArgs;
+    use crate::cli::args::{ExecutionArgs, ProgressLevel};
     fn test_run_args() -> ExecutionArgs {
         ExecutionArgs {
             mcp_server: None,
@@ -166,6 +166,7 @@ mod tests {
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: ProgressLevel::Off,
         }
     }
 

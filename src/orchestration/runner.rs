@@ -870,6 +870,7 @@ mod tests {
             raw_synthesize: true,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let config = build_actor_config(&args).expect("valid headers should parse");
@@ -1461,6 +1462,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let config = build_actor_config(&args).expect("valid headers should parse");
@@ -1495,6 +1497,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let err = build_actor_config(&args).expect_err("missing colon should be rejected");
@@ -1523,6 +1526,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let err = build_actor_config(&args).expect_err("invalid header name should be rejected");
@@ -1551,6 +1555,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let err = build_actor_config(&args).expect_err("invalid header value should be rejected");
@@ -1579,6 +1584,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let config = build_actor_config(&args).expect("empty header list should be valid");

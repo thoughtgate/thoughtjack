@@ -17,7 +17,7 @@ use crate::error::{EngineError, ThoughtJackError};
 use crate::loader::{self, LoadedDocument, document_actors};
 use crate::observability::events::{EventEmitter, ThoughtJackEvent};
 use crate::observability::init_metrics;
-use crate::observability::progress::{ProgressRenderer, resolve_color};
+use crate::observability::progress::{ProgressRenderer, resolve_color, resolve_progress};
 use crate::orchestration::orchestrator::{ActorOutcome, orchestrate};
 use crate::orchestration::runner::{ActorConfig, build_actor_config, run_actor};
 use crate::orchestration::store::ExtractorStore;
@@ -89,9 +89,9 @@ pub async fn run_from_yaml(
     config.grace_period = Some(grace_applied);
 
     // 4. Set up EventEmitter + progress renderer
-    let show_progress = !quiet && resolve_color(color);
+    let resolved_progress = resolve_progress(args.progress, quiet);
     let (events, progress_handle): (Arc<EventEmitter>, Option<tokio::task::JoinHandle<()>>) =
-        if show_progress {
+        if let Some(progress_level) = resolved_progress {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let writer: Box<dyn std::io::Write + Send> = match &args.events_file {
                 Some(path) => Box::new(
@@ -104,7 +104,8 @@ pub async fn run_from_yaml(
             };
             let emitter = Arc::new(EventEmitter::with_progress(writer, tx));
             let color_enabled = resolve_color(color);
-            let renderer = ProgressRenderer::new(rx, &loaded.document, color_enabled);
+            let renderer =
+                ProgressRenderer::new(rx, &loaded.document, color_enabled, progress_level);
             (emitter, Some(tokio::spawn(renderer.run())))
         } else {
             let emitter: Arc<EventEmitter> = match &args.events_file {
@@ -171,6 +172,7 @@ pub async fn run_from_yaml(
                 method: String::new(),
                 result: indicator_result_to_string(&iv.result),
                 duration_ms: 0,
+                evidence: iv.evidence.clone(),
             });
         }
         events.emit(ThoughtJackEvent::VerdictComputed {
@@ -208,7 +210,7 @@ pub async fn run_from_yaml(
     }
 
     // 12b. Print human summary (after progress renderer finishes)
-    if !quiet && !show_progress {
+    if !quiet && resolved_progress.is_none() {
         print_human_summary(&output);
     }
 
@@ -542,6 +544,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::cli::args::ProgressLevel;
 
     fn test_run_args(max_session: Duration) -> ExecutionArgs {
         ExecutionArgs {
@@ -561,6 +564,7 @@ mod tests {
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: ProgressLevel::Off,
         }
     }
 

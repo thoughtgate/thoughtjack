@@ -34,6 +34,12 @@ pub enum ThoughtJackEvent {
         phase_name: String,
         /// Zero-based index of the phase.
         phase_index: usize,
+        /// Trigger event type (e.g., "tools/call").
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger_event: Option<String>,
+        /// Trigger count target.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger_count: Option<i64>,
     },
 
     /// A phase transition occurred.
@@ -230,6 +236,21 @@ pub enum ThoughtJackEvent {
         result: String,
         /// Evaluation duration in milliseconds.
         duration_ms: u64,
+        /// Evidence description (e.g., `"regex matched id_rsa"`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        evidence: Option<String>,
+    },
+
+    /// A phase completed (before advancing to next phase).
+    PhaseCompleted {
+        /// Actor name.
+        actor: String,
+        /// Name of the completed phase.
+        phase_name: String,
+        /// Phase duration in milliseconds.
+        duration_ms: u64,
+        /// Number of protocol messages exchanged during this phase.
+        message_count: usize,
     },
 
     /// An indicator was skipped.
@@ -272,6 +293,12 @@ pub enum ThoughtJackEvent {
         /// Optional qualifier (e.g., tool name, resource URI).
         #[serde(skip_serializing_if = "Option::is_none")]
         qualifier: Option<String>,
+        /// Current trigger count after this event.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger_current: Option<u64>,
+        /// Trigger count target.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger_total: Option<i64>,
     },
 
     /// A protocol message was sent to the agent.
@@ -616,6 +643,8 @@ mod tests {
                 actor: "a".to_owned(),
                 phase_name: "p".to_owned(),
                 phase_index: 0,
+                trigger_event: Some("tools/call".to_owned()),
+                trigger_count: Some(3),
             },
             ThoughtJackEvent::PhaseAdvanced {
                 actor: "a".to_owned(),
@@ -715,6 +744,13 @@ mod tests {
                 method: "cel".to_owned(),
                 result: "matched".to_owned(),
                 duration_ms: 10,
+                evidence: Some("regex matched \"id_rsa\"".to_owned()),
+            },
+            ThoughtJackEvent::PhaseCompleted {
+                actor: "a".to_owned(),
+                phase_name: "exploit".to_owned(),
+                duration_ms: 3200,
+                message_count: 6,
             },
             ThoughtJackEvent::IndicatorSkipped {
                 indicator_id: "i2".to_owned(),
@@ -736,6 +772,8 @@ mod tests {
                 method: "tools/call".to_owned(),
                 protocol: "mcp".to_owned(),
                 qualifier: None,
+                trigger_current: Some(2),
+                trigger_total: Some(3),
             },
             ThoughtJackEvent::ProtocolMessageSent {
                 actor: "a".to_owned(),
@@ -902,6 +940,8 @@ mod tests {
                             actor: format!("thread-{i}"),
                             phase_name: format!("phase-{j}"),
                             phase_index: j,
+                            trigger_event: None,
+                            trigger_count: None,
                         });
                     }
                 })

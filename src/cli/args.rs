@@ -140,6 +140,10 @@ pub struct ExecutionArgs {
     /// Write structured events to a JSONL file instead of stderr.
     #[arg(long, env = "THOUGHTJACK_EVENTS_FILE")]
     pub events_file: Option<PathBuf>,
+
+    /// Progress output detail level [default: auto].
+    #[arg(long, default_value = "auto", env = "THOUGHTJACK_PROGRESS")]
+    pub progress: ProgressLevel,
 }
 
 /// Arguments for `run` — execute an OATF scenario.
@@ -287,6 +291,25 @@ pub enum LogFormatChoice {
     Human,
     /// Newline-delimited JSON for machine consumption.
     Json,
+}
+
+/// Progress output detail level.
+///
+/// Controls how much real-time progress information is shown during
+/// scenario execution.
+///
+/// Implements: TJ-SPEC-007 F-001
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum ProgressLevel {
+    /// No progress output.
+    Off,
+    /// Compact progress: phase labels, protocol messages, entry actions.
+    Compact,
+    /// Detailed progress: adds trigger counters, indicator evidence, phase timing.
+    Detailed,
+    /// Auto-detect: compact on TTY, off otherwise.
+    #[default]
+    Auto,
 }
 
 /// Output format for structured output.
@@ -617,5 +640,59 @@ mod tests {
     fn test_run_without_config_fails() {
         let cli = Cli::try_parse_from(["thoughtjack", "run"]);
         assert!(cli.is_err(), "Expected clap parse error");
+    }
+
+    /// All valid --progress values parse correctly.
+    #[test]
+    fn test_progress_values() {
+        let expected = [
+            ("off", ProgressLevel::Off),
+            ("compact", ProgressLevel::Compact),
+            ("detailed", ProgressLevel::Detailed),
+            ("auto", ProgressLevel::Auto),
+        ];
+        for (input, variant) in expected {
+            let cli = Cli::try_parse_from([
+                "thoughtjack",
+                "run",
+                "--config",
+                "x.yaml",
+                "--progress",
+                input,
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Run(args) => {
+                    assert_eq!(args.execution.progress, variant, "for --progress {input}");
+                }
+                _ => panic!("Expected Run command"),
+            }
+        }
+    }
+
+    /// Invalid --progress value should fail.
+    #[test]
+    fn test_invalid_progress_value() {
+        let result = Cli::try_parse_from([
+            "thoughtjack",
+            "run",
+            "--config",
+            "x.yaml",
+            "--progress",
+            "verbose",
+        ]);
+        assert!(result.is_err(), "Expected error for invalid progress value");
+    }
+
+    /// --progress defaults to auto.
+    #[test]
+    fn test_progress_default_auto() {
+        let cli = Cli::try_parse_from(["thoughtjack", "run", "--config", "x.yaml"]).unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.execution.progress, ProgressLevel::Auto);
+            }
+            _ => panic!("Expected Run command"),
+        }
     }
 }
