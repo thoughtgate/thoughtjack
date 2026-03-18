@@ -1,55 +1,191 @@
-/* Hero */
+/* ── Hero ─────────────────────────────────────────────── */
 
-.heroBanner {
+.hero {
   padding: 5rem 0 3rem;
   text-align: center;
-  background: linear-gradient(to bottom, #0a0d12, var(--tj-bg));
+  background: linear-gradient(
+    180deg,
+    var(--ifm-background-color) 0%,
+    rgba(37, 194, 160, 0.06) 100%
+  );
 }
 
 .heroTitle {
-  font-family: 'Source Serif 4', Georgia, serif;
-  font-size: 3rem;
-  font-weight: 600;
-  color: var(--tj-text);
-  margin-bottom: 0.5rem;
+  font-size: 3.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.75rem;
 }
 
-.heroSubtitle {
-  font-size: 1.25rem;
-  color: var(--tj-text-muted);
-  margin-bottom: 2rem;
+.heroTagline {
+  font-size: 1.35rem;
+  color: var(--ifm-color-emphasis-800);
+  max-width: 640px;
+  margin: 0 auto 1rem;
+  line-height: 1.5;
 }
 
-.buttons {
+.heroDescription {
+  font-size: 1rem;
+  color: var(--ifm-color-emphasis-600);
+  max-width: 640px;
+  margin: 0 auto 2rem;
+  line-height: 1.6;
+}
+
+.heroButtons {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 1rem;
+  margin-bottom: 2rem;
 }
 
-.ctaButton {
+.protocolBadges {
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.protocolBadge {
   display: inline-block;
-  padding: 0.75rem 2rem;
-  border: 1px solid var(--tj-accent);
-  border-radius: var(--tj-radius, 6px);
-  color: var(--tj-text);
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 999px;
+  font-size: 0.8rem;
   font-weight: 600;
-  font-size: 1rem;
-  text-decoration: none;
-  transition: background 0.15s, border-color 0.15s;
+  color: var(--ifm-color-emphasis-700);
+  letter-spacing: 0.04em;
 }
 
-.ctaButton:hover {
-  background: rgba(176, 42, 42, 0.15);
-  border-color: var(--tj-accent-hover, #c73333);
-  color: var(--tj-text);
-  text-decoration: none;
+/* ── Terminal Demo ───────────────────────────────────── */
+
+.terminalSection {
+  padding: 3rem 0 4rem;
 }
 
-/* Quick links */
+.sectionTitle {
+  text-align: center;
+  font-size: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.sectionSubtitle {
+  text-align: center;
+  color: var(--ifm-color-emphasis-600);
+  margin-bottom: 2rem;
+}
+
+.terminal {
+  max-width: 720px;
+  margin: 0 auto;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.terminalHeader {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: #1e1e2e;
+  gap: 0.5rem;
+}
+
+.terminalDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.terminalDotRed {
+  background: #ff5f57;
+}
+
+.terminalDotYellow {
+  background: #febc2e;
+}
+
+.terminalDotGreen {
+  background: #28c840;
+}
+
+.terminalTitle {
+  flex: 1;
+  text-align: center;
+  color: #6c7086;
+  font-size: 0.8rem;
+  margin-right: 52px; /* offset the dots */
+}
+
+.terminalBody {
+  margin: 0;
+  padding: 1.25rem 1.5rem;
+  background: #11111b;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  overflow-x: auto;
+  color: #cdd6f4;
+}
+
+.terminalBody code {
+  background: none;
+  padding: 0;
+  border: none;
+  font-size: inherit;
+}
+
+.termPrompt {
+  color: #a6e3a1;
+  font-weight: 700;
+}
+
+.termCmd {
+  color: #89b4fa;
+}
+
+.termMeta {
+  color: #6c7086;
+}
+
+.termPhase {
+  color: #cba6f7;
+  font-weight: 700;
+}
+
+.termIn {
+  color: #89dceb;
+}
+
+.termOut {
+  color: #a6e3a1;
+}
+
+.termWarn {
+  color: #fab387;
+  font-weight: 700;
+}
+
+.termFail {
+  color: #f38ba8;
+  font-weight: 700;
+}
+
+.termRule {
+  color: #45475a;
+}
+
+.termDim {
+  color: #585b70;
+}
+
+/* ── Quick Links ─────────────────────────────────────── */
 
 .quickLinks {
-  padding: 2rem 0 3rem;
+  padding: 2rem 0 4rem;
 }
 
 .quickLink {
@@ -58,31 +194,51 @@
 
 .quickLinkCard {
   display: block;
-  padding: 1.25rem;
-  background: var(--tj-surface, #1a1d27);
-  border: 1px solid var(--tj-border, #2a2d37);
-  border-radius: var(--tj-radius, 6px);
+  padding: 1.25rem 1.25rem 1.25rem 1.5rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-left: 4px solid var(--card-accent, var(--ifm-color-primary));
+  border-radius: 8px;
   text-decoration: none;
   color: inherit;
-  transition: border-color 0.15s, background 0.15s;
   height: 100%;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
 }
 
 .quickLinkCard:hover {
-  border-color: var(--tj-border-hover, #3a3d47);
-  background: var(--tj-surface-2, #13151d);
+  border-color: var(--card-accent, var(--ifm-color-primary));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  transform: translateY(-2px);
   text-decoration: none;
   color: inherit;
 }
 
-.quickLinkCard h3 {
+.quickLinkHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   margin-bottom: 0.5rem;
-  color: var(--tj-text, #e4e4e7);
-  font-family: 'Source Serif 4', Georgia, serif;
+}
+
+.quickLinkHeader h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.quickLinkBadge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: var(--ifm-color-primary);
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .quickLinkCard p {
   margin: 0;
-  color: var(--tj-text-muted, #a1a1aa);
-  font-size: 0.9rem;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.88rem;
+  line-height: 1.5;
 }
