@@ -567,7 +567,7 @@ pub fn resolve_progress(level: ProgressLevel, quiet: bool) -> Option<ProgressLev
         ProgressLevel::Detailed => Some(ProgressLevel::Detailed),
         ProgressLevel::Auto => {
             if std::io::stderr().is_terminal() {
-                Some(ProgressLevel::Compact)
+                Some(ProgressLevel::Detailed)
             } else {
                 None
             }
