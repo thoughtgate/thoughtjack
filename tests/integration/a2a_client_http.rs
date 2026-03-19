@@ -5,6 +5,7 @@
 //! trace.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -14,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use thoughtjack::engine::{
     ExtractorStore, PhaseEngine, PhaseLoop, PhaseLoopConfig, SharedTrace, TerminationReason,
 };
+use thoughtjack::observability::EventEmitter;
 use thoughtjack::protocol::a2a_client::create_a2a_client_driver;
 
 use crate::common::mock_server::MockServer;
@@ -34,6 +36,7 @@ fn test_config(trace: SharedTrace) -> PhaseLoopConfig {
         await_extractors_config: HashMap::new(),
         cancel: CancellationToken::new(),
         entry_action_sender: None,
+        events: Arc::new(EventEmitter::noop()),
     }
 }
 
@@ -320,6 +323,7 @@ attack:
         await_extractors_config: HashMap::new(),
         cancel: cancel.clone(),
         entry_action_sender: None,
+        events: Arc::new(EventEmitter::noop()),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, config);

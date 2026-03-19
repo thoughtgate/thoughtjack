@@ -5,12 +5,14 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
 use thoughtjack::engine::{
     ExtractorStore, PhaseEngine, PhaseLoop, PhaseLoopConfig, SharedTrace, TerminationReason,
 };
+use thoughtjack::observability::EventEmitter;
 use thoughtjack::protocol::mcp_client::create_mcp_client_driver;
 
 /// Helper: load an oatf Document from inline YAML.
@@ -100,6 +102,7 @@ attack:
         await_extractors_config: HashMap::new(),
         cancel: CancellationToken::new(),
         entry_action_sender: None,
+        events: Arc::new(EventEmitter::noop()),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, config);
@@ -187,6 +190,7 @@ attack:
         await_extractors_config: HashMap::new(),
         cancel: CancellationToken::new(),
         entry_action_sender: None,
+        events: Arc::new(EventEmitter::noop()),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, config);
@@ -246,6 +250,7 @@ attack:
         await_extractors_config: HashMap::new(),
         cancel: CancellationToken::new(),
         entry_action_sender: None,
+        events: Arc::new(EventEmitter::noop()),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, config);
@@ -325,6 +330,7 @@ attack:
         await_extractors_config: HashMap::new(),
         cancel: CancellationToken::new(),
         entry_action_sender: None,
+        events: Arc::new(EventEmitter::noop()),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, config);

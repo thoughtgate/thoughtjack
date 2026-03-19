@@ -179,6 +179,10 @@ thoughtjack run --config <path>
   --no-semantic                     # Skip semantic indicators
   --raw-synthesize                  # Bypass synthesize output validation (inject LLM output as-is)
 
+# Progress output
+  --progress <LEVEL>                # Progress detail level [default: auto]
+                                    # [possible values: off, compact, detailed, auto]
+
 # Observability (see TJ-SPEC-008)
   --metrics-port <port>             # Enable Prometheus metrics endpoint
   --events-file <path>              # Write structured events to JSONL file
@@ -582,6 +586,12 @@ The JSON verdict structure is defined in TJ-SPEC-014 §5.2.
 **Trigger:** `--raw-synthesize` flag set.
 
 **Expected:** Warning logged at startup: `"Synthesize output validation disabled (--raw-synthesize)"`. Execution proceeds.
+
+### EC-CLI-020: --progress with --quiet
+
+**Trigger:** `--quiet --progress compact` (or `detailed`).
+
+**Expected:** `--quiet` overrides any `--progress` level. No progress output produced.
 
 ---
 

@@ -54,21 +54,14 @@ This means:
 
 Why? Because real-world attacks operate this way — the malicious change happens between requests, not within one. This also prevents timing issues where a response might reference tools that don't exist yet.
 
-## Atomic state
+## Phase state ownership
 
-The current phase index is stored as an `AtomicU64`:
+In v0.5, the `PhaseEngine` owns the current phase index as a plain `usize` field. Thread safety comes from the architecture rather than atomic primitives:
 
-```
-Phase Index: AtomicU64
-├── Load (Relaxed) — every request reads the current phase
-├── Compare-and-swap — trigger evaluation atomically advances
-└── No mutex needed — lock-free hot path
-```
-
-This design choice matters for HTTP transport with multiple concurrent connections:
-- Multiple connections can read the current phase simultaneously without contention
-- Phase transitions are atomic — no intermediate states are visible
-- The `DashMap` provides per-connection state for `per-connection` scope
+- Each actor gets its own `PhaseLoop` running on a single Tokio task
+- The `PhaseLoop` is the only writer of phase state — no concurrent mutation
+- Drivers communicate via channels (`mpsc` for events, `watch` for extractors)
+- Cross-actor state uses `DashMap`-based `ExtractorStore`
 
 ## Trigger evaluation
 
@@ -90,7 +83,7 @@ phases:
   - name: trust_building
     trigger:
       event: tools/call     # event to count
-      count: 5              # fire after 5 calls
+      count: 3              # fire after 3 calls
 ```
 
 ### Time-based triggers
@@ -131,10 +124,10 @@ Regex patterns are compiled once and cached (up to 256 entries) for performance.
 phases:
   - name: dormant
     trigger:
-      event: tools/call:read_file  # scoped to a specific tool
+      event: tools/call
       match:
-        args.path:
-          regex: "(?i).*(passwd|shadow|\\.env|\\.pem|id_rsa).*"
+        field: "params.name"
+        equals: "read_file"
 ```
 
 ## Timeout behavior
@@ -173,9 +166,13 @@ When a phase is entered, actions fire in declaration order:
 
 ```yaml
 on_enter:
-  - log: "Phase entered"                              # 1st
-  - send_notification: "notifications/tools/list_changed"  # 2nd
-  - send_request: { method: "sampling/createMessage" }     # 3rd
+  - log:                                                    # 1st
+      message: "Phase entered"
+  - send:                                                   # 2nd
+      method: "notifications/tools/list_changed"
+  - send:                                                   # 3rd
+      method: "sampling/createMessage"
+      params: {}
 ```
 
 Entry actions are fire-and-forget — the engine doesn't wait for the client to process them before continuing.

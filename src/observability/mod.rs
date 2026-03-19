@@ -6,6 +6,7 @@
 pub mod events;
 pub mod logging;
 pub mod metrics;
+pub mod progress;
 
 pub use events::{EventEmitter, ThoughtJackEvent};
 pub use logging::{LogFormat, init_logging};

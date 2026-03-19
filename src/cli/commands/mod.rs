@@ -21,13 +21,14 @@ use crate::error::ThoughtJackError;
 /// Implements: TJ-SPEC-007 F-001, F-005
 pub async fn dispatch(cli: Cli, cancel: CancellationToken) -> Result<(), ThoughtJackError> {
     let quiet = cli.quiet;
+    let color = cli.color;
     match cli.command {
-        Commands::Run(args) => run::run(&args, quiet, cancel).await,
+        Commands::Run(args) => run::run(&args, quiet, color, cancel).await,
         Commands::Scenarios(cmd) => match cmd.subcommand {
             ScenariosSubcommand::List(ref args) => scenarios::list(args, quiet).await,
             ScenariosSubcommand::Show(ref args) => scenarios::show(args, quiet).await,
             ScenariosSubcommand::Run(ref args) => {
-                scenarios::run_scenario(args, quiet, cancel).await
+                scenarios::run_scenario(args, quiet, color, cancel).await
             }
         },
         Commands::Validate(args) => validate::validate(&args, quiet).await,

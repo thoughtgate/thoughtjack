@@ -1,63 +1,62 @@
 ---
 title: Run Over HTTP Transport
 sidebar_position: 6
-description: "Configure ThoughtJack's HTTP/SSE transport mode instead of stdio for multi-client testing, SSE streaming, and network-based MCP attack scenarios."
+description: "Configure ThoughtJack's Streamable HTTP transport for multi-client testing and network-based MCP attack scenarios."
 ---
 
 # Run Over HTTP Transport
 
-By default ThoughtJack uses stdio (JSON-RPC over stdin/stdout). The HTTP transport enables multi-client testing with Server-Sent Events (SSE) for server-to-client messages.
+By default ThoughtJack uses stdio (JSON-RPC over stdin/stdout). The HTTP transport uses [MCP Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http) for network-based testing.
 
 ## Start with HTTP
 
 ```bash
-thoughtjack run --config my_config.yaml --mcp-server 127.0.0.1:8080
+thoughtjack run --config my_scenario.yaml --mcp-server 127.0.0.1:8080
 ```
 
-This binds an HTTP server on `http://localhost:8080`.
+This binds an HTTP server at `http://127.0.0.1:8080/mcp`.
 
 ## Specify host and port
 
 ```bash
 # Bind to all interfaces
-thoughtjack run --config my_config.yaml --mcp-server 0.0.0.0:8080
+thoughtjack run --config my_scenario.yaml --mcp-server 0.0.0.0:8080
 
 # Bind to specific interface
-thoughtjack run --config my_config.yaml --mcp-server 192.168.1.100:3000
+thoughtjack run --config my_scenario.yaml --mcp-server 192.168.1.100:3000
 ```
 
 ## Test with curl
 
-Send an MCP `initialize` request:
+Send an MCP `initialize` request to the `/mcp` endpoint:
 
 ```bash
-curl -X POST http://localhost:8080 \
+curl -X POST http://127.0.0.1:8080/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
     "method": "initialize",
     "params": {
-      "protocolVersion": "2024-11-05",
+      "protocolVersion": "2025-03-26",
       "capabilities": {},
       "clientInfo": { "name": "test-client", "version": "1.0.0" }
     }
   }'
 ```
 
-## SSE endpoint
-
-Server-to-client messages (notifications, requests) are delivered via SSE. Connect to the SSE stream:
+The response includes an `Mcp-Session-Id` header. Pass it on subsequent requests to maintain the session:
 
 ```bash
-curl -N http://localhost:8080/sse
+curl -X POST http://127.0.0.1:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: <session-id-from-init>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 ```
 
-Notifications like `tools/list_changed` arrive as SSE events.
-
-## State scoping
-
-With HTTP transport, multiple clients can connect simultaneously. In v0.5, each connection has independent phase state by default — Client A reaching the exploit phase doesn't affect Client B.
+Responses are returned as SSE `event: message` frames with `data:` containing the JSON-RPC response.
 
 ## When to use HTTP
 
@@ -67,7 +66,7 @@ With HTTP transport, multiple clients can connect simultaneously. In v0.5, each 
 | Testing multiple concurrent clients | HTTP |
 | Automated test suites with HTTP clients | HTTP |
 | Integration with MCP clients that spawn subprocesses | stdio |
-| Testing SSE streaming behavior | HTTP |
+| Browser-based or remote testing | HTTP |
 
 ## Combining with other flags
 
@@ -75,10 +74,10 @@ All `run` flags work with HTTP transport:
 
 ```bash
 thoughtjack run \
-  --config my_config.yaml \
+  --config my_scenario.yaml \
   --mcp-server 127.0.0.1:8080 \
   --events-file events.jsonl \
-  -vv
+  --progress detailed
 ```
 
 Note: The `pipe_deadlock` side effect only works with stdio transport and is silently skipped on HTTP.

@@ -611,7 +611,7 @@ src/observability/
 #[serde(tag = "type")]
 pub enum ThoughtJackEvent {
     // --- Engine (TJ-SPEC-013) ---
-    PhaseEntered { actor: String, phase_name: String, phase_index: usize },
+    PhaseEntered { actor: String, phase_name: String, phase_index: usize, trigger_event: Option<String>, trigger_count: Option<i64> },
     PhaseAdvanced { actor: String, from: String, to: String, trigger: String },
     PhaseTerminal { actor: String, phase_name: String },
     ExtractorCaptured { actor: String, name: String, value_preview: String },
@@ -638,13 +638,14 @@ pub enum ThoughtJackEvent {
     GracePeriodStarted { duration_seconds: u64 },
     GracePeriodExpired { messages_captured: usize },
     GracePeriodEarlyTermination { reason: String },
-    IndicatorEvaluated { indicator_id: String, method: String, result: String, duration_ms: u64 },
+    IndicatorEvaluated { indicator_id: String, method: String, result: String, duration_ms: u64, evidence: Option<String> },
+    PhaseCompleted { actor: String, phase_name: String, duration_ms: u64, message_count: usize },
     IndicatorSkipped { indicator_id: String, reason: String },
     SemanticLlmCall { model: String, indicator_id: String, latency_ms: u64 },
     VerdictComputed { result: String, matched: usize, total: usize },
 
     // --- Protocol (TJ-SPEC-013, 016, 017, 018) ---
-    ProtocolMessageReceived { actor: String, method: String, protocol: String },
+    ProtocolMessageReceived { actor: String, method: String, protocol: String, qualifier: Option<String>, trigger_current: Option<u64>, trigger_total: Option<i64> },
     ProtocolMessageSent { actor: String, method: String, protocol: String, duration_ms: u64 },
     ProtocolNotification { actor: String, method: String, direction: String },
     ProtocolTransportError { actor: String, error: String },

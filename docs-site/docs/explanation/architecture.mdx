@@ -13,7 +13,7 @@ ThoughtJack is a monolithic Rust crate that implements an adversarial agent secu
 ```mermaid
 graph TD
     CLI[CLI<br/>args.rs, commands/] --> Config[Config<br/>schema, loader, validation]
-    CLI --> Scenarios[Scenarios<br/>27 built-in attacks]
+    CLI --> Scenarios[Scenarios<br/>10 built-in attacks]
     CLI --> Orchestrator[Orchestrator<br/>orchestration/orchestrator.rs]
     Orchestrator --> ActorRunner[ActorRunner<br/>orchestration/runner.rs]
     ActorRunner --> PhaseLoop[PhaseLoop<br/>engine/loop.rs]
@@ -100,7 +100,7 @@ Controls response delivery and side effects:
 
 ### Scenarios (`scenarios/`)
 
-Built-in attack scenario (`rug-pull`) embedded at compile time via `include_str!`, plus 25 archived v0.2 scenarios under `scenarios/archive/`. Supports listing, detail display, fuzzy name matching, and YAML export.
+10 built-in OATF attack scenarios embedded at compile time via `include_str!`. Scenarios are sourced from the [OATF scenarios](https://github.com/oatf-spec/scenarios) git submodule. Supports listing, detail display, fuzzy name matching, and YAML export.
 
 ### Observability (`observability/`)
 

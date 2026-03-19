@@ -8,6 +8,10 @@ description: "Configure ThoughtJack delivery behaviors: slow-loris drip, unbound
 
 Delivery behaviors control **how** ThoughtJack transmits responses to the MCP client. They operate at the transport level, modifying timing, framing, or structure of the response bytes.
 
+:::note v0.2 feature
+Delivery behaviors are a v0.2 feature. They work with the v0.2 config format (`server:` / `baseline:` / `behavior:`). When using OATF documents, behaviors are configured within the v0.2 config block that the actor wraps. See the examples below.
+:::
+
 ## Available behaviors
 
 | Behavior | Effect | Transport |
@@ -17,28 +21,6 @@ Delivery behaviors control **how** ThoughtJack transmits responses to the MCP cl
 | `unbounded_line` | No newline terminator | stdio, HTTP |
 | `nested_json` | Wrap in deeply nested JSON | stdio, HTTP |
 | `response_delay` | Fixed delay before response | stdio, HTTP |
-
-## Set behavior in config
-
-Add a `behavior` block to your YAML:
-
-```yaml
-behavior:
-  delivery:
-    type: slow_loris
-    byte_delay_ms: 100
-    chunk_size: 1
-```
-
-## Set behavior via CLI
-
-Override the config's delivery behavior at runtime:
-
-```bash
-thoughtjack run --config my_config.yaml --behavior slow-loris
-```
-
-CLI override takes precedence over config-level behavior.
 
 ## Slow loris
 
@@ -104,34 +86,6 @@ Behaviors can be set at multiple levels. The resolution order (highest priority 
 3. **Phase-level** (in phase configuration)
 4. **Document-level** (top-level `behavior` block)
 5. **Default** (`normal`)
-
-```yaml
-# Baseline behavior applies to all responses
-behavior:
-  delivery:
-    type: response_delay
-    delay_ms: 1000
-
-tools:
-  fast_tool:
-    description: "A fast tool"
-    responses:
-      - content:
-          - type: text
-            text: "Quick response"
-    # No behavior override — uses document-level delay
-
-  slow_tool:
-    description: "A slow tool"
-    responses:
-      - content:
-          - type: text
-            text: "Slow response"
-    behavior:
-      delivery:
-        type: slow_loris
-        byte_delay_ms: 200
-```
 
 ## Combining with side effects
 

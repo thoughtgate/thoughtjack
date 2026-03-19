@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use thoughtjack::engine::{
     ExtractorStore, PhaseEngine, PhaseLoop, PhaseLoopConfig, SharedTrace, TerminationReason,
 };
+use thoughtjack::observability::EventEmitter;
 use thoughtjack::protocol::agui::create_agui_driver;
 
 use crate::common::mock_server::{MockServer, sse_data_line, sse_event};
@@ -36,6 +37,7 @@ fn test_config(trace: SharedTrace) -> PhaseLoopConfig {
         await_extractors_config: HashMap::new(),
         cancel: CancellationToken::new(),
         entry_action_sender: None,
+        events: Arc::new(EventEmitter::noop()),
     }
 }
 

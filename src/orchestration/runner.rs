@@ -322,7 +322,7 @@ pub(crate) struct ActorRunContext<'a> {
     /// Broadcast receiver for the readiness gate (client-mode actors).
     pub gate_rx: Option<broadcast::Receiver<()>>,
     /// Event emitter for observability.
-    pub events: &'a EventEmitter,
+    pub events: &'a Arc<EventEmitter>,
 }
 
 // ============================================================================
@@ -353,7 +353,7 @@ pub async fn run_actor(
     cancel: CancellationToken,
     ready_tx: Option<oneshot::Sender<()>>,
     gate_rx: Option<broadcast::Receiver<()>>,
-    events: &EventEmitter,
+    events: &Arc<EventEmitter>,
 ) -> Result<ActorResult, EngineError> {
     let actors = document_actors(&document);
     let actor = actors.get(actor_index).ok_or_else(|| {
@@ -481,6 +481,7 @@ async fn run_mcp_server_actor(
         await_extractors_config: await_config,
         cancel,
         entry_action_sender: Some(Box::new(entry_action_sender)),
+        events: Arc::clone(events),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -554,6 +555,7 @@ async fn run_agui_client_actor(
         await_extractors_config: await_config,
         cancel,
         entry_action_sender: None,
+        events: Arc::clone(events),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -620,6 +622,7 @@ async fn run_a2a_server_actor(
         await_extractors_config: await_config,
         cancel,
         entry_action_sender: None,
+        events: Arc::clone(events),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -711,6 +714,7 @@ async fn run_a2a_client_actor(
         await_extractors_config: await_config,
         cancel,
         entry_action_sender: None,
+        events: Arc::clone(events),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -824,6 +828,7 @@ async fn run_mcp_client_actor(
         await_extractors_config: await_config,
         cancel,
         entry_action_sender: None,
+        events: Arc::clone(events),
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -865,6 +870,7 @@ mod tests {
             raw_synthesize: true,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let config = build_actor_config(&args).expect("valid headers should parse");
@@ -926,7 +932,7 @@ attack:
             CancellationToken::new(),
             None,
             None,
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 
@@ -980,7 +986,7 @@ attack:
             CancellationToken::new(),
             None,
             None,
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 
@@ -1038,7 +1044,7 @@ attack:
             CancellationToken::new(),
             None,
             None,
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 
@@ -1098,7 +1104,7 @@ attack:
             CancellationToken::new(),
             None,
             Some(rx),
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 
@@ -1159,7 +1165,7 @@ attack:
             CancellationToken::new(),
             None,
             Some(rx),
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 
@@ -1217,7 +1223,7 @@ attack:
             CancellationToken::new(),
             None,
             Some(rx),
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 
@@ -1284,7 +1290,7 @@ attack:
             cancel,
             None,
             None,
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 
@@ -1347,7 +1353,7 @@ attack:
             CancellationToken::new(),
             None,
             None,
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 
@@ -1414,7 +1420,7 @@ attack:
                 cancel,
                 None,
                 None,
-                &EventEmitter::noop(),
+                &Arc::new(EventEmitter::noop()),
             ),
         )
         .await
@@ -1456,6 +1462,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let config = build_actor_config(&args).expect("valid headers should parse");
@@ -1490,6 +1497,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let err = build_actor_config(&args).expect_err("missing colon should be rejected");
@@ -1518,6 +1526,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let err = build_actor_config(&args).expect_err("invalid header name should be rejected");
@@ -1546,6 +1555,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let err = build_actor_config(&args).expect_err("invalid header value should be rejected");
@@ -1574,6 +1584,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: crate::cli::args::ProgressLevel::Off,
         };
 
         let config = build_actor_config(&args).expect("empty header list should be valid");
@@ -1632,7 +1643,7 @@ attack:
             CancellationToken::new(),
             None,
             None,
-            &EventEmitter::noop(),
+            &Arc::new(EventEmitter::noop()),
         )
         .await;
 

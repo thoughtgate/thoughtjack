@@ -125,6 +125,7 @@ pub async fn show(args: &ScenariosShowArgs, quiet: bool) -> Result<(), ThoughtJa
 pub async fn run_scenario(
     args: &ScenariosRunArgs,
     quiet: bool,
+    color: crate::cli::args::ColorChoice,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
     let scenario = scenarios::find_scenario(&args.name).ok_or_else(|| {
@@ -138,7 +139,7 @@ pub async fn run_scenario(
         ThoughtJackError::Usage(message)
     })?;
 
-    super::run::run_from_yaml(scenario.yaml, &args.execution, quiet, cancel).await
+    super::run::run_from_yaml(scenario.yaml, &args.execution, quiet, color, cancel).await
 }
 
 #[cfg(test)]
@@ -146,7 +147,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::cli::args::ExecutionArgs;
+    use crate::cli::args::{ExecutionArgs, ProgressLevel};
     fn test_run_args() -> ExecutionArgs {
         ExecutionArgs {
             mcp_server: None,
@@ -165,6 +166,7 @@ mod tests {
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            progress: ProgressLevel::Off,
         }
     }
 
@@ -175,9 +177,14 @@ mod tests {
             execution: test_run_args(),
         };
 
-        let err = run_scenario(&args, true, CancellationToken::new())
-            .await
-            .expect_err("unknown scenario should fail with usage error");
+        let err = run_scenario(
+            &args,
+            true,
+            crate::cli::args::ColorChoice::Never,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("unknown scenario should fail with usage error");
 
         match err {
             ThoughtJackError::Usage(msg) => {

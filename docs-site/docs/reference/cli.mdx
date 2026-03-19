@@ -44,6 +44,7 @@ thoughtjack run --config <oatf.yaml>
 | `--header <KEY:VALUE>` | | HTTP headers for client transports (repeatable) |
 | `--no-semantic` | | Disable semantic (LLM-as-judge) indicator evaluation |
 | `--raw-synthesize` | | Bypass synthesize output validation |
+| `--progress <LEVEL>` | `THOUGHTJACK_PROGRESS` | Progress detail level: `off`, `compact`, `detailed`, `auto` (default) |
 | `--metrics-port <port>` | `THOUGHTJACK_METRICS_PORT` | Enable Prometheus metrics endpoint |
 | `--events-file <path>` | `THOUGHTJACK_EVENTS_FILE` | Write structured events to JSONL file |
 
@@ -91,10 +92,10 @@ thoughtjack scenarios show <name>
 Run a built-in scenario by name.
 
 ```bash
-thoughtjack scenarios run <name> --config <oatf.yaml>
+thoughtjack scenarios run <name> [run flags...]
 ```
 
-Accepts all `run` flags after the scenario name.
+Accepts all `run` flags (except `--config`) after the scenario name. Uses the built-in scenario YAML.
 
 ### `version`
 
@@ -111,6 +112,7 @@ thoughtjack version [--format human|json]
 | `THOUGHTJACK_CONFIG` | — | Default OATF document file path |
 | `THOUGHTJACK_METRICS_PORT` | — | Prometheus metrics port |
 | `THOUGHTJACK_EVENTS_FILE` | — | Structured event output file |
+| `THOUGHTJACK_PROGRESS` | `auto` | Progress detail level (`off`, `compact`, `detailed`, `auto`) |
 | `THOUGHTJACK_COLOR` | `auto` | Color output control |
 | `THOUGHTJACK_LOG_LEVEL` | — | Override log level (trace, debug, info, warn, error) |
 | `NO_COLOR` | — | Disable color output (any value) |
