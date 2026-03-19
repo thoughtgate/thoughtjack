@@ -89,9 +89,9 @@ pub async fn run_from_yaml(
     config.grace_period = Some(grace_applied);
 
     // 4. Set up EventEmitter + progress renderer
-    let resolved_progress = resolve_progress(args.progress, quiet);
+    let progress_enabled = resolve_progress(args.progress, quiet);
     let (events, progress_handle): (Arc<EventEmitter>, Option<tokio::task::JoinHandle<()>>) =
-        if let Some(progress_level) = resolved_progress {
+        if progress_enabled {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let writer: Box<dyn std::io::Write + Send> = match &args.events_file {
                 Some(path) => Box::new(
@@ -100,12 +100,11 @@ pub async fn run_from_yaml(
                         .append(true)
                         .open(path)?,
                 ),
-                None => Box::new(std::io::sink()),
+                None => Box::new(std::io::stdout()),
             };
             let emitter = Arc::new(EventEmitter::with_progress(writer, tx));
             let color_enabled = resolve_color(color);
-            let renderer =
-                ProgressRenderer::new(rx, &loaded.document, color_enabled, progress_level);
+            let renderer = ProgressRenderer::new(rx, &loaded.document, color_enabled);
             (emitter, Some(tokio::spawn(renderer.run())))
         } else {
             let emitter: Arc<EventEmitter> = match &args.events_file {
@@ -210,7 +209,7 @@ pub async fn run_from_yaml(
     }
 
     // 12b. Print human summary (after progress renderer finishes)
-    if !quiet && resolved_progress.is_none() {
+    if !quiet && !progress_enabled {
         print_human_summary(&output);
     }
 

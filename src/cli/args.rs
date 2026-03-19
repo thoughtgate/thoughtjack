@@ -141,7 +141,7 @@ pub struct ExecutionArgs {
     #[arg(long, env = "THOUGHTJACK_EVENTS_FILE")]
     pub events_file: Option<PathBuf>,
 
-    /// Progress output detail level [default: auto].
+    /// Progress output [default: auto (on for TTY)].
     #[arg(long, default_value = "auto", env = "THOUGHTJACK_PROGRESS")]
     pub progress: ProgressLevel,
 }
@@ -293,9 +293,9 @@ pub enum LogFormatChoice {
     Json,
 }
 
-/// Progress output detail level.
+/// Progress output level.
 ///
-/// Controls how much real-time progress information is shown during
+/// Controls whether real-time progress information is shown during
 /// scenario execution.
 ///
 /// Implements: TJ-SPEC-007 F-001
@@ -303,11 +303,9 @@ pub enum LogFormatChoice {
 pub enum ProgressLevel {
     /// No progress output.
     Off,
-    /// Compact progress: phase labels, protocol messages, entry actions.
-    Compact,
-    /// Detailed progress: adds trigger counters, indicator evidence, phase timing.
-    Detailed,
-    /// Auto-detect: compact on TTY, off otherwise.
+    /// Show progress output.
+    On,
+    /// Auto-detect: on for TTY, off otherwise.
     #[default]
     Auto,
 }
@@ -647,8 +645,7 @@ mod tests {
     fn test_progress_values() {
         let expected = [
             ("off", ProgressLevel::Off),
-            ("compact", ProgressLevel::Compact),
-            ("detailed", ProgressLevel::Detailed),
+            ("on", ProgressLevel::On),
             ("auto", ProgressLevel::Auto),
         ];
         for (input, variant) in expected {

@@ -116,7 +116,6 @@ struct PendingPhase {
 pub struct ProgressRenderer {
     colors: AnsiColors,
     rx: mpsc::UnboundedReceiver<ThoughtJackEvent>,
-    level: ProgressLevel,
     scenario_name: String,
     scenario_id: Option<String>,
     scenario_description: Option<String>,
@@ -142,7 +141,6 @@ impl ProgressRenderer {
         rx: mpsc::UnboundedReceiver<ThoughtJackEvent>,
         document: &oatf::Document,
         color_enabled: bool,
-        level: ProgressLevel,
     ) -> Self {
         let attack = &document.attack;
 
@@ -202,7 +200,6 @@ impl ProgressRenderer {
         Self {
             colors: AnsiColors::new(color_enabled),
             rx,
-            level,
             scenario_name,
             scenario_id,
             scenario_description,
@@ -287,15 +284,11 @@ impl ProgressRenderer {
                 self.flush_pending_phase_to(out);
                 self.maybe_print_actor_change_to(actor, out);
 
-                let suffix = if self.is_detailed() {
-                    match (trigger_current, trigger_total) {
-                        (Some(current), Some(total)) => {
-                            format!(" [{current}/{total}]")
-                        }
-                        _ => String::new(),
+                let suffix = match (trigger_current, trigger_total) {
+                    (Some(current), Some(total)) => {
+                        format!(" [{current}/{total}]")
                     }
-                } else {
-                    String::new()
+                    _ => String::new(),
                 };
 
                 if let Some(q) = qualifier {
@@ -373,14 +366,10 @@ impl ProgressRenderer {
                 let matched = result == "matched";
                 let symbol = if matched { "\u{2717}" } else { "\u{2713}" };
 
-                let line = if self.is_detailed() {
-                    evidence.as_ref().map_or_else(
-                        || format!("    {symbol} {indicator_id}"),
-                        |ev| format!("    {symbol} {indicator_id}: {ev}"),
-                    )
-                } else {
-                    format!("    {symbol} {indicator_id}")
-                };
+                let line = evidence.as_ref().map_or_else(
+                    || format!("    {symbol} {indicator_id}"),
+                    |ev| format!("    {symbol} {indicator_id}: {ev}"),
+                );
 
                 if matched {
                     let _ = writeln!(out, "{}", self.colors.red(&line));
@@ -404,15 +393,13 @@ impl ProgressRenderer {
             } => {
                 self.pending_phase = None;
 
-                if self.is_detailed() {
-                    #[allow(clippy::cast_precision_loss)]
-                    let secs = *duration_ms as f64 / 1000.0;
-                    let timing = format!(
-                        "    ({secs:.1}s, {message_count} message{})",
-                        if *message_count == 1 { "" } else { "s" }
-                    );
-                    let _ = writeln!(out, "{}", self.colors.dim(&timing));
-                }
+                #[allow(clippy::cast_precision_loss)]
+                let secs = *duration_ms as f64 / 1000.0;
+                let timing = format!(
+                    "    ({secs:.1}s, {message_count} message{})",
+                    if *message_count == 1 { "" } else { "s" }
+                );
+                let _ = writeln!(out, "{}", self.colors.dim(&timing));
             }
 
             ThoughtJackEvent::VerdictComputed { result, .. } => {
@@ -446,9 +433,7 @@ impl ProgressRenderer {
         let scenario_line = format!("  Scenario: {id_prefix}{}", self.scenario_name);
         let _ = writeln!(out, "{}", self.colors.bold(&scenario_line));
 
-        if self.is_detailed()
-            && let Some(desc) = &self.scenario_description
-        {
+        if let Some(desc) = &self.scenario_description {
             let desc_line = format!("  {desc}");
             let _ = writeln!(out, "{}", self.colors.dim(&desc_line));
         }
@@ -507,11 +492,6 @@ impl ProgressRenderer {
         }
     }
 
-    /// Whether the level is `Detailed`.
-    const fn is_detailed(&self) -> bool {
-        matches!(self.level, ProgressLevel::Detailed)
-    }
-
     /// Renders a single event to stderr. Delegates to [`render_event_to`].
     fn render_event(&mut self, event: &ThoughtJackEvent) {
         let mut out = std::io::stderr().lock();
@@ -549,31 +529,24 @@ pub fn format_phase_name(raw: &str) -> String {
     raw.to_string()
 }
 
-/// Resolves the effective progress level based on CLI flags.
+/// Resolves whether progress output should be enabled.
 ///
-/// - `Auto`: compact on TTY, off otherwise
+/// - `Auto`: on for TTY, off otherwise
 /// - `Off`: no progress output
-/// - `Compact`/`Detailed`: forced level (overridden by `--quiet`)
+/// - `On`: force progress (overridden by `--quiet`)
 ///
-/// Returns `None` when progress should be disabled.
+/// Returns `true` when progress should be shown.
 ///
 /// Implements: TJ-SPEC-007 F-001
 #[must_use]
-pub fn resolve_progress(level: ProgressLevel, quiet: bool) -> Option<ProgressLevel> {
+pub fn resolve_progress(level: ProgressLevel, quiet: bool) -> bool {
     if quiet || level == ProgressLevel::Off {
-        return None;
+        return false;
     }
     match level {
-        ProgressLevel::Off => None,
-        ProgressLevel::Compact => Some(ProgressLevel::Compact),
-        ProgressLevel::Detailed => Some(ProgressLevel::Detailed),
-        ProgressLevel::Auto => {
-            if std::io::stderr().is_terminal() {
-                Some(ProgressLevel::Detailed)
-            } else {
-                None
-            }
-        }
+        ProgressLevel::Off => false,
+        ProgressLevel::On => true,
+        ProgressLevel::Auto => std::io::stderr().is_terminal(),
     }
 }
 
@@ -667,45 +640,30 @@ mod tests {
     }
 
     #[test]
-    fn resolve_progress_off_always_none() {
-        assert!(resolve_progress(ProgressLevel::Off, false).is_none());
-        assert!(resolve_progress(ProgressLevel::Off, true).is_none());
+    fn resolve_progress_off_always_false() {
+        assert!(!resolve_progress(ProgressLevel::Off, false));
+        assert!(!resolve_progress(ProgressLevel::Off, true));
     }
 
     #[test]
     fn resolve_progress_quiet_overrides() {
-        assert!(resolve_progress(ProgressLevel::Compact, true).is_none());
-        assert!(resolve_progress(ProgressLevel::Detailed, true).is_none());
-        assert!(resolve_progress(ProgressLevel::Auto, true).is_none());
+        assert!(!resolve_progress(ProgressLevel::On, true));
+        assert!(!resolve_progress(ProgressLevel::Auto, true));
     }
 
     #[test]
-    fn resolve_progress_compact_not_quiet() {
-        assert_eq!(
-            resolve_progress(ProgressLevel::Compact, false),
-            Some(ProgressLevel::Compact)
-        );
-    }
-
-    #[test]
-    fn resolve_progress_detailed_not_quiet() {
-        assert_eq!(
-            resolve_progress(ProgressLevel::Detailed, false),
-            Some(ProgressLevel::Detailed)
-        );
+    fn resolve_progress_on_not_quiet() {
+        assert!(resolve_progress(ProgressLevel::On, false));
     }
 
     // ── Test helpers for ProgressRenderer ────────────────────────────────
 
     /// Creates a `ProgressRenderer` from a YAML document string.
     /// Returns `(renderer, tx)` so the test can send events and render them.
-    fn make_renderer(
-        yaml: &str,
-        level: ProgressLevel,
-    ) -> (ProgressRenderer, mpsc::UnboundedSender<ThoughtJackEvent>) {
+    fn make_renderer(yaml: &str) -> (ProgressRenderer, mpsc::UnboundedSender<ThoughtJackEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let loaded = oatf::load(yaml).expect("test YAML should be valid");
-        let renderer = ProgressRenderer::new(rx, &loaded.document, false, level);
+        let renderer = ProgressRenderer::new(rx, &loaded.document, false);
         (renderer, tx)
     }
 
@@ -784,7 +742,7 @@ attack:
 
     #[test]
     fn header_prints_scenario_name_and_id() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ActorStarted {
@@ -800,7 +758,7 @@ attack:
 
     #[test]
     fn header_prints_protocol_and_phases() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ActorStarted {
@@ -818,8 +776,8 @@ attack:
     }
 
     #[test]
-    fn header_prints_description_in_detailed_mode() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Detailed);
+    fn header_prints_description() {
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ActorStarted {
@@ -834,24 +792,8 @@ attack:
     }
 
     #[test]
-    fn header_omits_description_in_compact_mode() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
-        let output = render_to_string(
-            &mut r,
-            &[ThoughtJackEvent::ActorStarted {
-                actor_name: "default".to_string(),
-                phase_count: 2,
-            }],
-        );
-        assert!(
-            !output.contains("A test scenario for unit testing"),
-            "got: {output}"
-        );
-    }
-
-    #[test]
     fn header_printed_only_once() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -872,7 +814,7 @@ attack:
 
     #[test]
     fn phase_entered_deferred_until_first_event() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         // Phase entered but no visible event yet — should not appear
         let output = render_to_string(
             &mut r,
@@ -892,7 +834,7 @@ attack:
 
     #[test]
     fn phase_flushed_on_protocol_message() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -922,7 +864,7 @@ attack:
 
     #[test]
     fn phase_label_with_trigger_no_count() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -951,7 +893,7 @@ attack:
 
     #[test]
     fn phase_label_no_trigger() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -980,7 +922,7 @@ attack:
 
     #[test]
     fn empty_phase_suppressed() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -1008,7 +950,7 @@ attack:
 
     #[test]
     fn consecutive_phase_discards_previous_empty() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -1048,7 +990,7 @@ attack:
 
     #[test]
     fn protocol_message_received_with_qualifier() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ProtocolMessageReceived {
@@ -1066,7 +1008,7 @@ attack:
 
     #[test]
     fn protocol_message_received_without_qualifier() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ProtocolMessageReceived {
@@ -1082,8 +1024,8 @@ attack:
     }
 
     #[test]
-    fn protocol_message_received_detailed_shows_trigger_counter() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Detailed);
+    fn protocol_message_received_shows_trigger_counter() {
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ProtocolMessageReceived {
@@ -1095,35 +1037,12 @@ attack:
                 trigger_total: Some(3),
             }],
         );
-        assert!(
-            output.contains("[2/3]"),
-            "detailed should show counter, got: {output}"
-        );
-    }
-
-    #[test]
-    fn protocol_message_received_compact_hides_trigger_counter() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
-        let output = render_to_string(
-            &mut r,
-            &[ThoughtJackEvent::ProtocolMessageReceived {
-                actor: "default".to_string(),
-                method: "tools/call".to_string(),
-                protocol: "mcp".to_string(),
-                qualifier: None,
-                trigger_current: Some(2),
-                trigger_total: Some(3),
-            }],
-        );
-        assert!(
-            !output.contains("[2/3]"),
-            "compact should hide counter, got: {output}"
-        );
+        assert!(output.contains("[2/3]"), "got: {output}");
     }
 
     #[test]
     fn protocol_message_sent_with_qualifier() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ProtocolMessageSent {
@@ -1140,7 +1059,7 @@ attack:
 
     #[test]
     fn protocol_message_sent_without_qualifier() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ProtocolMessageSent {
@@ -1156,7 +1075,7 @@ attack:
 
     #[test]
     fn protocol_notification_outgoing() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ProtocolNotification {
@@ -1173,7 +1092,7 @@ attack:
 
     #[test]
     fn protocol_notification_incoming() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ProtocolNotification {
@@ -1192,7 +1111,7 @@ attack:
 
     #[test]
     fn entry_action_renders_with_arrow() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::EntryActionExecuted {
@@ -1205,7 +1124,7 @@ attack:
 
     #[test]
     fn entry_action_flushes_pending_phase() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -1233,7 +1152,7 @@ attack:
 
     #[test]
     fn grace_period_nonzero_renders() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::GracePeriodStarted {
@@ -1245,7 +1164,7 @@ attack:
 
     #[test]
     fn grace_period_zero_suppressed() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::GracePeriodStarted {
@@ -1262,7 +1181,7 @@ attack:
 
     #[test]
     fn indicator_matched_shows_cross() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::IndicatorEvaluated {
@@ -1278,7 +1197,7 @@ attack:
 
     #[test]
     fn indicator_not_matched_shows_check() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::IndicatorEvaluated {
@@ -1293,8 +1212,8 @@ attack:
     }
 
     #[test]
-    fn indicator_detailed_shows_evidence() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Detailed);
+    fn indicator_shows_evidence() {
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::IndicatorEvaluated {
@@ -1312,28 +1231,8 @@ attack:
     }
 
     #[test]
-    fn indicator_compact_hides_evidence() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
-        let output = render_to_string(
-            &mut r,
-            &[ThoughtJackEvent::IndicatorEvaluated {
-                indicator_id: "IND-003".to_string(),
-                method: "pattern".to_string(),
-                result: "matched".to_string(),
-                duration_ms: 5,
-                evidence: Some("regex matched id_rsa".to_string()),
-            }],
-        );
-        assert!(output.contains("✗ IND-003"), "got: {output}");
-        assert!(
-            !output.contains("regex matched"),
-            "compact hides evidence, got: {output}"
-        );
-    }
-
-    #[test]
     fn indicator_skipped_shows_circle() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::IndicatorSkipped {
@@ -1350,41 +1249,8 @@ attack:
     // ── Phase completed rendering ───────────────────────────────────────
 
     #[test]
-    fn phase_completed_detailed_shows_timing() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Detailed);
-        // Need a pending phase first so PhaseCompleted doesn't just discard
-        let output = render_to_string(
-            &mut r,
-            &[
-                ThoughtJackEvent::PhaseEntered {
-                    actor: "default".to_string(),
-                    phase_name: "trust_building".to_string(),
-                    phase_index: 0,
-                    trigger_event: None,
-                    trigger_count: None,
-                },
-                ThoughtJackEvent::ProtocolMessageReceived {
-                    actor: "default".to_string(),
-                    method: "tools/call".to_string(),
-                    protocol: "mcp".to_string(),
-                    qualifier: None,
-                    trigger_current: None,
-                    trigger_total: None,
-                },
-                ThoughtJackEvent::PhaseCompleted {
-                    actor: "default".to_string(),
-                    phase_name: "trust_building".to_string(),
-                    duration_ms: 4200,
-                    message_count: 8,
-                },
-            ],
-        );
-        assert!(output.contains("4.2s, 8 messages"), "got: {output}");
-    }
-
-    #[test]
-    fn phase_completed_compact_hides_timing() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+    fn phase_completed_shows_timing() {
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::PhaseCompleted {
@@ -1394,15 +1260,12 @@ attack:
                 message_count: 8,
             }],
         );
-        assert!(
-            !output.contains("4.2s"),
-            "compact hides timing, got: {output}"
-        );
+        assert!(output.contains("4.2s, 8 messages"), "got: {output}");
     }
 
     #[test]
     fn phase_completed_singular_message() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Detailed);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::PhaseCompleted {
@@ -1423,7 +1286,7 @@ attack:
 
     #[test]
     fn verdict_exploited_rendered() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::VerdictComputed {
@@ -1441,7 +1304,7 @@ attack:
 
     #[test]
     fn verdict_not_exploited_rendered() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::VerdictComputed {
@@ -1455,7 +1318,7 @@ attack:
 
     #[test]
     fn verdict_partial_rendered() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::VerdictComputed {
@@ -1469,7 +1332,7 @@ attack:
 
     #[test]
     fn verdict_sets_verdict_seen_flag() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         assert!(!r.verdict_seen);
         render_to_string(
             &mut r,
@@ -1486,7 +1349,7 @@ attack:
 
     #[test]
     fn multi_actor_shows_actor_separator() {
-        let (mut r, _tx) = make_renderer(MULTI_ACTOR_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MULTI_ACTOR_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -1514,7 +1377,7 @@ attack:
 
     #[test]
     fn multi_actor_same_actor_no_duplicate_separator() {
-        let (mut r, _tx) = make_renderer(MULTI_ACTOR_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MULTI_ACTOR_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -1545,7 +1408,7 @@ attack:
 
     #[test]
     fn single_actor_no_separator() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[ThoughtJackEvent::ProtocolMessageReceived {
@@ -1567,7 +1430,7 @@ attack:
 
     #[test]
     fn unhandled_events_produce_no_output() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -1596,7 +1459,7 @@ attack:
 
     #[test]
     fn full_rug_pull_sequence() {
-        let (mut r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Detailed);
+        let (mut r, _tx) = make_renderer(MINIMAL_YAML);
         let output = render_to_string(
             &mut r,
             &[
@@ -1690,7 +1553,7 @@ attack:
 
     #[tokio::test]
     async fn run_completes_when_channel_closes() {
-        let (mut renderer, tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut renderer, tx) = make_renderer(MINIMAL_YAML);
         // Override to avoid writing to real stderr during tests
         renderer.verdict_seen = true;
 
@@ -1709,12 +1572,12 @@ attack:
 
     #[tokio::test]
     async fn run_prints_interrupted_when_no_verdict() {
-        let (_renderer, tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (_renderer, tx) = make_renderer(MINIMAL_YAML);
         // Just verify it doesn't hang — the "interrupted" output goes to stderr
         // which we can't easily capture, but we verify the verdict_seen flag logic
         drop(tx);
 
-        let (mut renderer2, tx2) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (mut renderer2, tx2) = make_renderer(MINIMAL_YAML);
         assert!(!renderer2.verdict_seen);
         // Send verdict first to suppress the interrupted message
         renderer2.verdict_seen = true;
@@ -1729,7 +1592,7 @@ attack:
 
     #[test]
     fn constructor_extracts_metadata_single_actor() {
-        let (r, _tx) = make_renderer(MINIMAL_YAML, ProgressLevel::Compact);
+        let (r, _tx) = make_renderer(MINIMAL_YAML);
         assert_eq!(r.scenario_name, "Test Scenario");
         assert_eq!(r.scenario_id.as_deref(), Some("OATF-TEST-001"));
         assert_eq!(
@@ -1747,7 +1610,7 @@ attack:
 
     #[test]
     fn constructor_extracts_metadata_multi_actor() {
-        let (r, _tx) = make_renderer(MULTI_ACTOR_YAML, ProgressLevel::Detailed);
+        let (r, _tx) = make_renderer(MULTI_ACTOR_YAML);
         assert_eq!(r.scenario_name, "Multi-Actor Test");
         assert!(r.multi_actor);
         assert_eq!(r.actor_modes.len(), 2);
