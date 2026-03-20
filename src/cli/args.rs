@@ -144,6 +144,16 @@ pub struct ExecutionArgs {
     /// Progress output [default: auto (on for TTY)].
     #[arg(long, default_value = "auto", env = "THOUGHTJACK_PROGRESS")]
     pub progress: ProgressLevel,
+
+    /// Write full protocol trace (with payloads) to a JSONL file.
+    ///
+    /// Each line is a JSON object with seq, timestamp, actor, phase,
+    /// direction, method, and content fields (see TJ-SPEC-015 §5.4).
+    /// Use `-` for stdout.
+    ///
+    /// Implements: TJ-SPEC-014 F-010
+    #[arg(long, value_name = "PATH", env = "THOUGHTJACK_EXPORT_TRACE")]
+    pub export_trace: Option<String>,
 }
 
 /// Arguments for `run` — execute an OATF scenario.

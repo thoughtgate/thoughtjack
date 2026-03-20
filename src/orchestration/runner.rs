@@ -870,6 +870,7 @@ mod tests {
             raw_synthesize: true,
             metrics_port: None,
             events_file: None,
+            export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
         };
 
@@ -1462,6 +1463,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
         };
 
@@ -1497,6 +1499,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
         };
 
@@ -1526,6 +1529,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
         };
 
@@ -1555,6 +1559,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
         };
 
@@ -1584,6 +1589,7 @@ attack:
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
         };
 

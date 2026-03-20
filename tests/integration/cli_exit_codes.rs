@@ -493,3 +493,68 @@ attack:
         "run should fail when every actor terminates due cancellation/timeout",
     );
 }
+
+// ---- --export-trace tests ----
+
+#[test]
+fn export_trace_writes_jsonl_file() {
+    let yaml_file = write_terminal_yaml();
+    let config_path = yaml_file.path().to_string_lossy().into_owned();
+
+    let trace_dir = tempfile::tempdir().unwrap();
+    let trace_path = trace_dir.path().join("trace.jsonl");
+    let trace_path_str = trace_path.to_string_lossy().into_owned();
+
+    let output = run_thoughtjack(&[
+        "run",
+        "--config",
+        &config_path,
+        "--mcp-server",
+        "127.0.0.1:0",
+        "--max-session",
+        "500ms",
+        "--quiet",
+        "--export-trace",
+        &trace_path_str,
+    ]);
+
+    assert_exit_code(&output, 0, "export-trace with terminal yaml");
+    assert!(trace_path.exists(), "trace file should be created");
+
+    // File should exist (may be empty if no protocol messages exchanged)
+    let content = std::fs::read_to_string(&trace_path).unwrap();
+    // Each non-empty line should be valid JSON
+    for line in content.lines() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).expect("each trace line should be valid JSON");
+        assert!(parsed["seq"].is_number(), "trace entry should have seq");
+        assert!(parsed["method"].is_string(), "trace entry should have method");
+        assert!(!parsed["content"].is_null(), "trace entry should have content");
+    }
+}
+
+#[test]
+fn export_trace_creates_parent_dirs() {
+    let yaml_file = write_terminal_yaml();
+    let config_path = yaml_file.path().to_string_lossy().into_owned();
+
+    let trace_dir = tempfile::tempdir().unwrap();
+    let trace_path = trace_dir.path().join("nested").join("dir").join("trace.jsonl");
+    let trace_path_str = trace_path.to_string_lossy().into_owned();
+
+    let output = run_thoughtjack(&[
+        "run",
+        "--config",
+        &config_path,
+        "--mcp-server",
+        "127.0.0.1:0",
+        "--max-session",
+        "500ms",
+        "--quiet",
+        "--export-trace",
+        &trace_path_str,
+    ]);
+
+    assert_exit_code(&output, 0, "export-trace with nested dirs");
+    assert!(trace_path.exists(), "trace file should be created in nested directory");
+}
