@@ -21,10 +21,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from agent import create_graph
 
 _parser = argparse.ArgumentParser(description="LangGraph AG-UI reference agent")
-_parser.add_argument("--llm-base-url", required=True, help="Mock LLM base URL")
+_parser.add_argument("--llm-base-url", required=True, help="LLM base URL (OpenAI-compatible)")
 _parser.add_argument("--port", type=int, default=8000, help="Listen port")
 _parser.add_argument(
     "--mcp-server", action="append", default=[], help="MCP server URL (repeatable)",
+)
+_parser.add_argument("--api-key", default="mock-key", help="LLM API key")
+_parser.add_argument("--model", default="mock", help="LLM model name")
+_parser.add_argument(
+    "--default-headers", default=None,
+    help="JSON string of extra HTTP headers for the LLM client",
 )
 _args = _parser.parse_args()
 
@@ -48,7 +54,14 @@ async def agent_endpoint(request: Request) -> StreamingResponse:
     """AG-UI endpoint: lazily creates the LangGraph agent, runs it, streams SSE."""
     global _graph
     if _graph is None:
-        _graph = await create_graph(_args.llm_base_url, _args.mcp_server)
+        headers = json.loads(_args.default_headers) if _args.default_headers else None
+        _graph = await create_graph(
+            _args.llm_base_url,
+            _args.mcp_server,
+            api_key=_args.api_key,
+            model=_args.model,
+            default_headers=headers,
+        )
 
     body = await request.json()
     messages = body.get("messages", [])
@@ -89,4 +102,4 @@ async def on_startup() -> None:
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=_args.port, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=_args.port, log_level="warning")

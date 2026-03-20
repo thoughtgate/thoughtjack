@@ -54,13 +54,13 @@ The codebase follows the TJ-SPEC specifications in the `/specs` folder:
 | Module | Spec | Purpose |
 |--------|------|---------|
 | `engine/` | TJ-SPEC-013 | Core engine: PhaseEngine, PhaseLoop, PhaseDriver trait, GenerationProvider |
-| `engine/mcp_server.rs` | TJ-SPEC-013 §8.2 | MCP server PhaseDriver (the original mode, reimplemented on new engine) |
+| `engine/mcp_server/` | TJ-SPEC-013 §8.2 | MCP server PhaseDriver (the original mode, reimplemented on new engine) |
 | `verdict/` | TJ-SPEC-014 | Grace period, indicator evaluation, verdict computation, output |
 | `orchestration/` | TJ-SPEC-015 | Multi-actor: ExtractorStore, ActorRunner, Orchestrator, await_extractors |
 | `protocol/agui.rs` | TJ-SPEC-016 | AG-UI client PhaseDriver |
 | `protocol/a2a_server.rs` | TJ-SPEC-017 | A2A server PhaseDriver |
 | `protocol/a2a_client.rs` | TJ-SPEC-017 | A2A client PhaseDriver |
-| `protocol/mcp_client.rs` | TJ-SPEC-018 | MCP client PhaseDriver + server request handler |
+| `protocol/mcp_client/` | TJ-SPEC-018 | MCP client PhaseDriver + server request handler |
 
 ### Key Architectural Principles
 
@@ -170,6 +170,12 @@ cargo fmt -- --check
 
 # Run a scenario (v0.5)
 cargo run -- run --config <path.yaml>
+
+# Run a scenario with full trace output
+cargo run -- run --config <path.yaml> --export-trace trace.jsonl
+
+# Run a built-in scenario
+cargo run -- scenarios run oatf-001 --mcp-server 127.0.0.1:8080
 ```
 
 ## Commit Conventions
@@ -353,7 +359,7 @@ let (tx, _) = tokio::sync::watch::channel(HashMap::new());
 
 ```
 thoughtjack/
-├── Cargo.toml             # Single crate (no workspace)
+├── Cargo.toml             # Single crate (workspace includes fuzz/)
 ├── build.rs               # Build-time metadata
 ├── CLAUDE.md              # This file
 ├── README.md
@@ -372,7 +378,6 @@ thoughtjack/
 │   ├── main.rs            # Entry point
 │   ├── lib.rs             # Library root
 │   ├── error.rs           # Error types
-│   ├── server.rs          # Server runtime (v0.2)
 │   ├── config/            # TJ-SPEC-001, 006
 │   │   ├── mod.rs
 │   │   ├── schema.rs
@@ -382,33 +387,48 @@ thoughtjack/
 │   │   ├── mod.rs
 │   │   ├── stdio.rs
 │   │   ├── http.rs
+│   │   ├── sse.rs
 │   │   └── jsonrpc.rs
+│   ├── loader/            # OATF document loading + await_extractors preprocessing
+│   │   └── mod.rs
+│   ├── scenarios/         # Built-in scenario registry (TJ-SPEC-010)
+│   │   └── mod.rs
 │   ├── engine/            # TJ-SPEC-013 — v0.5 core engine
 │   │   ├── mod.rs
 │   │   ├── phase.rs       # PhaseEngine
-│   │   ├── loop.rs        # PhaseLoop (or phase_loop.rs)
+│   │   ├── phase_loop.rs  # PhaseLoop
 │   │   ├── driver.rs      # PhaseDriver trait + DriveResult + ProtocolEvent
 │   │   ├── generation.rs  # GenerationProvider + synthesize validation
+│   │   ├── actions.rs     # Phase entry actions (send, log)
 │   │   ├── types.rs       # Shared types (Direction, PhaseAction, etc.)
-│   │   └── mcp_server.rs  # MCP server PhaseDriver (013 §8.2)
+│   │   ├── trace.rs       # SharedTrace (append-only trace buffer)
+│   │   └── mcp_server/    # MCP server PhaseDriver (013 §8.2)
+│   │       ├── mod.rs
+│   │       ├── driver.rs
+│   │       ├── handlers.rs
+│   │       └── ...
 │   ├── verdict/           # TJ-SPEC-014
 │   │   ├── mod.rs
 │   │   ├── evaluation.rs  # Indicator evaluation pipeline
 │   │   ├── grace.rs       # Grace period
-│   │   ├── semantic.rs    # SemanticEvaluator (LLM-as-judge)
-│   │   └── output.rs      # JSON + human summary output
+│   │   └── output.rs      # JSON verdict, trace JSONL, human summary
 │   ├── orchestration/     # TJ-SPEC-015
 │   │   ├── mod.rs
 │   │   ├── store.rs       # ExtractorStore
 │   │   ├── runner.rs      # ActorRunner
 │   │   ├── orchestrator.rs
-│   │   └── trace.rs       # SharedTrace
+│   │   └── gate.rs        # ReadinessGate (server ready before clients)
 │   ├── protocol/          # TJ-SPEC-016, 017, 018
 │   │   ├── mod.rs
 │   │   ├── agui.rs        # AG-UI client driver
 │   │   ├── a2a_server.rs  # A2A server driver
 │   │   ├── a2a_client.rs  # A2A client driver
-│   │   └── mcp_client.rs  # MCP client driver + server request handler
+│   │   └── mcp_client/    # MCP client driver + server request handler
+│   │       ├── mod.rs
+│   │       ├── driver.rs
+│   │       ├── handler.rs
+│   │       ├── transport.rs
+│   │       └── multiplexer.rs
 │   ├── phase/             # TJ-SPEC-003 (v0.2 — kept for backward compat)
 │   │   └── ...
 │   ├── behavior/          # TJ-SPEC-004
@@ -423,13 +443,14 @@ thoughtjack/
 │       └── ...
 ├── scenarios/             # Built-in OATF attack scenarios (TJ-SPEC-010)
 │   └── library/           # Git submodule: github.com/oatf-spec/scenarios
-├── library/               # Attack pattern library
-│   ├── tools/
-│   ├── servers/
-│   └── resources/
-└── tests/
-    ├── integration/
-    └── fixtures/
+├── lab/                   # Docker lab for real-LLM testing (gitignored)
+├── tests/
+│   ├── integration/
+│   ├── fixtures/
+│   └── e2e/               # End-to-end framework tests
+│       ├── reference-agents/langgraph/  # LangGraph reference agent
+│       └── fixtures/
+└── docs-site/             # Docusaurus documentation site
 ```
 
 ## Specification References
@@ -514,3 +535,105 @@ ThoughtJack is an **offensive security tool**. When developing:
 2. Create handler in `src/cli/commands/`
 3. Add to dispatch in `src/main.rs`
 4. Update shell completions
+
+## Docker Lab (Real-LLM Testing)
+
+The `lab/` directory (gitignored) contains a Docker-based lab for running attack scenarios against a real LLM-connected LangGraph agent. Single container, one scenario per `docker run`, verdict + trace output to a mounted volume.
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│  lab container (single docker run)               │
+│                                                  │
+│  1. entrypoint.sh starts LangGraph agent         │
+│  2. waits for agent health check (:8000/health)  │
+│  3. runs: thoughtjack scenarios run <id>         │
+│       --mcp-server 0.0.0.0:8080                  │
+│       --a2a-server 0.0.0.0:9090                  │
+│       --agui-client-endpoint http://127.0.0.1:8000/ │
+│       --export-trace /results/<id>.trace.jsonl   │
+│       --output /results/<id>.json                │
+│  4. agent lazily connects MCP on first AG-UI req │
+│  5. scenario completes → verdict + trace → exit  │
+└──────────────────────────────────────────────────┘
+```
+
+### Setup
+
+```bash
+# 1. Create .env with your API key (never committed)
+cp lab/.env.example lab/.env
+# Edit lab/.env — set OPENAI_API_KEY, MODEL_NAME, OPENAI_BASE_URL
+
+# 2. Build the Docker image
+./lab/run.sh --build
+```
+
+### Running Scenarios
+
+```bash
+# Run a single scenario
+./lab/run.sh oatf-001
+
+# Run multiple specific scenarios
+./lab/run.sh oatf-001 oatf-004 oatf-010
+
+# Run all scenarios sequentially
+./lab/run.sh
+
+# List available scenarios
+./lab/run.sh --list
+
+# Use a different model (override .env)
+MODEL_NAME=gpt-4o-mini ./lab/run.sh oatf-001
+```
+
+### Viewing Results
+
+Results are written to `lab/results/` (gitignored):
+
+```bash
+# Verdict summary
+jq '.verdict.result' lab/results/oatf-001.json
+
+# Full trace — see every protocol message with payloads
+cat lab/results/oatf-001.trace.jsonl | python3 -c "
+import json, sys
+for line in sys.stdin:
+    obj = json.loads(line)
+    print(f'[{obj[\"seq\"]}] {obj[\"direction\"]:8s} {obj[\"actor\"]}/{obj[\"method\"]}')
+    if obj['method'] in ('tools/call', 'run_agent_input', '_accumulated_response'):
+        print(f'    {json.dumps(obj[\"content\"])[:200]}')
+"
+
+# Pretty-print a single trace entry
+jq -s '.[10]' lab/results/oatf-001.trace.jsonl
+```
+
+### Cleanup
+
+```bash
+# Remove all results
+rm -rf lab/results/*.json lab/results/*.jsonl
+
+# Remove the Docker image
+docker rmi thoughtjack-lab
+
+# Full cleanup (keeps .env)
+rm -rf lab/results && docker rmi thoughtjack-lab 2>/dev/null
+```
+
+### Lab Files
+
+| File | Purpose |
+|------|---------|
+| `lab/Dockerfile` | Multi-stage: Rust build + Python agent runtime |
+| `lab/entrypoint.sh` | Start agent → wait → run ThoughtJack → exit |
+| `lab/run.sh` | Host-side runner: build, list, run scenarios |
+| `lab/.env.example` | Template for API key + model settings |
+| `lab/.env` | Your actual API key (gitignored, never committed) |
+
+### Reference Agent
+
+The lab uses the LangGraph reference agent at `tests/e2e/reference-agents/langgraph/`. It accepts `--api-key`, `--model`, and `--default-headers` CLI args for real LLM providers (any OpenAI-compatible API). Defaults (`mock-key`/`mock`) preserve backward compatibility with the e2e test framework.
