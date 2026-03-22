@@ -525,6 +525,17 @@ impl ContextTransport {
                 break;
             }
 
+            // Drain any queued notifications from server actors (e.g.
+            // notifications/tools/list_changed sent by on_enter actions). These
+            // are processed by PhaseLoop via synthetic events; the drive loop
+            // only needs to clear them so they don't interfere with tool result
+            // collection later in this turn.
+            while let Ok(msg) = self.tool_result_rx.try_recv() {
+                if let JsonRpcMessage::Notification(ref n) = msg {
+                    tracing::debug!(method = %n.method, "drained queued notification");
+                }
+            }
+
             let mut all_tools = Vec::new();
             let mut tool_router: HashMap<String, String> = HashMap::new();
             for (actor_name, watch_rx) in &self.server_tool_watches {
@@ -738,17 +749,32 @@ impl ContextTransport {
     /// Returns the user message text if a follow-up arrives, or `None` if the
     /// channel closes, times out, or cancellation fires.
     async fn wait_for_followup(&mut self, cancel: &CancellationToken) -> Option<String> {
+        tracing::debug!("wait_for_followup: waiting for AG-UI follow-up (5s timeout)");
         tokio::select! {
             result = tokio::time::timeout(
                 Duration::from_secs(5),
                 self.agui_response_rx.recv(),
             ) => {
                 match result {
-                    Ok(Some(follow_up)) => Some(extract_user_message(&follow_up)),
-                    Ok(None) | Err(_) => None,
+                    Ok(Some(follow_up)) => {
+                        let text = extract_user_message(&follow_up);
+                        tracing::debug!(text = %text, "wait_for_followup: received follow-up");
+                        Some(text)
+                    }
+                    Ok(None) => {
+                        tracing::debug!("wait_for_followup: channel closed (no follow-up)");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::debug!("wait_for_followup: timed out (5s)");
+                        None
+                    }
                 }
             }
-            () = cancel.cancelled() => None,
+            () = cancel.cancelled() => {
+                tracing::debug!("wait_for_followup: cancelled");
+                None
+            }
         }
     }
 
@@ -1010,11 +1036,7 @@ pub fn extract_tool_definitions(state: &Value) -> Vec<ToolDefinition> {
     // MCP tools
     if let Some(tool_array) = state.get("tools").and_then(Value::as_array) {
         for tool in tool_array {
-            let name = tool
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
+            let name = sanitize_tool_name(tool.get("name").and_then(Value::as_str).unwrap_or(""));
             if name.is_empty() {
                 continue;
             }
@@ -1036,7 +1058,10 @@ pub fn extract_tool_definitions(state: &Value) -> Vec<ToolDefinition> {
     }
 
     // A2A skills — check both state.skills and state.agent_card.skills
-    // (real A2A scenarios define skills under agent_card per TJ-SPEC-017)
+    // (real A2A scenarios define skills under agent_card per TJ-SPEC-017).
+    // Prefer `id` (machine-readable, e.g. "analyze-data") over `name`
+    // (human-readable, e.g. "Data Analysis") because LLM API providers
+    // restrict tool function names to `[a-zA-Z0-9_-]+`.
     let skill_array = state.get("skills").and_then(Value::as_array).or_else(|| {
         state
             .get("agent_card")
@@ -1045,12 +1070,13 @@ pub fn extract_tool_definitions(state: &Value) -> Vec<ToolDefinition> {
     });
     if let Some(skill_array) = skill_array {
         for skill in skill_array {
-            let name = skill
-                .get("name")
-                .or_else(|| skill.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
+            let name = sanitize_tool_name(
+                skill
+                    .get("id")
+                    .or_else(|| skill.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            );
             if name.is_empty() {
                 continue;
             }
@@ -1062,12 +1088,53 @@ pub fn extract_tool_definitions(state: &Value) -> Vec<ToolDefinition> {
             tools.push(ToolDefinition {
                 name,
                 description,
-                parameters: json!({"type": "object", "additionalProperties": true}),
+                parameters: json!({"type": "object", "properties": {}, "additionalProperties": true}),
             });
         }
     }
 
     tools
+}
+
+/// Sanitise a tool name for LLM API compatibility.
+///
+/// Ensures the name matches `^[a-zA-Z0-9_-]+$` (required by `OpenAI` and
+/// other providers). Characters outside that set are replaced with `_`,
+/// consecutive underscores are collapsed, and leading/trailing underscores
+/// are trimmed.
+///
+/// Implements: TJ-SPEC-022 F-001
+#[must_use]
+pub fn sanitize_tool_name(raw: &str) -> String {
+    let replaced: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // Collapse consecutive underscores and trim leading/trailing
+    let mut result = String::with_capacity(replaced.len());
+    let mut prev_underscore = true; // treat start as underscore to trim leading
+    for c in replaced.chars() {
+        if c == '_' {
+            if !prev_underscore {
+                result.push(c);
+            }
+            prev_underscore = true;
+        } else {
+            prev_underscore = false;
+            result.push(c);
+        }
+    }
+    // Trim trailing underscore
+    if result.ends_with('_') {
+        result.pop();
+    }
+    result
 }
 
 /// Extracts result content from a `JsonRpcMessage`, handling both success and error.

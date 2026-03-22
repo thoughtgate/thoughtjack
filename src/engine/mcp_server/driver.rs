@@ -25,7 +25,7 @@ use super::handlers::{
     handle_tasks_cancel, handle_tasks_get, handle_tasks_list, handle_tasks_result,
     handle_tools_list, handle_unknown,
 };
-use super::helpers::find_by_name;
+use super::helpers::{find_by_field, find_by_name};
 use super::response::dispatch_response;
 
 use crate::engine::actions::EntryActionSender;
@@ -243,7 +243,24 @@ impl McpServerDriver {
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        let Some(tool) = find_by_name(state, "tools", tool_name) else {
+        // Look up the tool in MCP state first, then fall back to A2A skill
+        // collections. In context-mode, A2A server actors use McpServerDriver
+        // as a shim (see orchestrator.rs run_context_server_actor), so skills
+        // may live under state.skills or state.agent_card.skills keyed by "id".
+        let Some(tool) = find_by_name(state, "tools", tool_name)
+            .or_else(|| find_by_field(state, "skills", "id", tool_name))
+            .or_else(|| {
+                state
+                    .get("agent_card")
+                    .and_then(|ac| ac.get("skills"))
+                    .and_then(Value::as_array)
+                    .and_then(|arr| {
+                        arr.iter()
+                            .find(|s| s.get("id").and_then(Value::as_str) == Some(tool_name))
+                    })
+                    .cloned()
+            })
+        else {
             return JsonRpcResponse::error(
                 request.id.clone(),
                 crate::transport::jsonrpc::error_codes::INVALID_PARAMS,

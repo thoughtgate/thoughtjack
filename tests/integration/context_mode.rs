@@ -767,7 +767,9 @@ fn a2a_skills_extracted_as_tool_definitions() {
     assert_eq!(tools[0].parameters["additionalProperties"], true);
 }
 
-/// Verify A2A skill extraction from `agent_card.skills` (real A2A scenario structure)
+/// Verify A2A skill extraction from `agent_card.skills` — `id` takes priority
+/// over `name` because LLM API providers restrict tool function names to
+/// `[a-zA-Z0-9_-]+` and the human-readable `name` may contain spaces.
 #[test]
 fn a2a_skills_extracted_from_agent_card() {
     let state = json!({
@@ -781,8 +783,22 @@ fn a2a_skills_extracted_from_agent_card() {
     });
     let tools = extract_tool_definitions(&state);
     assert_eq!(tools.len(), 2);
-    assert_eq!(tools[0].name, "Data Analysis");
-    assert_eq!(tools[1].name, "Export");
+    // id takes priority over name
+    assert_eq!(tools[0].name, "analyze");
+    assert_eq!(tools[1].name, "export");
+}
+
+/// Verify `sanitize_tool_name` replaces invalid characters and collapses underscores
+#[test]
+fn sanitize_tool_name_normalizes_invalid_chars() {
+    use thoughtjack::transport::context::sanitize_tool_name;
+    assert_eq!(sanitize_tool_name("valid-name_123"), "valid-name_123");
+    assert_eq!(sanitize_tool_name("Data Analysis"), "Data_Analysis");
+    assert_eq!(sanitize_tool_name("foo  bar"), "foo_bar");
+    assert_eq!(sanitize_tool_name("  leading"), "leading");
+    assert_eq!(sanitize_tool_name("trailing  "), "trailing");
+    assert_eq!(sanitize_tool_name("a/b.c:d"), "a_b_c_d");
+    assert_eq!(sanitize_tool_name(""), "");
 }
 
 /// Verify error.data is preserved in `extract_result_content`

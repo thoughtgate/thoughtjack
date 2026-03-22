@@ -128,6 +128,10 @@ pub fn default_capabilities(state: &Value) -> Value {
 
 /// Handle `tools/list` — return tool definitions, stripping internal fields.
 ///
+/// Falls back to A2A skills (from `state.skills` or `state.agent_card.skills`)
+/// when `state.tools` is absent. This allows `McpServerDriver` to serve tool lists
+/// for A2A server actors in context-mode.
+///
 /// Implements: TJ-SPEC-013 F-001
 pub fn handle_tools_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResponse {
     let tools = state
@@ -140,6 +144,37 @@ pub fn handle_tools_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResp
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+
+    // Fall back to A2A skills when no MCP tools are defined (context-mode shim)
+    if tools.is_empty() {
+        let skills = state.get("skills").and_then(Value::as_array).or_else(|| {
+            state
+                .get("agent_card")
+                .and_then(|ac| ac.get("skills"))
+                .and_then(Value::as_array)
+        });
+        if let Some(skill_array) = skills {
+            let mapped: Vec<Value> = skill_array
+                .iter()
+                .filter_map(|skill| {
+                    let name = skill
+                        .get("id")
+                        .or_else(|| skill.get("name"))
+                        .and_then(Value::as_str)?;
+                    let desc = skill
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    Some(json!({
+                        "name": name,
+                        "description": desc,
+                        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": true}
+                    }))
+                })
+                .collect();
+            return JsonRpcResponse::success(request.id.clone(), json!({ "tools": mapped }));
+        }
+    }
 
     JsonRpcResponse::success(request.id.clone(), json!({ "tools": tools }))
 }

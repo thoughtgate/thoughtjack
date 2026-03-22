@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use oatf::enums::ExtractorSource;
 use oatf::primitives::evaluate_extractor;
+use serde_json::json;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -347,6 +348,36 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             let effective_state = self.phase_engine.effective_state();
             let (event_tx, mut event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
+            // Context-mode: when a phase's on_enter sends
+            // notifications/tools/list_changed, there is no real agent to
+            // re-fetch the tool list. Inject a synthetic tools/list event so
+            // the phase trigger can evaluate against it (enables rug pull /
+            // temporal attack scenarios like OATF-002).
+            if self.tool_watch_tx.is_some() {
+                let phase = self.phase_engine.get_phase(phase_index);
+                if let Some(on_enter) = &phase.on_enter {
+                    let sends_list_changed = on_enter.iter().any(|a| {
+                        matches!(
+                            a,
+                            oatf::Action::Send { method, .. }
+                                if method == "notifications/tools/list_changed"
+                        )
+                    });
+                    if sends_list_changed {
+                        let _ = event_tx.try_send(ProtocolEvent {
+                            direction: Direction::Incoming,
+                            method: "tools/list".to_string(),
+                            content: effective_state.get("tools").cloned().unwrap_or(json!([])),
+                        });
+                        tracing::debug!(
+                            actor = %self.actor_name,
+                            phase = phase_index,
+                            "injected synthetic tools/list event for tools/list_changed on_enter"
+                        );
+                    }
+                }
+            }
+
             // Run driver and event consumer concurrently.
             // drive_fut is scoped so its mutable borrow drops before on_phase_advanced.
             let phase_cancel = self.cancel.child_token();
@@ -454,7 +485,14 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 }
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
-            if self.phase_engine.is_terminal() {
+            // Context-mode server actors stay alive in their terminal phase
+            // so they can keep serving requests on follow-up LLM turns
+            // (e.g. rug pull: trust_building → exploit, then follow-up call).
+            // All other actors (traffic-mode servers, client-mode) exit
+            // immediately — traffic-mode servers are cancelled by the session
+            // timeout, clients have no more work.
+            let context_mode_server = self.tool_watch_tx.is_some() && self.is_server_mode;
+            if self.phase_engine.is_terminal() && !context_mode_server {
                 return Ok(self.build_result(TerminationReason::TerminalPhaseReached));
             }
         }
