@@ -149,6 +149,15 @@ pub struct ExecutionSummary {
     pub trace_messages: usize,
     /// Total execution time in milliseconds.
     pub duration_ms: u64,
+    /// Transport mode used ("context" for context-mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// LLM provider name in context-mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_provider: Option<String>,
+    /// LLM model used in context-mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_model: Option<String>,
 }
 
 // ============================================================================
@@ -258,6 +267,9 @@ pub fn build_verdict_output(
         grace_period_applied: grace_str,
         trace_messages,
         duration_ms,
+        transport: None,
+        context_provider: None,
+        context_model: None,
     };
 
     VerdictOutput {
@@ -535,6 +547,9 @@ mod tests {
                 grace_period_applied: Some("30s".to_string()),
                 trace_messages: 12,
                 duration_ms: 4520,
+                transport: None,
+                context_provider: None,
+                context_model: None,
             },
         }
     }
@@ -691,6 +706,9 @@ mod tests {
                 grace_period_applied: None,
                 trace_messages: 1,
                 duration_ms: 100,
+                transport: None,
+                context_provider: None,
+                context_model: None,
             },
         };
 
@@ -751,6 +769,9 @@ mod tests {
                 grace_period_applied: None,
                 trace_messages: 0,
                 duration_ms: 0,
+                transport: None,
+                context_provider: None,
+                context_model: None,
             },
         };
         print_human_summary(&output);

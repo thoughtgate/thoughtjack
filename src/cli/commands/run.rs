@@ -125,9 +125,16 @@ pub async fn run_from_yaml(
         .ok_or_else(|| ThoughtJackError::Usage("no actors in document".into()))?;
     validate_transport_flags(actors, &config)?;
 
-    // 6. Execute: single-actor bypass or multi-actor orchestrate
+    // 6. Execute: context-mode, single-actor bypass, or multi-actor orchestrate
     let start = Instant::now();
-    let (outcomes, trace) = if actors.len() <= 1 {
+    let (outcomes, trace) = if config.context_mode {
+        let result = crate::orchestration::orchestrator::orchestrate_context(
+            &loaded, &config, &events, cancel,
+        )
+        .await
+        .map_err(|e| ThoughtJackError::Orchestration(e.to_string()))?;
+        (result.outcomes, result.trace)
+    } else if actors.len() <= 1 {
         run_single_actor(&loaded, &config, &events, cancel).await?
     } else {
         let result = orchestrate(&loaded, &config, &events, cancel)
@@ -571,6 +578,16 @@ mod tests {
             events_file: None,
             export_trace: None,
             progress: ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         }
     }
 

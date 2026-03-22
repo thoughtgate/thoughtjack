@@ -593,6 +593,420 @@ async fn drain_join_set_with_timeout(
 }
 
 // ============================================================================
+// Context-Mode Orchestration (TJ-SPEC-022)
+// ============================================================================
+
+/// Runs context-mode orchestration: LLM API-backed conversation with channel handles.
+///
+/// Constructs the channel topology per TJ-SPEC-022 §2.4:
+/// 1. Validates actors (requires AG-UI client, rejects MCP/A2A client).
+/// 2. Constructs per-actor channels, handles, and watch channels.
+/// 3. Creates `ContextTransport` with LLM provider.
+/// 4. Spawns server actors, AG-UI actor, and the drive loop.
+///
+/// # Errors
+///
+/// Returns `EngineError` if actors are invalid, provider creation fails,
+/// or an actor fails critically.
+///
+/// Implements: TJ-SPEC-022 F-001
+#[allow(clippy::too_many_lines)]
+pub async fn orchestrate_context(
+    loaded: &LoadedDocument,
+    config: &ActorConfig,
+    events: &Arc<EventEmitter>,
+    cancel: CancellationToken,
+) -> Result<OrchestratorResult, EngineError> {
+    use std::sync::Arc as StdArc;
+    use crate::engine::phase::PhaseEngine;
+    use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
+    use crate::protocol::context_agui::ContextAgUiDriver;
+    use crate::transport::context::{
+        AgUiHandle, ContextTransport, ServerActorEntry, ServerHandle, extract_tool_definitions,
+    };
+    use crate::transport::provider::create_provider;
+    use tokio::task::JoinSet;
+
+    let actors = document_actors(&loaded.document);
+
+    // 1. Validate actors
+    let mut agui_index = None;
+    let mut server_indices = Vec::new();
+    for (i, actor) in actors.iter().enumerate() {
+        match actor.mode.as_str() {
+            "ag_ui_client" => {
+                if agui_index.is_some() {
+                    return Err(EngineError::Driver(
+                        "context-mode supports at most one ag_ui_client actor".into(),
+                    ));
+                }
+                agui_index = Some(i);
+            }
+            "mcp_server" | "a2a_server" => server_indices.push(i),
+            "mcp_client" | "a2a_client" => {
+                return Err(EngineError::Driver(format!(
+                    "context-mode does not support {} actors",
+                    actor.mode
+                )));
+            }
+            _ => {
+                return Err(EngineError::Driver(format!(
+                    "unsupported actor mode in context-mode: {}",
+                    actor.mode
+                )));
+            }
+        }
+    }
+    let agui_actor_index = agui_index.ok_or_else(|| {
+        EngineError::Driver(
+            "context-mode requires an ag_ui_client actor (hint: add an actor \
+             with mode: ag_ui_client to your OATF document)"
+                .into(),
+        )
+    })?;
+
+    events.emit(ThoughtJackEvent::OrchestratorStarted {
+        actor_count: actors.len(),
+        server_count: server_indices.len(),
+        client_count: 1,
+    });
+
+    // 2. Shared state
+    let trace = SharedTrace::new();
+    let extractor_store = ExtractorStore::new();
+    let thread_id = uuid::Uuid::new_v4().to_string();
+
+    // 3. AG-UI channels
+    let (agui_tx, agui_rx) = tokio::sync::mpsc::channel(16);
+    let (agui_response_tx, agui_response_rx) = tokio::sync::mpsc::channel(16);
+
+    // 4. Shared result/request channels
+    let (tool_result_tx, tool_result_rx) = tokio::sync::mpsc::channel(16);
+    let (server_request_tx, server_request_rx) = tokio::sync::mpsc::channel(16);
+
+    // 5. Per-server-actor setup (OATF document order)
+    let mut server_actor_entries: HashMap<String, ServerActorEntry> = HashMap::new();
+    let mut server_tool_watches = Vec::new();
+    let mut server_handles: Vec<(usize, String, StdArc<dyn crate::transport::Transport>)> = Vec::new();
+    let mut tool_watch_txs: HashMap<String, tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>> = HashMap::new();
+
+    for &idx in &server_indices {
+        let actor = &actors[idx];
+        let actor_name = actor.name.clone();
+
+        let (server_tx, server_rx) = tokio::sync::mpsc::channel(16);
+
+        // Extract initial tool definitions from phase 0
+        let engine_tmp = PhaseEngine::new(loaded.document.clone(), idx);
+        let effective_state = engine_tmp.effective_state();
+        let initial_tools = extract_tool_definitions(&effective_state);
+
+        let (tool_watch_tx, tool_watch_rx) =
+            tokio::sync::watch::channel(initial_tools);
+
+        let handle = ServerHandle::new(
+            server_rx,
+            tool_result_tx.clone(),
+            server_request_tx.clone(),
+            actor_name.clone(),
+        );
+
+        server_actor_entries.insert(
+            actor_name.clone(),
+            ServerActorEntry {
+                mode: actor.mode.clone(),
+                tx: server_tx,
+            },
+        );
+        server_tool_watches.push((actor_name.clone(), tool_watch_rx));
+        server_handles.push((idx, actor_name.clone(), StdArc::new(handle)));
+        tool_watch_txs.insert(actor_name, tool_watch_tx);
+    }
+
+    // 6. Create LLM provider
+    let provider_config = config.context_provider_config.as_ref().ok_or_else(|| {
+        EngineError::Driver("context-mode requires provider configuration".into())
+    })?;
+    let provider = create_provider(provider_config)?;
+
+    let max_turns = config.max_turns.unwrap_or(20);
+
+    // Grace period warning
+    if config.grace_period.is_some_and(|g| !g.is_zero()) {
+        tracing::warn!(
+            "grace period is not applicable in context-mode (no open transport to observe), ignoring"
+        );
+    }
+
+    // 7. Construct ContextTransport
+    let context_transport = ContextTransport::new(
+        provider,
+        config.context_system_prompt.clone(),
+        max_turns,
+        agui_tx,
+        agui_response_rx,
+        thread_id.clone(),
+        server_actor_entries,
+        server_tool_watches,
+        tool_result_rx,
+        server_request_rx,
+    );
+
+    // 8. Construct AgUiHandle
+    let agui_handle = AgUiHandle::new(agui_rx, agui_response_tx);
+
+    // 9. Spawn actors
+    let mut join_set: JoinSet<ActorTaskResult> = JoinSet::new();
+
+    // 9a. AG-UI actor — spawn PhaseLoop directly
+    {
+        let driver = ContextAgUiDriver::new(Box::new(agui_handle), thread_id.clone());
+        let engine = PhaseEngine::new(loaded.document.clone(), agui_actor_index);
+        let agui_actor_name = actors[agui_actor_index].name.clone();
+
+        let agui_await_cfg: HashMap<usize, Vec<AwaitExtractor>> = loaded
+            .await_extractors
+            .iter()
+            .filter(|((name, _), _)| name == &agui_actor_name)
+            .map(|((_, phase_idx), specs)| (*phase_idx, specs.clone()))
+            .collect();
+
+        let phase_count = engine.actor().phases.len();
+        events.emit(ThoughtJackEvent::ActorInit {
+            actor_name: agui_actor_name.clone(),
+            mode: "ag_ui_client".to_string(),
+        });
+        events.emit(ThoughtJackEvent::ActorReady {
+            actor_name: agui_actor_name.clone(),
+            bind_address: "context".to_string(),
+        });
+        events.emit(ThoughtJackEvent::ActorStarted {
+            actor_name: agui_actor_name.clone(),
+            phase_count,
+        });
+
+        let loop_config = PhaseLoopConfig {
+            trace: trace.clone(),
+            extractor_store: extractor_store.clone(),
+            actor_name: agui_actor_name.clone(),
+            await_extractors_config: agui_await_cfg,
+            cancel: cancel.child_token(),
+            entry_action_sender: None,
+            events: StdArc::clone(events),
+            tool_watch_tx: None,
+        };
+
+        let actor_name_owned = agui_actor_name;
+        join_set.spawn(async move {
+            let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
+            let result = phase_loop.run().await;
+            ActorTaskResult {
+                actor_name: actor_name_owned,
+                is_server: false,
+                result,
+            }
+        });
+    }
+
+    // 9b. Server actors — use ServerHandle as transport
+    for (idx, actor_name, handle) in server_handles {
+        let actor = &actors[idx];
+        let doc = loaded.document.clone();
+        let tr = trace.clone();
+        let es = extractor_store.clone();
+        let actor_cancel = cancel.child_token();
+        let task_events = StdArc::clone(events);
+        let actor_name_clone = actor_name.clone();
+        let raw_synthesize = config.raw_synthesize;
+        let tool_watch_tx = tool_watch_txs.remove(&actor_name);
+
+        let await_cfg: HashMap<usize, Vec<AwaitExtractor>> = loaded
+            .await_extractors
+            .iter()
+            .filter(|((name, _), _)| name == &actor_name)
+            .map(|((_, phase_idx), specs)| (*phase_idx, specs.clone()))
+            .collect();
+
+        let mode = actor.mode.clone();
+        join_set.spawn(async move {
+            let server_cfg = ContextServerActorConfig {
+                actor_index: idx,
+                document: doc,
+                transport: handle,
+                raw_synthesize,
+                tool_watch_tx,
+                trace: tr,
+                extractor_store: es,
+                await_config: await_cfg,
+                cancel: actor_cancel,
+                mode,
+                actor_name: actor_name_clone.clone(),
+            };
+            let result = run_context_server_actor(server_cfg, &task_events).await;
+            ActorTaskResult {
+                actor_name: actor_name_clone,
+                is_server: true,
+                result,
+            }
+        });
+    }
+
+    // 10. Spawn drive loop
+    let drive_cancel = cancel.child_token();
+    let drive_handle = context_transport.spawn_drive_loop(drive_cancel);
+
+    // 11. Wait for completion
+    let mut outcomes = Vec::new();
+    let max_session_sleep =
+        tokio::time::sleep_until(tokio::time::Instant::now() + config.max_session);
+    tokio::pin!(max_session_sleep);
+    let cancelled = cancel.cancelled();
+    tokio::pin!(cancelled);
+
+    loop {
+        tokio::select! {
+            Some(join_result) = join_set.join_next() => {
+                match join_result {
+                    Ok(task_result) => {
+                        let actor_name = task_result.actor_name.clone();
+                        match task_result.result {
+                            Ok(result) => {
+                                events.emit(ThoughtJackEvent::ActorCompleted {
+                                    actor_name: actor_name.clone(),
+                                    reason: result.termination.to_string(),
+                                    phases_completed: result.phases_completed,
+                                });
+                                outcomes.push(ActorOutcome::Success(result));
+                            }
+                            Err(e) => {
+                                events.emit(ThoughtJackEvent::ActorError {
+                                    actor_name: actor_name.clone(),
+                                    error: e.to_string(),
+                                });
+                                outcomes.push(ActorOutcome::Error {
+                                    actor_name,
+                                    error: e.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Err(join_err) => {
+                        let actor_name = "(unknown)".to_string();
+                        if join_err.is_panic() {
+                            outcomes.push(ActorOutcome::Panic { actor_name });
+                        } else {
+                            outcomes.push(ActorOutcome::Aborted { actor_name });
+                        }
+                    }
+                }
+                if join_set.is_empty() {
+                    break;
+                }
+            }
+            () = &mut max_session_sleep => {
+                tracing::warn!("max session timeout reached, cancelling");
+                cancel.cancel();
+            }
+            () = &mut cancelled => {
+                // Wait a short drain period then abort
+                join_set.abort_all();
+                while let Some(join_result) = join_set.join_next().await {
+                    if let Ok(task_result) = join_result {
+                        match task_result.result {
+                            Ok(result) => outcomes.push(ActorOutcome::Success(result)),
+                            Err(e) => outcomes.push(ActorOutcome::Error {
+                                actor_name: task_result.actor_name,
+                                error: e.to_string(),
+                            }),
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // Wait for drive loop to finish
+    let _ = drive_handle.await;
+
+    emit_completion_summary(&outcomes, events);
+    Ok(OrchestratorResult { outcomes, trace })
+}
+
+/// Configuration for running a server actor in context-mode.
+struct ContextServerActorConfig {
+    actor_index: usize,
+    document: oatf::Document,
+    transport: std::sync::Arc<dyn crate::transport::Transport>,
+    raw_synthesize: bool,
+    tool_watch_tx: Option<tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
+    trace: SharedTrace,
+    extractor_store: ExtractorStore,
+    await_config: HashMap<usize, Vec<AwaitExtractor>>,
+    cancel: CancellationToken,
+    mode: String,
+    actor_name: String,
+}
+
+/// Runs a server actor in context-mode with a pre-built transport handle.
+async fn run_context_server_actor(
+    cfg: ContextServerActorConfig,
+    events: &std::sync::Arc<EventEmitter>,
+) -> Result<crate::engine::types::ActorResult, EngineError> {
+    use crate::engine::mcp_server::McpServerDriver;
+    use crate::engine::phase::PhaseEngine;
+    use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
+
+    events.emit(ThoughtJackEvent::ActorInit {
+        actor_name: cfg.actor_name.clone(),
+        mode: cfg.mode.clone(),
+    });
+
+    // Server actors are immediately ready in context-mode (no port binding)
+    events.emit(ThoughtJackEvent::ActorReady {
+        actor_name: cfg.actor_name.clone(),
+        bind_address: "context".to_string(),
+    });
+
+    let engine = PhaseEngine::new(cfg.document, cfg.actor_index);
+    let phase_count = engine.actor().phases.len();
+    events.emit(ThoughtJackEvent::ActorStarted {
+        actor_name: cfg.actor_name.clone(),
+        phase_count,
+    });
+
+    // Both MCP and A2A server actors use McpServerDriver in context-mode —
+    // it handles JSON-RPC dispatch via the ServerHandle transport.
+    if cfg.mode != "mcp_server" && cfg.mode != "a2a_server" {
+        return Err(EngineError::Driver(format!(
+            "unsupported server mode in context-mode: {}",
+            cfg.mode
+        )));
+    }
+
+    let driver = McpServerDriver::new(cfg.transport.clone(), cfg.raw_synthesize);
+    let entry_action_sender = driver.entry_action_sender();
+    let loop_config = PhaseLoopConfig {
+        trace: cfg.trace,
+        extractor_store: cfg.extractor_store,
+        actor_name: cfg.actor_name.clone(),
+        await_extractors_config: cfg.await_config,
+        cancel: cfg.cancel,
+        entry_action_sender: Some(Box::new(entry_action_sender)),
+        events: std::sync::Arc::clone(events),
+        tool_watch_tx: cfg.tool_watch_tx,
+    };
+    let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
+    let result = phase_loop.run().await?;
+    events.emit(ThoughtJackEvent::ActorCompleted {
+        actor_name: cfg.actor_name,
+        reason: result.termination.to_string(),
+        phases_completed: result.phases_completed,
+    });
+    Ok(result)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -640,6 +1054,10 @@ mod tests {
             grace_period: None,
             max_session,
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: Some(crate::orchestration::runner::null_transport_factory()),
         }
     }

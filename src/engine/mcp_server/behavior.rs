@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
 use crate::error::EngineError;
-use crate::transport::{JsonRpcMessage, JsonRpcNotification, JsonRpcResponse, Transport};
+use crate::transport::{
+    JsonRpcMessage, JsonRpcNotification, JsonRpcResponse, Transport, TransportType,
+};
 
 use super::helpers::u64_to_usize;
 
@@ -24,6 +26,7 @@ use super::helpers::u64_to_usize;
 /// # Errors
 ///
 /// Returns `EngineError::Driver` on transport failure.
+#[allow(clippy::too_many_lines)]
 pub(super) async fn apply_delivery(
     transport: &Arc<dyn Transport>,
     state: &Value,
@@ -51,6 +54,16 @@ pub(super) async fn apply_delivery(
             Ok(None)
         }
         "slow_stream" => {
+            if transport.transport_type() == TransportType::Context {
+                tracing::warn!(
+                    "slow_stream delivery not supported in context-mode, using normal"
+                );
+                transport
+                    .send_message(response_msg)
+                    .await
+                    .map_err(|e| EngineError::Driver(format!("send error: {e}")))?;
+                return Ok(None);
+            }
             let bytes = serde_json::to_vec(response_msg)
                 .map_err(|e| EngineError::Driver(format!("serialize error: {e}")))?;
             let byte_delay_ms = params

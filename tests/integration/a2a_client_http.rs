@@ -37,6 +37,7 @@ fn test_config(trace: SharedTrace) -> PhaseLoopConfig {
         cancel: CancellationToken::new(),
         entry_action_sender: None,
         events: Arc::new(EventEmitter::noop()),
+        tool_watch_tx: None,
     }
 }
 
@@ -324,6 +325,7 @@ attack:
         cancel: cancel.clone(),
         entry_action_sender: None,
         events: Arc::new(EventEmitter::noop()),
+        tool_watch_tx: None,
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, config);

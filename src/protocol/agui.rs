@@ -671,7 +671,7 @@ impl MessageAccumulator {
 /// Implements: TJ-SPEC-016 F-001
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RunAgentInput {
+pub(crate) struct RunAgentInput {
     thread_id: String,
     run_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -696,7 +696,7 @@ struct RunAgentInput {
 /// `synthesize` block is present (not yet supported).
 ///
 /// Implements: TJ-SPEC-016 F-001
-fn build_run_agent_input(
+pub(crate) fn build_run_agent_input(
     state: &Value,
     extractors: &HashMap<String, String>,
     thread_id: &str,

@@ -154,6 +154,76 @@ pub struct ExecutionArgs {
     /// Implements: TJ-SPEC-014 F-010
     #[arg(long, value_name = "PATH", env = "THOUGHTJACK_EXPORT_TRACE")]
     pub export_trace: Option<String>,
+
+    // ---- Context-mode flags (TJ-SPEC-022) ----
+    /// Enable context-mode (call LLM API directly instead of real protocol infrastructure).
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(long)]
+    pub context: bool,
+
+    /// LLM model identifier for context-mode (required with --context).
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(long, value_name = "MODEL", env = "THOUGHTJACK_CONTEXT_MODEL")]
+    pub context_model: Option<String>,
+
+    /// API key for context-mode LLM provider.
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(long, value_name = "KEY", env = "THOUGHTJACK_CONTEXT_API_KEY")]
+    pub context_api_key: Option<String>,
+
+    /// Base URL for context-mode LLM provider (overrides default).
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(long, value_name = "URL", env = "THOUGHTJACK_CONTEXT_BASE_URL")]
+    pub context_base_url: Option<String>,
+
+    /// LLM provider type for context-mode [default: openai].
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(
+        long,
+        value_name = "TYPE",
+        env = "THOUGHTJACK_CONTEXT_PROVIDER",
+        default_value = "openai"
+    )]
+    pub context_provider: String,
+
+    /// Sampling temperature for context-mode [default: 0.0].
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(long, value_name = "FLOAT", env = "THOUGHTJACK_CONTEXT_TEMPERATURE")]
+    pub context_temperature: Option<f32>,
+
+    /// Max tokens per LLM response in context-mode [default: 4096].
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(long, value_name = "TOKENS", env = "THOUGHTJACK_CONTEXT_MAX_TOKENS")]
+    pub context_max_tokens: Option<u32>,
+
+    /// System prompt for context-mode (simulates agent framework instructions).
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(
+        long,
+        value_name = "PROMPT",
+        env = "THOUGHTJACK_CONTEXT_SYSTEM_PROMPT"
+    )]
+    pub context_system_prompt: Option<String>,
+
+    /// Per-request timeout in seconds for context-mode LLM calls [default: 120].
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(long, value_name = "SECONDS", env = "THOUGHTJACK_CONTEXT_TIMEOUT")]
+    pub context_timeout: Option<u64>,
+
+    /// Maximum LLM conversation turns in context-mode [default: 20].
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    #[arg(long, value_name = "N")]
+    pub max_turns: Option<u32>,
 }
 
 /// Arguments for `run` — execute an OATF scenario.

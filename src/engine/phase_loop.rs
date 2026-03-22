@@ -248,6 +248,11 @@ pub struct PhaseLoopConfig {
     pub entry_action_sender: Option<Box<dyn EntryActionSender>>,
     /// Event emitter for structured observability events.
     pub events: Arc<EventEmitter>,
+    /// Optional watch channel for publishing tool definitions on phase advance.
+    ///
+    /// Used in context-mode to synchronize tool definitions with the drive loop.
+    /// Traffic-mode passes `None`.
+    pub tool_watch_tx: Option<watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
 }
 
 /// Core execution loop for a single actor.
@@ -270,6 +275,7 @@ pub struct PhaseLoop<D: PhaseDriver> {
     extractors_tx: watch::Sender<HashMap<String, String>>,
     entry_action_sender: Option<Box<dyn EntryActionSender>>,
     events: Arc<EventEmitter>,
+    tool_watch_tx: Option<watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
 }
 
 impl<D: PhaseDriver> PhaseLoop<D> {
@@ -298,6 +304,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             extractors_tx,
             entry_action_sender: config.entry_action_sender,
             events: config.events,
+            tool_watch_tx: config.tool_watch_tx,
         }
     }
 
@@ -439,6 +446,12 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                     message_count: phase_message_count,
                 });
                 let to = self.phase_engine.advance_phase();
+                // Publish updated tool definitions on the watch channel (context-mode).
+                if let Some(ref tx) = self.tool_watch_tx {
+                    let effective = self.phase_engine.effective_state();
+                    let tools = crate::transport::context::extract_tool_definitions(&effective);
+                    let _ = tx.send(tools);
+                }
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
             if self.phase_engine.is_terminal() {
@@ -703,6 +716,7 @@ mod tests {
             cancel: CancellationToken::new(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
         }
     }
 
@@ -880,6 +894,7 @@ attack:
             cancel: cancel.clone(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
         };
 
         let engine = PhaseEngine::new(doc, 0);
@@ -997,6 +1012,7 @@ attack:
             cancel: CancellationToken::new(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
         };
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
 
@@ -1548,6 +1564,7 @@ attack:
             cancel: CancellationToken::new(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
         };
 
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
@@ -1638,6 +1655,7 @@ attack:
             cancel: cancel.clone(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
         };
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
 
