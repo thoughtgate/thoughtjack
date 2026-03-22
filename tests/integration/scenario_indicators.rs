@@ -240,7 +240,7 @@ fn oatf_006_indicator_fires_on_credential_exfil() {
         "default",
         "phase-1",
         "tools/call",
-        json!({"arguments": {"data": "sk-live-abc123def456"}}),
+        json!({"arguments": {"data": "sk-Tf2bYq9xRzLmKp3nWs8vAjHd"}}),
         Direction::Incoming,
     )];
     let actors = vec![ActorInfo {
