@@ -988,8 +988,7 @@ mod tests {
         write_trace_jsonl(&entries, path.to_str().unwrap()).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 5);
+        assert_eq!(content.lines().count(), 5);
     }
 
     #[test]
@@ -1024,7 +1023,8 @@ mod tests {
         write_trace_jsonl(&entries, path.to_str().unwrap()).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(content.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["content"]["name"], "search");
         assert_eq!(parsed["content"]["arguments"]["query"], "test");
         assert_eq!(parsed["content"]["arguments"]["nested"]["deep"], true);

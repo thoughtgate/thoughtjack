@@ -528,8 +528,14 @@ fn export_trace_writes_jsonl_file() {
         let parsed: serde_json::Value =
             serde_json::from_str(line).expect("each trace line should be valid JSON");
         assert!(parsed["seq"].is_number(), "trace entry should have seq");
-        assert!(parsed["method"].is_string(), "trace entry should have method");
-        assert!(!parsed["content"].is_null(), "trace entry should have content");
+        assert!(
+            parsed["method"].is_string(),
+            "trace entry should have method"
+        );
+        assert!(
+            !parsed["content"].is_null(),
+            "trace entry should have content"
+        );
     }
 }
 
@@ -539,7 +545,11 @@ fn export_trace_creates_parent_dirs() {
     let config_path = yaml_file.path().to_string_lossy().into_owned();
 
     let trace_dir = tempfile::tempdir().unwrap();
-    let trace_path = trace_dir.path().join("nested").join("dir").join("trace.jsonl");
+    let trace_path = trace_dir
+        .path()
+        .join("nested")
+        .join("dir")
+        .join("trace.jsonl");
     let trace_path_str = trace_path.to_string_lossy().into_owned();
 
     let output = run_thoughtjack(&[
@@ -556,5 +566,8 @@ fn export_trace_creates_parent_dirs() {
     ]);
 
     assert_exit_code(&output, 0, "export-trace with nested dirs");
-    assert!(trace_path.exists(), "trace file should be created in nested directory");
+    assert!(
+        trace_path.exists(),
+        "trace file should be created in nested directory"
+    );
 }

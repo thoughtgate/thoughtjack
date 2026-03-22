@@ -441,8 +441,8 @@ thoughtjack/
 │   │   └── ...
 │   └── observability/     # TJ-SPEC-008
 │       └── ...
-├── scenarios/             # Built-in OATF attack scenarios (TJ-SPEC-010)
-│   └── library/           # Git submodule: github.com/oatf-spec/scenarios
+├── scenarios/             # Git submodule: github.com/oatf-spec/scenarios (TJ-SPEC-010)
+│   └── library/           # OATF scenario YAML files
 ├── lab/                   # Docker lab for real-LLM testing (gitignored)
 ├── tests/
 │   ├── integration/
