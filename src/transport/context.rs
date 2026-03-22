@@ -79,6 +79,15 @@ impl ChatMessage {
         }
     }
 
+    /// Creates a `ToolResult` with an error message.
+    #[must_use]
+    pub fn tool_error(tool_call_id: &str, error_msg: &str) -> Self {
+        Self::ToolResult {
+            tool_call_id: tool_call_id.to_string(),
+            content: json!({"error": error_msg}),
+        }
+    }
+
     /// Creates a `User` message.
     #[must_use]
     pub fn user(text: &str) -> Self {
@@ -204,8 +213,6 @@ pub trait LlmProvider: Send + Sync {
 ///
 /// Implements: TJ-SPEC-022 F-001
 pub struct ServerActorEntry {
-    /// Actor mode string (e.g. `mcp_server`, `a2a_server`).
-    pub mode: String,
     /// Channel sender for dispatching tool calls to this actor.
     pub tx: mpsc::Sender<JsonRpcMessage>,
 }
@@ -502,7 +509,6 @@ impl ContextTransport {
             }
         };
 
-        // Seed history from RunAgentInput.messages.
         if let Some(ref cli_prompt) = self.cli_system_prompt {
             self.history.push(ChatMessage::System(cli_prompt.clone()));
         }
@@ -519,7 +525,6 @@ impl ContextTransport {
                 break;
             }
 
-            // Merge tool definitions from all server actors (per-turn rebuild).
             let mut all_tools = Vec::new();
             let mut tool_router: HashMap<String, String> = HashMap::new();
             for (actor_name, watch_rx) in &self.server_tool_watches {
@@ -539,7 +544,6 @@ impl ContextTransport {
                 }
             }
 
-            // LLM API call (cancellation-aware).
             let response = tokio::select! {
                 result = self.provider.chat_completion(&self.history, &all_tools) => {
                     match result {
@@ -573,23 +577,11 @@ impl ContextTransport {
 
                     consecutive_truncations = 0;
 
-                    // Wait for AG-UI follow-up (5s timeout).
-                    tokio::select! {
-                        result = tokio::time::timeout(
-                            Duration::from_secs(5),
-                            self.agui_response_rx.recv(),
-                        ) => {
-                            match result {
-                                Ok(Some(follow_up)) => {
-                                    let user_text = extract_user_message(&follow_up);
-                                    self.history.push(ChatMessage::user(&user_text));
-                                    continue;
-                                }
-                                Ok(None) | Err(_) => break,
-                            }
-                        }
-                        () = cancel.cancelled() => break,
+                    if let Some(user_text) = self.wait_for_followup(&cancel).await {
+                        self.history.push(ChatMessage::user(&user_text));
+                        continue;
                     }
+                    break;
                 }
                 LlmResponse::ToolUse(calls) => {
                     consecutive_truncations = 0;
@@ -600,23 +592,11 @@ impl ContextTransport {
                         for call in &calls {
                             self.emit_tool_attempt_to_agui(call).await;
                         }
-                        // Wait for AG-UI follow-up
-                        tokio::select! {
-                            result = tokio::time::timeout(
-                                Duration::from_secs(5),
-                                self.agui_response_rx.recv(),
-                            ) => {
-                                match result {
-                                    Ok(Some(follow_up)) => {
-                                        let user_text = extract_user_message(&follow_up);
-                                        self.history.push(ChatMessage::user(&user_text));
-                                        continue;
-                                    }
-                                    Ok(None) | Err(_) => break,
-                                }
-                            }
-                            () = cancel.cancelled() => break,
+                        if let Some(user_text) = self.wait_for_followup(&cancel).await {
+                            self.history.push(ChatMessage::user(&user_text));
+                            continue;
                         }
+                        break;
                     }
 
                     // Multi-actor: route tool calls to owning actors.
@@ -633,13 +613,13 @@ impl ContextTransport {
                                         actor = %actor_name,
                                         "server actor channel closed, synthesizing error"
                                     );
-                                    self.history.push(ChatMessage::ToolResult {
-                                        tool_call_id: call.id.clone(),
-                                        content: json!({"error": format!(
+                                    self.history.push(ChatMessage::tool_error(
+                                        &call.id,
+                                        &format!(
                                             "server actor channel closed for tool: {}",
                                             call.name
-                                        )}),
-                                    });
+                                        ),
+                                    ));
                                 }
                             }
                         } else {
@@ -647,13 +627,10 @@ impl ContextTransport {
                                 tool = %call.name,
                                 "no actor owns tool, synthesizing error"
                             );
-                            self.history.push(ChatMessage::ToolResult {
-                                tool_call_id: call.id.clone(),
-                                content: json!({"error": format!(
-                                    "no server actor owns tool: {}",
-                                    call.name
-                                )}),
-                            });
+                            self.history.push(ChatMessage::tool_error(
+                                &call.id,
+                                &format!("no server actor owns tool: {}", call.name),
+                            ));
                         }
                     }
 
@@ -695,10 +672,10 @@ impl ContextTransport {
                                             "server channel closed, synthesizing errors"
                                         );
                                         for (_id, call) in pending.drain() {
-                                            self.history.push(ChatMessage::ToolResult {
-                                                tool_call_id: call.id.clone(),
-                                                content: json!({"error": "server channel closed"}),
-                                            });
+                                            self.history.push(ChatMessage::tool_error(
+                                                &call.id,
+                                                "server channel closed",
+                                            ));
                                         }
                                     }
                                 }
@@ -730,18 +707,18 @@ impl ContextTransport {
                                     "tool result deadline expired, synthesizing errors"
                                 );
                                 for (_id, call) in pending.drain() {
-                                    self.history.push(ChatMessage::ToolResult {
-                                        tool_call_id: call.id.clone(),
-                                        content: json!({"error": "tool result deadline expired"}),
-                                    });
+                                    self.history.push(ChatMessage::tool_error(
+                                        &call.id,
+                                        "tool result deadline expired",
+                                    ));
                                 }
                             }
                             () = cancel.cancelled() => {
                                 for (_id, call) in pending.drain() {
-                                    self.history.push(ChatMessage::ToolResult {
-                                        tool_call_id: call.id.clone(),
-                                        content: json!({"error": "cancelled"}),
-                                    });
+                                    self.history.push(ChatMessage::tool_error(
+                                        &call.id,
+                                        "cancelled",
+                                    ));
                                 }
                                 break;
                             }
@@ -756,6 +733,25 @@ impl ContextTransport {
     }
 
     /// Emits `text_message_content` + `text_message_end` to the AG-UI actor.
+    /// Waits for an AG-UI follow-up message (5s timeout, cancellation-aware).
+    ///
+    /// Returns the user message text if a follow-up arrives, or `None` if the
+    /// channel closes, times out, or cancellation fires.
+    async fn wait_for_followup(&mut self, cancel: &CancellationToken) -> Option<String> {
+        tokio::select! {
+            result = tokio::time::timeout(
+                Duration::from_secs(5),
+                self.agui_response_rx.recv(),
+            ) => {
+                match result {
+                    Ok(Some(follow_up)) => Some(extract_user_message(&follow_up)),
+                    Ok(None) | Err(_) => None,
+                }
+            }
+            () = cancel.cancelled() => None,
+        }
+    }
+
     async fn emit_text_content(&self, text: &str) {
         let msg_id = Uuid::new_v4().to_string();
         let content_notif = JsonRpcMessage::Notification(JsonRpcNotification::new(
@@ -879,12 +875,9 @@ impl ContextTransport {
             }),
             _ => json!({ "content": text }),
         };
-        Ok(JsonRpcMessage::Response(JsonRpcResponse {
-            jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
-            result: Some(result),
-            error: None,
-            id: request_id,
-        }))
+        Ok(JsonRpcMessage::Response(JsonRpcResponse::success(
+            request_id, result,
+        )))
     }
 }
 

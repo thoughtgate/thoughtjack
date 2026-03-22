@@ -714,13 +714,7 @@ pub async fn orchestrate_context(
             actor_name.clone(),
         );
 
-        server_actor_entries.insert(
-            actor_name.clone(),
-            ServerActorEntry {
-                mode: actor.mode.clone(),
-                tx: server_tx,
-            },
-        );
+        server_actor_entries.insert(actor_name.clone(), ServerActorEntry { tx: server_tx });
         server_tool_watches.push((actor_name.clone(), tool_watch_rx));
         server_handles.push((idx, actor_name.clone(), StdArc::new(handle)));
         tool_watch_txs.insert(actor_name, tool_watch_tx);

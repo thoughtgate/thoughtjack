@@ -1143,10 +1143,7 @@ async fn ec_ctx_015_tool_result_deadline_fires() {
     let mut server_actors = HashMap::new();
     server_actors.insert(
         "slow_server".to_string(),
-        ServerActorEntry {
-            mode: "mcp_server".to_string(),
-            tx: server_tx,
-        },
+        ServerActorEntry { tx: server_tx },
     );
 
     let transport = ContextTransport::new(
