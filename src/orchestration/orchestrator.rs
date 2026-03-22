@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::json;
 use tokio::task::{Id as TaskId, JoinSet};
 use tokio_util::sync::CancellationToken;
 
@@ -1008,7 +1009,13 @@ async fn run_context_server_actor(
         )));
     }
 
-    let driver = McpServerDriver::new(cfg.transport.clone(), cfg.raw_synthesize);
+    let mut driver = McpServerDriver::new(cfg.transport.clone(), cfg.raw_synthesize);
+    // Context-mode skips the MCP `initialize` handshake, so pre-populate
+    // client capabilities to enable elicitation and sampling.
+    driver.set_client_capabilities(json!({
+        "sampling": {},
+        "elicitation": {},
+    }));
     let entry_action_sender = driver.entry_action_sender();
     let loop_config = PhaseLoopConfig {
         trace: cfg.trace,

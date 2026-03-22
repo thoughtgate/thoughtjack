@@ -93,6 +93,18 @@ impl McpServerDriver {
         }
     }
 
+    /// Pre-populate client capabilities (context-mode only).
+    ///
+    /// In context-mode, the `initialize` handshake is skipped because
+    /// the drive loop calls the LLM directly rather than connecting a
+    /// real MCP client. This method enables capability-gated features
+    /// (elicitation, sampling) that would otherwise be blocked.
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    pub fn set_client_capabilities(&mut self, caps: Value) {
+        self.client_capabilities = Some(caps);
+    }
+
     /// Creates an `McpTransportEntryActionSender` sharing this driver's transport.
     ///
     /// Implements: TJ-SPEC-013 F-001

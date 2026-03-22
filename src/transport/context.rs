@@ -841,7 +841,7 @@ impl ContextTransport {
 
     /// Handles a server-initiated request (elicitation/sampling) via LLM roundtrip.
     async fn handle_server_initiated_request(
-        &mut self,
+        &self,
         req: &ServerRequest,
         cancel: &CancellationToken,
     ) -> Result<JsonRpcMessage, EngineError> {
@@ -854,12 +854,44 @@ impl ContextTransport {
             }
         };
 
-        let prompt = format_server_request_as_user_message(method, params);
-        self.history.push(ChatMessage::user(&prompt));
+        let request_id = match &req.request {
+            JsonRpcMessage::Request(r) => r.id.clone(),
+            _ => json!(null),
+        };
 
-        // LLM roundtrip — no tools.
+        // Elicitation targets the human user, not the LLM. In context-mode
+        // there is no real user to interact with, so reject the request.
+        // Elicitation attacks need traffic-mode with a real agent/UI.
+        if method == "elicitation/create" {
+            tracing::warn!(
+                actor = %req.actor_name,
+                "elicitation not supported in context-mode — requires real user interaction, rejecting"
+            );
+            return Ok(JsonRpcMessage::Response(JsonRpcResponse::success(
+                request_id,
+                json!({ "action": "reject", "content": "context-mode: no user to elicit" }),
+            )));
+        }
+
+        // Sampling targets the LLM — perform a real LLM roundtrip.
+        let prompt = format_server_request_as_user_message(method, params);
+
+        // Use a fork of the history that excludes pending tool_calls.
+        // Server requests arrive while tool results are being collected.
+        // The main history may end with assistant tool_calls without
+        // corresponding tool result messages, violating the OpenAI API
+        // sequencing requirement. The fork strips the trailing block.
+        let mut fork = self.history.clone();
+        while fork
+            .last()
+            .is_some_and(|m| matches!(m, ChatMessage::AssistantToolUse { .. }))
+        {
+            fork.pop();
+        }
+        fork.push(ChatMessage::user(&prompt));
+
         let response = tokio::select! {
-            result = self.provider.chat_completion(&self.history, &[]) => {
+            result = self.provider.chat_completion(&fork, &[]) => {
                 match result {
                     Ok(resp) => resp,
                     Err(e) => {
@@ -883,17 +915,8 @@ impl ContextTransport {
                 String::new()
             }
         };
-        self.history.push(ChatMessage::assistant_text(&text));
 
-        let request_id = match &req.request {
-            JsonRpcMessage::Request(r) => r.id.clone(),
-            _ => json!(null),
-        };
         let result = match method {
-            "elicitation/create" => json!({
-                "action": "accept",
-                "content": text,
-            }),
             "sampling/createMessage" => json!({
                 "model": "context-mode",
                 "role": "assistant",
