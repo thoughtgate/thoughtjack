@@ -63,14 +63,27 @@ pub fn filter_trace_for_indicator<'a>(
     trace: &'a [TraceEntry],
     indicator: &oatf::Indicator,
     actors: &[ActorInfo],
+    context_mode: bool,
 ) -> Vec<&'a TraceEntry> {
     let target_protocol = indicator.protocol.as_deref().unwrap_or("mcp");
 
-    let matching_actors: HashSet<&str> = actors
+    let mut matching_actors: HashSet<&str> = actors
         .iter()
         .filter(|a| extract_protocol(&a.mode) == target_protocol)
         .map(|a| a.name.as_str())
         .collect();
+
+    // In context mode, the LLM's response is always delivered via the
+    // AG-UI actor regardless of which protocol triggered the interaction.
+    // Include the AG-UI actor so indicators for any protocol can search
+    // the LLM's response text.
+    if context_mode {
+        for a in actors {
+            if extract_protocol(&a.mode) == "ag_ui" {
+                matching_actors.insert(&a.name);
+            }
+        }
+    }
 
     trace
         .iter()
@@ -94,6 +107,67 @@ pub fn filter_trace_for_indicator<'a>(
             })
         })
         .collect()
+}
+
+/// Builds shadow trace entries for context-mode indicator evaluation.
+///
+/// Copies the original trace, then for each AG-UI `text_message_content`
+/// entry, creates a shadow entry for every non-AG-UI server actor. The
+/// shadow entry has the AG-UI text placed at common indicator target paths
+/// (`response.content`, `arguments`, `body`) so non-AG-UI indicators can
+/// match the LLM's response text.
+fn build_context_mode_shadow_entries(
+    trace: &[TraceEntry],
+    actors: &[ActorInfo],
+) -> Vec<TraceEntry> {
+    let agui_actors: HashSet<&str> = actors
+        .iter()
+        .filter(|a| extract_protocol(&a.mode) == "ag_ui")
+        .map(|a| a.name.as_str())
+        .collect();
+
+    let server_actors: Vec<&str> = actors
+        .iter()
+        .filter(|a| a.mode.ends_with("_server"))
+        .map(|a| a.name.as_str())
+        .collect();
+
+    let mut result: Vec<TraceEntry> = trace.to_vec();
+
+    for entry in trace {
+        if !agui_actors.contains(entry.actor.as_str()) {
+            continue;
+        }
+        if entry.method != "text_message_content" {
+            continue;
+        }
+        let Some(delta) = entry.content.get("delta").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+
+        // Create shadow entry for each server actor so the protocol
+        // filter in filter_trace_for_indicator can find it.
+        let shadow_content = serde_json::json!({
+            "response": {"content": delta},
+            "arguments": delta,
+            "body": delta,
+            "content": delta,
+        });
+
+        for &server_actor in &server_actors {
+            result.push(TraceEntry {
+                seq: entry.seq,
+                timestamp: entry.timestamp,
+                actor: server_actor.to_string(),
+                phase: entry.phase.clone(),
+                direction: entry.direction,
+                method: "text_message_content".to_string(),
+                content: shadow_content.clone(),
+            });
+        }
+    }
+
+    result
 }
 
 // ============================================================================
@@ -140,6 +214,13 @@ pub struct EvaluationConfig<'a> {
     pub semantic_evaluator: Option<&'a dyn oatf::evaluate::SemanticEvaluator>,
     /// Whether semantic evaluation is disabled (`--no-semantic`).
     pub no_semantic: bool,
+    /// Whether running in context mode.
+    ///
+    /// In context mode, indicator protocol filtering is relaxed: indicators
+    /// for any protocol also search the AG-UI actor's trace entries, since
+    /// the LLM's response content is delivered via AG-UI regardless of
+    /// which protocol's tool triggered the response.
+    pub context_mode: bool,
 }
 
 impl std::fmt::Debug for EvaluationConfig<'_> {
@@ -301,12 +382,25 @@ pub fn evaluate_verdict(
         config.semantic_evaluator
     };
 
+    // Context-mode trace augmentation: create shadow entries for AG-UI
+    // text responses so that non-AG-UI indicators (e.g. protocol: a2a) can
+    // match the LLM's response text.  Shadow entries place the delta text
+    // at common target paths (response.content, arguments, body).
+    let augmented_trace: Vec<TraceEntry>;
+    let effective_trace: &[TraceEntry] = if config.context_mode {
+        augmented_trace = build_context_mode_shadow_entries(trace, actors);
+        &augmented_trace
+    } else {
+        trace
+    };
+
     let mut indicator_verdicts: HashMap<String, oatf::IndicatorVerdict> =
         HashMap::with_capacity(indicators.len());
 
     for indicator in indicators {
         let ind_id = indicator.id.as_deref().unwrap_or("").to_string();
-        let relevant_entries = filter_trace_for_indicator(trace, indicator, actors);
+        let relevant_entries =
+            filter_trace_for_indicator(effective_trace, indicator, actors, config.context_mode);
 
         tracing::debug!(
             indicator_id = %ind_id,
@@ -472,6 +566,7 @@ mod tests {
             cel_evaluator: None,
             semantic_evaluator: None,
             no_semantic: false,
+            context_mode: false,
         }
     }
 
@@ -506,7 +601,7 @@ mod tests {
         let actors = vec![make_actor("actor1", "mcp_server")];
         let indicator = make_pattern_indicator("ind-1", "test");
 
-        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors, false);
         assert_eq!(filtered.len(), 2);
     }
 
@@ -524,13 +619,13 @@ mod tests {
 
         // MCP indicator should only see mcp_actor entries
         let mcp_indicator = make_pattern_indicator("ind-mcp", "test");
-        let filtered = filter_trace_for_indicator(&trace, &mcp_indicator, &actors);
+        let filtered = filter_trace_for_indicator(&trace, &mcp_indicator, &actors, false);
         assert_eq!(filtered.len(), 2);
 
         // A2A indicator
         let mut a2a_indicator = make_pattern_indicator("ind-a2a", "test");
         a2a_indicator.protocol = Some("a2a".to_string());
-        let filtered = filter_trace_for_indicator(&trace, &a2a_indicator, &actors);
+        let filtered = filter_trace_for_indicator(&trace, &a2a_indicator, &actors, false);
         assert_eq!(filtered.len(), 1);
     }
 
@@ -540,7 +635,7 @@ mod tests {
         let actors = vec![make_actor("actor1", "mcp_server")];
         let indicator = make_pattern_indicator("ind-1", "test");
 
-        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors, false);
         assert!(filtered.is_empty());
     }
 
@@ -569,7 +664,7 @@ mod tests {
         ];
 
         let mcp_indicator = make_pattern_indicator("ind-1", "test");
-        let filtered = filter_trace_for_indicator(&trace, &mcp_indicator, &actors);
+        let filtered = filter_trace_for_indicator(&trace, &mcp_indicator, &actors, false);
         assert_eq!(filtered.len(), 50);
     }
 
@@ -753,6 +848,7 @@ mod tests {
             cel_evaluator: None,
             semantic_evaluator: None,
             no_semantic: true,
+            context_mode: false,
         };
 
         let verdict = evaluate_verdict(&attack, &trace, &actors, &config, "test/1.0");
@@ -958,6 +1054,7 @@ mod tests {
             cel_evaluator: Some(&error_evaluator),
             semantic_evaluator: None,
             no_semantic: false,
+            context_mode: false,
         };
 
         let verdict = evaluate_verdict(&attack, &trace, &actors, &config, "test/1.0");
@@ -1079,7 +1176,7 @@ mod tests {
         let mut indicator = make_pattern_indicator("ind-1", "test");
         indicator.actor = Some("actor1".to_string());
 
-        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors, false);
         assert_eq!(filtered.len(), 2);
         assert!(filtered.iter().all(|e| e.actor == "actor1"));
     }
@@ -1096,7 +1193,7 @@ mod tests {
         let mut indicator = make_pattern_indicator("ind-1", "test");
         indicator.direction = Some(OatfDirection::Request);
 
-        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors);
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors, false);
         // Server mode: Incoming = Request → should match
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].direction, Direction::Incoming);

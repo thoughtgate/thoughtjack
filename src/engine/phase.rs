@@ -41,6 +41,13 @@ pub struct PhaseEngine {
     pub(crate) phase_start_time: Instant,
     /// Local extractor values captured during execution.
     pub(crate) extractor_values: HashMap<String, String>,
+    /// Whether this engine runs in context mode.
+    ///
+    /// In context mode, `after:` temporal conditions are bypassed by using
+    /// a synthetic elapsed duration, since context-mode conversations
+    /// complete in seconds rather than the minutes that temporal triggers
+    /// target.
+    pub(crate) context_mode: bool,
 }
 
 impl PhaseEngine {
@@ -70,6 +77,7 @@ impl PhaseEngine {
             trigger_state: TriggerState::default(),
             phase_start_time: Instant::now(),
             extractor_values: HashMap::new(),
+            context_mode: false,
         }
     }
 
@@ -99,7 +107,14 @@ impl PhaseEngine {
             return PhaseAction::Stay; // Terminal phase — no trigger
         };
 
-        let elapsed = self.phase_start_time.elapsed();
+        // In context mode, bypass `after:` temporal conditions by using a
+        // large synthetic elapsed duration.  Context-mode conversations
+        // complete in seconds, but temporal triggers target minutes.
+        let elapsed = if self.context_mode {
+            std::time::Duration::from_secs(3600)
+        } else {
+            self.phase_start_time.elapsed()
+        };
         let result = evaluate_trigger(trigger, Some(event), elapsed, &mut self.trigger_state);
 
         match result {

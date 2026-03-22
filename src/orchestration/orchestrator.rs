@@ -622,7 +622,8 @@ pub async fn orchestrate_context(
     use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
     use crate::protocol::context_agui::ContextAgUiDriver;
     use crate::transport::context::{
-        AgUiHandle, ContextTransport, ServerActorEntry, ServerHandle, extract_tool_definitions,
+        AgUiHandle, ContextTransport, ServerActorEntry, ServerHandle,
+        extract_tool_definitions_for_actor,
     };
     use crate::transport::provider::create_provider;
     use std::sync::Arc as StdArc;
@@ -701,10 +702,24 @@ pub async fn orchestrate_context(
 
         let (server_tx, server_rx) = tokio::sync::mpsc::channel(16);
 
-        // Extract initial tool definitions from phase 0
+        // Extract initial tool definitions from phase 0 (mode-aware for A2A)
         let engine_tmp = PhaseEngine::new(loaded.document.clone(), idx);
         let effective_state = engine_tmp.effective_state();
-        let initial_tools = extract_tool_definitions(&effective_state);
+        let initial_tools = extract_tool_definitions_for_actor(
+            &effective_state,
+            &actor_name,
+            &actor.mode,
+        );
+
+        // For A2A actors, record the first skill ID for tool-call rewriting
+        let a2a_default_skill = if actor.mode == "a2a_server" {
+            crate::engine::mcp_server::helpers::a2a_skill_array(&effective_state)
+                .and_then(|arr| arr.first())
+                .and_then(|s| crate::engine::mcp_server::helpers::a2a_skill_name(s))
+                .map(String::from)
+        } else {
+            None
+        };
 
         let (tool_watch_tx, tool_watch_rx) = tokio::sync::watch::channel(initial_tools);
 
@@ -715,7 +730,14 @@ pub async fn orchestrate_context(
             actor_name.clone(),
         );
 
-        server_actor_entries.insert(actor_name.clone(), ServerActorEntry { tx: server_tx });
+        server_actor_entries.insert(
+            actor_name.clone(),
+            ServerActorEntry {
+                tx: server_tx,
+                mode: actor.mode.clone(),
+                a2a_default_skill,
+            },
+        );
         server_tool_watches.push((actor_name.clone(), tool_watch_rx));
         server_handles.push((idx, actor_name.clone(), StdArc::new(handle)));
         tool_watch_txs.insert(actor_name, tool_watch_tx);
@@ -737,9 +759,13 @@ pub async fn orchestrate_context(
     }
 
     // 7. Construct ContextTransport
+    // Build A2A system context roster (R2) — populated in Phase C
+    let a2a_system_context = build_a2a_system_context(actors, &server_indices, &loaded.document);
+
     let context_transport = ContextTransport::new(
         provider,
         config.context_system_prompt.clone(),
+        a2a_system_context,
         max_turns,
         agui_tx,
         agui_response_rx,
@@ -792,6 +818,7 @@ pub async fn orchestrate_context(
             entry_action_sender: None,
             events: StdArc::clone(events),
             tool_watch_tx: None,
+            context_mode: true,
         };
 
         let actor_name_owned = agui_actor_name;
@@ -948,6 +975,115 @@ pub async fn orchestrate_context(
     Ok(OrchestratorResult { outcomes, trace })
 }
 
+/// Builds the A2A agent roster for system prompt injection.
+///
+/// Extracts Agent Card metadata from all `a2a_server` actors and formats
+/// a structured text section. Returns `None` if no A2A actors exist.
+///
+/// Implements: TJ-SPEC-022 F-001
+fn build_a2a_system_context(
+    actors: &[oatf::Actor],
+    server_indices: &[usize],
+    document: &oatf::Document,
+) -> Option<String> {
+    use std::fmt::Write;
+
+    use crate::engine::PhaseEngine;
+    use crate::engine::mcp_server::helpers::{a2a_skill_array, a2a_skill_name};
+    use serde_json::Value;
+
+    let a2a_indices: Vec<usize> = server_indices
+        .iter()
+        .copied()
+        .filter(|&idx| actors[idx].mode == "a2a_server")
+        .collect();
+
+    if a2a_indices.is_empty() {
+        return None;
+    }
+
+    let mut text = String::from("## Available A2A Agents\n");
+
+    for idx in a2a_indices {
+        let actor = &actors[idx];
+        let engine_tmp = PhaseEngine::new(document.clone(), idx);
+        let state = engine_tmp.effective_state();
+        let card = state.get("agent_card").unwrap_or(&state);
+
+        let agent_name = card["name"].as_str().unwrap_or(&actor.name);
+        let description = card["description"].as_str().unwrap_or("");
+        let url = card["url"].as_str().unwrap_or("");
+        let version = card["version"].as_str().unwrap_or("");
+
+        let _ = write!(text, "\n### {}\n- Agent: {agent_name}", actor.name);
+        if !version.is_empty() {
+            let _ = write!(text, " (v{version})");
+        }
+        text.push('\n');
+        if !url.is_empty() {
+            let _ = writeln!(text, "- URL: {url}");
+        }
+        if !description.is_empty() {
+            let _ = writeln!(text, "- Description: {description}");
+        }
+
+        // Capabilities
+        if let Some(caps) = card.get("capabilities") {
+            let streaming = caps["streaming"].as_bool().unwrap_or(false);
+            let push = caps["pushNotifications"].as_bool().unwrap_or(false);
+            let _ = writeln!(
+                text,
+                "- Capabilities: streaming={streaming}, pushNotifications={push}"
+            );
+        }
+
+        // Authentication
+        if let Some(auth) = card.get("authentication")
+            && let Some(schemes) = auth["schemes"].as_array()
+        {
+            let scheme_strs: Vec<&str> =
+                schemes.iter().filter_map(Value::as_str).collect();
+            if !scheme_strs.is_empty() {
+                let _ = writeln!(text, "- Authentication: {}", scheme_strs.join(", "));
+            }
+        }
+
+        // Webhook
+        if let Some(wh_url) =
+            state.pointer("/webhook_registration/url").and_then(Value::as_str)
+        {
+            let _ = writeln!(text, "- Webhook URL: {wh_url}");
+        }
+
+        // Skills
+        if let Some(skills) = a2a_skill_array(&state)
+            && !skills.is_empty()
+        {
+            text.push_str("- Skills:\n");
+            for skill in skills {
+                let skill_id = a2a_skill_name(skill).unwrap_or("unknown");
+                let skill_desc = skill["description"].as_str().unwrap_or("");
+                let _ = writeln!(text, "  - {skill_id}: {skill_desc}");
+
+                if let Some(examples) = skill["examples"].as_array() {
+                    let ex_strs: Vec<&str> =
+                        examples.iter().filter_map(Value::as_str).collect();
+                    if !ex_strs.is_empty() {
+                        let quoted: Vec<String> =
+                            ex_strs.iter().map(|e| format!("\"{e}\"")).collect();
+                        let _ = writeln!(text, "    Examples: {}", quoted.join(", "));
+                    }
+                }
+            }
+        }
+    }
+
+    text.push_str(
+        "\nTo interact with an A2A agent, call its tool with a message parameter.\n",
+    );
+    Some(text)
+}
+
 /// Configuration for running a server actor in context-mode.
 struct ContextServerActorConfig {
     actor_index: usize,
@@ -1026,6 +1162,7 @@ async fn run_context_server_actor(
         entry_action_sender: Some(Box::new(entry_action_sender)),
         events: std::sync::Arc::clone(events),
         tool_watch_tx: cfg.tool_watch_tx,
+        context_mode: true,
     };
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
     let result = phase_loop.run().await?;

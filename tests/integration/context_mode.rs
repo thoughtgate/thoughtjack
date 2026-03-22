@@ -116,6 +116,7 @@ async fn ec_ctx_002_empty_response() {
     let transport = ContextTransport::new(
         Box::new(provider),
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -202,6 +203,7 @@ async fn ec_ctx_009_single_actor_no_tools() {
     let transport = ContextTransport::new(
         Box::new(provider),
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -278,6 +280,7 @@ async fn ec_ctx_007_max_turns_reached() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         2, // max_turns = 2
         agui_tx,
@@ -358,6 +361,7 @@ async fn ec_ctx_014_repeated_truncation_terminates() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         20,
         agui_tx,
@@ -508,6 +512,7 @@ async fn ec_ctx_019_cancellation_stops_drive_loop() {
     let transport = ContextTransport::new(
         Box::new(BlockingProvider),
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -559,6 +564,7 @@ async fn ec_ctx_020_follow_up_timeout_ends_conversation() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         20,
         agui_tx,
@@ -624,6 +630,7 @@ async fn ec_ctx_022_initial_message_timeout() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         20,
         agui_tx,
@@ -852,6 +859,7 @@ async fn ec_ctx_003_rate_limited_propagates_error() {
     let transport = ContextTransport::new(
         Box::new(RateLimitedProvider),
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -913,6 +921,7 @@ async fn ec_ctx_004_auth_error_fails_immediately() {
 
     let transport = ContextTransport::new(
         Box::new(AuthErrorProvider),
+        None,
         None,
         20,
         agui_tx,
@@ -1006,6 +1015,7 @@ async fn ec_ctx_010_timeout_propagates_error() {
     let transport = ContextTransport::new(
         Box::new(TimeoutProvider),
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -1067,6 +1077,7 @@ async fn ec_ctx_011_context_window_exceeded() {
 
     let transport = ContextTransport::new(
         Box::new(ContextWindowProvider),
+        None,
         None,
         20,
         agui_tx,
@@ -1159,11 +1170,16 @@ async fn ec_ctx_015_tool_result_deadline_fires() {
     let mut server_actors = HashMap::new();
     server_actors.insert(
         "slow_server".to_string(),
-        ServerActorEntry { tx: server_tx },
+        ServerActorEntry {
+            tx: server_tx,
+            mode: "mcp_server".to_string(),
+            a2a_default_skill: None,
+        },
     );
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         20,
         agui_tx,

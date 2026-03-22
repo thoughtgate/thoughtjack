@@ -166,6 +166,82 @@ pub fn a2a_skill_name(skill: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+/// Builds response content from A2A state fields (`task.message.parts`,
+/// `artifacts`).
+///
+/// When A2A skills have no `responses[]` array, this function extracts
+/// response content from the broader state object where A2A scenarios
+/// typically store task messages and artifact data.
+///
+/// Implements: TJ-SPEC-022 F-001
+#[must_use]
+pub fn build_a2a_response_content(state: &Value) -> Option<A2aResponseContent> {
+    let mut parts = Vec::new();
+
+    // Try task message parts
+    if let Some(task_parts) = state
+        .pointer("/task/message/parts")
+        .and_then(Value::as_array)
+    {
+        for part in task_parts {
+            if part.get("type").and_then(Value::as_str) == Some("text")
+                && let Some(text) = part.get("text").and_then(Value::as_str)
+            {
+                parts.push(text.to_string());
+            }
+        }
+    }
+
+    // Try artifacts (both task.artifacts and top-level state.artifacts)
+    let artifact_sources = [
+        state.pointer("/task/artifacts"),
+        state.get("artifacts"),
+    ];
+    for source in artifact_sources.into_iter().flatten() {
+        if let Some(artifacts) = source.as_array() {
+            for artifact in artifacts {
+                if let Some(content) = artifact.get("content").and_then(Value::as_str) {
+                    parts.push(content.to_string());
+                }
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    let task_status = state
+        .pointer("/task/status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed")
+        .to_string();
+
+    // For input-required, prepend a signal so the LLM understands the
+    // agent is asking a question and expects a follow-up response.
+    let mut text = String::new();
+    if task_status == "input-required" {
+        text.push_str("[Agent requires additional input]\n");
+    }
+    text.push_str(&parts.join("\n"));
+
+    Some(A2aResponseContent {
+        text,
+        status: task_status,
+    })
+}
+
+/// Structured response from an A2A actor, including task status.
+///
+/// Returned by [`build_a2a_response_content`]. The `status` field
+/// enables the drive loop to detect `input-required` states.
+pub struct A2aResponseContent {
+    /// Response text (message parts + artifacts concatenated).
+    pub text: String,
+    /// A2A task status (`"completed"`, `"input-required"`, etc.).
+    pub status: String,
+}
+
 /// Strip internal fields from a state object for wire format.
 pub fn strip_internal_fields(value: &Value, fields: &[&str]) -> Value {
     let Some(obj) = value.as_object() else {

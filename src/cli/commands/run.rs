@@ -166,6 +166,7 @@ pub async fn run_from_yaml(
             cel_evaluator: Some(&cel),
             semantic_evaluator: None,
             no_semantic: args.no_semantic,
+            context_mode: config.context_mode,
         };
         let source = format!("thoughtjack/{}", env!("CARGO_PKG_VERSION"));
         let verdict = evaluate_verdict(

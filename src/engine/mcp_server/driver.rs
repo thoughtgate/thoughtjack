@@ -25,7 +25,7 @@ use super::handlers::{
     handle_tasks_cancel, handle_tasks_get, handle_tasks_list, handle_tasks_result,
     handle_tools_list, handle_unknown,
 };
-use super::helpers::{find_a2a_skill, find_by_name};
+use super::helpers::{build_a2a_response_content, find_a2a_skill, find_by_name};
 use super::response::dispatch_response;
 
 use crate::engine::actions::EntryActionSender;
@@ -275,6 +275,22 @@ impl McpServerDriver {
             .await;
         self.maybe_send_elicitation(state, params, tool_name, event_tx, cancel)
             .await;
+
+        // A2A response content (R4): when an A2A skill has no `responses[]`,
+        // try to build response content from `state.task.message.parts[]` or
+        // `state.artifacts[]`. Includes `_a2a_status` for input-required
+        // multi-turn support.
+        if tool.get("responses").is_none()
+            && let Some(a2a_resp) = build_a2a_response_content(state)
+        {
+            return JsonRpcResponse::success(
+                request.id.clone(),
+                json!({
+                    "content": [{"type": "text", "text": a2a_resp.text}],
+                    "_a2a_status": a2a_resp.status,
+                }),
+            );
+        }
 
         dispatch_response(
             &request.id,

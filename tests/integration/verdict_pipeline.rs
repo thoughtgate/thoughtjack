@@ -115,6 +115,7 @@ fn default_config() -> EvaluationConfig<'static> {
         cel_evaluator: None,
         semantic_evaluator: None,
         no_semantic: false,
+        context_mode: false,
     }
 }
 

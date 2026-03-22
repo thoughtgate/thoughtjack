@@ -215,6 +215,12 @@ pub trait LlmProvider: Send + Sync {
 pub struct ServerActorEntry {
     /// Channel sender for dispatching tool calls to this actor.
     pub tx: mpsc::Sender<JsonRpcMessage>,
+    /// Actor mode (`"mcp_server"` or `"a2a_server"`).
+    pub mode: String,
+    /// For A2A actors: the default skill ID to use when rewriting tool calls
+    /// from the actor-name tool back to a skill name that `McpServerDriver`
+    /// can resolve via `find_a2a_skill()`.
+    pub a2a_default_skill: Option<String>,
 }
 
 /// A server-initiated request (elicitation/sampling) routed to the drive loop.
@@ -414,6 +420,8 @@ pub struct ContextTransport {
     provider: Box<dyn LlmProvider>,
     history: Vec<ChatMessage>,
     cli_system_prompt: Option<String>,
+    /// A2A agent roster injected as a system message during history seeding.
+    a2a_system_context: Option<String>,
     turn_count: u32,
     max_turns: u32,
     agui_tx: mpsc::Sender<JsonRpcMessage>,
@@ -433,6 +441,7 @@ impl ContextTransport {
     pub fn new(
         provider: Box<dyn LlmProvider>,
         cli_system_prompt: Option<String>,
+        a2a_system_context: Option<String>,
         max_turns: u32,
         agui_tx: mpsc::Sender<JsonRpcMessage>,
         agui_response_rx: mpsc::Receiver<JsonRpcMessage>,
@@ -446,6 +455,7 @@ impl ContextTransport {
             provider,
             history: Vec::new(),
             cli_system_prompt,
+            a2a_system_context,
             turn_count: 0,
             max_turns,
             agui_tx,
@@ -511,6 +521,11 @@ impl ContextTransport {
 
         if let Some(ref cli_prompt) = self.cli_system_prompt {
             self.history.push(ChatMessage::System(cli_prompt.clone()));
+        }
+        // Inject A2A agent roster (R2) — provides Agent Card metadata,
+        // skill descriptions, and examples as system context for the LLM.
+        if let Some(ref a2a_ctx) = self.a2a_system_context {
+            self.history.push(ChatMessage::System(a2a_ctx.clone()));
         }
         let seed_messages = extract_run_agent_input_messages(&initial)?;
         for msg in seed_messages {
@@ -615,7 +630,24 @@ impl ContextTransport {
                     for call in &calls {
                         if let Some(actor_name) = tool_router.get(&call.name) {
                             if let Some(entry) = self.server_actors.get(actor_name) {
-                                let msg = Self::tool_call_to_json_rpc(call);
+                                // For A2A actors, the LLM calls the actor-name
+                                // tool but McpServerDriver needs the skill name
+                                // to find the tool via find_a2a_skill().
+                                let dispatch_name =
+                                    if entry.mode == "a2a_server" {
+                                        entry
+                                            .a2a_default_skill
+                                            .as_deref()
+                                            .unwrap_or(&call.name)
+                                    } else {
+                                        &call.name
+                                    };
+                                let rewritten = ToolCall {
+                                    id: call.id.clone(),
+                                    name: dispatch_name.to_string(),
+                                    arguments: call.arguments.clone(),
+                                };
+                                let msg = Self::tool_call_to_json_rpc(&rewritten);
                                 if entry.tx.send(msg).await.is_ok() {
                                     pending.insert(call.id.clone(), call);
                                 } else {
@@ -1106,6 +1138,158 @@ pub fn extract_tool_definitions(state: &Value) -> Vec<ToolDefinition> {
     }
 
     tools
+}
+
+/// Mode-aware tool definition extraction for a single actor.
+///
+/// For `a2a_server` actors: creates one tool per agent (actor name as tool
+/// name, Agent Card metadata + skill roster in description, single `message`
+/// parameter). For all other modes: delegates to [`extract_tool_definitions`].
+///
+/// Implements: TJ-SPEC-022 F-001
+#[must_use]
+pub fn extract_tool_definitions_for_actor(
+    state: &Value,
+    actor_name: &str,
+    mode: &str,
+) -> Vec<ToolDefinition> {
+    if mode == "a2a_server" {
+        extract_a2a_agent_tool(actor_name, state)
+            .into_iter()
+            .collect()
+    } else {
+        extract_tool_definitions(state)
+    }
+}
+
+/// Builds a single tool definition representing an A2A agent.
+///
+/// Creates one tool per agent (not per skill). The tool name is the actor
+/// name, the description combines Agent Card metadata with a skill roster,
+/// and the tool accepts a single `message` parameter. This matches how
+/// real A2A orchestrators (Google ADK, etc.) present agents to the LLM.
+///
+/// Implements: TJ-SPEC-022 F-001
+#[must_use]
+pub fn extract_a2a_agent_tool(actor_name: &str, state: &Value) -> Option<ToolDefinition> {
+    use std::fmt::Write;
+
+    use crate::engine::mcp_server::helpers::{a2a_skill_array, a2a_skill_name};
+
+    let card = state.get("agent_card").unwrap_or(state);
+
+    // Need at least an agent_card or skills to produce a tool
+    let has_card = card.get("name").is_some() || card.get("description").is_some();
+    let has_skills = a2a_skill_array(state).is_some_and(|arr| !arr.is_empty());
+    if !has_card && !has_skills {
+        return None;
+    }
+
+    let mut desc = String::new();
+
+    // Agent identity
+    let agent_name = card["name"].as_str().unwrap_or(actor_name);
+    let agent_desc = card["description"].as_str().unwrap_or("");
+    let url = card["url"].as_str().unwrap_or("");
+    let version = card["version"].as_str().unwrap_or("");
+
+    desc.push_str(agent_desc);
+    if !url.is_empty() || !version.is_empty() {
+        let _ = write!(desc, "\n\nAgent: {agent_name}");
+        if !version.is_empty() {
+            let _ = write!(desc, " (v{version})");
+        }
+        if !url.is_empty() {
+            let _ = write!(desc, "\nURL: {url}");
+        }
+    }
+
+    // Capabilities
+    if let Some(caps) = card.get("capabilities") {
+        let streaming = caps["streaming"].as_bool().unwrap_or(false);
+        let push = caps["pushNotifications"].as_bool().unwrap_or(false);
+        let _ = write!(
+            desc,
+            "\nCapabilities: streaming={streaming}, pushNotifications={push}"
+        );
+    }
+
+    // Authentication
+    if let Some(auth) = card.get("authentication") {
+        if let Some(schemes) = auth["schemes"].as_array() {
+            let scheme_strs: Vec<&str> = schemes.iter().filter_map(Value::as_str).collect();
+            if !scheme_strs.is_empty() {
+                let _ = write!(desc, "\nAuthentication: {}", scheme_strs.join(", "));
+            }
+        }
+        if let Some(creds) = auth["credentials"].as_array() {
+            let cred_strs: Vec<&str> = creds.iter().filter_map(Value::as_str).collect();
+            if !cred_strs.is_empty() {
+                let _ = write!(desc, "\nCredentials: {}", cred_strs.join(", "));
+            }
+        }
+    }
+
+    // Webhook / push notification registration (R5)
+    if let Some(webhook) = state.get("webhook_registration") {
+        if let Some(wh_url) = webhook["url"].as_str() {
+            let _ = write!(desc, "\nWebhook URL: {wh_url}");
+        }
+        if let Some(wh_creds) = webhook.pointer("/authentication/credentials").and_then(Value::as_str) {
+            let _ = write!(desc, "\nWebhook Credentials: {wh_creds}");
+        }
+    }
+
+    // Skill roster
+    if let Some(skills) = a2a_skill_array(state)
+        && !skills.is_empty()
+    {
+        desc.push_str("\n\nSkills:");
+        for skill in skills {
+            let skill_id = a2a_skill_name(skill).unwrap_or("unknown");
+            let skill_name = skill["name"].as_str().unwrap_or("");
+            let skill_desc = skill["description"].as_str().unwrap_or("");
+
+            let _ = write!(desc, "\n- {skill_id}");
+            if !skill_name.is_empty() && skill_name != skill_id {
+                let _ = write!(desc, " ({skill_name})");
+            }
+            if !skill_desc.is_empty() {
+                let _ = write!(desc, ": {skill_desc}");
+            }
+
+            // Include examples to steer LLM message composition
+            if let Some(examples) = skill["examples"].as_array() {
+                let ex_strs: Vec<&str> =
+                    examples.iter().filter_map(Value::as_str).collect();
+                if !ex_strs.is_empty() {
+                    let quoted: Vec<String> =
+                        ex_strs.iter().map(|e| format!("\"{e}\"")).collect();
+                    let _ = write!(desc, "\n  Examples: {}", quoted.join(", "));
+                }
+            }
+        }
+    }
+
+    let tool_name = sanitize_tool_name(actor_name);
+    if tool_name.is_empty() {
+        return None;
+    }
+
+    Some(ToolDefinition {
+        name: tool_name,
+        description: desc,
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Task message to send to this agent"
+                }
+            },
+            "required": ["message"]
+        }),
+    })
 }
 
 /// Sanitise a tool name for LLM API compatibility.
