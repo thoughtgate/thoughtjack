@@ -894,13 +894,29 @@ pub fn extract_run_agent_input_messages(
         })?;
 
     let mut result = Vec::with_capacity(messages.len());
-    for entry in messages {
-        let role = entry.get("role").and_then(Value::as_str).unwrap_or("user");
-        let content = entry.get("content").and_then(Value::as_str).unwrap_or("");
+    for (idx, entry) in messages.iter().enumerate() {
+        let role = entry.get("role").and_then(Value::as_str).ok_or_else(|| {
+            EngineError::Driver(format!(
+                "message at index {idx} missing or non-string 'role' field"
+            ))
+        })?;
+        let content = entry
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                EngineError::Driver(format!(
+                    "message at index {idx} (role={role}) missing or non-string 'content' field"
+                ))
+            })?;
         match role {
             "system" => result.push(ChatMessage::System(content.to_string())),
             "assistant" => result.push(ChatMessage::AssistantText(content.to_string())),
-            _ => result.push(ChatMessage::User(content.to_string())),
+            "user" => result.push(ChatMessage::User(content.to_string())),
+            other => {
+                return Err(EngineError::Driver(format!(
+                    "message at index {idx} has unrecognized role '{other}'"
+                )));
+            }
         }
     }
     Ok(result)
@@ -999,8 +1015,15 @@ pub fn extract_tool_definitions(state: &Value) -> Vec<ToolDefinition> {
         }
     }
 
-    // A2A skills
-    if let Some(skill_array) = state.get("skills").and_then(Value::as_array) {
+    // A2A skills — check both state.skills and state.agent_card.skills
+    // (real A2A scenarios define skills under agent_card per TJ-SPEC-017)
+    let skill_array = state.get("skills").and_then(Value::as_array).or_else(|| {
+        state
+            .get("agent_card")
+            .and_then(|ac| ac.get("skills"))
+            .and_then(Value::as_array)
+    });
+    if let Some(skill_array) = skill_array {
         for skill in skill_array {
             let name = skill
                 .get("name")
@@ -1038,13 +1061,15 @@ pub fn extract_result_content(response: &JsonRpcMessage) -> Value {
     match response {
         JsonRpcMessage::Response(resp) => {
             if let Some(ref error) = resp.error {
-                // Preserve error object as-is
-                json!({
-                    "error": {
-                        "code": error.code,
-                        "message": error.message,
-                    }
-                })
+                // Preserve error object as-is (including data field)
+                let mut err_obj = json!({
+                    "code": error.code,
+                    "message": error.message,
+                });
+                if let Some(ref data) = error.data {
+                    err_obj["data"] = data.clone();
+                }
+                json!({ "error": err_obj })
             } else if let Some(ref result) = resp.result {
                 // Check for A2A response format (has message.parts)
                 if let Some(message) = result.get("message")
@@ -1258,6 +1283,34 @@ mod tests {
             id: json!("1"),
         });
         assert!(extract_run_agent_input_messages(&msg).is_err());
+    }
+
+    #[test]
+    fn test_extract_run_agent_input_messages_missing_role() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: Some(json!({
+                "messages": [{"content": "no role field"}]
+            })),
+            id: json!("1"),
+        });
+        let err = extract_run_agent_input_messages(&msg).unwrap_err();
+        assert!(err.to_string().contains("missing or non-string 'role'"));
+    }
+
+    #[test]
+    fn test_extract_run_agent_input_messages_missing_content() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: Some(json!({
+                "messages": [{"role": "user"}]
+            })),
+            id: json!("1"),
+        });
+        let err = extract_run_agent_input_messages(&msg).unwrap_err();
+        assert!(err.to_string().contains("missing or non-string 'content'"));
     }
 
     #[test]

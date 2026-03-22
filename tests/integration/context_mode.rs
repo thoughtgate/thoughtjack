@@ -750,7 +750,7 @@ fn server_request_sampling_format() {
     assert!(result.starts_with("[Server sampling request]"));
 }
 
-/// Verify A2A skill extraction
+/// Verify A2A skill extraction from top-level `skills`
 #[test]
 fn a2a_skills_extracted_as_tool_definitions() {
     let state = json!({
@@ -765,6 +765,42 @@ fn a2a_skills_extracted_as_tool_definitions() {
     assert_eq!(tools[1].name, "summarize");
     // A2A skills get permissive schema
     assert_eq!(tools[0].parameters["additionalProperties"], true);
+}
+
+/// Verify A2A skill extraction from `agent_card.skills` (real A2A scenario structure)
+#[test]
+fn a2a_skills_extracted_from_agent_card() {
+    let state = json!({
+        "agent_card": {
+            "name": "DataAgent",
+            "skills": [
+                {"id": "analyze", "name": "Data Analysis", "description": "Analyze data"},
+                {"id": "export", "name": "Export", "description": "Export results"}
+            ]
+        }
+    });
+    let tools = extract_tool_definitions(&state);
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0].name, "Data Analysis");
+    assert_eq!(tools[1].name, "Export");
+}
+
+/// Verify error.data is preserved in `extract_result_content`
+#[test]
+fn error_data_preserved_in_result_content() {
+    let resp = JsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32601,
+            message: "tool not found".into(),
+            data: Some(json!({"detail": "no such tool: foo", "tried": ["bar", "baz"]})),
+        }),
+        id: json!("1"),
+    });
+    let content = extract_result_content(&resp);
+    assert_eq!(content["error"]["code"], -32601);
+    assert_eq!(content["error"]["data"]["detail"], "no such tool: foo");
 }
 
 // ============================================================================

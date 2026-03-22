@@ -205,10 +205,19 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 });
             }
 
-            let resp_body: Value = resp
-                .json()
-                .await
-                .map_err(|e| ProviderError::Parse(format!("JSON parse error: {e}")))?;
+            let resp_body: Value = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    // EC-CTX-008: retry once on malformed JSON
+                    retries += 1;
+                    if retries > MAX_RETRIES {
+                        return Err(ProviderError::Parse(format!("JSON parse error: {e}")));
+                    }
+                    tracing::warn!(error = %e, "malformed provider JSON, retrying");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
 
             // Extract the first choice
             let choice = resp_body
