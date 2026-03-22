@@ -32,6 +32,17 @@ pub struct VerdictOutput {
     pub execution_summary: ExecutionSummary,
 }
 
+impl VerdictOutput {
+    /// Sets context-mode attribution fields on the execution summary.
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    pub fn set_context_attribution(&mut self, provider: &str, model: &str) {
+        self.execution_summary.transport = Some("context".to_string());
+        self.execution_summary.context_provider = Some(provider.to_string());
+        self.execution_summary.context_model = Some(model.to_string());
+    }
+}
+
 /// Attack metadata extracted from the OATF document.
 ///
 /// Implements: TJ-SPEC-014 F-007

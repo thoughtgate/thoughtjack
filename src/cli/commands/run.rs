@@ -193,7 +193,7 @@ pub async fn run_from_yaml(
         });
 
         let actor_statuses = build_actor_statuses(&outcomes, actors);
-        let output = build_verdict_output(
+        let mut output = build_verdict_output(
             &loaded.document.attack,
             &verdict,
             actor_statuses,
@@ -201,6 +201,15 @@ pub async fn run_from_yaml(
             trace_snapshot.len(),
             duration_ms,
         );
+
+        // Set context-mode attribution if applicable
+        if let Some(ref provider_config) = config.context_provider_config {
+            output.set_context_attribution(
+                &provider_config.provider_type,
+                &provider_config.model,
+            );
+        }
+
         (output, verdict.result)
     };
     let (output, verdict_result) = output;
