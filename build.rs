@@ -29,12 +29,9 @@ struct ScenarioEntry {
 fn discover_scenarios() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    let library_dir = Path::new(&manifest_dir)
-        .join("scenarios")
-        .join("library")
-        .join("library");
+    let library_dir = Path::new(&manifest_dir).join("scenarios").join("library");
 
-    println!("cargo:rerun-if-changed=scenarios/library/library");
+    println!("cargo:rerun-if-changed=scenarios/library");
 
     let mut scenarios = Vec::new();
 
@@ -43,7 +40,7 @@ fn discover_scenarios() {
     } else {
         println!(
             "cargo:warning=scenarios/library/ not found — no built-in scenarios will be \
-             embedded. Run `git submodule update --init` to fetch the OATF scenario library."
+             embedded. Run `git submodule update --init scenarios` to fetch the OATF scenario library."
         );
     }
 

@@ -303,6 +303,44 @@ pub fn write_json_verdict(output: &VerdictOutput, path: &str) -> std::io::Result
     Ok(())
 }
 
+/// Write the full protocol trace as JSONL to a file or stdout.
+///
+/// Each line is a JSON object with `seq`, `timestamp`, `actor`, `phase`,
+/// `direction`, `method`, and `content` fields matching TJ-SPEC-015 §5.4.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or written.
+///
+/// Implements: TJ-SPEC-014 F-010
+pub fn write_trace_jsonl(
+    trace: &[crate::engine::trace::TraceEntry],
+    path: &str,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut writer: Box<dyn Write> = if path == "-" {
+        Box::new(std::io::stdout().lock())
+    } else {
+        let path = Path::new(path);
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        Box::new(std::io::BufWriter::new(std::fs::File::create(path)?))
+    };
+
+    for entry in trace {
+        serde_json::to_writer(&mut writer, entry).map_err(std::io::Error::other)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+
+    Ok(())
+}
+
 // ============================================================================
 // Human Summary (stderr)
 // ============================================================================
@@ -918,5 +956,115 @@ mod tests {
         // make_verdict_output includes correlation: Some(any)
         // Should not panic; correlation line is printed
         print_human_summary(&output);
+    }
+
+    // ---- write_trace_jsonl tests ----
+
+    fn make_trace_entries(n: usize) -> Vec<crate::engine::trace::TraceEntry> {
+        use crate::engine::types::Direction;
+        (0..n)
+            .map(|i| crate::engine::trace::TraceEntry {
+                seq: i as u64,
+                timestamp: chrono::Utc::now(),
+                actor: "test_actor".to_string(),
+                phase: "phase_1".to_string(),
+                direction: if i % 2 == 0 {
+                    Direction::Incoming
+                } else {
+                    Direction::Outgoing
+                },
+                method: format!("method_{i}"),
+                content: serde_json::json!({"key": format!("value_{i}")}),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_trace_jsonl_creates_file_with_correct_line_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let entries = make_trace_entries(5);
+
+        write_trace_jsonl(&entries, path.to_str().unwrap()).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.lines().count(), 5);
+    }
+
+    #[test]
+    fn write_trace_jsonl_each_line_is_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let entries = make_trace_entries(3);
+
+        write_trace_jsonl(&entries, path.to_str().unwrap()).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        for (i, line) in content.lines().enumerate() {
+            let parsed: serde_json::Value =
+                serde_json::from_str(line).expect("each line should be valid JSON");
+            assert_eq!(parsed["seq"], i as u64);
+            assert_eq!(parsed["actor"], "test_actor");
+            assert_eq!(parsed["method"], format!("method_{i}"));
+            assert!(parsed["content"]["key"].is_string());
+        }
+    }
+
+    #[test]
+    fn write_trace_jsonl_includes_full_content_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let mut entries = make_trace_entries(1);
+        entries[0].content = serde_json::json!({
+            "name": "search",
+            "arguments": {"query": "test", "nested": {"deep": true}},
+        });
+
+        write_trace_jsonl(&entries, path.to_str().unwrap()).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["content"]["name"], "search");
+        assert_eq!(parsed["content"]["arguments"]["query"], "test");
+        assert_eq!(parsed["content"]["arguments"]["nested"]["deep"], true);
+    }
+
+    #[test]
+    fn write_trace_jsonl_creates_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("dir").join("trace.jsonl");
+        let entries = make_trace_entries(1);
+
+        write_trace_jsonl(&entries, path.to_str().unwrap()).unwrap();
+
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn write_trace_jsonl_empty_trace_creates_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.jsonl");
+
+        write_trace_jsonl(&[], path.to_str().unwrap()).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn write_trace_jsonl_preserves_direction_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let entries = make_trace_entries(2);
+
+        write_trace_jsonl(&entries, path.to_str().unwrap()).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(first["direction"], "incoming");
+        assert_eq!(second["direction"], "outgoing");
     }
 }

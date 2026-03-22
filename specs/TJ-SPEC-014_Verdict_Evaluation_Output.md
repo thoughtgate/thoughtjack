@@ -804,6 +804,7 @@ TJ-SPEC-014 adds the following flags to `thoughtjack run` (defined in TJ-SPEC-01
 | `--max-session <duration>` | `5m` | Maximum total session duration |
 | `--output <path>` | None | Write JSON verdict to file (use `-` for stdout) |
 | `--no-semantic` | false | Skip semantic indicators (produce `skipped` instead of calling LLM) |
+| `--export-trace <path>` | None | Write full protocol trace (with payloads) to JSONL file. Use `-` for stdout. Each line is a JSON object with `seq`, `timestamp`, `actor`, `phase`, `direction`, `method`, and `content` fields. See TJ-SPEC-015 §5.4 for format. |
 
 **Semantic evaluation configuration** uses the shared `THOUGHTJACK_SYNTHESIZE_*` environment variables (TJ-SPEC-019 §F-008). An optional `THOUGHTJACK_SEMANTIC_MODEL` override allows using a different model for evaluation (§4.6). When `THOUGHTJACK_SYNTHESIZE_API_KEY` is not set and `--no-semantic` is not explicitly passed, semantic indicators produce `skipped` results — this is the zero-config default.
 
@@ -813,7 +814,7 @@ TJ-SPEC-014 adds the following flags to `thoughtjack run` (defined in TJ-SPEC-01
 |---------|--------|
 | `thoughtjack suite` | Deferred — agents have context, sequential runs require agent teardown between scenarios. Use CI scripts for multi-attack workflows. |
 | `thoughtjack evaluate` | Deferred — attacks are cheap to re-run. Offline evaluation against stale traces introduces more bugs than it saves time. |
-| `--export-trace <path>` | Deferred — no offline consumer exists without `evaluate`. |
+| `--export-trace <path>` | ~~Deferred~~ Implemented in v0.5. Moved to active CLI flags table above. |
 | `--report <path>` | Replaced by `--output <path>` |
 | `--output json\|yaml\|text` | Replaced by `--output <path>` (always JSON). Human summary on stderr. |
 | `--llm-model <model>` | Replaced by `THOUGHTJACK_SYNTHESIZE_MODEL` env var (TJ-SPEC-019 §F-008), with optional `THOUGHTJACK_SEMANTIC_MODEL` override for evaluation |

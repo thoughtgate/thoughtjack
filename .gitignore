@@ -3,3 +3,5 @@
 proptest-regressions/
 tests/e2e/results/*.json
 tests/e2e/results/*.stderr
+lab/
+.playwright-mcp/

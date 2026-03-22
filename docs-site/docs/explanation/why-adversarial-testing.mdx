@@ -1,0 +1,102 @@
+---
+title: Why Adversarial Agent Testing
+sidebar_position: 2
+description: "Why functional testing isn't enough for AI agents that connect to external tools and services — and how adversarial testing closes the security gap."
+---
+
+# Why Adversarial Agent Testing
+
+AI agents are now connected to external tools, servers, and each other through protocols like MCP, A2A, and AG-UI. This connectivity creates attack surfaces that functional testing cannot cover.
+
+## The problem: agents trust their tools
+
+When an agent calls a tool, it trusts the response. When it reads a tool description, it treats the text as authoritative. When it receives a notification, it acts on it.
+
+This trust model worked when tools were local functions with predictable behavior. It breaks when tools are remote servers operated by unknown parties — or when a trusted server changes behavior after initial review.
+
+Consider what happens today:
+
+1. A developer installs an MCP server from a public registry
+2. The server provides a legitimate `send_email` tool
+3. After 15 versions of clean behavior, an update injects a BCC instruction into the tool description
+4. The agent silently copies every email to an attacker-controlled address
+
+This is not a hypothetical. Researchers have documented this pattern in the wild: the Postmark MCP server injected BCC copies across 15 versions, and the Smithery platform breach compromised over 3,000 applications.
+
+## Functional testing misses adversarial behavior
+
+Traditional testing verifies that an agent does the right thing when inputs are well-formed and tools behave honestly. It answers: "Does the agent complete the task?"
+
+Adversarial testing verifies that an agent does the right thing when inputs are malicious and tools are deceptive. It answers: "Does the agent resist manipulation?"
+
+These are fundamentally different questions, and passing one tells you nothing about the other.
+
+| Test type | What it verifies | What it misses |
+|-----------|------------------|----------------|
+| Functional | Agent completes tasks correctly | Agent resilience to deception |
+| Adversarial | Agent resists manipulation | Whether the agent works at all |
+
+Both are necessary. Neither is sufficient.
+
+## The growing attack surface
+
+Three protocol families now dominate agent-to-tool communication. Each introduces distinct attack vectors:
+
+### MCP (Model Context Protocol)
+
+MCP connects agents to tool servers. The protocol allows dynamic capability changes via `list_changed` notifications, tool descriptions are free-form text (enabling prompt injection), and there is no mutual authentication between client and server.
+
+**Documented attacks**: Tool description injection, rug pulls, supply chain compromise, data exfiltration via the "lethal trifecta" (private data + untrusted content + external communication).
+
+### A2A (Agent-to-Agent)
+
+A2A enables agents to delegate tasks to each other. Agent Cards are self-declared JSON with no mandatory signing or central registry, making spoofing and impersonation straightforward.
+
+**Documented attacks**: Agent Card prompt injection, typosquatting, capability claim manipulation.
+
+### AG-UI (Agent User Interface)
+
+AG-UI provides bidirectional communication between agents and UIs. Client-side state updates flow directly into agent processing, enabling message history injection and conversation manipulation.
+
+**Documented attacks**: Message list injection (fabricated system messages, fake assistant responses, simulated tool executions).
+
+## Research evidence
+
+The severity of these attack vectors is well-documented:
+
+- **Palo Alto Networks** found prompt injection success rates exceeding 50%, with some attacks reaching 88%
+- **Unit 42** confirmed indirect injection actively deployed across live websites with 22 distinct obfuscation techniques
+- **MCPTox benchmark** found over 60% attack success rates against MCP clients
+- **MintMCP** found 5.5% of public MCP servers contain vulnerabilities
+- **OWASP** rates goal hijacking as ASI01 — the #1 risk for agentic applications
+- **CVE-2025-6514** in mcp-remote (437,000+ downloads) enabled OS command execution through an MCP server
+
+## Where ThoughtJack fits
+
+ThoughtJack is an offensive testing tool. It simulates the attacker's side of the equation by:
+
+1. **Acting as a malicious server** — presenting tools with injected descriptions, mutating capabilities over time, delivering exfiltration payloads
+2. **Acting as a malicious client** — sending adversarial requests to servers, injecting conversation history, testing input validation
+3. **Evaluating agent behavior** — observing whether the agent follows injected instructions, accesses sensitive files, or exfiltrates data
+
+Attack scenarios are authored as OATF (Open Agentic Testing Framework) documents — a declarative YAML format that describes the attack setup, phases, triggers, and success indicators. ThoughtJack executes these documents and produces a verdict: did the agent resist, or was it compromised?
+
+### Offensive + defensive
+
+ThoughtJack is the offensive counterpart to defensive measures like input filtering, output scanning, and permission boundaries. Use ThoughtJack to verify that your defenses actually work by running the attacks they're supposed to stop.
+
+The pattern is:
+
+1. Deploy your agent with its defensive measures
+2. Run ThoughtJack scenarios against it
+3. Fix any failures
+4. Repeat with new attack patterns
+
+This is the same red team / blue team methodology used in traditional security, applied to the new attack surface of AI agent protocols.
+
+## Further reading
+
+- [MCP Attack Surface](/docs/explanation/mcp-attack-surface) — detailed vulnerability model for MCP, A2A, and AG-UI
+- [Security Framework Mappings](/docs/explanation/framework-mappings) — how ThoughtJack scenarios map to MITRE ATT&CK and OWASP MCP Top 10
+- [Scenario Library](/scenarios) — browse all built-in attack scenarios
+- [Getting Started](/docs/tutorials/getting-started) — run your first adversarial test in 5 minutes

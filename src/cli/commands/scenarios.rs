@@ -166,6 +166,7 @@ mod tests {
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            export_trace: None,
             progress: ProgressLevel::Off,
         }
     }

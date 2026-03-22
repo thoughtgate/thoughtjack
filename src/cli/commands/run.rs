@@ -26,6 +26,7 @@ use crate::verdict::grace::resolve_grace_period;
 use crate::verdict::output::{
     ActorStatus, attack_result_to_string, build_verdict_output, indicator_result_to_string,
     print_human_summary, termination_to_status, verdict_exit_code, write_json_verdict,
+    write_trace_jsonl,
 };
 
 /// Execute an OATF scenario.
@@ -200,6 +201,11 @@ pub async fn run_from_yaml(
     // 11. Write JSON verdict if --output
     if let Some(ref path) = args.output {
         write_json_verdict(&output, path)?;
+    }
+
+    // 11b. Write full trace if --export-trace
+    if let Some(ref path) = args.export_trace {
+        write_trace_jsonl(&trace_snapshot, path)?;
     }
 
     // 12. Shut down progress renderer (drop emitter to close channel)
@@ -563,6 +569,7 @@ mod tests {
             raw_synthesize: false,
             metrics_port: None,
             events_file: None,
+            export_trace: None,
             progress: ProgressLevel::Off,
         }
     }
