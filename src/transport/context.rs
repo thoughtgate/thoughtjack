@@ -625,8 +625,22 @@ impl ContextTransport {
                         if let Some(actor_name) = tool_router.get(&call.name) {
                             if let Some(entry) = self.server_actors.get(actor_name) {
                                 let msg = Self::tool_call_to_json_rpc(call);
-                                let _ = entry.tx.send(msg).await;
-                                pending.insert(call.id.clone(), call);
+                                if entry.tx.send(msg).await.is_ok() {
+                                    pending.insert(call.id.clone(), call);
+                                } else {
+                                    tracing::warn!(
+                                        tool = %call.name,
+                                        actor = %actor_name,
+                                        "server actor channel closed, synthesizing error"
+                                    );
+                                    self.history.push(ChatMessage::ToolResult {
+                                        tool_call_id: call.id.clone(),
+                                        content: json!({"error": format!(
+                                            "server actor channel closed for tool: {}",
+                                            call.name
+                                        )}),
+                                    });
+                                }
                             }
                         } else {
                             tracing::warn!(
@@ -650,12 +664,12 @@ impl ContextTransport {
                         tokio::select! {
                             result = self.tool_result_rx.recv() => {
                                 match result {
-                                    Some(JsonRpcMessage::Response(ref resp)) => {
+                                    Some(ref msg @ JsonRpcMessage::Response(ref resp)) => {
                                         let result_id = extract_response_id(resp);
                                         if let Some(call) = pending.remove(&result_id) {
                                             self.history.push(ChatMessage::tool_result(
                                                 &call.id,
-                                                result.as_ref().unwrap_or(&JsonRpcMessage::Response(resp.clone())),
+                                                msg,
                                             ));
                                         } else {
                                             tracing::warn!(
@@ -690,11 +704,24 @@ impl ContextTransport {
                                 }
                             }
                             Some(server_req) = self.server_request_rx.recv() => {
-                                let response = self
+                                match self
                                     .handle_server_initiated_request(&server_req, &cancel)
-                                    .await?;
-                                if let Some(entry) = self.server_actors.get(&server_req.actor_name) {
-                                    let _ = entry.tx.send(response).await;
+                                    .await
+                                {
+                                    Ok(response) => {
+                                        if let Some(entry) = self.server_actors.get(&server_req.actor_name) {
+                                            let _ = entry.tx.send(response).await;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        // Log but don't propagate — the drive loop must
+                                        // exit normally to emit run_finished.
+                                        tracing::warn!(
+                                            actor = %server_req.actor_name,
+                                            error = %err,
+                                            "server-initiated request failed, continuing"
+                                        );
+                                    }
                                 }
                             }
                             () = tokio::time::sleep_until(deadline) => {
