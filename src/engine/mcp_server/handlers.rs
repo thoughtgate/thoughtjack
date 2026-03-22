@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 use crate::transport::jsonrpc::error_codes;
 use crate::transport::{JsonRpcRequest, JsonRpcResponse};
 
-use super::helpers::{find_by_field, find_matching_template, strip_internal_fields};
+use super::helpers::{
+    a2a_skill_array, a2a_skill_name, find_by_field, find_matching_template, strip_internal_fields,
+};
 use super::response::dispatch_response;
 
 /// Default MCP protocol version (MCP 2025-11-25).
@@ -145,35 +147,25 @@ pub fn handle_tools_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResp
         })
         .unwrap_or_default();
 
-    // Fall back to A2A skills when no MCP tools are defined (context-mode shim)
-    if tools.is_empty() {
-        let skills = state.get("skills").and_then(Value::as_array).or_else(|| {
-            state
-                .get("agent_card")
-                .and_then(|ac| ac.get("skills"))
-                .and_then(Value::as_array)
-        });
-        if let Some(skill_array) = skills {
-            let mapped: Vec<Value> = skill_array
-                .iter()
-                .filter_map(|skill| {
-                    let name = skill
-                        .get("id")
-                        .or_else(|| skill.get("name"))
-                        .and_then(Value::as_str)?;
-                    let desc = skill
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    Some(json!({
-                        "name": name,
-                        "description": desc,
-                        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": true}
-                    }))
-                })
-                .collect();
-            return JsonRpcResponse::success(request.id.clone(), json!({ "tools": mapped }));
-        }
+    // Fall back to A2A skills when no MCP tools are defined (context-mode shim).
+    // Uses shared helpers to avoid duplicating skill lookup logic.
+    if tools.is_empty() && let Some(skill_array) = a2a_skill_array(state) {
+        let mapped: Vec<Value> = skill_array
+            .iter()
+            .filter_map(|skill| {
+                let name = a2a_skill_name(skill)?;
+                let desc = skill
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                Some(json!({
+                    "name": name,
+                    "description": desc,
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": true}
+                }))
+            })
+            .collect();
+        return JsonRpcResponse::success(request.id.clone(), json!({ "tools": mapped }));
     }
 
     JsonRpcResponse::success(request.id.clone(), json!({ "tools": tools }))

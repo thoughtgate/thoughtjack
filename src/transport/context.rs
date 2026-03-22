@@ -1080,26 +1080,15 @@ pub fn extract_tool_definitions(state: &Value) -> Vec<ToolDefinition> {
         }
     }
 
-    // A2A skills — check both state.skills and state.agent_card.skills
-    // (real A2A scenarios define skills under agent_card per TJ-SPEC-017).
-    // Prefer `id` (machine-readable, e.g. "analyze-data") over `name`
-    // (human-readable, e.g. "Data Analysis") because LLM API providers
-    // restrict tool function names to `[a-zA-Z0-9_-]+`.
-    let skill_array = state.get("skills").and_then(Value::as_array).or_else(|| {
-        state
-            .get("agent_card")
-            .and_then(|ac| ac.get("skills"))
-            .and_then(Value::as_array)
-    });
-    if let Some(skill_array) = skill_array {
+    // A2A skills — uses shared helpers from mcp_server/helpers.rs to avoid
+    // duplicating the skill lookup logic across context.rs, handlers.rs,
+    // and driver.rs. See helpers::a2a_skill_array() for the full lookup chain.
+    if let Some(skill_array) = crate::engine::mcp_server::helpers::a2a_skill_array(state) {
         for skill in skill_array {
-            let name = sanitize_tool_name(
-                skill
-                    .get("id")
-                    .or_else(|| skill.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or(""),
-            );
+            let Some(raw_name) = crate::engine::mcp_server::helpers::a2a_skill_name(skill) else {
+                continue;
+            };
+            let name = sanitize_tool_name(raw_name);
             if name.is_empty() {
                 continue;
             }

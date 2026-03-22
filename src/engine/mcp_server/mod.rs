@@ -25,10 +25,12 @@ pub mod handlers;
 #[cfg(not(fuzzing))]
 mod handlers;
 
+// pub(crate): context.rs uses a2a_skill_array/a2a_skill_name for the
+// context-mode A2A shim. pub for fuzzing.
 #[cfg(fuzzing)]
 pub mod helpers;
 #[cfg(not(fuzzing))]
-mod helpers;
+pub(crate) mod helpers;
 
 #[cfg(fuzzing)]
 pub mod response;
