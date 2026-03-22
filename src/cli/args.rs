@@ -206,11 +206,7 @@ pub struct ExecutionArgs {
     /// System prompt for context-mode (simulates agent framework instructions).
     ///
     /// Implements: TJ-SPEC-022 F-001
-    #[arg(
-        long,
-        value_name = "PROMPT",
-        env = "THOUGHTJACK_CONTEXT_SYSTEM_PROMPT"
-    )]
+    #[arg(long, value_name = "PROMPT", env = "THOUGHTJACK_CONTEXT_SYSTEM_PROMPT")]
     pub context_system_prompt: Option<String>,
 
     /// Per-request timeout in seconds for context-mode LLM calls [default: 120].

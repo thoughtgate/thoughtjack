@@ -55,9 +55,7 @@ pub(super) async fn apply_delivery(
         }
         "slow_stream" => {
             if transport.transport_type() == TransportType::Context {
-                tracing::warn!(
-                    "slow_stream delivery not supported in context-mode, using normal"
-                );
+                tracing::warn!("slow_stream delivery not supported in context-mode, using normal");
                 transport
                     .send_message(response_msg)
                     .await

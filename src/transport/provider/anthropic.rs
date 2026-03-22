@@ -28,6 +28,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Implements: TJ-SPEC-022 F-001
 pub struct AnthropicProvider {
     client: Client,
+    base_url: String,
     api_key: String,
     model: String,
     temperature: f32,
@@ -44,6 +45,7 @@ impl AnthropicProvider {
     pub fn new(
         api_key: String,
         model: String,
+        base_url: Option<String>,
         temperature: f32,
         max_tokens: u32,
         timeout_secs: u64,
@@ -55,6 +57,7 @@ impl AnthropicProvider {
 
         Self {
             client,
+            base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             api_key,
             model,
             temperature,
@@ -66,9 +69,7 @@ impl AnthropicProvider {
     ///
     /// Anthropic requires system prompt as a top-level parameter, not in messages.
     /// `ChatMessage::System` entries are extracted and concatenated.
-    fn prepare_request(
-        history: &[ChatMessage],
-    ) -> (Option<String>, Vec<Value>) {
+    fn prepare_request(history: &[ChatMessage]) -> (Option<String>, Vec<Value>) {
         let mut system_parts = Vec::new();
         let mut messages = Vec::new();
 
@@ -166,7 +167,8 @@ impl LlmProvider for AnthropicProvider {
             body["tools"] = json!(Self::serialize_tools(tools));
         }
 
-        let url = format!("{DEFAULT_BASE_URL}/v1/messages");
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{base}/v1/messages");
 
         let mut retries = 0;
         loop {

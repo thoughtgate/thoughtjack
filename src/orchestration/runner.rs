@@ -121,9 +121,7 @@ pub fn build_actor_config(args: &ExecutionArgs) -> Result<ActorConfig, EngineErr
     // Build context-mode provider config if --context is active
     let context_provider_config = if args.context {
         let model = args.context_model.clone().ok_or_else(|| {
-            EngineError::Driver(
-                "--context-model is required when --context is enabled".into(),
-            )
+            EngineError::Driver("--context-model is required when --context is enabled".into())
         })?;
 
         // API key conditionally required: not needed for local/private endpoints

@@ -222,13 +222,14 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 .and_then(Value::as_str)
                 .unwrap_or("stop");
 
-            let message = choice.get("message").ok_or_else(|| {
-                ProviderError::Parse("no message in choice".into())
-            })?;
+            let message = choice
+                .get("message")
+                .ok_or_else(|| ProviderError::Parse("no message in choice".into()))?;
 
             // Check for tool calls
             if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array)
-                && !tool_calls.is_empty() && finish_reason != "length"
+                && !tool_calls.is_empty()
+                && finish_reason != "length"
             {
                 let calls: Vec<ToolCall> = tool_calls
                     .iter()
@@ -240,8 +241,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
                             .get("arguments")
                             .and_then(Value::as_str)
                             .unwrap_or("{}");
-                        let arguments: Value =
-                            serde_json::from_str(args_str).unwrap_or(json!({}));
+                        let arguments: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
                         Some(ToolCall {
                             id,
                             name,

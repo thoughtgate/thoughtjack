@@ -123,7 +123,11 @@ pub async fn run_from_yaml(
         .actors
         .as_ref()
         .ok_or_else(|| ThoughtJackError::Usage("no actors in document".into()))?;
-    validate_transport_flags(actors, &config)?;
+    // Skip traffic-mode transport validation in context-mode — context-mode
+    // uses channel-based handles, not real transports (TJ-SPEC-022 §4.1).
+    if !config.context_mode {
+        validate_transport_flags(actors, &config)?;
+    }
 
     // 6. Execute: context-mode, single-actor bypass, or multi-actor orchestrate
     let start = Instant::now();
@@ -204,10 +208,7 @@ pub async fn run_from_yaml(
 
         // Set context-mode attribution if applicable
         if let Some(ref provider_config) = config.context_provider_config {
-            output.set_context_attribution(
-                &provider_config.provider_type,
-                &provider_config.model,
-            );
+            output.set_context_attribution(&provider_config.provider_type, &provider_config.model);
         }
 
         (output, verdict.result)

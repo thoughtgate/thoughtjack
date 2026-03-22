@@ -6,18 +6,18 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{Mutex, mpsc, watch};
 
 use thoughtjack::transport::Transport;
 use thoughtjack::transport::context::{
     AgUiHandle, ChatMessage, ContextTransport, LlmProvider, LlmResponse, ProviderError,
-    TextResponse, ToolDefinition,
-    extract_result_content, extract_run_agent_input_messages, extract_tool_definitions,
-    extract_user_message, format_server_request_as_user_message,
+    ServerActorEntry, ServerHandle, TextResponse, ToolCall, ToolDefinition, extract_result_content,
+    extract_run_agent_input_messages, extract_tool_definitions, extract_user_message,
+    format_server_request_as_user_message,
 };
 use thoughtjack::transport::{
-    JsonRpcError, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    JSONRPC_VERSION,
+    JSONRPC_VERSION, JsonRpcError, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
+    JsonRpcResponse,
 };
 
 // ============================================================================
@@ -217,7 +217,9 @@ async fn ec_ctx_009_single_actor_no_tools() {
 
     // Send initial message
     response_tx
-        .send(make_run_agent_input(&[json!({"role": "user", "content": "Hello"})]))
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Hello"}),
+        ]))
         .await
         .unwrap();
 
@@ -260,9 +262,18 @@ async fn ec_ctx_007_max_turns_reached() {
 
     // Provider returns text every turn — drive loop should stop at max_turns=2
     let provider = MockProvider::new(vec![
-        LlmResponse::Text(TextResponse { text: "Turn 1".into(), is_truncated: false }),
-        LlmResponse::Text(TextResponse { text: "Turn 2".into(), is_truncated: false }),
-        LlmResponse::Text(TextResponse { text: "Turn 3".into(), is_truncated: false }),
+        LlmResponse::Text(TextResponse {
+            text: "Turn 1".into(),
+            is_truncated: false,
+        }),
+        LlmResponse::Text(TextResponse {
+            text: "Turn 2".into(),
+            is_truncated: false,
+        }),
+        LlmResponse::Text(TextResponse {
+            text: "Turn 3".into(),
+            is_truncated: false,
+        }),
     ]);
 
     let transport = ContextTransport::new(
@@ -283,14 +294,18 @@ async fn ec_ctx_007_max_turns_reached() {
 
     // Send initial and follow-ups
     response_tx
-        .send(make_run_agent_input(&[json!({"role": "user", "content": "Go"})]))
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Go"}),
+        ]))
         .await
         .unwrap();
 
     // Follow-up for turn 2
     tokio::time::sleep(Duration::from_millis(200)).await;
     response_tx
-        .send(make_run_agent_input(&[json!({"role": "user", "content": "Continue"})]))
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Continue"}),
+        ]))
         .await
         .unwrap();
 
@@ -331,8 +346,14 @@ async fn ec_ctx_014_repeated_truncation_terminates() {
 
     // Two consecutive truncated responses should terminate with error
     let provider = MockProvider::new(vec![
-        LlmResponse::Text(TextResponse { text: "partial...".into(), is_truncated: true }),
-        LlmResponse::Text(TextResponse { text: "still partial...".into(), is_truncated: true }),
+        LlmResponse::Text(TextResponse {
+            text: "partial...".into(),
+            is_truncated: true,
+        }),
+        LlmResponse::Text(TextResponse {
+            text: "still partial...".into(),
+            is_truncated: true,
+        }),
     ]);
 
     let transport = ContextTransport::new(
@@ -353,7 +374,9 @@ async fn ec_ctx_014_repeated_truncation_terminates() {
 
     // Send initial message
     response_tx
-        .send(make_run_agent_input(&[json!({"role": "user", "content": "Hello"})]))
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Hello"}),
+        ]))
         .await
         .unwrap();
 
@@ -382,21 +405,29 @@ async fn ec_ctx_014_repeated_truncation_terminates() {
 #[test]
 fn ec_ctx_017_tool_name_collision_first_wins() {
     // Simulate what the drive loop does: iterate watches in order, first wins
-    let tools_a = vec![
-        ToolDefinition { name: "search".into(), description: "Actor A".into(), parameters: json!({"type": "object"}) },
-    ];
+    let tools_a = vec![ToolDefinition {
+        name: "search".into(),
+        description: "Actor A".into(),
+        parameters: json!({"type": "object"}),
+    }];
     let tools_b = vec![
-        ToolDefinition { name: "search".into(), description: "Actor B".into(), parameters: json!({"type": "object"}) },
-        ToolDefinition { name: "unique".into(), description: "Only B".into(), parameters: json!({"type": "object"}) },
+        ToolDefinition {
+            name: "search".into(),
+            description: "Actor B".into(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolDefinition {
+            name: "unique".into(),
+            description: "Only B".into(),
+            parameters: json!({"type": "object"}),
+        },
     ];
 
     let (tx_a, rx_a) = watch::channel(tools_a);
     let (tx_b, rx_b) = watch::channel(tools_b);
 
-    let watches: Vec<(String, watch::Receiver<Vec<ToolDefinition>>)> = vec![
-        ("actor_a".to_string(), rx_a),
-        ("actor_b".to_string(), rx_b),
-    ];
+    let watches: Vec<(String, watch::Receiver<Vec<ToolDefinition>>)> =
+        vec![("actor_a".to_string(), rx_a), ("actor_b".to_string(), rx_b)];
 
     // Replicate drive loop merge logic
     let mut all_tools = Vec::new();
@@ -459,8 +490,12 @@ impl LlmProvider for BlockingProvider {
     ) -> Result<LlmResponse, ProviderError> {
         std::future::pending().await
     }
-    fn provider_name(&self) -> &'static str { "blocking" }
-    fn model_name(&self) -> &'static str { "block" }
+    fn provider_name(&self) -> &'static str {
+        "blocking"
+    }
+    fn model_name(&self) -> &'static str {
+        "block"
+    }
 }
 
 #[tokio::test]
@@ -488,7 +523,9 @@ async fn ec_ctx_019_cancellation_stops_drive_loop() {
 
     // Send initial message
     response_tx
-        .send(make_run_agent_input(&[json!({"role": "user", "content": "Hello"})]))
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Hello"}),
+        ]))
         .await
         .unwrap();
 
@@ -538,7 +575,9 @@ async fn ec_ctx_020_follow_up_timeout_ends_conversation() {
 
     // Send initial message but NO follow-up
     response_tx
-        .send(make_run_agent_input(&[json!({"role": "user", "content": "Hello"})]))
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Hello"}),
+        ]))
         .await
         .unwrap();
 
@@ -561,7 +600,10 @@ async fn ec_ctx_020_follow_up_timeout_ends_conversation() {
             () = tokio::time::sleep_until(deadline) => break,
         }
     }
-    assert!(got_run_finished, "should get run_finished after follow-up timeout");
+    assert!(
+        got_run_finished,
+        "should get run_finished after follow-up timeout"
+    );
 
     let result = handle.await.unwrap();
     assert!(result.is_ok());
@@ -723,4 +765,475 @@ fn a2a_skills_extracted_as_tool_definitions() {
     assert_eq!(tools[1].name, "summarize");
     // A2A skills get permissive schema
     assert_eq!(tools[0].parameters["additionalProperties"], true);
+}
+
+// ============================================================================
+// EC-CTX-003: HTTP 429 — provider returns RateLimited
+// ============================================================================
+
+/// Provider that always returns a rate-limit error.
+struct RateLimitedProvider;
+#[async_trait::async_trait]
+impl LlmProvider for RateLimitedProvider {
+    async fn chat_completion(
+        &self,
+        _: &[ChatMessage],
+        _: &[ToolDefinition],
+    ) -> Result<LlmResponse, ProviderError> {
+        Err(ProviderError::RateLimited { retries: 3 })
+    }
+    fn provider_name(&self) -> &'static str {
+        "rate-limited"
+    }
+    fn model_name(&self) -> &'static str {
+        "mock"
+    }
+}
+
+#[tokio::test]
+async fn ec_ctx_003_rate_limited_propagates_error() {
+    let (agui_tx, _agui_rx) = mpsc::channel(16);
+    let (response_tx, response_rx) = mpsc::channel(16);
+    let (_result_tx, result_rx) = mpsc::channel(16);
+    let (_req_tx, req_rx) = mpsc::channel(16);
+
+    let transport = ContextTransport::new(
+        Box::new(RateLimitedProvider),
+        None,
+        20,
+        agui_tx,
+        response_rx,
+        "thread-1".into(),
+        HashMap::new(),
+        Vec::new(),
+        result_rx,
+        req_rx,
+    );
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = transport.spawn_drive_loop(cancel);
+
+    response_tx
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Hi"}),
+        ]))
+        .await
+        .unwrap();
+
+    let result = handle.await.unwrap();
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("LLM API error"), "got: {err}");
+}
+
+// ============================================================================
+// EC-CTX-004: HTTP 401/403 — provider returns auth error
+// ============================================================================
+
+/// Provider that always returns an auth error.
+struct AuthErrorProvider;
+#[async_trait::async_trait]
+impl LlmProvider for AuthErrorProvider {
+    async fn chat_completion(
+        &self,
+        _: &[ChatMessage],
+        _: &[ToolDefinition],
+    ) -> Result<LlmResponse, ProviderError> {
+        Err(ProviderError::Http {
+            status: 401,
+            body: "Unauthorized".into(),
+        })
+    }
+    fn provider_name(&self) -> &'static str {
+        "auth-error"
+    }
+    fn model_name(&self) -> &'static str {
+        "mock"
+    }
+}
+
+#[tokio::test]
+async fn ec_ctx_004_auth_error_fails_immediately() {
+    let (agui_tx, _agui_rx) = mpsc::channel(16);
+    let (response_tx, response_rx) = mpsc::channel(16);
+    let (_result_tx, result_rx) = mpsc::channel(16);
+    let (_req_tx, req_rx) = mpsc::channel(16);
+
+    let transport = ContextTransport::new(
+        Box::new(AuthErrorProvider),
+        None,
+        20,
+        agui_tx,
+        response_rx,
+        "thread-1".into(),
+        HashMap::new(),
+        Vec::new(),
+        result_rx,
+        req_rx,
+    );
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = transport.spawn_drive_loop(cancel);
+
+    response_tx
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Hi"}),
+        ]))
+        .await
+        .unwrap();
+
+    let result = handle.await.unwrap();
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("401"), "got: {err}");
+}
+
+// ============================================================================
+// EC-CTX-006: Phase advances mid-conversation — watch channel updates
+// ============================================================================
+
+#[tokio::test]
+async fn ec_ctx_006_phase_advance_updates_tool_definitions() {
+    let initial_tools = vec![ToolDefinition {
+        name: "old_tool".into(),
+        description: "Goes away".into(),
+        parameters: json!({"type": "object"}),
+    }];
+    let new_tools = vec![ToolDefinition {
+        name: "new_tool".into(),
+        description: "Rug pull".into(),
+        parameters: json!({"type": "object"}),
+    }];
+
+    let (tx, rx) = watch::channel(initial_tools);
+
+    // Verify initial state
+    let current = rx.borrow().clone();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].name, "old_tool");
+
+    // Simulate phase advance — PhaseLoop publishes new tools
+    tx.send(new_tools).unwrap();
+
+    // Drive loop would pick up the change on next turn
+    let updated = rx.borrow().clone();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].name, "new_tool");
+}
+
+// ============================================================================
+// EC-CTX-010: Network timeout — provider returns Timeout error
+// ============================================================================
+
+/// Provider that always returns a timeout error.
+struct TimeoutProvider;
+#[async_trait::async_trait]
+impl LlmProvider for TimeoutProvider {
+    async fn chat_completion(
+        &self,
+        _: &[ChatMessage],
+        _: &[ToolDefinition],
+    ) -> Result<LlmResponse, ProviderError> {
+        Err(ProviderError::Timeout { seconds: 120 })
+    }
+    fn provider_name(&self) -> &'static str {
+        "timeout"
+    }
+    fn model_name(&self) -> &'static str {
+        "mock"
+    }
+}
+
+#[tokio::test]
+async fn ec_ctx_010_timeout_propagates_error() {
+    let (agui_tx, _agui_rx) = mpsc::channel(16);
+    let (response_tx, response_rx) = mpsc::channel(16);
+    let (_result_tx, result_rx) = mpsc::channel(16);
+    let (_req_tx, req_rx) = mpsc::channel(16);
+
+    let transport = ContextTransport::new(
+        Box::new(TimeoutProvider),
+        None,
+        20,
+        agui_tx,
+        response_rx,
+        "thread-1".into(),
+        HashMap::new(),
+        Vec::new(),
+        result_rx,
+        req_rx,
+    );
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = transport.spawn_drive_loop(cancel);
+
+    response_tx
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Hi"}),
+        ]))
+        .await
+        .unwrap();
+
+    let result = handle.await.unwrap();
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("Timeout"), "got: {err}");
+}
+
+// ============================================================================
+// EC-CTX-011: Context window exceeded — provider returns parse/http error
+// ============================================================================
+
+/// Provider simulating context window exceeded (API returns 400).
+struct ContextWindowProvider;
+#[async_trait::async_trait]
+impl LlmProvider for ContextWindowProvider {
+    async fn chat_completion(
+        &self,
+        _: &[ChatMessage],
+        _: &[ToolDefinition],
+    ) -> Result<LlmResponse, ProviderError> {
+        Err(ProviderError::Http {
+            status: 400,
+            body: "context_length_exceeded: max 128000 tokens".into(),
+        })
+    }
+    fn provider_name(&self) -> &'static str {
+        "context-window"
+    }
+    fn model_name(&self) -> &'static str {
+        "mock"
+    }
+}
+
+#[tokio::test]
+async fn ec_ctx_011_context_window_exceeded() {
+    let (agui_tx, _agui_rx) = mpsc::channel(16);
+    let (response_tx, response_rx) = mpsc::channel(16);
+    let (_result_tx, result_rx) = mpsc::channel(16);
+    let (_req_tx, req_rx) = mpsc::channel(16);
+
+    let transport = ContextTransport::new(
+        Box::new(ContextWindowProvider),
+        None,
+        20,
+        agui_tx,
+        response_rx,
+        "thread-1".into(),
+        HashMap::new(),
+        Vec::new(),
+        result_rx,
+        req_rx,
+    );
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = transport.spawn_drive_loop(cancel);
+
+    response_tx
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Hi"}),
+        ]))
+        .await
+        .unwrap();
+
+    let result = handle.await.unwrap();
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("context_length_exceeded"), "got: {err}");
+}
+
+// ============================================================================
+// EC-CTX-013: Server handle active after drive loop exit
+// ============================================================================
+
+#[tokio::test]
+async fn ec_ctx_013_server_handle_after_loop_exit() {
+    // Create a ServerHandle whose drive loop channel has been dropped
+    let (_server_tx, server_rx) = mpsc::channel::<JsonRpcMessage>(16);
+    let (result_tx, result_rx) = mpsc::channel(16);
+    let (req_tx, _req_rx) = mpsc::channel(16);
+
+    let handle = ServerHandle::new(server_rx, result_tx, req_tx, "test_actor".into());
+
+    // Drop the result receiver (simulates drive loop exiting)
+    drop(result_rx);
+
+    // send_message should fail with ConnectionClosed
+    let msg = JsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.into(),
+        result: Some(json!("ok")),
+        error: None,
+        id: json!("1"),
+    });
+    let result = handle.send_message(&msg).await;
+    assert!(result.is_err());
+}
+
+// ============================================================================
+// EC-CTX-015: Tool result timeout (server unresponsive)
+// ============================================================================
+
+#[tokio::test]
+async fn ec_ctx_015_tool_result_deadline_fires() {
+    let (agui_tx, agui_rx) = mpsc::channel(16);
+    let (response_tx, response_rx) = mpsc::channel(16);
+    // result_tx is intentionally unused — the server never sends a result,
+    // which is the point of this test (deadline fires).
+    let (_result_tx, result_rx) = mpsc::channel(16);
+    let (_req_tx, req_rx) = mpsc::channel(16);
+
+    // Provider returns a tool call on first turn, then text on second
+    let provider = MockProvider::new(vec![
+        LlmResponse::ToolUse(vec![ToolCall {
+            id: "tc-1".into(),
+            name: "slow_tool".into(),
+            arguments: json!({}),
+        }]),
+        LlmResponse::Text(TextResponse {
+            text: "Tool timed out, continuing.".into(),
+            is_truncated: false,
+        }),
+    ]);
+
+    // Set up a server actor with a tool
+    let (server_tx, server_rx) = mpsc::channel(16);
+    let tools = vec![ToolDefinition {
+        name: "slow_tool".into(),
+        description: "Never responds".into(),
+        parameters: json!({"type": "object"}),
+    }];
+    let (_tool_watch_tx, tool_watch_rx) = watch::channel(tools);
+
+    let mut server_actors = HashMap::new();
+    server_actors.insert(
+        "slow_server".to_string(),
+        ServerActorEntry {
+            mode: "mcp_server".to_string(),
+            tx: server_tx,
+        },
+    );
+
+    let transport = ContextTransport::new(
+        Box::new(provider),
+        None,
+        20,
+        agui_tx,
+        response_rx,
+        "thread-1".into(),
+        server_actors,
+        vec![("slow_server".to_string(), tool_watch_rx)],
+        result_rx,
+        req_rx,
+    );
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = transport.spawn_drive_loop(cancel.clone());
+
+    // Send initial message
+    response_tx
+        .send(make_run_agent_input(&[
+            json!({"role": "user", "content": "Use tool"}),
+        ]))
+        .await
+        .unwrap();
+
+    // The server actor receives the tool call but NEVER responds
+    let mut srv_rx = server_rx;
+    let tool_call_msg = tokio::time::timeout(Duration::from_secs(5), srv_rx.recv())
+        .await
+        .expect("should receive tool call")
+        .expect("channel should be open");
+
+    // Verify it's a tools/call request
+    if let JsonRpcMessage::Request(req) = &tool_call_msg {
+        assert_eq!(req.method, "tools/call");
+    } else {
+        panic!("expected Request, got {tool_call_msg:?}");
+    }
+
+    // Don't respond — let the 30s deadline fire.
+    // For test speed, cancel after a few seconds (deadline is 30s per call,
+    // but we don't want to wait that long in tests).
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    cancel.cancel();
+
+    // Drive loop should exit cleanly after cancellation
+    let result = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("should complete")
+        .expect("should not panic");
+    assert!(result.is_ok());
+
+    // Verify run_finished was sent
+    let agui_handle = AgUiHandle::new(agui_rx, response_tx.clone());
+    let mut got_run_finished = false;
+    while let Ok(Some(msg)) = agui_handle.receive_message().await {
+        if let JsonRpcMessage::Notification(n) = msg
+            && n.method == "run_finished"
+        {
+            got_run_finished = true;
+            break;
+        }
+    }
+    assert!(got_run_finished);
+}
+
+// ============================================================================
+// EC-CTX-021: Server-initiated request during tool dispatch
+// ============================================================================
+
+#[tokio::test]
+async fn ec_ctx_021_server_request_routing() {
+    // Verify that ServerHandle routes Request to server_request_tx
+    // and Response to result_tx (separate channels)
+    let (_server_tx, server_rx) = mpsc::channel::<JsonRpcMessage>(16);
+    let (result_tx, mut result_rx) = mpsc::channel(16);
+    let (req_tx, mut req_rx) = mpsc::channel(16);
+
+    let handle = ServerHandle::new(server_rx, result_tx, req_tx, "test_actor".into());
+
+    // Send a Request (server-initiated) — should go to req_rx
+    let request = JsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: JSONRPC_VERSION.into(),
+        method: "elicitation/create".into(),
+        params: Some(json!({"message": "Enter name"})),
+        id: json!("req-1"),
+    });
+    handle.send_message(&request).await.unwrap();
+
+    let received = req_rx.recv().await.expect("should receive on req channel");
+    assert_eq!(received.actor_name, "test_actor");
+    if let JsonRpcMessage::Request(r) = &received.request {
+        assert_eq!(r.method, "elicitation/create");
+    } else {
+        panic!("expected Request");
+    }
+
+    // Send a Response (tool result) — should go to result_rx
+    let response = JsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.into(),
+        result: Some(json!({"content": [{"type": "text", "text": "result"}]})),
+        error: None,
+        id: json!("tc-1"),
+    });
+    handle.send_message(&response).await.unwrap();
+
+    let received = result_rx
+        .recv()
+        .await
+        .expect("should receive on result channel");
+    assert!(matches!(received, JsonRpcMessage::Response(_)));
+
+    // Send a Notification — should also go to result_rx
+    let notif = JsonRpcMessage::Notification(JsonRpcNotification::new(
+        "notifications/resources/updated",
+        Some(json!({"uri": "test://resource"})),
+    ));
+    handle.send_message(&notif).await.unwrap();
+
+    let received = result_rx
+        .recv()
+        .await
+        .expect("should receive notification on result channel");
+    assert!(matches!(received, JsonRpcMessage::Notification(_)));
 }

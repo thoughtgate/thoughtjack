@@ -55,6 +55,7 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>, 
         "anthropic" => Ok(Box::new(AnthropicProvider::new(
             config.api_key.clone(),
             config.model.clone(),
+            config.base_url.clone(),
             config.temperature,
             config.max_tokens.unwrap_or(4096),
             config.timeout_secs,

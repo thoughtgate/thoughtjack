@@ -347,9 +347,7 @@ impl Transport for ServerHandle {
                         request: message.clone(),
                     })
                     .await
-                    .map_err(|_| {
-                        TransportError::ConnectionClosed("drive loop closed".into())
-                    })?;
+                    .map_err(|_| TransportError::ConnectionClosed("drive loop closed".into()))?;
             }
             _ => {
                 // Tool result or notification — route to result channel
@@ -472,7 +470,11 @@ impl ContextTransport {
     /// → collect results → repeat until max turns or completion.
     ///
     /// Implements: TJ-SPEC-022 F-001
-    #[allow(clippy::too_many_lines, clippy::needless_continue)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::needless_continue,
+        clippy::cognitive_complexity
+    )]
     async fn drive_loop(&mut self, cancel: CancellationToken) -> Result<(), EngineError> {
         // Wait for initial RunAgentInput from AG-UI actor (30s timeout).
         let initial = tokio::select! {
@@ -565,8 +567,7 @@ impl ContextTransport {
                                 "Repeated truncation — increase --context-max-tokens".into(),
                             ));
                         }
-                        self.history
-                            .push(ChatMessage::user("Please continue."));
+                        self.history.push(ChatMessage::user("Please continue."));
                         continue;
                     }
 
@@ -623,8 +624,7 @@ impl ContextTransport {
                     for call in &calls {
                         if let Some(actor_name) = tool_router.get(&call.name) {
                             if let Some(entry) = self.server_actors.get(actor_name) {
-                                let msg =
-                                    Self::tool_call_to_json_rpc(call, &entry.mode);
+                                let msg = Self::tool_call_to_json_rpc(call);
                                 let _ = entry.tx.send(msg).await;
                                 pending.insert(call.id.clone(), call);
                             }
@@ -774,38 +774,20 @@ impl ContextTransport {
         let _ = self.agui_tx.send(finish_notif).await;
     }
 
-    /// Converts a `ToolCall` to a `JsonRpcMessage` for the owning actor's protocol.
-    fn tool_call_to_json_rpc(call: &ToolCall, mode: &str) -> JsonRpcMessage {
-        match mode {
-            "mcp_server" => JsonRpcMessage::Request(JsonRpcRequest {
-                jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
-                method: "tools/call".to_string(),
-                params: Some(json!({
-                    "name": call.name,
-                    "arguments": call.arguments,
-                })),
-                id: json!(call.id),
-            }),
-            "a2a_server" => JsonRpcMessage::Request(JsonRpcRequest {
-                jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
-                method: "message/send".to_string(),
-                params: Some(json!({
-                    "message": {
-                        "role": "user",
-                        "parts": [{
-                            "kind": "text",
-                            "text": serde_json::to_string(&call.arguments)
-                                .expect("ToolCall.arguments is always valid JSON"),
-                        }],
-                    },
-                    "metadata": {
-                        "tool_name": call.name,
-                    },
-                })),
-                id: json!(call.id),
-            }),
-            _ => unreachable!("only mcp_server and a2a_server actors in server_actors"),
-        }
+    /// Converts a `ToolCall` to a `JsonRpcMessage` for context-mode dispatch.
+    ///
+    /// In context-mode all server actors (MCP and A2A) are driven by
+    /// `McpServerDriver`, so tool calls are always sent as `tools/call`.
+    fn tool_call_to_json_rpc(call: &ToolCall) -> JsonRpcMessage {
+        JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: crate::transport::JSONRPC_VERSION.to_string(),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": call.name,
+                "arguments": call.arguments,
+            })),
+            id: json!(call.id),
+        })
     }
 
     /// Handles a server-initiated request (elicitation/sampling) via LLM roundtrip.
@@ -819,7 +801,7 @@ impl ContextTransport {
             _ => {
                 return Err(EngineError::Driver(
                     "expected Request in ServerRequest".into(),
-                ))
+                ));
             }
         };
 
@@ -830,7 +812,7 @@ impl ContextTransport {
         let response = tokio::select! {
             result = self.provider.chat_completion(&self.history, &[]) => {
                 match result {
-                    Ok(res) => res,
+                    Ok(resp) => resp,
                     Err(e) => {
                         return Err(EngineError::Driver(
                             format!("LLM error during {method}: {e}"),
@@ -901,29 +883,20 @@ pub fn extract_run_agent_input_messages(
         JsonRpcMessage::Request(r) => r.params.as_ref(),
         _ => None,
     };
-    let params = params.ok_or_else(|| {
-        EngineError::Driver("initial AG-UI message missing params".into())
-    })?;
+    let params =
+        params.ok_or_else(|| EngineError::Driver("initial AG-UI message missing params".into()))?;
 
     let messages = params
         .get("messages")
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            EngineError::Driver(
-                "initial AG-UI message missing 'messages' array in params".into(),
-            )
+            EngineError::Driver("initial AG-UI message missing 'messages' array in params".into())
         })?;
 
     let mut result = Vec::with_capacity(messages.len());
     for entry in messages {
-        let role = entry
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or("user");
-        let content = entry
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let role = entry.get("role").and_then(Value::as_str).unwrap_or("user");
+        let content = entry.get("content").and_then(Value::as_str).unwrap_or("");
         match role {
             "system" => result.push(ChatMessage::System(content.to_string())),
             "assistant" => result.push(ChatMessage::AssistantText(content.to_string())),
@@ -1093,10 +1066,7 @@ pub fn extract_result_content(response: &JsonRpcMessage) -> Value {
 fn normalize_a2a_parts(parts: &[Value]) -> Value {
     let mut segments = Vec::new();
     for part in parts {
-        let kind = part
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or("text");
+        let kind = part.get("kind").and_then(Value::as_str).unwrap_or("text");
         if kind == "text" {
             if let Some(text) = part.get("text").and_then(Value::as_str) {
                 segments.push(text.to_string());
@@ -1140,7 +1110,9 @@ mod tests {
             arguments: json!({"q": "test"}),
         }];
         let msg = ChatMessage::assistant_tool_use(&calls);
-        assert!(matches!(msg, ChatMessage::AssistantToolUse { tool_calls } if tool_calls.len() == 1));
+        assert!(
+            matches!(msg, ChatMessage::AssistantToolUse { tool_calls } if tool_calls.len() == 1)
+        );
     }
 
     #[test]
@@ -1307,8 +1279,10 @@ mod tests {
 
     #[test]
     fn test_format_server_request_elicitation() {
-        let result =
-            format_server_request_as_user_message("elicitation/create", &Some(json!({"message": "Enter your name"})));
+        let result = format_server_request_as_user_message(
+            "elicitation/create",
+            &Some(json!({"message": "Enter your name"})),
+        );
         assert_eq!(result, "[Server elicitation] Enter your name");
     }
 

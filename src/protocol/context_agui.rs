@@ -17,7 +17,7 @@ use crate::engine::driver::PhaseDriver;
 use crate::engine::types::{Direction, DriveResult, ProtocolEvent};
 use crate::error::EngineError;
 use crate::protocol::agui::build_run_agent_input;
-use crate::transport::{JsonRpcMessage, JsonRpcRequest, Transport, JSONRPC_VERSION};
+use crate::transport::{JSONRPC_VERSION, JsonRpcMessage, JsonRpcRequest, Transport};
 
 /// Context-mode AG-UI `PhaseDriver`.
 ///
@@ -153,10 +153,7 @@ mod tests {
 
     #[test]
     fn test_extract_event_from_notification_no_params() {
-        let msg = JsonRpcMessage::Notification(JsonRpcNotification::new(
-            "run_finished",
-            None,
-        ));
+        let msg = JsonRpcMessage::Notification(JsonRpcNotification::new("run_finished", None));
         let (method, content) = extract_event_from_message(&msg);
         assert_eq!(method, "run_finished");
         assert_eq!(content, json!({}));

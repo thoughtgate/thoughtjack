@@ -617,7 +617,6 @@ pub async fn orchestrate_context(
     events: &Arc<EventEmitter>,
     cancel: CancellationToken,
 ) -> Result<OrchestratorResult, EngineError> {
-    use std::sync::Arc as StdArc;
     use crate::engine::phase::PhaseEngine;
     use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
     use crate::protocol::context_agui::ContextAgUiDriver;
@@ -625,6 +624,7 @@ pub async fn orchestrate_context(
         AgUiHandle, ContextTransport, ServerActorEntry, ServerHandle, extract_tool_definitions,
     };
     use crate::transport::provider::create_provider;
+    use std::sync::Arc as StdArc;
     use tokio::task::JoinSet;
 
     let actors = document_actors(&loaded.document);
@@ -687,8 +687,12 @@ pub async fn orchestrate_context(
     // 5. Per-server-actor setup (OATF document order)
     let mut server_actor_entries: HashMap<String, ServerActorEntry> = HashMap::new();
     let mut server_tool_watches = Vec::new();
-    let mut server_handles: Vec<(usize, String, StdArc<dyn crate::transport::Transport>)> = Vec::new();
-    let mut tool_watch_txs: HashMap<String, tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>> = HashMap::new();
+    let mut server_handles: Vec<(usize, String, StdArc<dyn crate::transport::Transport>)> =
+        Vec::new();
+    let mut tool_watch_txs: HashMap<
+        String,
+        tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>,
+    > = HashMap::new();
 
     for &idx in &server_indices {
         let actor = &actors[idx];
@@ -701,8 +705,7 @@ pub async fn orchestrate_context(
         let effective_state = engine_tmp.effective_state();
         let initial_tools = extract_tool_definitions(&effective_state);
 
-        let (tool_watch_tx, tool_watch_rx) =
-            tokio::sync::watch::channel(initial_tools);
+        let (tool_watch_tx, tool_watch_rx) = tokio::sync::watch::channel(initial_tools);
 
         let handle = ServerHandle::new(
             server_rx,
@@ -926,8 +929,25 @@ pub async fn orchestrate_context(
         }
     }
 
-    // Wait for drive loop to finish
-    let _ = drive_handle.await;
+    // Wait for drive loop to finish and propagate errors.
+    // JoinError (panic/cancel) is logged; EngineError is surfaced as a
+    // synthetic actor outcome so the verdict pipeline can see it.
+    match drive_handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(engine_err)) => {
+            tracing::error!(error = %engine_err, "context drive loop failed");
+            outcomes.push(ActorOutcome::Error {
+                actor_name: "(drive_loop)".to_string(),
+                error: engine_err.to_string(),
+            });
+        }
+        Err(join_err) => {
+            tracing::error!(error = %join_err, "context drive loop task failed");
+            outcomes.push(ActorOutcome::Panic {
+                actor_name: "(drive_loop)".to_string(),
+            });
+        }
+    }
 
     emit_completion_summary(&outcomes, events);
     Ok(OrchestratorResult { outcomes, trace })
@@ -939,7 +959,8 @@ struct ContextServerActorConfig {
     document: oatf::Document,
     transport: std::sync::Arc<dyn crate::transport::Transport>,
     raw_synthesize: bool,
-    tool_watch_tx: Option<tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
+    tool_watch_tx:
+        Option<tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
     trace: SharedTrace,
     extractor_store: ExtractorStore,
     await_config: HashMap<usize, Vec<AwaitExtractor>>,
