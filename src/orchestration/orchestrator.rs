@@ -996,8 +996,17 @@ async fn run_context_server_actor(
         phase_count,
     });
 
-    // Both MCP and A2A server actors use McpServerDriver in context-mode —
-    // it handles JSON-RPC dispatch via the ServerHandle transport.
+    // Both MCP and A2A server actors use McpServerDriver in context-mode.
+    // This works because McpServerDriver is transport-agnostic (receive
+    // request → dispatch against OATF state → send response) and both
+    // protocols share the same tool state schema (name, inputSchema,
+    // responses). A2aServerDriver can't be used here because it bypasses
+    // the Transport trait and binds its own axum HTTP server.
+    //
+    // TODO: Refactor A2aServerDriver onto the Transport trait so it works
+    // with any transport (channels, stdio, HTTP) — then context-mode can
+    // use the real A2A driver and get full A2A fidelity (Agent Card,
+    // task lifecycle, SSE streaming). Track as separate PR.
     if cfg.mode != "mcp_server" && cfg.mode != "a2a_server" {
         return Err(EngineError::Driver(format!(
             "unsupported server mode in context-mode: {}",
