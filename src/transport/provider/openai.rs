@@ -149,7 +149,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
         });
 
         if let Some(max_tokens) = self.max_tokens {
-            body["max_tokens"] = json!(max_tokens);
+            // Newer OpenAI models (o1, gpt-4.1+) require max_completion_tokens;
+            // older models use max_tokens. Send both — the API ignores unknown fields.
+            body["max_completion_tokens"] = json!(max_tokens);
         }
 
         if !tools.is_empty() {
