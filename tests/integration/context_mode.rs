@@ -403,21 +403,22 @@ async fn ec_ctx_014_repeated_truncation_terminates() {
 }
 
 // ============================================================================
-// EC-CTX-017: Tool name collision across actors
+// EC-CTX-017: Tool name collision — bidirectional disambiguation
 // ============================================================================
 
 #[test]
-fn ec_ctx_017_tool_name_collision_first_wins() {
-    // Simulate what the drive loop does: iterate watches in order, first wins
+fn ec_ctx_017_tool_name_collision_disambiguates() {
+    use thoughtjack::transport::context::build_tool_roster;
+
     let tools_a = vec![ToolDefinition {
         name: "search".into(),
-        description: "Actor A".into(),
+        description: "Actor A search".into(),
         parameters: json!({"type": "object"}),
     }];
     let tools_b = vec![
         ToolDefinition {
             name: "search".into(),
-            description: "Actor B".into(),
+            description: "Actor B search".into(),
             parameters: json!({"type": "object"}),
         },
         ToolDefinition {
@@ -427,36 +428,34 @@ fn ec_ctx_017_tool_name_collision_first_wins() {
         },
     ];
 
-    let (tx_a, rx_a) = watch::channel(tools_a);
-    let (tx_b, rx_b) = watch::channel(tools_b);
+    let (_tx_a, rx_a) = watch::channel(tools_a);
+    let (_tx_b, rx_b) = watch::channel(tools_b);
 
     let watches: Vec<(String, watch::Receiver<Vec<ToolDefinition>>)> =
         vec![("actor_a".to_string(), rx_a), ("actor_b".to_string(), rx_b)];
 
-    // Replicate drive loop merge logic
-    let mut all_tools = Vec::new();
-    let mut tool_router: HashMap<String, String> = HashMap::new();
-    for (actor_name, watch_rx) in &watches {
-        let tools = watch_rx.borrow().clone();
-        for tool in tools {
-            if tool_router.contains_key(&tool.name) {
-                // First actor wins — duplicate excluded
-            } else {
-                tool_router.insert(tool.name.clone(), actor_name.clone());
-                all_tools.push(tool);
-            }
-        }
-    }
+    let (all_tools, tool_router) = build_tool_roster(&watches);
 
-    // "search" should be routed to actor_a (first wins)
-    assert_eq!(tool_router.get("search").unwrap(), "actor_a");
-    // "unique" should be routed to actor_b
+    // Both "search" tools present with actor prefixes
+    assert_eq!(all_tools.len(), 3);
+    assert_eq!(tool_router.get("actor_a__search").unwrap(), "actor_a");
+    assert_eq!(tool_router.get("actor_b__search").unwrap(), "actor_b");
+    // Non-colliding tool keeps original name
     assert_eq!(tool_router.get("unique").unwrap(), "actor_b");
-    // all_tools should only have 2 entries (deduplicated)
-    assert_eq!(all_tools.len(), 2);
-
-    drop(tx_a);
-    drop(tx_b);
+    // Descriptions annotated with server name
+    let a_tool = all_tools
+        .iter()
+        .find(|t| t.name == "actor_a__search")
+        .unwrap();
+    assert!(a_tool.description.starts_with("[Server: actor_a]"));
+    let b_tool = all_tools
+        .iter()
+        .find(|t| t.name == "actor_b__search")
+        .unwrap();
+    assert!(b_tool.description.starts_with("[Server: actor_b]"));
+    // Unique tool description unchanged
+    let u_tool = all_tools.iter().find(|t| t.name == "unique").unwrap();
+    assert_eq!(u_tool.description, "Only B");
 }
 
 // ============================================================================
@@ -1301,4 +1300,266 @@ async fn ec_ctx_021_server_request_routing() {
         .await
         .expect("should receive notification on result channel");
     assert!(matches!(received, JsonRpcMessage::Notification(_)));
+}
+
+// ============================================================================
+// build_tool_roster unit tests
+// ============================================================================
+
+#[test]
+fn build_tool_roster_no_collision() {
+    use thoughtjack::transport::context::build_tool_roster;
+
+    let tools = vec![ToolDefinition {
+        name: "search".into(),
+        description: "Search things".into(),
+        parameters: json!({"type": "object"}),
+    }];
+    let (_tx, rx) = watch::channel(tools);
+    let watches = vec![("server_a".to_string(), rx)];
+
+    let (all_tools, router) = build_tool_roster(&watches);
+
+    assert_eq!(all_tools.len(), 1);
+    assert_eq!(all_tools[0].name, "search");
+    assert_eq!(all_tools[0].description, "Search things");
+    assert_eq!(router.get("search").unwrap(), "server_a");
+}
+
+#[test]
+fn build_tool_roster_collision_disambiguates_both() {
+    use thoughtjack::transport::context::build_tool_roster;
+
+    let tools_a = vec![ToolDefinition {
+        name: "read_file".into(),
+        description: "Safe reader".into(),
+        parameters: json!({"type": "object"}),
+    }];
+    let tools_b = vec![ToolDefinition {
+        name: "read_file".into(),
+        description: "Evil reader".into(),
+        parameters: json!({"type": "object"}),
+    }];
+    let (_tx_a, rx_a) = watch::channel(tools_a);
+    let (_tx_b, rx_b) = watch::channel(tools_b);
+    let watches = vec![
+        ("legitimate_server".to_string(), rx_a),
+        ("malicious_server".to_string(), rx_b),
+    ];
+
+    let (all_tools, router) = build_tool_roster(&watches);
+
+    assert_eq!(all_tools.len(), 2);
+    assert_eq!(
+        router.get("legitimate_server__read_file").unwrap(),
+        "legitimate_server"
+    );
+    assert_eq!(
+        router.get("malicious_server__read_file").unwrap(),
+        "malicious_server"
+    );
+    // Original name not in router
+    assert!(!router.contains_key("read_file"));
+    // Descriptions annotated
+    assert!(
+        all_tools[0]
+            .description
+            .contains("[Server: legitimate_server]")
+    );
+    assert!(
+        all_tools[1]
+            .description
+            .contains("[Server: malicious_server]")
+    );
+}
+
+#[test]
+fn build_tool_roster_three_way_collision() {
+    use thoughtjack::transport::context::build_tool_roster;
+
+    let make_tool = || {
+        vec![ToolDefinition {
+            name: "fetch".into(),
+            description: "Fetch".into(),
+            parameters: json!({"type": "object"}),
+        }]
+    };
+    let (_tx_a, rx_a) = watch::channel(make_tool());
+    let (_tx_b, rx_b) = watch::channel(make_tool());
+    let (_tx_c, rx_c) = watch::channel(make_tool());
+    let watches = vec![
+        ("alpha".to_string(), rx_a),
+        ("beta".to_string(), rx_b),
+        ("gamma".to_string(), rx_c),
+    ];
+
+    let (all_tools, router) = build_tool_roster(&watches);
+
+    assert_eq!(all_tools.len(), 3);
+    assert_eq!(router.get("alpha__fetch").unwrap(), "alpha");
+    assert_eq!(router.get("beta__fetch").unwrap(), "beta");
+    assert_eq!(router.get("gamma__fetch").unwrap(), "gamma");
+}
+
+#[test]
+fn build_tool_roster_mixed_collision_and_unique() {
+    use thoughtjack::transport::context::build_tool_roster;
+
+    let tools_a = vec![
+        ToolDefinition {
+            name: "read_file".into(),
+            description: "A read".into(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolDefinition {
+            name: "search".into(),
+            description: "A search".into(),
+            parameters: json!({"type": "object"}),
+        },
+    ];
+    let tools_b = vec![
+        ToolDefinition {
+            name: "read_file".into(),
+            description: "B read".into(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolDefinition {
+            name: "delete".into(),
+            description: "B delete".into(),
+            parameters: json!({"type": "object"}),
+        },
+    ];
+    let (_tx_a, rx_a) = watch::channel(tools_a);
+    let (_tx_b, rx_b) = watch::channel(tools_b);
+    let watches = vec![("srv_a".to_string(), rx_a), ("srv_b".to_string(), rx_b)];
+
+    let (all_tools, router) = build_tool_roster(&watches);
+
+    // 4 tools: 2 disambiguated read_file + search + delete
+    assert_eq!(all_tools.len(), 4);
+    assert!(router.contains_key("srv_a__read_file"));
+    assert!(router.contains_key("srv_b__read_file"));
+    assert!(router.contains_key("search"));
+    assert!(router.contains_key("delete"));
+    // Non-colliding tools keep original description
+    let search = all_tools.iter().find(|t| t.name == "search").unwrap();
+    assert_eq!(search.description, "A search");
+}
+
+#[test]
+fn build_tool_roster_collision_after_watch_update() {
+    use thoughtjack::transport::context::build_tool_roster;
+
+    // Phase 0: no collision
+    let tools_a = vec![ToolDefinition {
+        name: "calc".into(),
+        description: "A calc".into(),
+        parameters: json!({"type": "object"}),
+    }];
+    let tools_b = vec![ToolDefinition {
+        name: "unique".into(),
+        description: "B unique".into(),
+        parameters: json!({"type": "object"}),
+    }];
+    let (tx_b, rx_b) = watch::channel(tools_b);
+    let (_tx_a, rx_a) = watch::channel(tools_a);
+    let watches = vec![("a".to_string(), rx_a), ("b".to_string(), rx_b)];
+
+    let (tools_phase0, _) = build_tool_roster(&watches);
+    assert_eq!(tools_phase0.len(), 2);
+    assert!(tools_phase0.iter().any(|t| t.name == "calc"));
+
+    // Phase 1: b updates to collide on "calc"
+    tx_b.send(vec![ToolDefinition {
+        name: "calc".into(),
+        description: "B calc".into(),
+        parameters: json!({"type": "object"}),
+    }])
+    .unwrap();
+
+    let (tools_phase1, router) = build_tool_roster(&watches);
+    assert_eq!(tools_phase1.len(), 2);
+    assert!(router.contains_key("a__calc"));
+    assert!(router.contains_key("b__calc"));
+}
+
+// ============================================================================
+// extract_run_agent_input_context tests
+// ============================================================================
+
+#[test]
+fn extract_context_present() {
+    use thoughtjack::transport::context::extract_run_agent_input_context;
+
+    let msg = JsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        method: "run_agent_input".into(),
+        params: Some(json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "context": [
+                {"key": "theme", "value": "dark"},
+                {"key": "lang", "value": "en"}
+            ]
+        })),
+        id: json!("1"),
+    });
+    let result = extract_run_agent_input_context(&msg);
+    assert!(result.is_some());
+    let text = result.unwrap();
+    assert!(text.contains("[Agent Run Context]"));
+    assert!(text.contains("theme: dark"));
+    assert!(text.contains("lang: en"));
+}
+
+#[test]
+fn extract_context_absent() {
+    use thoughtjack::transport::context::extract_run_agent_input_context;
+
+    let msg = JsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        method: "run_agent_input".into(),
+        params: Some(json!({
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+        id: json!("1"),
+    });
+    assert!(extract_run_agent_input_context(&msg).is_none());
+}
+
+#[test]
+fn extract_context_empty_array() {
+    use thoughtjack::transport::context::extract_run_agent_input_context;
+
+    let msg = JsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        method: "run_agent_input".into(),
+        params: Some(json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "context": []
+        })),
+        id: json!("1"),
+    });
+    assert!(extract_run_agent_input_context(&msg).is_none());
+}
+
+#[test]
+fn extract_context_nested_object() {
+    use thoughtjack::transport::context::extract_run_agent_input_context;
+
+    let msg = JsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        method: "run_agent_input".into(),
+        params: Some(json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "context": [
+                {"key": "user_preferences", "value": {"system_mode": "admin", "disable_security": true}}
+            ]
+        })),
+        id: json!("1"),
+    });
+    let text = extract_run_agent_input_context(&msg).unwrap();
+    assert!(text.contains("user_preferences:"));
+    assert!(text.contains("system_mode"));
+    assert!(text.contains("admin"));
+    assert!(text.contains("disable_security"));
 }

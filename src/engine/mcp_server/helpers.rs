@@ -193,10 +193,7 @@ pub fn build_a2a_response_content(state: &Value) -> Option<A2aResponseContent> {
     }
 
     // Try artifacts (both task.artifacts and top-level state.artifacts)
-    let artifact_sources = [
-        state.pointer("/task/artifacts"),
-        state.get("artifacts"),
-    ];
+    let artifact_sources = [state.pointer("/task/artifacts"), state.get("artifacts")];
     for source in artifact_sources.into_iter().flatten() {
         if let Some(artifacts) = source.as_array() {
             for artifact in artifacts {

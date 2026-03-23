@@ -141,7 +141,11 @@ fn build_context_mode_shadow_entries(
         if entry.method != "text_message_content" {
             continue;
         }
-        let Some(delta) = entry.content.get("delta").and_then(serde_json::Value::as_str) else {
+        let Some(delta) = entry
+            .content
+            .get("delta")
+            .and_then(serde_json::Value::as_str)
+        else {
             continue;
         };
 

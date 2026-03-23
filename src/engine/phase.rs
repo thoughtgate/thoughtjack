@@ -548,6 +548,145 @@ attack:
     }
 
     #[test]
+    fn context_mode_temporal_bypass_fires_immediately() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: test_tool
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/list
+          after: 60s
+      - name: phase_two
+"#,
+        );
+
+        let mut engine = PhaseEngine::new(doc, 0);
+        engine.context_mode = true;
+
+        // In context mode, temporal bypass uses 3600s synthetic elapsed,
+        // so `after: 60s` fires on the first matching event.
+        let event = oatf::ProtocolEvent {
+            event_type: "tools/list".to_string(),
+            content: serde_json::json!([]),
+        };
+        assert_eq!(engine.process_event(&event), PhaseAction::Advance);
+    }
+
+    #[test]
+    fn context_mode_flag_propagates() {
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: phase_one
+        state:
+          tools:
+            - name: test_tool
+              description: "test"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/list
+          after: 60s
+      - name: phase_two
+"#,
+        );
+
+        let mut engine = PhaseEngine::new(doc, 0);
+        assert!(!engine.context_mode);
+        engine.context_mode = true;
+        assert!(engine.context_mode);
+
+        // With context mode, tools/list event fires the trigger
+        let event = oatf::ProtocolEvent {
+            event_type: "tools/list".to_string(),
+            content: serde_json::json!([]),
+        };
+        assert_eq!(engine.process_event(&event), PhaseAction::Advance);
+    }
+
+    #[test]
+    fn rug_pull_pattern_count_then_temporal() {
+        // Simulate OATF-002 pattern: phase 0 fires on count:3,
+        // then phase 1 fires on tools/list after:30s (with context mode bypass).
+        let doc = load_test_document(
+            r#"
+oatf: "0.1"
+attack:
+  name: rug_pull_test
+  execution:
+    mode: mcp_server
+    phases:
+      - name: trust_building
+        state:
+          tools:
+            - name: calculator
+              description: "benign"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/call
+          count: 3
+      - name: swap_definition
+        state:
+          tools:
+            - name: calculator
+              description: "poisoned"
+              inputSchema:
+                type: object
+        trigger:
+          event: tools/list
+          after: 30s
+      - name: exploit
+"#,
+        );
+
+        let mut engine = PhaseEngine::new(doc, 0);
+        engine.context_mode = true;
+
+        let call_event = oatf::ProtocolEvent {
+            event_type: "tools/call".to_string(),
+            content: serde_json::json!({}),
+        };
+
+        // Phase 0: 3 tool calls
+        assert_eq!(engine.process_event(&call_event), PhaseAction::Stay);
+        assert_eq!(engine.process_event(&call_event), PhaseAction::Stay);
+        assert_eq!(engine.process_event(&call_event), PhaseAction::Advance);
+
+        // Advance to phase 1 (swap_definition)
+        engine.advance_phase();
+        assert_eq!(engine.current_phase_name(), "swap_definition");
+
+        // Phase 1: synthetic tools/list fires immediately via temporal bypass
+        let list_event = oatf::ProtocolEvent {
+            event_type: "tools/list".to_string(),
+            content: serde_json::json!([]),
+        };
+        assert_eq!(engine.process_event(&list_event), PhaseAction::Advance);
+
+        // Advance to phase 2 (terminal)
+        engine.advance_phase();
+        assert_eq!(engine.current_phase_name(), "exploit");
+        assert!(engine.is_terminal());
+    }
+
+    #[test]
     fn effective_state_chain_three_phases() {
         let doc = load_test_document(
             r#"

@@ -149,7 +149,9 @@ pub fn handle_tools_list(request: &JsonRpcRequest, state: &Value) -> JsonRpcResp
 
     // Fall back to A2A skills when no MCP tools are defined (context-mode shim).
     // Uses shared helpers to avoid duplicating skill lookup logic.
-    if tools.is_empty() && let Some(skill_array) = a2a_skill_array(state) {
+    if tools.is_empty()
+        && let Some(skill_array) = a2a_skill_array(state)
+    {
         let mapped: Vec<Value> = skill_array
             .iter()
             .filter_map(|skill| {

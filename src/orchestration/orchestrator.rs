@@ -705,11 +705,8 @@ pub async fn orchestrate_context(
         // Extract initial tool definitions from phase 0 (mode-aware for A2A)
         let engine_tmp = PhaseEngine::new(loaded.document.clone(), idx);
         let effective_state = engine_tmp.effective_state();
-        let initial_tools = extract_tool_definitions_for_actor(
-            &effective_state,
-            &actor_name,
-            &actor.mode,
-        );
+        let initial_tools =
+            extract_tool_definitions_for_actor(&effective_state, &actor_name, &actor.mode);
 
         // For A2A actors, record the first skill ID for tool-call rewriting
         let a2a_default_skill = if actor.mode == "a2a_server" {
@@ -1041,16 +1038,16 @@ fn build_a2a_system_context(
         if let Some(auth) = card.get("authentication")
             && let Some(schemes) = auth["schemes"].as_array()
         {
-            let scheme_strs: Vec<&str> =
-                schemes.iter().filter_map(Value::as_str).collect();
+            let scheme_strs: Vec<&str> = schemes.iter().filter_map(Value::as_str).collect();
             if !scheme_strs.is_empty() {
                 let _ = writeln!(text, "- Authentication: {}", scheme_strs.join(", "));
             }
         }
 
         // Webhook
-        if let Some(wh_url) =
-            state.pointer("/webhook_registration/url").and_then(Value::as_str)
+        if let Some(wh_url) = state
+            .pointer("/webhook_registration/url")
+            .and_then(Value::as_str)
         {
             let _ = writeln!(text, "- Webhook URL: {wh_url}");
         }
@@ -1066,8 +1063,7 @@ fn build_a2a_system_context(
                 let _ = writeln!(text, "  - {skill_id}: {skill_desc}");
 
                 if let Some(examples) = skill["examples"].as_array() {
-                    let ex_strs: Vec<&str> =
-                        examples.iter().filter_map(Value::as_str).collect();
+                    let ex_strs: Vec<&str> = examples.iter().filter_map(Value::as_str).collect();
                     if !ex_strs.is_empty() {
                         let quoted: Vec<String> =
                             ex_strs.iter().map(|e| format!("\"{e}\"")).collect();
@@ -1078,9 +1074,7 @@ fn build_a2a_system_context(
         }
     }
 
-    text.push_str(
-        "\nTo interact with an A2A agent, call its tool with a message parameter.\n",
-    );
+    text.push_str("\nTo interact with an A2A agent, call its tool with a message parameter.\n");
     Some(text)
 }
 

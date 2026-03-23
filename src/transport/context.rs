@@ -527,6 +527,11 @@ impl ContextTransport {
         if let Some(ref a2a_ctx) = self.a2a_system_context {
             self.history.push(ChatMessage::System(a2a_ctx.clone()));
         }
+        // Inject AG-UI context items (key-value state) as a system message.
+        // This surfaces run_agent_input.context for state injection scenarios.
+        if let Some(context_text) = extract_run_agent_input_context(&initial) {
+            self.history.push(ChatMessage::System(context_text));
+        }
         let seed_messages = extract_run_agent_input_messages(&initial)?;
         for msg in seed_messages {
             self.history.push(msg);
@@ -551,24 +556,7 @@ impl ContextTransport {
                 }
             }
 
-            let mut all_tools = Vec::new();
-            let mut tool_router: HashMap<String, String> = HashMap::new();
-            for (actor_name, watch_rx) in &self.server_tool_watches {
-                let tools = watch_rx.borrow().clone();
-                for tool in tools {
-                    if tool_router.contains_key(&tool.name) {
-                        tracing::warn!(
-                            tool = %tool.name,
-                            winner = %tool_router[&tool.name],
-                            duplicate = %actor_name,
-                            "duplicate tool name across actors, first actor wins"
-                        );
-                    } else {
-                        tool_router.insert(tool.name.clone(), actor_name.clone());
-                        all_tools.push(tool);
-                    }
-                }
-            }
+            let (all_tools, tool_router) = build_tool_roster(&self.server_tool_watches);
 
             let response = tokio::select! {
                 result = self.provider.chat_completion(&self.history, &all_tools) => {
@@ -633,15 +621,14 @@ impl ContextTransport {
                                 // For A2A actors, the LLM calls the actor-name
                                 // tool but McpServerDriver needs the skill name
                                 // to find the tool via find_a2a_skill().
-                                let dispatch_name =
-                                    if entry.mode == "a2a_server" {
-                                        entry
-                                            .a2a_default_skill
-                                            .as_deref()
-                                            .unwrap_or(&call.name)
-                                    } else {
-                                        &call.name
-                                    };
+                                // For disambiguated MCP tools, strip the actor
+                                // prefix so the server receives the original name.
+                                let dispatch_name = if entry.mode == "a2a_server" {
+                                    entry.a2a_default_skill.as_deref().unwrap_or(&call.name)
+                                } else {
+                                    let prefix = format!("{actor_name}__");
+                                    call.name.strip_prefix(&prefix).unwrap_or(&call.name)
+                                };
                                 let rewritten = ToolCall {
                                     id: call.id.clone(),
                                     name: dispatch_name.to_string(),
@@ -1023,6 +1010,44 @@ pub fn extract_run_agent_input_messages(
     Ok(result)
 }
 
+/// Extracts the `context` array from a `RunAgentInput` message and formats
+/// it as text suitable for injection as a system message.
+///
+/// AG-UI's `RunAgentInput` can carry key-value context items (e.g., user
+/// preferences, state overrides). This function serializes them so the LLM
+/// can see injected state — enabling state-injection attack scenarios like
+/// OATF-017.
+///
+/// Returns `None` if no context items are present.
+///
+/// Implements: TJ-SPEC-022 F-024
+#[must_use]
+pub fn extract_run_agent_input_context(msg: &JsonRpcMessage) -> Option<String> {
+    let params = match msg {
+        JsonRpcMessage::Request(r) => r.params.as_ref(),
+        _ => None,
+    }?;
+    let context = params.get("context").and_then(Value::as_array)?;
+    if context.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::with_capacity(context.len() + 1);
+    lines.push("[Agent Run Context]".to_string());
+    for entry in context {
+        let key = entry
+            .get("key")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let value = &entry["value"];
+        let formatted = value.as_str().map_or_else(
+            || serde_json::to_string_pretty(value).unwrap_or_default(),
+            ToString::to_string,
+        );
+        lines.push(format!("{key}: {formatted}"));
+    }
+    Some(lines.join("\n"))
+}
+
 /// Extracts the last user message from a follow-up `RunAgentInput`.
 ///
 /// Append-only invariant: only the last user message is extracted from
@@ -1076,6 +1101,72 @@ pub fn format_server_request_as_user_message(method: &str, params: &Option<Value
         }
         _ => format!("[Server request: {method}] {params_str}"),
     }
+}
+
+/// Builds the merged tool list and routing table for context-mode.
+///
+/// When tool names collide across actors, **both** tools are disambiguated
+/// by prefixing `{actor_name}__{tool_name}`. Tools without collisions retain
+/// their original names. Disambiguated tools have the actor name prepended
+/// to their description for LLM clarity.
+///
+/// This follows the pattern established by real agent frameworks (`LangGraph`,
+/// `CrewAI`, `AutoGen`, A2A spec) where agents are presented as distinct entities
+/// rather than merged into a flat tool namespace.
+///
+/// Implements: TJ-SPEC-022 F-023
+#[must_use]
+pub fn build_tool_roster(
+    server_tool_watches: &[(String, watch::Receiver<Vec<ToolDefinition>>)],
+) -> (Vec<ToolDefinition>, HashMap<String, String>) {
+    // Pass 1: collect all (actor, tool) pairs and detect name collisions
+    let mut pairs: Vec<(String, ToolDefinition)> = Vec::new();
+    let mut name_actors: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (actor_name, watch_rx) in server_tool_watches {
+        for tool in watch_rx.borrow().iter() {
+            name_actors
+                .entry(tool.name.clone())
+                .or_default()
+                .push(actor_name.clone());
+            pairs.push((actor_name.clone(), tool.clone()));
+        }
+    }
+
+    // Pass 2: build tool list with bidirectional disambiguation
+    let mut all_tools = Vec::new();
+    let mut router: HashMap<String, String> = HashMap::new();
+
+    for (actor_name, tool) in pairs {
+        let is_collision = name_actors[&tool.name].len() > 1;
+        let effective_name = if is_collision {
+            let disambiguated = format!("{}__{}", sanitize_tool_name(&actor_name), tool.name);
+            tracing::info!(
+                original = %tool.name,
+                disambiguated = %disambiguated,
+                actor = %actor_name,
+                "tool name collision — disambiguating with actor prefix"
+            );
+            disambiguated
+        } else {
+            tool.name.clone()
+        };
+
+        let description = if is_collision {
+            format!("[Server: {}] {}", actor_name, tool.description)
+        } else {
+            tool.description
+        };
+
+        router.insert(effective_name.clone(), actor_name);
+        all_tools.push(ToolDefinition {
+            name: effective_name,
+            description,
+            parameters: tool.parameters,
+        });
+    }
+
+    (all_tools, router)
 }
 
 /// Extracts tool definitions from an actor's effective state.
@@ -1235,7 +1326,10 @@ pub fn extract_a2a_agent_tool(actor_name: &str, state: &Value) -> Option<ToolDef
         if let Some(wh_url) = webhook["url"].as_str() {
             let _ = write!(desc, "\nWebhook URL: {wh_url}");
         }
-        if let Some(wh_creds) = webhook.pointer("/authentication/credentials").and_then(Value::as_str) {
+        if let Some(wh_creds) = webhook
+            .pointer("/authentication/credentials")
+            .and_then(Value::as_str)
+        {
             let _ = write!(desc, "\nWebhook Credentials: {wh_creds}");
         }
     }
@@ -1260,11 +1354,9 @@ pub fn extract_a2a_agent_tool(actor_name: &str, state: &Value) -> Option<ToolDef
 
             // Include examples to steer LLM message composition
             if let Some(examples) = skill["examples"].as_array() {
-                let ex_strs: Vec<&str> =
-                    examples.iter().filter_map(Value::as_str).collect();
+                let ex_strs: Vec<&str> = examples.iter().filter_map(Value::as_str).collect();
                 if !ex_strs.is_empty() {
-                    let quoted: Vec<String> =
-                        ex_strs.iter().map(|e| format!("\"{e}\"")).collect();
+                    let quoted: Vec<String> = ex_strs.iter().map(|e| format!("\"{e}\"")).collect();
                     let _ = write!(desc, "\n  Examples: {}", quoted.join(", "));
                 }
             }

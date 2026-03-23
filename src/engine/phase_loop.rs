@@ -472,6 +472,29 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                                         phase_advancing = true;
                                         phase_cancel.cancel();
                                     }
+                                    // Drain remaining queued events before yielding
+                                    // back to the driver.  In context mode all channel
+                                    // sends are non-blocking, so the driver can queue
+                                    // many events between polls.  Processing them all
+                                    // here ensures the trigger fires before the driver
+                                    // consumes the next message.
+                                    while !phase_advancing {
+                                        match event_rx.try_recv() {
+                                            Ok(queued) => {
+                                                phase_message_count += 1;
+                                                if process_protocol_event(
+                                                    queued,
+                                                    &mut self.phase_engine,
+                                                    &ctx,
+                                                ) == PhaseAction::Advance
+                                                {
+                                                    phase_advancing = true;
+                                                    phase_cancel.cancel();
+                                                }
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
                                 }
                                 None => {
                                     break if phase_advancing {
