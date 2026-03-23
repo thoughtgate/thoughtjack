@@ -14,12 +14,6 @@ use crate::transport::context::{
 /// Default base URL for the Anthropic API.
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
-/// Maximum number of retries on HTTP 429.
-const MAX_RETRIES: u32 = 3;
-
-/// Initial retry backoff in seconds.
-const INITIAL_RETRY_BACKOFF_SECS: u64 = 1;
-
 /// Anthropic API version header.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -170,118 +164,69 @@ impl LlmProvider for AnthropicProvider {
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/v1/messages");
 
-        let mut retries = 0;
-        loop {
-            let resp = self
-                .client
+        let resp_body = super::retry::send_with_retry(|| {
+            self.client
                 .post(&url)
                 .header("Content-Type", "application/json")
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .json(&body)
                 .send()
-                .await?;
+        })
+        .await?;
 
-            let status = resp.status().as_u16();
+        let stop_reason = resp_body
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("end_turn");
 
-            if status == 401 || status == 403 {
-                let resp_body = resp.text().await.unwrap_or_default();
-                return Err(ProviderError::Http {
-                    status,
-                    body: resp_body,
-                });
-            }
+        let content = resp_body
+            .get("content")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ProviderError::Parse("no content in response".into()))?;
 
-            if status == 429 {
-                retries += 1;
-                if retries > MAX_RETRIES {
-                    return Err(ProviderError::RateLimited { retries });
-                }
-                let backoff = INITIAL_RETRY_BACKOFF_SECS * (1 << (retries - 1));
-                tracing::warn!(
-                    retry = retries,
-                    backoff_secs = backoff,
-                    "rate limited, retrying"
-                );
-                tokio::time::sleep(Duration::from_secs(backoff)).await;
-                continue;
-            }
+        // Check for tool_use content blocks
+        let tool_uses: Vec<&Value> = content
+            .iter()
+            .filter(|c| c.get("type").and_then(Value::as_str) == Some("tool_use"))
+            .collect();
 
-            if !resp.status().is_success() {
-                let resp_body = resp.text().await.unwrap_or_default();
-                return Err(ProviderError::Http {
-                    status,
-                    body: resp_body,
-                });
-            }
-
-            let resp_body: Value = match resp.json().await {
-                Ok(v) => v,
-                Err(e) => {
-                    // EC-CTX-008: retry once on malformed JSON
-                    retries += 1;
-                    if retries > MAX_RETRIES {
-                        return Err(ProviderError::Parse(format!("JSON parse error: {e}")));
-                    }
-                    tracing::warn!(error = %e, "malformed provider JSON, retrying");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-            };
-
-            let stop_reason = resp_body
-                .get("stop_reason")
-                .and_then(Value::as_str)
-                .unwrap_or("end_turn");
-
-            let content = resp_body
-                .get("content")
-                .and_then(Value::as_array)
-                .ok_or_else(|| ProviderError::Parse("no content in response".into()))?;
-
-            // Check for tool_use content blocks
-            let tool_uses: Vec<&Value> = content
+        if !tool_uses.is_empty() && stop_reason != "max_tokens" {
+            let calls: Vec<ToolCall> = tool_uses
                 .iter()
-                .filter(|c| c.get("type").and_then(Value::as_str) == Some("tool_use"))
-                .collect();
-
-            if !tool_uses.is_empty() && stop_reason != "max_tokens" {
-                let calls: Vec<ToolCall> = tool_uses
-                    .iter()
-                    .filter_map(|tc| {
-                        let id = tc.get("id")?.as_str()?.to_string();
-                        let name = tc.get("name")?.as_str()?.to_string();
-                        let arguments = tc.get("input")?.clone();
-                        Some(ToolCall {
-                            id,
-                            name,
-                            arguments,
-                        })
+                .filter_map(|tc| {
+                    let id = tc.get("id")?.as_str()?.to_string();
+                    let name = tc.get("name")?.as_str()?.to_string();
+                    let arguments = tc.get("input")?.clone();
+                    Some(ToolCall {
+                        id,
+                        name,
+                        arguments,
                     })
-                    .collect();
-                if !calls.is_empty() {
-                    return Ok(LlmResponse::ToolUse(calls));
-                }
+                })
+                .collect();
+            if !calls.is_empty() {
+                return Ok(LlmResponse::ToolUse(calls));
             }
-
-            // Text response: concatenate all text blocks
-            let text: String = content
-                .iter()
-                .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|c| c.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("");
-
-            let is_truncated = stop_reason == "max_tokens";
-            if is_truncated {
-                tracing::warn!(
-                    text_len = text.len(),
-                    "response truncated (stop_reason=max_tokens)"
-                );
-            }
-
-            return Ok(LlmResponse::Text(TextResponse { text, is_truncated }));
         }
+
+        // Text response: concatenate all text blocks
+        let text: String = content
+            .iter()
+            .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("");
+
+        let is_truncated = stop_reason == "max_tokens";
+        if is_truncated {
+            tracing::warn!(
+                text_len = text.len(),
+                "response truncated (stop_reason=max_tokens)"
+            );
+        }
+
+        Ok(LlmResponse::Text(TextResponse { text, is_truncated }))
     }
 
     fn provider_name(&self) -> &'static str {

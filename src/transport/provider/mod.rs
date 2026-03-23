@@ -7,6 +7,7 @@
 
 pub mod anthropic;
 pub mod openai;
+pub mod retry;
 
 pub use anthropic::AnthropicProvider;
 pub use openai::OpenAiCompatibleProvider;

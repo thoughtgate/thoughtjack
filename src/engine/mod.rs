@@ -19,6 +19,7 @@
 //! Each protocol mode (MCP server/client, A2A, AG-UI) implements
 //! `PhaseDriver`. The `PhaseLoop` provides the common event loop.
 
+pub mod a2a;
 pub mod actions;
 pub mod driver;
 pub mod generation;

@@ -116,13 +116,12 @@ pub fn matches_uri_template(template: &str, uri: &str) -> bool {
 }
 
 // ============================================================================
-// A2A skill helpers (context-mode shim)
+// A2A skill helpers
 //
-// In context-mode, A2A server actors use McpServerDriver. These helpers
-// provide a single source of truth for A2A skill lookup and conversion
-// so the logic isn't duplicated across driver.rs, handlers.rs, and
-// context.rs. See orchestrator.rs run_context_server_actor() for why
-// the shim exists.
+// Shared helpers for A2A skill lookup and conversion, used by both
+// traffic-mode and context-mode when A2A actors are served by
+// McpServerDriver.  Single source of truth so the logic isn't
+// duplicated across driver.rs, handlers.rs, and the context module.
 // ============================================================================
 
 /// Find an A2A skill by `id` across both `state.skills[]` and
@@ -145,25 +144,17 @@ pub fn find_a2a_skill(state: &Value, skill_id: &str) -> Option<Value> {
 
 /// Return the A2A skills array from state, checking both `state.skills`
 /// and `state.agent_card.skills`.
+///
+/// Delegates to [`crate::engine::a2a::skill_array`].
 pub fn a2a_skill_array(state: &Value) -> Option<&Vec<Value>> {
-    state.get("skills").and_then(Value::as_array).or_else(|| {
-        state
-            .get("agent_card")
-            .and_then(|ac| ac.get("skills"))
-            .and_then(Value::as_array)
-    })
+    crate::engine::a2a::skill_array(state)
 }
 
 /// Resolve the canonical tool name for an A2A skill.
 ///
-/// Prefers `id` (machine-readable, e.g. "analyze-data") over `name`
-/// (human-readable, e.g. "Data Analysis") because LLM API providers
-/// restrict tool function names to `[a-zA-Z0-9_-]+`.
+/// Delegates to [`crate::engine::a2a::skill_name`].
 pub fn a2a_skill_name(skill: &Value) -> Option<&str> {
-    skill
-        .get("id")
-        .or_else(|| skill.get("name"))
-        .and_then(Value::as_str)
+    crate::engine::a2a::skill_name(skill)
 }
 
 /// Builds response content from A2A state fields (`task.message.parts`,

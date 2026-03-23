@@ -99,8 +99,9 @@ impl PhaseDriver for ContextAgUiDriver {
                         }
                         Ok(None) => return Ok(DriveResult::TransportClosed),
                         Err(e) => {
-                            tracing::warn!(error = %e, "receive error");
-                            return Ok(DriveResult::TransportClosed);
+                            return Err(EngineError::Driver(format!(
+                                "AG-UI transport receive error: {e}"
+                            )));
                         }
                     }
                 }

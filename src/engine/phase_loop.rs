@@ -291,6 +291,7 @@ pub struct PhaseLoop<D: PhaseDriver> {
     actor_name: String,
     protocol: String,
     is_server_mode: bool,
+    context_mode: bool,
     await_extractors_config: HashMap<usize, Vec<AwaitExtractor>>,
     cancel: CancellationToken,
     extractors_tx: watch::Sender<HashMap<String, String>>,
@@ -321,6 +322,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             actor_name: config.actor_name,
             protocol,
             is_server_mode,
+            context_mode: config.context_mode,
             await_extractors_config: config.await_extractors_config,
             cancel: config.cancel,
             extractors_tx,
@@ -374,7 +376,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             // re-fetch the tool list. Inject a synthetic tools/list event so
             // the phase trigger can evaluate against it (enables rug pull /
             // temporal attack scenarios like OATF-002).
-            if self.tool_watch_tx.is_some() {
+            if self.context_mode {
                 let phase = self.phase_engine.get_phase(phase_index);
                 if let Some(on_enter) = &phase.on_enter {
                     let sends_list_changed = on_enter.iter().any(|a| {
@@ -402,7 +404,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             // Context-mode A2A: inject synthetic agent_card_read at phase 0.
             // This represents the moment the LLM's tool list is loaded and
             // the Agent Card has been "discovered" by the orchestrator.
-            if self.tool_watch_tx.is_some() && self.protocol == "a2a" && phase_index == 0 {
+            if self.context_mode && self.protocol == "a2a" && phase_index == 0 {
                 let _ = event_tx.try_send(ProtocolEvent {
                     direction: Direction::Incoming,
                     method: "agent_card_read".to_string(),
@@ -427,7 +429,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 actor_name: &self.actor_name,
                 protocol: &self.protocol,
                 is_server_mode: self.is_server_mode,
-                is_context_mode: self.tool_watch_tx.is_some(),
+                is_context_mode: self.context_mode,
                 events: &self.events,
             };
             let action = {
@@ -558,7 +560,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             // All other actors (traffic-mode servers, client-mode) exit
             // immediately — traffic-mode servers are cancelled by the session
             // timeout, clients have no more work.
-            let context_mode_server = self.tool_watch_tx.is_some() && self.is_server_mode;
+            let context_mode_server = self.context_mode && self.is_server_mode;
             if self.phase_engine.is_terminal() && !context_mode_server {
                 return Ok(self.build_result(TerminationReason::TerminalPhaseReached));
             }

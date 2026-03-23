@@ -17,12 +17,6 @@ use crate::transport::context::{
 /// Default base URL for the `OpenAI` API.
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// Maximum number of retries on HTTP 429.
-const MAX_RETRIES: u32 = 3;
-
-/// Initial retry backoff in seconds.
-const INITIAL_RETRY_BACKOFF_SECS: u64 = 1;
-
 /// `OpenAI`-compatible LLM provider.
 ///
 /// Implements: TJ-SPEC-022 F-001
@@ -160,128 +154,76 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
-        // Retry loop for rate limiting
-        let mut retries = 0;
-        loop {
-            let resp = self
-                .client
+        let resp_body = super::retry::send_with_retry(|| {
+            self.client
                 .post(&url)
                 .header("Content-Type", "application/json")
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .json(&body)
                 .send()
-                .await?;
+        })
+        .await?;
 
-            let status = resp.status().as_u16();
+        // Extract the first choice
+        let choice = resp_body
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|c| c.first())
+            .ok_or_else(|| ProviderError::Parse("no choices in response".into()))?;
 
-            // Fail immediately on auth errors
-            if status == 401 || status == 403 {
-                let resp_body = resp.text().await.unwrap_or_default();
-                return Err(ProviderError::Http {
-                    status,
-                    body: resp_body,
-                });
-            }
+        let finish_reason = choice
+            .get("finish_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("stop");
 
-            // Retry on rate limit
-            if status == 429 {
-                retries += 1;
-                if retries > MAX_RETRIES {
-                    return Err(ProviderError::RateLimited { retries });
-                }
-                let backoff = INITIAL_RETRY_BACKOFF_SECS * (1 << (retries - 1));
-                tracing::warn!(
-                    retry = retries,
-                    backoff_secs = backoff,
-                    "rate limited, retrying"
-                );
-                tokio::time::sleep(Duration::from_secs(backoff)).await;
-                continue;
-            }
+        let message = choice
+            .get("message")
+            .ok_or_else(|| ProviderError::Parse("no message in choice".into()))?;
 
-            if !resp.status().is_success() {
-                let resp_body = resp.text().await.unwrap_or_default();
-                return Err(ProviderError::Http {
-                    status,
-                    body: resp_body,
-                });
-            }
-
-            let resp_body: Value = match resp.json().await {
-                Ok(v) => v,
-                Err(e) => {
-                    // EC-CTX-008: retry once on malformed JSON
-                    retries += 1;
-                    if retries > MAX_RETRIES {
-                        return Err(ProviderError::Parse(format!("JSON parse error: {e}")));
-                    }
-                    tracing::warn!(error = %e, "malformed provider JSON, retrying");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-            };
-
-            // Extract the first choice
-            let choice = resp_body
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|c| c.first())
-                .ok_or_else(|| ProviderError::Parse("no choices in response".into()))?;
-
-            let finish_reason = choice
-                .get("finish_reason")
-                .and_then(Value::as_str)
-                .unwrap_or("stop");
-
-            let message = choice
-                .get("message")
-                .ok_or_else(|| ProviderError::Parse("no message in choice".into()))?;
-
-            // Check for tool calls
-            if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array)
-                && !tool_calls.is_empty()
-                && finish_reason != "length"
-            {
-                let calls: Vec<ToolCall> = tool_calls
-                    .iter()
-                    .filter_map(|tc| {
-                        let id = tc.get("id")?.as_str()?.to_string();
-                        let function = tc.get("function")?;
-                        let name = function.get("name")?.as_str()?.to_string();
-                        let args_str = function
-                            .get("arguments")
-                            .and_then(Value::as_str)
-                            .unwrap_or("{}");
-                        let arguments: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
-                        Some(ToolCall {
-                            id,
-                            name,
-                            arguments,
-                        })
+        // Check for tool calls
+        if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array)
+            && !tool_calls.is_empty()
+            && finish_reason != "length"
+        {
+            let calls: Vec<ToolCall> = tool_calls
+                .iter()
+                .filter_map(|tc| {
+                    let id = tc.get("id")?.as_str()?.to_string();
+                    let function = tc.get("function")?;
+                    let name = function.get("name")?.as_str()?.to_string();
+                    let args_str = function
+                        .get("arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or("{}");
+                    let arguments: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                    Some(ToolCall {
+                        id,
+                        name,
+                        arguments,
                     })
-                    .collect();
-                if !calls.is_empty() {
-                    return Ok(LlmResponse::ToolUse(calls));
-                }
+                })
+                .collect();
+            if !calls.is_empty() {
+                return Ok(LlmResponse::ToolUse(calls));
             }
-
-            // Text response
-            let text = message
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let is_truncated = finish_reason == "length";
-
-            if is_truncated {
-                tracing::warn!(
-                    text_len = text.len(),
-                    "response truncated (finish_reason=length)"
-                );
-            }
-
-            return Ok(LlmResponse::Text(TextResponse { text, is_truncated }));
         }
+
+        // Text response
+        let text = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let is_truncated = finish_reason == "length";
+
+        if is_truncated {
+            tracing::warn!(
+                text_len = text.len(),
+                "response truncated (finish_reason=length)"
+            );
+        }
+
+        Ok(LlmResponse::Text(TextResponse { text, is_truncated }))
     }
 
     fn provider_name(&self) -> &'static str {
