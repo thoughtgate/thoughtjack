@@ -232,8 +232,12 @@ impl ContextTransport {
                                 // to find the tool via find_a2a_skill().
                                 // For disambiguated MCP tools, strip the actor
                                 // prefix so the server receives the original name.
+                                let a2a_skill_name = entry
+                                    .a2a_skill_rx
+                                    .as_ref()
+                                    .and_then(|rx| rx.borrow().clone());
                                 let dispatch_name = if entry.mode == "a2a_server" {
-                                    entry.a2a_default_skill.as_deref().unwrap_or(&call.name)
+                                    a2a_skill_name.as_deref().unwrap_or(&call.name)
                                 } else {
                                     let prefix = format!("{actor_name}__");
                                     call.name.strip_prefix(&prefix).unwrap_or(&call.name)

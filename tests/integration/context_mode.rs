@@ -1172,7 +1172,7 @@ async fn ec_ctx_015_tool_result_deadline_fires() {
         ServerActorEntry {
             tx: server_tx,
             mode: "mcp_server".to_string(),
-            a2a_default_skill: None,
+            a2a_skill_rx: None,
         },
     );
 

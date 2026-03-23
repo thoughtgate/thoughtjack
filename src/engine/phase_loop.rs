@@ -269,6 +269,10 @@ pub struct PhaseLoopConfig {
     /// Used in context-mode to synchronize tool definitions with the drive loop.
     /// Traffic-mode passes `None`.
     pub tool_watch_tx: Option<watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
+    /// Optional watch channel for publishing the current A2A default skill on
+    /// phase advance.  Ensures the drive loop dispatches to the correct skill
+    /// after capability escalation.
+    pub a2a_skill_tx: Option<watch::Sender<Option<String>>>,
     /// Whether this loop runs in context mode.
     ///
     /// Enables A2A event aliasing and temporal trigger bypass.
@@ -298,6 +302,7 @@ pub struct PhaseLoop<D: PhaseDriver> {
     entry_action_sender: Option<Box<dyn EntryActionSender>>,
     events: Arc<EventEmitter>,
     tool_watch_tx: Option<watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
+    a2a_skill_tx: Option<watch::Sender<Option<String>>>,
 }
 
 impl<D: PhaseDriver> PhaseLoop<D> {
@@ -329,6 +334,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             entry_action_sender: config.entry_action_sender,
             events: config.events,
             tool_watch_tx: config.tool_watch_tx,
+            a2a_skill_tx: config.a2a_skill_tx,
         }
     }
 
@@ -551,6 +557,16 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                         &self.phase_engine.actor().mode,
                     );
                     let _ = tx.send(tools);
+
+                    // Also update the A2A default skill so dispatch uses
+                    // the current phase's first skill, not the Phase 0 one.
+                    if let Some(ref skill_tx) = self.a2a_skill_tx {
+                        let new_skill = crate::engine::a2a::skill_array(&effective)
+                            .and_then(|arr| arr.first())
+                            .and_then(|s| crate::engine::a2a::skill_name(s))
+                            .map(String::from);
+                        let _ = skill_tx.send(new_skill);
+                    }
                 }
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
@@ -824,6 +840,7 @@ mod tests {
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
             tool_watch_tx: None,
+            a2a_skill_tx: None,
             context_mode: false,
         }
     }
@@ -1003,6 +1020,7 @@ attack:
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
             tool_watch_tx: None,
+            a2a_skill_tx: None,
             context_mode: false,
         };
 
@@ -1122,6 +1140,7 @@ attack:
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
             tool_watch_tx: None,
+            a2a_skill_tx: None,
             context_mode: false,
         };
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
@@ -1675,6 +1694,7 @@ attack:
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
             tool_watch_tx: None,
+            a2a_skill_tx: None,
             context_mode: false,
         };
 
@@ -1767,6 +1787,7 @@ attack:
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
             tool_watch_tx: None,
+            a2a_skill_tx: None,
             context_mode: false,
         };
         let mut phase_loop = PhaseLoop::new(driver, engine, config);

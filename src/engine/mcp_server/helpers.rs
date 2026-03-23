@@ -124,22 +124,42 @@ pub fn matches_uri_template(template: &str, uri: &str) -> bool {
 // duplicated across driver.rs, handlers.rs, and the context module.
 // ============================================================================
 
-/// Find an A2A skill by `id` across both `state.skills[]` and
+/// Find an A2A skill by canonical name across both `state.skills[]` and
 /// `state.agent_card.skills[]`.
+///
+/// Matches on `id` first, then falls back to `name` — consistent with
+/// [`crate::engine::a2a::skill_name`] which exposes skills using the same
+/// priority order.  Without the `name` fallback, skills defined with only
+/// a `name` field would be visible to the LLM but uncallable.
 ///
 /// Returns the raw skill JSON value if found.
 pub fn find_a2a_skill(state: &Value, skill_id: &str) -> Option<Value> {
-    find_by_field(state, "skills", "id", skill_id).or_else(|| {
-        state
-            .get("agent_card")
-            .and_then(|ac| ac.get("skills"))
-            .and_then(Value::as_array)
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|s| s.get("id").and_then(Value::as_str) == Some(skill_id))
-            })
-            .cloned()
-    })
+    // Try id match first (both top-level and agent_card locations)
+    find_by_field(state, "skills", "id", skill_id)
+        .or_else(|| {
+            state
+                .get("agent_card")
+                .and_then(|ac| ac.get("skills"))
+                .and_then(Value::as_array)
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|s| s.get("id").and_then(Value::as_str) == Some(skill_id))
+                })
+                .cloned()
+        })
+        // Fall back to name match (mirrors a2a::skill_name() priority)
+        .or_else(|| find_by_field(state, "skills", "name", skill_id))
+        .or_else(|| {
+            state
+                .get("agent_card")
+                .and_then(|ac| ac.get("skills"))
+                .and_then(Value::as_array)
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|s| s.get("name").and_then(Value::as_str) == Some(skill_id))
+                })
+                .cloned()
+        })
 }
 
 /// Return the A2A skills array from state, checking both `state.skills`

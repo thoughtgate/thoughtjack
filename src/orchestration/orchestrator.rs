@@ -695,6 +695,10 @@ pub async fn orchestrate_context(
         String,
         tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>,
     > = HashMap::new();
+    // Per-A2A-actor watch for the current default skill name, updated on
+    // phase advance so the drive loop dispatches to the right skill.
+    let mut a2a_skill_txs: HashMap<String, tokio::sync::watch::Sender<Option<String>>> =
+        HashMap::new();
 
     for &idx in &server_indices {
         let actor = &actors[idx];
@@ -708,12 +712,16 @@ pub async fn orchestrate_context(
         let initial_tools =
             extract_tool_definitions_for_actor(&effective_state, &actor_name, &actor.mode);
 
-        // For A2A actors, record the first skill ID for tool-call rewriting
-        let a2a_default_skill = if actor.mode == "a2a_server" {
-            crate::engine::mcp_server::helpers::a2a_skill_array(&effective_state)
-                .and_then(|arr| arr.first())
-                .and_then(|s| crate::engine::mcp_server::helpers::a2a_skill_name(s))
-                .map(String::from)
+        // For A2A actors, create a watch channel for the current first skill
+        let a2a_skill_rx = if actor.mode == "a2a_server" {
+            let initial_skill =
+                crate::engine::mcp_server::helpers::a2a_skill_array(&effective_state)
+                    .and_then(|arr| arr.first())
+                    .and_then(|s| crate::engine::mcp_server::helpers::a2a_skill_name(s))
+                    .map(String::from);
+            let (skill_tx, skill_rx) = tokio::sync::watch::channel(initial_skill);
+            a2a_skill_txs.insert(actor_name.clone(), skill_tx);
+            Some(skill_rx)
         } else {
             None
         };
@@ -732,7 +740,7 @@ pub async fn orchestrate_context(
             ServerActorEntry {
                 tx: server_tx,
                 mode: actor.mode.clone(),
-                a2a_default_skill,
+                a2a_skill_rx,
             },
         );
         server_tool_watches.push((actor_name.clone(), tool_watch_rx));
@@ -815,6 +823,7 @@ pub async fn orchestrate_context(
             entry_action_sender: None,
             events: StdArc::clone(events),
             tool_watch_tx: None,
+            a2a_skill_tx: None,
             context_mode: true,
         };
 
@@ -841,6 +850,7 @@ pub async fn orchestrate_context(
         let actor_name_clone = actor_name.clone();
         let raw_synthesize = config.raw_synthesize;
         let tool_watch_tx = tool_watch_txs.remove(&actor_name);
+        let a2a_skill_tx = a2a_skill_txs.remove(&actor_name);
 
         let await_cfg: HashMap<usize, Vec<AwaitExtractor>> = loaded
             .await_extractors
@@ -857,6 +867,7 @@ pub async fn orchestrate_context(
                 transport: handle,
                 raw_synthesize,
                 tool_watch_tx,
+                a2a_skill_tx,
                 trace: tr,
                 extractor_store: es,
                 await_config: await_cfg,
@@ -1086,6 +1097,8 @@ struct ContextServerActorConfig {
     raw_synthesize: bool,
     tool_watch_tx:
         Option<tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
+    /// For A2A actors: sender to publish updated default skill on phase advance.
+    a2a_skill_tx: Option<tokio::sync::watch::Sender<Option<String>>>,
     trace: SharedTrace,
     extractor_store: ExtractorStore,
     await_config: HashMap<usize, Vec<AwaitExtractor>>,
@@ -1156,6 +1169,7 @@ async fn run_context_server_actor(
         entry_action_sender: Some(Box::new(entry_action_sender)),
         events: std::sync::Arc::clone(events),
         tool_watch_tx: cfg.tool_watch_tx,
+        a2a_skill_tx: cfg.a2a_skill_tx,
         context_mode: true,
     };
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);

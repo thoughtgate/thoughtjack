@@ -572,6 +572,7 @@ async fn run_mcp_server_actor(
         entry_action_sender: Some(Box::new(entry_action_sender)),
         events: Arc::clone(events),
         tool_watch_tx: None,
+        a2a_skill_tx: None,
         context_mode: false,
     };
 
@@ -648,6 +649,7 @@ async fn run_agui_client_actor(
         entry_action_sender: None,
         events: Arc::clone(events),
         tool_watch_tx: None,
+        a2a_skill_tx: None,
         context_mode: false,
     };
 
@@ -717,6 +719,7 @@ async fn run_a2a_server_actor(
         entry_action_sender: None,
         events: Arc::clone(events),
         tool_watch_tx: None,
+        a2a_skill_tx: None,
         context_mode: false,
     };
 
@@ -811,6 +814,7 @@ async fn run_a2a_client_actor(
         entry_action_sender: None,
         events: Arc::clone(events),
         tool_watch_tx: None,
+        a2a_skill_tx: None,
         context_mode: false,
     };
 
@@ -927,6 +931,7 @@ async fn run_mcp_client_actor(
         entry_action_sender: None,
         events: Arc::clone(events),
         tool_watch_tx: None,
+        a2a_skill_tx: None,
         context_mode: false,
     };
 

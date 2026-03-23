@@ -12,10 +12,12 @@ pub struct ServerActorEntry {
     pub tx: mpsc::Sender<JsonRpcMessage>,
     /// Actor mode (`"mcp_server"` or `"a2a_server"`).
     pub mode: String,
-    /// For A2A actors: the default skill ID to use when rewriting tool calls
-    /// from the actor-name tool back to a skill name that `McpServerDriver`
-    /// can resolve via `find_a2a_skill()`.
-    pub a2a_default_skill: Option<String>,
+    /// For A2A actors: watch receiver for the current default skill ID.
+    ///
+    /// Updated by the `PhaseLoop` on phase advance so that tool-call
+    /// dispatch always uses the first skill from the current phase
+    /// (not the stale Phase 0 value).
+    pub a2a_skill_rx: Option<tokio::sync::watch::Receiver<Option<String>>>,
 }
 
 /// A server-initiated request (elicitation/sampling) routed to the drive loop.
