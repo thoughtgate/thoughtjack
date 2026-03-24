@@ -32,10 +32,10 @@ pub struct OpenAiCompatibleProvider {
 impl OpenAiCompatibleProvider {
     /// Creates a new provider.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the `reqwest` HTTP client cannot be built (TLS backend failure).
-    #[must_use]
+    /// Returns `ProviderError::Parse` if the HTTP client cannot be built
+    /// (e.g. TLS backend failure in constrained environments).
     pub fn new(
         api_key: String,
         model: String,
@@ -43,20 +43,20 @@ impl OpenAiCompatibleProvider {
         temperature: f32,
         max_tokens: Option<u32>,
         timeout_secs: u64,
-    ) -> Self {
+    ) -> Result<Self, ProviderError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
-            .expect("failed to build reqwest client");
+            .map_err(ProviderError::Request)?;
 
-        Self {
+        Ok(Self {
             client,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             api_key,
             model,
             temperature,
             max_tokens,
-        }
+        })
     }
 
     /// Serializes conversation history to `OpenAI` message format.

@@ -18,7 +18,7 @@ use crate::transport::context::LlmProvider;
 /// Configuration for constructing an LLM provider.
 ///
 /// Implements: TJ-SPEC-022 F-001
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderConfig {
     /// Provider type: "openai" or "anthropic".
     pub provider_type: String,
@@ -36,6 +36,21 @@ pub struct ProviderConfig {
     pub timeout_secs: u64,
 }
 
+// Manual Debug impl to redact the API key (CWE-532).
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("provider_type", &self.provider_type)
+            .field("api_key", &"[REDACTED]")
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
+}
+
 /// Creates an `LlmProvider` from configuration.
 ///
 /// # Errors
@@ -45,22 +60,32 @@ pub struct ProviderConfig {
 /// Implements: TJ-SPEC-022 F-001
 pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>, EngineError> {
     match config.provider_type.as_str() {
-        "openai" => Ok(Box::new(OpenAiCompatibleProvider::new(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.base_url.clone(),
-            config.temperature,
-            config.max_tokens,
-            config.timeout_secs,
-        ))),
-        "anthropic" => Ok(Box::new(AnthropicProvider::new(
-            config.api_key.clone(),
-            config.model.clone(),
-            config.base_url.clone(),
-            config.temperature,
-            config.max_tokens.unwrap_or(4096),
-            config.timeout_secs,
-        ))),
+        "openai" => {
+            let provider = OpenAiCompatibleProvider::new(
+                config.api_key.clone(),
+                config.model.clone(),
+                config.base_url.clone(),
+                config.temperature,
+                config.max_tokens,
+                config.timeout_secs,
+            )
+            .map_err(|e| EngineError::Driver(format!("failed to create OpenAI provider: {e}")))?;
+            Ok(Box::new(provider))
+        }
+        "anthropic" => {
+            let provider = AnthropicProvider::new(
+                config.api_key.clone(),
+                config.model.clone(),
+                config.base_url.clone(),
+                config.temperature,
+                config.max_tokens.unwrap_or(4096),
+                config.timeout_secs,
+            )
+            .map_err(|e| {
+                EngineError::Driver(format!("failed to create Anthropic provider: {e}"))
+            })?;
+            Ok(Box::new(provider))
+        }
         other => Err(EngineError::Driver(format!(
             "unknown context provider type: '{other}' (expected 'openai' or 'anthropic')"
         ))),
@@ -118,10 +143,15 @@ mod tests {
     }
 
     #[test]
-    fn provider_config_debug_impl() {
+    fn provider_config_debug_redacts_api_key() {
         let config = test_config("openai");
         let debug = format!("{config:?}");
         assert!(debug.contains("openai"));
         assert!(debug.contains("test-model"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(
+            !debug.contains("test-key"),
+            "API key must not appear in Debug output"
+        );
     }
 }
