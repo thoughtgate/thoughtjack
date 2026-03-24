@@ -103,6 +103,7 @@ fn make_pattern_indicator(id: &str, contains: &str, protocol: Option<&str>) -> o
         }),
         expression: None,
         semantic: None,
+        tier: None,
         confidence: None,
         severity: None,
         false_positives: None,

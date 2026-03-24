@@ -400,6 +400,7 @@ pub fn evaluate_verdict(
             return oatf::AttackVerdict {
                 attack_id: attack.id.clone(),
                 result: AttackResult::NotExploited,
+                max_tier: None,
                 indicator_verdicts: vec![],
                 evaluation_summary: oatf::EvaluationSummary {
                     matched: 0,
@@ -565,6 +566,7 @@ mod tests {
             }),
             expression: None,
             semantic: None,
+            tier: None,
             confidence: None,
             severity: None,
             false_positives: None,
@@ -591,6 +593,7 @@ mod tests {
                 threshold: Some(0.7),
                 examples: None,
             }),
+            tier: None,
             confidence: None,
             severity: None,
             false_positives: None,
@@ -1113,6 +1116,7 @@ mod tests {
                 variables: None,
             }),
             semantic: None,
+            tier: None,
             confidence: None,
             severity: None,
             false_positives: None,

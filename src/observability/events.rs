@@ -275,6 +275,9 @@ pub enum ThoughtJackEvent {
     VerdictComputed {
         /// Verdict result (exploited, `not_exploited`, partial, error).
         result: String,
+        /// Highest outcome tier among matched indicators (OATF §6.5).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_tier: Option<String>,
         /// Number of indicators that matched.
         matched: usize,
         /// Total number of indicators evaluated.
@@ -763,6 +766,7 @@ mod tests {
             },
             ThoughtJackEvent::VerdictComputed {
                 result: "exploited".to_owned(),
+                max_tier: Some("boundary_breach".to_owned()),
                 matched: 2,
                 total: 3,
             },

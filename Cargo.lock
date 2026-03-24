@@ -1270,9 +1270,9 @@ dependencies = [
 
 [[package]]
 name = "oatf"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7f917e883332950b153eefd8309a68b5885329adce119d7674cdca4c3412f5f"
+checksum = "0b2b204892d1852e3661c8807f43dde5875e604a5b9fa87ebd654b9fb2dff68b"
 dependencies = [
  "cel",
  "indexmap",

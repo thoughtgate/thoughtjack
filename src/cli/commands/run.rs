@@ -25,8 +25,8 @@ use crate::verdict::evaluation::{ActorInfo, EvaluationConfig, evaluate_verdict};
 use crate::verdict::grace::resolve_grace_period;
 use crate::verdict::output::{
     ActorStatus, attack_result_to_string, build_verdict_output, indicator_result_to_string,
-    print_human_summary, termination_to_status, verdict_exit_code, write_json_verdict,
-    write_trace_jsonl,
+    print_human_summary, termination_to_status, tier_to_string, verdict_exit_code,
+    write_json_verdict, write_trace_jsonl,
 };
 
 /// Execute an OATF scenario.
@@ -194,6 +194,10 @@ pub async fn run_from_yaml(
         }
         events.emit(ThoughtJackEvent::VerdictComputed {
             result: attack_result_to_string(&verdict.result),
+            max_tier: verdict
+                .max_tier
+                .as_ref()
+                .map(|t| tier_to_string(t).to_string()),
             matched: verdict
                 .indicator_verdicts
                 .iter()
@@ -217,9 +221,9 @@ pub async fn run_from_yaml(
             output.set_context_attribution(&provider_config.provider_type, &provider_config.model);
         }
 
-        (output, verdict.result)
+        (output, verdict.result, verdict.max_tier)
     };
-    let (output, verdict_result) = output;
+    let (output, verdict_result, verdict_max_tier) = output;
 
     // 11. Write JSON verdict if --output
     if let Some(ref path) = args.output {
@@ -260,7 +264,7 @@ pub async fn run_from_yaml(
     }
 
     // 14. Exit code
-    let code = verdict_exit_code(&verdict_result);
+    let code = verdict_exit_code(&verdict_result, verdict_max_tier.as_ref());
     if code != 0 {
         return Err(ThoughtJackError::Verdict {
             message: output.verdict.result,
