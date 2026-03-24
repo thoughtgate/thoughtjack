@@ -91,6 +91,14 @@ pub struct ActorConfig {
     pub max_session: Duration,
     /// Timeout for server readiness gate.
     pub readiness_timeout: Duration,
+    /// Whether context-mode is active.
+    pub context_mode: bool,
+    /// Context-mode LLM provider configuration.
+    pub context_provider_config: Option<crate::transport::provider::ProviderConfig>,
+    /// Maximum conversation turns (context-mode).
+    pub max_turns: Option<u32>,
+    /// System prompt for context-mode.
+    pub context_system_prompt: Option<String>,
     /// Test-only transport factory to inject `NullTransport` instead of real stdio.
     #[cfg(test)]
     pub transport_factory: Option<TransportFactory>,
@@ -110,6 +118,31 @@ pub fn build_actor_config(args: &ExecutionArgs) -> Result<ActorConfig, EngineErr
         headers.push(parse_cli_header(raw, idx + 1)?);
     }
 
+    // Build context-mode provider config if --context is active
+    let context_provider_config = if args.context {
+        let model = args.context_model.clone().ok_or_else(|| {
+            EngineError::Driver("--context-model is required when --context is enabled".into())
+        })?;
+
+        // API key conditionally required: not needed for local/private endpoints
+        let api_key = resolve_context_api_key(
+            args.context_api_key.as_deref(),
+            args.context_base_url.as_deref(),
+        )?;
+
+        Some(crate::transport::provider::ProviderConfig {
+            provider_type: args.context_provider.clone(),
+            api_key,
+            model,
+            base_url: args.context_base_url.clone(),
+            temperature: args.context_temperature.unwrap_or(0.0),
+            max_tokens: args.context_max_tokens.or(Some(4096)),
+            timeout_secs: args.context_timeout.unwrap_or(120),
+        })
+    } else {
+        None
+    };
+
     Ok(ActorConfig {
         mcp_server_bind: args.mcp_server.clone(),
         agui_client_endpoint: args.agui_client_endpoint.clone(),
@@ -123,9 +156,65 @@ pub fn build_actor_config(args: &ExecutionArgs) -> Result<ActorConfig, EngineErr
         grace_period: args.grace_period.map(Into::into),
         max_session: args.max_session.into(),
         readiness_timeout: args.readiness_timeout.into(),
+        context_mode: args.context,
+        context_provider_config,
+        max_turns: args.max_turns,
+        context_system_prompt: args.context_system_prompt.clone(),
         #[cfg(test)]
         transport_factory: None,
     })
+}
+
+/// Resolves the context-mode API key, applying the local-endpoint exception.
+///
+/// Returns `"no-key"` if the base URL points to a local/private address.
+/// Returns an error if no key is provided and the endpoint is not local.
+fn resolve_context_api_key(
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+) -> Result<String, EngineError> {
+    if let Some(key) = api_key {
+        return Ok(if key.is_empty() {
+            "no-key".to_string()
+        } else {
+            key.to_string()
+        });
+    }
+    // Check if base URL points to a local/private address
+    if base_url.is_some_and(is_local_endpoint) {
+        return Ok("no-key".to_string());
+    }
+    Err(EngineError::Driver(
+        "--context-api-key is required (omit only for local endpoints like localhost, \
+         127.0.0.1, or private IP ranges)"
+            .into(),
+    ))
+}
+
+/// Checks if a URL points to a local or private address.
+fn is_local_endpoint(url: &str) -> bool {
+    let host = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+
+    matches!(
+        host,
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "host.docker.internal"
+    ) || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || (host.starts_with("172.")
+            && host
+                .split('.')
+                .nth(1)
+                .and_then(|s| s.parse::<u8>().ok())
+                .is_some_and(|n| (16..=31).contains(&n)))
 }
 
 /// Parses and validates a CLI `--header` value (`KEY:VALUE`).
@@ -482,6 +571,9 @@ async fn run_mcp_server_actor(
         cancel,
         entry_action_sender: Some(Box::new(entry_action_sender)),
         events: Arc::clone(events),
+        tool_watch_tx: None,
+        a2a_skill_tx: None,
+        context_mode: false,
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -556,6 +648,9 @@ async fn run_agui_client_actor(
         cancel,
         entry_action_sender: None,
         events: Arc::clone(events),
+        tool_watch_tx: None,
+        a2a_skill_tx: None,
+        context_mode: false,
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -623,6 +718,9 @@ async fn run_a2a_server_actor(
         cancel,
         entry_action_sender: None,
         events: Arc::clone(events),
+        tool_watch_tx: None,
+        a2a_skill_tx: None,
+        context_mode: false,
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -715,6 +813,9 @@ async fn run_a2a_client_actor(
         cancel,
         entry_action_sender: None,
         events: Arc::clone(events),
+        tool_watch_tx: None,
+        a2a_skill_tx: None,
+        context_mode: false,
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -829,6 +930,9 @@ async fn run_mcp_client_actor(
         cancel,
         entry_action_sender: None,
         events: Arc::clone(events),
+        tool_watch_tx: None,
+        a2a_skill_tx: None,
+        context_mode: false,
     };
 
     let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
@@ -872,6 +976,16 @@ mod tests {
             events_file: None,
             export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         };
 
         let config = build_actor_config(&args).expect("valid headers should parse");
@@ -920,6 +1034,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: None,
         };
 
@@ -974,6 +1092,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: Some(null_transport_factory()),
         };
 
@@ -1032,6 +1154,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: None,
         };
 
@@ -1089,6 +1215,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: None,
         };
 
@@ -1150,6 +1280,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: None,
         };
 
@@ -1208,6 +1342,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: None,
         };
 
@@ -1269,6 +1407,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: None,
         };
 
@@ -1341,6 +1483,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: None,
         };
 
@@ -1397,6 +1543,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(5),
             readiness_timeout: Duration::from_secs(5),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: Some(null_transport_factory()),
         };
 
@@ -1465,6 +1615,16 @@ attack:
             events_file: None,
             export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         };
 
         let config = build_actor_config(&args).expect("valid headers should parse");
@@ -1501,6 +1661,16 @@ attack:
             events_file: None,
             export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         };
 
         let err = build_actor_config(&args).expect_err("missing colon should be rejected");
@@ -1531,6 +1701,16 @@ attack:
             events_file: None,
             export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         };
 
         let err = build_actor_config(&args).expect_err("invalid header name should be rejected");
@@ -1561,6 +1741,16 @@ attack:
             events_file: None,
             export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         };
 
         let err = build_actor_config(&args).expect_err("invalid header value should be rejected");
@@ -1591,6 +1781,16 @@ attack:
             events_file: None,
             export_trace: None,
             progress: crate::cli::args::ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         };
 
         let config = build_actor_config(&args).expect("empty header list should be valid");
@@ -1636,6 +1836,10 @@ attack:
             grace_period: None,
             max_session: Duration::from_secs(300),
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: None,
         };
 

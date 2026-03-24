@@ -40,6 +40,7 @@ fn no_semantic_config() -> EvaluationConfig<'static> {
         cel_evaluator: None,
         semantic_evaluator: None,
         no_semantic: true,
+        context_mode: false,
     }
 }
 

@@ -168,6 +168,16 @@ mod tests {
             events_file: None,
             export_trace: None,
             progress: ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         }
     }
 

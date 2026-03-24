@@ -32,6 +32,10 @@ const fn default_actor_config(max_session: Duration) -> ActorConfig {
         grace_period: None,
         max_session,
         readiness_timeout: Duration::from_secs(30),
+        context_mode: false,
+        context_provider_config: None,
+        max_turns: None,
+        context_system_prompt: None,
     }
 }
 

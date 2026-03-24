@@ -94,6 +94,11 @@ pub async fn run_from_yaml(
     let (events, progress_handle): (Arc<EventEmitter>, Option<tokio::task::JoinHandle<()>>) =
         if progress_enabled {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            // When progress is active, only write raw JSON events if
+            // --events-file was explicitly set. Otherwise suppress JSON
+            // output — the progress renderer already shows a formatted
+            // view of the same events and raw JSON would interleave
+            // with it on the terminal.
             let writer: Box<dyn std::io::Write + Send> = match &args.events_file {
                 Some(path) => Box::new(
                     std::fs::OpenOptions::new()
@@ -101,7 +106,7 @@ pub async fn run_from_yaml(
                         .append(true)
                         .open(path)?,
                 ),
-                None => Box::new(std::io::stdout()),
+                None => Box::new(std::io::sink()),
             };
             let emitter = Arc::new(EventEmitter::with_progress(writer, tx));
             let color_enabled = resolve_color(color);
@@ -123,11 +128,22 @@ pub async fn run_from_yaml(
         .actors
         .as_ref()
         .ok_or_else(|| ThoughtJackError::Usage("no actors in document".into()))?;
-    validate_transport_flags(actors, &config)?;
+    // Skip traffic-mode transport validation in context-mode — context-mode
+    // uses channel-based handles, not real transports (TJ-SPEC-022 §4.1).
+    if !config.context_mode {
+        validate_transport_flags(actors, &config)?;
+    }
 
-    // 6. Execute: single-actor bypass or multi-actor orchestrate
+    // 6. Execute: context-mode, single-actor bypass, or multi-actor orchestrate
     let start = Instant::now();
-    let (outcomes, trace) = if actors.len() <= 1 {
+    let (outcomes, trace) = if config.context_mode {
+        let result = crate::orchestration::orchestrator::orchestrate_context(
+            &loaded, &config, &events, cancel,
+        )
+        .await
+        .map_err(|e| ThoughtJackError::Orchestration(e.to_string()))?;
+        (result.outcomes, result.trace)
+    } else if actors.len() <= 1 {
         run_single_actor(&loaded, &config, &events, cancel).await?
     } else {
         let result = orchestrate(&loaded, &config, &events, cancel)
@@ -155,6 +171,7 @@ pub async fn run_from_yaml(
             cel_evaluator: Some(&cel),
             semantic_evaluator: None,
             no_semantic: args.no_semantic,
+            context_mode: config.context_mode,
         };
         let source = format!("thoughtjack/{}", env!("CARGO_PKG_VERSION"));
         let verdict = evaluate_verdict(
@@ -186,7 +203,7 @@ pub async fn run_from_yaml(
         });
 
         let actor_statuses = build_actor_statuses(&outcomes, actors);
-        let output = build_verdict_output(
+        let mut output = build_verdict_output(
             &loaded.document.attack,
             &verdict,
             actor_statuses,
@@ -194,6 +211,12 @@ pub async fn run_from_yaml(
             trace_snapshot.len(),
             duration_ms,
         );
+
+        // Set context-mode attribution if applicable
+        if let Some(ref provider_config) = config.context_provider_config {
+            output.set_context_attribution(&provider_config.provider_type, &provider_config.model);
+        }
+
         (output, verdict.result)
     };
     let (output, verdict_result) = output;
@@ -571,6 +594,16 @@ mod tests {
             events_file: None,
             export_trace: None,
             progress: ProgressLevel::Off,
+            context: false,
+            context_model: None,
+            context_api_key: None,
+            context_base_url: None,
+            context_provider: "openai".to_string(),
+            context_temperature: None,
+            context_max_tokens: None,
+            context_system_prompt: None,
+            context_timeout: None,
+            max_turns: None,
         }
     }
 

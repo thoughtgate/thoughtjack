@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::json;
 use tokio::task::{Id as TaskId, JoinSet};
 use tokio_util::sync::CancellationToken;
 
@@ -593,6 +594,595 @@ async fn drain_join_set_with_timeout(
 }
 
 // ============================================================================
+// Context-Mode Orchestration (TJ-SPEC-022)
+// ============================================================================
+
+/// Runs context-mode orchestration: LLM API-backed conversation with channel handles.
+///
+/// Constructs the channel topology per TJ-SPEC-022 §2.4:
+/// 1. Validates actors (requires AG-UI client, rejects MCP/A2A client).
+/// 2. Constructs per-actor channels, handles, and watch channels.
+/// 3. Creates `ContextTransport` with LLM provider.
+/// 4. Spawns server actors, AG-UI actor, and the drive loop.
+///
+/// # Errors
+///
+/// Returns `EngineError` if actors are invalid, provider creation fails,
+/// or an actor fails critically.
+///
+/// Implements: TJ-SPEC-022 F-001
+#[allow(clippy::too_many_lines)]
+pub async fn orchestrate_context(
+    loaded: &LoadedDocument,
+    config: &ActorConfig,
+    events: &Arc<EventEmitter>,
+    cancel: CancellationToken,
+) -> Result<OrchestratorResult, EngineError> {
+    use crate::engine::phase::PhaseEngine;
+    use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
+    use crate::protocol::context_agui::ContextAgUiDriver;
+    use crate::transport::context::{
+        AgUiHandle, ContextTransport, ServerActorEntry, ServerHandle,
+        extract_tool_definitions_for_actor,
+    };
+    use crate::transport::provider::create_provider;
+    use std::sync::Arc as StdArc;
+    use tokio::task::JoinSet;
+
+    let actors = document_actors(&loaded.document);
+
+    // 1. Validate actors
+    let mut agui_index = None;
+    let mut server_indices = Vec::new();
+    for (i, actor) in actors.iter().enumerate() {
+        match actor.mode.as_str() {
+            "ag_ui_client" => {
+                if agui_index.is_some() {
+                    return Err(EngineError::Driver(
+                        "context-mode supports at most one ag_ui_client actor".into(),
+                    ));
+                }
+                agui_index = Some(i);
+            }
+            "mcp_server" | "a2a_server" => server_indices.push(i),
+            "mcp_client" | "a2a_client" => {
+                return Err(EngineError::Driver(format!(
+                    "context-mode does not support {} actors",
+                    actor.mode
+                )));
+            }
+            _ => {
+                return Err(EngineError::Driver(format!(
+                    "unsupported actor mode in context-mode: {}",
+                    actor.mode
+                )));
+            }
+        }
+    }
+    let agui_actor_index = agui_index.ok_or_else(|| {
+        EngineError::Driver(
+            "context-mode requires an ag_ui_client actor (hint: add an actor \
+             with mode: ag_ui_client to your OATF document)"
+                .into(),
+        )
+    })?;
+
+    events.emit(ThoughtJackEvent::OrchestratorStarted {
+        actor_count: actors.len(),
+        server_count: server_indices.len(),
+        client_count: 1,
+    });
+
+    // 2. Shared state
+    let trace = SharedTrace::new();
+    let extractor_store = ExtractorStore::new();
+    let thread_id = uuid::Uuid::new_v4().to_string();
+
+    // 3. AG-UI channels
+    let (agui_tx, agui_rx) = tokio::sync::mpsc::channel(16);
+    let (agui_response_tx, agui_response_rx) = tokio::sync::mpsc::channel(16);
+
+    // 4. Shared result/request channels
+    let (tool_result_tx, tool_result_rx) = tokio::sync::mpsc::channel(16);
+    let (server_request_tx, server_request_rx) = tokio::sync::mpsc::channel(16);
+
+    // 5. Per-server-actor setup (OATF document order)
+    let mut server_actor_entries: HashMap<String, ServerActorEntry> = HashMap::new();
+    let mut server_tool_watches = Vec::new();
+    let mut server_handles: Vec<(usize, String, StdArc<dyn crate::transport::Transport>)> =
+        Vec::new();
+    let mut tool_watch_txs: HashMap<
+        String,
+        tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>,
+    > = HashMap::new();
+    // Per-A2A-actor watch for the current default skill name, updated on
+    // phase advance so the drive loop dispatches to the right skill.
+    let mut a2a_skill_txs: HashMap<String, tokio::sync::watch::Sender<Option<String>>> =
+        HashMap::new();
+
+    for &idx in &server_indices {
+        let actor = &actors[idx];
+        let actor_name = actor.name.clone();
+
+        let (server_tx, server_rx) = tokio::sync::mpsc::channel(16);
+
+        // Extract initial tool definitions from phase 0 (mode-aware for A2A)
+        let engine_tmp = PhaseEngine::new(loaded.document.clone(), idx);
+        let effective_state = engine_tmp.effective_state();
+        let initial_tools =
+            extract_tool_definitions_for_actor(&effective_state, &actor_name, &actor.mode);
+
+        // For A2A actors, create a watch channel for the current first skill
+        let a2a_skill_rx = if actor.mode == "a2a_server" {
+            let initial_skill =
+                crate::engine::mcp_server::helpers::a2a_skill_array(&effective_state)
+                    .and_then(|arr| arr.first())
+                    .and_then(|s| crate::engine::mcp_server::helpers::a2a_skill_name(s))
+                    .map(String::from);
+            let (skill_tx, skill_rx) = tokio::sync::watch::channel(initial_skill);
+            a2a_skill_txs.insert(actor_name.clone(), skill_tx);
+            Some(skill_rx)
+        } else {
+            None
+        };
+
+        let (tool_watch_tx, tool_watch_rx) = tokio::sync::watch::channel(initial_tools);
+
+        let handle = ServerHandle::new(
+            server_rx,
+            tool_result_tx.clone(),
+            server_request_tx.clone(),
+            actor_name.clone(),
+        );
+
+        server_actor_entries.insert(
+            actor_name.clone(),
+            ServerActorEntry {
+                tx: server_tx,
+                mode: actor.mode.clone(),
+                a2a_skill_rx,
+            },
+        );
+        server_tool_watches.push((actor_name.clone(), tool_watch_rx));
+        server_handles.push((idx, actor_name.clone(), StdArc::new(handle)));
+        tool_watch_txs.insert(actor_name, tool_watch_tx);
+    }
+
+    // 6. Create LLM provider
+    let provider_config = config.context_provider_config.as_ref().ok_or_else(|| {
+        EngineError::Driver("context-mode requires provider configuration".into())
+    })?;
+    let provider = create_provider(provider_config)?;
+
+    let max_turns = config.max_turns.unwrap_or(20);
+
+    // Grace period warning
+    if config.grace_period.is_some_and(|g| !g.is_zero()) {
+        tracing::warn!(
+            "grace period is not applicable in context-mode (no open transport to observe), ignoring"
+        );
+    }
+
+    // 7. Construct ContextTransport
+    // Build A2A system context roster (R2) — populated in Phase C
+    let a2a_system_context = build_a2a_system_context(actors, &server_indices, &loaded.document);
+
+    let context_transport = ContextTransport::new(
+        provider,
+        config.context_system_prompt.clone(),
+        a2a_system_context,
+        max_turns,
+        agui_tx,
+        agui_response_rx,
+        thread_id.clone(),
+        server_actor_entries,
+        server_tool_watches,
+        tool_result_rx,
+        server_request_rx,
+    );
+
+    // 8. Construct AgUiHandle
+    let agui_handle = AgUiHandle::new(agui_rx, agui_response_tx);
+
+    // 9. Spawn actors
+    let mut join_set: JoinSet<ActorTaskResult> = JoinSet::new();
+
+    // 9a. AG-UI actor — spawn PhaseLoop directly
+    {
+        let driver = ContextAgUiDriver::new(Box::new(agui_handle), thread_id.clone());
+        let engine = PhaseEngine::new(loaded.document.clone(), agui_actor_index);
+        let agui_actor_name = actors[agui_actor_index].name.clone();
+
+        let agui_await_cfg: HashMap<usize, Vec<AwaitExtractor>> = loaded
+            .await_extractors
+            .iter()
+            .filter(|((name, _), _)| name == &agui_actor_name)
+            .map(|((_, phase_idx), specs)| (*phase_idx, specs.clone()))
+            .collect();
+
+        let phase_count = engine.actor().phases.len();
+        events.emit(ThoughtJackEvent::ActorInit {
+            actor_name: agui_actor_name.clone(),
+            mode: "ag_ui_client".to_string(),
+        });
+        events.emit(ThoughtJackEvent::ActorReady {
+            actor_name: agui_actor_name.clone(),
+            bind_address: "context".to_string(),
+        });
+        events.emit(ThoughtJackEvent::ActorStarted {
+            actor_name: agui_actor_name.clone(),
+            phase_count,
+        });
+
+        let loop_config = PhaseLoopConfig {
+            trace: trace.clone(),
+            extractor_store: extractor_store.clone(),
+            actor_name: agui_actor_name.clone(),
+            await_extractors_config: agui_await_cfg,
+            cancel: cancel.child_token(),
+            entry_action_sender: None,
+            events: StdArc::clone(events),
+            tool_watch_tx: None,
+            a2a_skill_tx: None,
+            context_mode: true,
+        };
+
+        let actor_name_owned = agui_actor_name;
+        join_set.spawn(async move {
+            let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
+            let result = phase_loop.run().await;
+            ActorTaskResult {
+                actor_name: actor_name_owned,
+                is_server: false,
+                result,
+            }
+        });
+    }
+
+    // 9b. Server actors — use ServerHandle as transport
+    for (idx, actor_name, handle) in server_handles {
+        let actor = &actors[idx];
+        let doc = loaded.document.clone();
+        let tr = trace.clone();
+        let es = extractor_store.clone();
+        let actor_cancel = cancel.child_token();
+        let task_events = StdArc::clone(events);
+        let actor_name_clone = actor_name.clone();
+        let raw_synthesize = config.raw_synthesize;
+        let tool_watch_tx = tool_watch_txs.remove(&actor_name);
+        let a2a_skill_tx = a2a_skill_txs.remove(&actor_name);
+
+        let await_cfg: HashMap<usize, Vec<AwaitExtractor>> = loaded
+            .await_extractors
+            .iter()
+            .filter(|((name, _), _)| name == &actor_name)
+            .map(|((_, phase_idx), specs)| (*phase_idx, specs.clone()))
+            .collect();
+
+        let mode = actor.mode.clone();
+        join_set.spawn(async move {
+            let server_cfg = ContextServerActorConfig {
+                actor_index: idx,
+                document: doc,
+                transport: handle,
+                raw_synthesize,
+                tool_watch_tx,
+                a2a_skill_tx,
+                trace: tr,
+                extractor_store: es,
+                await_config: await_cfg,
+                cancel: actor_cancel,
+                mode,
+                actor_name: actor_name_clone.clone(),
+            };
+            let result = run_context_server_actor(server_cfg, &task_events).await;
+            ActorTaskResult {
+                actor_name: actor_name_clone,
+                is_server: true,
+                result,
+            }
+        });
+    }
+
+    // 10. Spawn drive loop
+    let drive_cancel = cancel.child_token();
+    let drive_handle = context_transport.spawn_drive_loop(drive_cancel);
+
+    // 11. Wait for completion
+    let mut outcomes = Vec::new();
+    let max_session_sleep =
+        tokio::time::sleep_until(tokio::time::Instant::now() + config.max_session);
+    tokio::pin!(max_session_sleep);
+    let cancelled = cancel.cancelled();
+    tokio::pin!(cancelled);
+
+    loop {
+        tokio::select! {
+            Some(join_result) = join_set.join_next() => {
+                match join_result {
+                    Ok(task_result) => {
+                        let actor_name = task_result.actor_name.clone();
+                        match task_result.result {
+                            Ok(result) => {
+                                events.emit(ThoughtJackEvent::ActorCompleted {
+                                    actor_name: actor_name.clone(),
+                                    reason: result.termination.to_string(),
+                                    phases_completed: result.phases_completed,
+                                });
+                                outcomes.push(ActorOutcome::Success(result));
+                            }
+                            Err(e) => {
+                                events.emit(ThoughtJackEvent::ActorError {
+                                    actor_name: actor_name.clone(),
+                                    error: e.to_string(),
+                                });
+                                outcomes.push(ActorOutcome::Error {
+                                    actor_name,
+                                    error: e.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Err(join_err) => {
+                        let actor_name = "(unknown)".to_string();
+                        if join_err.is_panic() {
+                            outcomes.push(ActorOutcome::Panic { actor_name });
+                        } else {
+                            outcomes.push(ActorOutcome::Aborted { actor_name });
+                        }
+                    }
+                }
+                if join_set.is_empty() {
+                    break;
+                }
+            }
+            () = &mut max_session_sleep => {
+                tracing::warn!("max session timeout reached, cancelling");
+                cancel.cancel();
+            }
+            () = &mut cancelled => {
+                // Wait a short drain period then abort
+                join_set.abort_all();
+                while let Some(join_result) = join_set.join_next().await {
+                    if let Ok(task_result) = join_result {
+                        match task_result.result {
+                            Ok(result) => outcomes.push(ActorOutcome::Success(result)),
+                            Err(e) => outcomes.push(ActorOutcome::Error {
+                                actor_name: task_result.actor_name,
+                                error: e.to_string(),
+                            }),
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // Wait for drive loop to finish and propagate errors.
+    // JoinError (panic/cancel) is logged; EngineError is surfaced as a
+    // synthetic actor outcome so the verdict pipeline can see it.
+    match drive_handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(engine_err)) => {
+            tracing::error!(error = %engine_err, "context drive loop failed");
+            outcomes.push(ActorOutcome::Error {
+                actor_name: "(drive_loop)".to_string(),
+                error: engine_err.to_string(),
+            });
+        }
+        Err(join_err) => {
+            tracing::error!(error = %join_err, "context drive loop task failed");
+            outcomes.push(ActorOutcome::Panic {
+                actor_name: "(drive_loop)".to_string(),
+            });
+        }
+    }
+
+    emit_completion_summary(&outcomes, events);
+    Ok(OrchestratorResult { outcomes, trace })
+}
+
+/// Builds the A2A agent roster for system prompt injection.
+///
+/// Extracts Agent Card metadata from all `a2a_server` actors and formats
+/// a structured text section. Returns `None` if no A2A actors exist.
+///
+/// Implements: TJ-SPEC-022 F-001
+fn build_a2a_system_context(
+    actors: &[oatf::Actor],
+    server_indices: &[usize],
+    document: &oatf::Document,
+) -> Option<String> {
+    use std::fmt::Write;
+
+    use crate::engine::PhaseEngine;
+    use crate::engine::mcp_server::helpers::{a2a_skill_array, a2a_skill_name};
+    use serde_json::Value;
+
+    let a2a_indices: Vec<usize> = server_indices
+        .iter()
+        .copied()
+        .filter(|&idx| actors[idx].mode == "a2a_server")
+        .collect();
+
+    if a2a_indices.is_empty() {
+        return None;
+    }
+
+    let mut text = String::from("## Available A2A Agents\n");
+
+    for idx in a2a_indices {
+        let actor = &actors[idx];
+        let engine_tmp = PhaseEngine::new(document.clone(), idx);
+        let state = engine_tmp.effective_state();
+        let card = state.get("agent_card").unwrap_or(&state);
+
+        let agent_name = card["name"].as_str().unwrap_or(&actor.name);
+        let description = card["description"].as_str().unwrap_or("");
+        let url = card["url"].as_str().unwrap_or("");
+        let version = card["version"].as_str().unwrap_or("");
+
+        let _ = write!(text, "\n### {}\n- Agent: {agent_name}", actor.name);
+        if !version.is_empty() {
+            let _ = write!(text, " (v{version})");
+        }
+        text.push('\n');
+        if !url.is_empty() {
+            let _ = writeln!(text, "- URL: {url}");
+        }
+        if !description.is_empty() {
+            let _ = writeln!(text, "- Description: {description}");
+        }
+
+        // Capabilities
+        if let Some(caps) = card.get("capabilities") {
+            let streaming = caps["streaming"].as_bool().unwrap_or(false);
+            let push = caps["pushNotifications"].as_bool().unwrap_or(false);
+            let _ = writeln!(
+                text,
+                "- Capabilities: streaming={streaming}, pushNotifications={push}"
+            );
+        }
+
+        // Authentication
+        if let Some(auth) = card.get("authentication")
+            && let Some(schemes) = auth["schemes"].as_array()
+        {
+            let scheme_strs: Vec<&str> = schemes.iter().filter_map(Value::as_str).collect();
+            if !scheme_strs.is_empty() {
+                let _ = writeln!(text, "- Authentication: {}", scheme_strs.join(", "));
+            }
+        }
+
+        // Webhook
+        if let Some(wh_url) = state
+            .pointer("/webhook_registration/url")
+            .and_then(Value::as_str)
+        {
+            let _ = writeln!(text, "- Webhook URL: {wh_url}");
+        }
+
+        // Skills
+        if let Some(skills) = a2a_skill_array(&state)
+            && !skills.is_empty()
+        {
+            text.push_str("- Skills:\n");
+            for skill in skills {
+                let skill_id = a2a_skill_name(skill).unwrap_or("unknown");
+                let skill_desc = skill["description"].as_str().unwrap_or("");
+                let _ = writeln!(text, "  - {skill_id}: {skill_desc}");
+
+                if let Some(examples) = skill["examples"].as_array() {
+                    let ex_strs: Vec<&str> = examples.iter().filter_map(Value::as_str).collect();
+                    if !ex_strs.is_empty() {
+                        let quoted: Vec<String> =
+                            ex_strs.iter().map(|e| format!("\"{e}\"")).collect();
+                        let _ = writeln!(text, "    Examples: {}", quoted.join(", "));
+                    }
+                }
+            }
+        }
+    }
+
+    text.push_str("\nTo interact with an A2A agent, call its tool with a message parameter.\n");
+    Some(text)
+}
+
+/// Configuration for running a server actor in context-mode.
+struct ContextServerActorConfig {
+    actor_index: usize,
+    document: oatf::Document,
+    transport: std::sync::Arc<dyn crate::transport::Transport>,
+    raw_synthesize: bool,
+    tool_watch_tx:
+        Option<tokio::sync::watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
+    /// For A2A actors: sender to publish updated default skill on phase advance.
+    a2a_skill_tx: Option<tokio::sync::watch::Sender<Option<String>>>,
+    trace: SharedTrace,
+    extractor_store: ExtractorStore,
+    await_config: HashMap<usize, Vec<AwaitExtractor>>,
+    cancel: CancellationToken,
+    mode: String,
+    actor_name: String,
+}
+
+/// Runs a server actor in context-mode with a pre-built transport handle.
+async fn run_context_server_actor(
+    cfg: ContextServerActorConfig,
+    events: &std::sync::Arc<EventEmitter>,
+) -> Result<crate::engine::types::ActorResult, EngineError> {
+    use crate::engine::mcp_server::McpServerDriver;
+    use crate::engine::phase::PhaseEngine;
+    use crate::engine::phase_loop::{PhaseLoop, PhaseLoopConfig};
+
+    events.emit(ThoughtJackEvent::ActorInit {
+        actor_name: cfg.actor_name.clone(),
+        mode: cfg.mode.clone(),
+    });
+
+    // Server actors are immediately ready in context-mode (no port binding)
+    events.emit(ThoughtJackEvent::ActorReady {
+        actor_name: cfg.actor_name.clone(),
+        bind_address: "context".to_string(),
+    });
+
+    let engine = PhaseEngine::new(cfg.document, cfg.actor_index);
+    let phase_count = engine.actor().phases.len();
+    events.emit(ThoughtJackEvent::ActorStarted {
+        actor_name: cfg.actor_name.clone(),
+        phase_count,
+    });
+
+    // Both MCP and A2A server actors use McpServerDriver in context-mode.
+    // This works because McpServerDriver is transport-agnostic (receive
+    // request → dispatch against OATF state → send response) and both
+    // protocols share the same tool state schema (name, inputSchema,
+    // responses). A2aServerDriver can't be used here because it bypasses
+    // the Transport trait and binds its own axum HTTP server.
+    //
+    // TODO: Refactor A2aServerDriver onto the Transport trait so it works
+    // with any transport (channels, stdio, HTTP) — then context-mode can
+    // use the real A2A driver and get full A2A fidelity (Agent Card,
+    // task lifecycle, SSE streaming). Track as separate PR.
+    if cfg.mode != "mcp_server" && cfg.mode != "a2a_server" {
+        return Err(EngineError::Driver(format!(
+            "unsupported server mode in context-mode: {}",
+            cfg.mode
+        )));
+    }
+
+    let mut driver = McpServerDriver::new(cfg.transport.clone(), cfg.raw_synthesize);
+    // Context-mode skips the MCP `initialize` handshake, so pre-populate
+    // client capabilities to enable elicitation and sampling.
+    driver.set_client_capabilities(json!({
+        "sampling": {},
+        "elicitation": {},
+    }));
+    let entry_action_sender = driver.entry_action_sender();
+    let loop_config = PhaseLoopConfig {
+        trace: cfg.trace,
+        extractor_store: cfg.extractor_store,
+        actor_name: cfg.actor_name.clone(),
+        await_extractors_config: cfg.await_config,
+        cancel: cfg.cancel,
+        entry_action_sender: Some(Box::new(entry_action_sender)),
+        events: std::sync::Arc::clone(events),
+        tool_watch_tx: cfg.tool_watch_tx,
+        a2a_skill_tx: cfg.a2a_skill_tx,
+        context_mode: true,
+    };
+    let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
+    let result = phase_loop.run().await?;
+    events.emit(ThoughtJackEvent::ActorCompleted {
+        actor_name: cfg.actor_name,
+        reason: result.termination.to_string(),
+        phases_completed: result.phases_completed,
+    });
+    Ok(result)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -640,6 +1230,10 @@ mod tests {
             grace_period: None,
             max_session,
             readiness_timeout: Duration::from_secs(30),
+            context_mode: false,
+            context_provider_config: None,
+            max_turns: None,
+            context_system_prompt: None,
             transport_factory: Some(crate::orchestration::runner::null_transport_factory()),
         }
     }

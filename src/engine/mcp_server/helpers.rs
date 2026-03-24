@@ -115,6 +115,141 @@ pub fn matches_uri_template(template: &str, uri: &str) -> bool {
     pos == uri.len()
 }
 
+// ============================================================================
+// A2A skill helpers
+//
+// Shared helpers for A2A skill lookup and conversion, used by both
+// traffic-mode and context-mode when A2A actors are served by
+// McpServerDriver.  Single source of truth so the logic isn't
+// duplicated across driver.rs, handlers.rs, and the context module.
+// ============================================================================
+
+/// Find an A2A skill by canonical name across both `state.skills[]` and
+/// `state.agent_card.skills[]`.
+///
+/// Matches on `id` first, then falls back to `name` — consistent with
+/// [`crate::engine::a2a::skill_name`] which exposes skills using the same
+/// priority order.  Without the `name` fallback, skills defined with only
+/// a `name` field would be visible to the LLM but uncallable.
+///
+/// Returns the raw skill JSON value if found.
+pub fn find_a2a_skill(state: &Value, skill_id: &str) -> Option<Value> {
+    // Try id match first (both top-level and agent_card locations)
+    find_by_field(state, "skills", "id", skill_id)
+        .or_else(|| {
+            state
+                .get("agent_card")
+                .and_then(|ac| ac.get("skills"))
+                .and_then(Value::as_array)
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|s| s.get("id").and_then(Value::as_str) == Some(skill_id))
+                })
+                .cloned()
+        })
+        // Fall back to name match (mirrors a2a::skill_name() priority)
+        .or_else(|| find_by_field(state, "skills", "name", skill_id))
+        .or_else(|| {
+            state
+                .get("agent_card")
+                .and_then(|ac| ac.get("skills"))
+                .and_then(Value::as_array)
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|s| s.get("name").and_then(Value::as_str) == Some(skill_id))
+                })
+                .cloned()
+        })
+}
+
+/// Return the A2A skills array from state, checking both `state.skills`
+/// and `state.agent_card.skills`.
+///
+/// Delegates to [`crate::engine::a2a::skill_array`].
+pub fn a2a_skill_array(state: &Value) -> Option<&Vec<Value>> {
+    crate::engine::a2a::skill_array(state)
+}
+
+/// Resolve the canonical tool name for an A2A skill.
+///
+/// Delegates to [`crate::engine::a2a::skill_name`].
+pub fn a2a_skill_name(skill: &Value) -> Option<&str> {
+    crate::engine::a2a::skill_name(skill)
+}
+
+/// Builds response content from A2A state fields (`task.message.parts`,
+/// `artifacts`).
+///
+/// When A2A skills have no `responses[]` array, this function extracts
+/// response content from the broader state object where A2A scenarios
+/// typically store task messages and artifact data.
+///
+/// Implements: TJ-SPEC-022 F-001
+#[must_use]
+pub fn build_a2a_response_content(state: &Value) -> Option<A2aResponseContent> {
+    let mut parts = Vec::new();
+
+    // Try task message parts
+    if let Some(task_parts) = state
+        .pointer("/task/message/parts")
+        .and_then(Value::as_array)
+    {
+        for part in task_parts {
+            if part.get("type").and_then(Value::as_str) == Some("text")
+                && let Some(text) = part.get("text").and_then(Value::as_str)
+            {
+                parts.push(text.to_string());
+            }
+        }
+    }
+
+    // Try artifacts (both task.artifacts and top-level state.artifacts)
+    let artifact_sources = [state.pointer("/task/artifacts"), state.get("artifacts")];
+    for source in artifact_sources.into_iter().flatten() {
+        if let Some(artifacts) = source.as_array() {
+            for artifact in artifacts {
+                if let Some(content) = artifact.get("content").and_then(Value::as_str) {
+                    parts.push(content.to_string());
+                }
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    let task_status = state
+        .pointer("/task/status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed")
+        .to_string();
+
+    // For input-required, prepend a signal so the LLM understands the
+    // agent is asking a question and expects a follow-up response.
+    let mut text = String::new();
+    if task_status == "input-required" {
+        text.push_str("[Agent requires additional input]\n");
+    }
+    text.push_str(&parts.join("\n"));
+
+    Some(A2aResponseContent {
+        text,
+        status: task_status,
+    })
+}
+
+/// Structured response from an A2A actor, including task status.
+///
+/// Returned by [`build_a2a_response_content`]. The `status` field
+/// enables the drive loop to detect `input-required` states.
+pub struct A2aResponseContent {
+    /// Response text (message parts + artifacts concatenated).
+    pub text: String,
+    /// A2A task status (`"completed"`, `"input-required"`, etc.).
+    pub status: String,
+}
+
 /// Strip internal fields from a state object for wire format.
 pub fn strip_internal_fields(value: &Value, fields: &[&str]) -> Value {
     let Some(obj) = value.as_object() else {
@@ -158,6 +293,212 @@ mod tests {
         let _ = matches_uri_template("préfixe{v}suffixe", "préfixeXsuffixe");
         let _ = matches_uri_template("{v}", "日本語");
         let _ = matches_uri_template("{a}{b}{c}", "αβγ");
+    }
+
+    // ── find_by_name / find_by_field ───────────────────────────────
+
+    #[test]
+    fn find_by_name_found() {
+        let state = serde_json::json!({
+            "tools": [
+                {"name": "search", "desc": "web search"},
+                {"name": "calc", "desc": "calculator"}
+            ]
+        });
+        let result = find_by_name(&state, "tools", "calc").unwrap();
+        assert_eq!(result["desc"], "calculator");
+    }
+
+    #[test]
+    fn find_by_name_not_found() {
+        let state = serde_json::json!({"tools": [{"name": "search"}]});
+        assert!(find_by_name(&state, "tools", "missing").is_none());
+    }
+
+    #[test]
+    fn find_by_name_missing_collection() {
+        let state = serde_json::json!({});
+        assert!(find_by_name(&state, "tools", "any").is_none());
+    }
+
+    #[test]
+    fn find_by_field_custom_field() {
+        let state = serde_json::json!({
+            "skills": [
+                {"id": "s1", "name": "translate"},
+                {"id": "s2", "name": "summarize"}
+            ]
+        });
+        let result = find_by_field(&state, "skills", "id", "s2").unwrap();
+        assert_eq!(result["name"], "summarize");
+    }
+
+    // ── find_a2a_skill ──────────────────────────────────────────────
+
+    #[test]
+    fn find_a2a_skill_by_id_top_level() {
+        let state = serde_json::json!({
+            "skills": [{"id": "translate", "name": "Translate Text"}]
+        });
+        let skill = find_a2a_skill(&state, "translate").unwrap();
+        assert_eq!(skill["name"], "Translate Text");
+    }
+
+    #[test]
+    fn find_a2a_skill_by_id_in_agent_card() {
+        let state = serde_json::json!({
+            "agent_card": {
+                "skills": [{"id": "analyze", "name": "Data Analysis"}]
+            }
+        });
+        let skill = find_a2a_skill(&state, "analyze").unwrap();
+        assert_eq!(skill["name"], "Data Analysis");
+    }
+
+    #[test]
+    fn find_a2a_skill_falls_back_to_name() {
+        let state = serde_json::json!({
+            "skills": [{"name": "process-data"}]
+        });
+        // No "id" field — should match on "name"
+        let skill = find_a2a_skill(&state, "process-data").unwrap();
+        assert_eq!(skill["name"], "process-data");
+    }
+
+    #[test]
+    fn find_a2a_skill_name_fallback_in_agent_card() {
+        let state = serde_json::json!({
+            "agent_card": {
+                "skills": [{"name": "deep-search"}]
+            }
+        });
+        let skill = find_a2a_skill(&state, "deep-search").unwrap();
+        assert_eq!(skill["name"], "deep-search");
+    }
+
+    #[test]
+    fn find_a2a_skill_not_found() {
+        let state = serde_json::json!({
+            "skills": [{"id": "a", "name": "b"}]
+        });
+        assert!(find_a2a_skill(&state, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn find_a2a_skill_empty_state() {
+        assert!(find_a2a_skill(&serde_json::json!({}), "any").is_none());
+    }
+
+    // ── build_a2a_response_content ──────────────────────────────────
+
+    #[test]
+    fn build_a2a_response_from_task_parts() {
+        let state = serde_json::json!({
+            "task": {
+                "status": "completed",
+                "message": {
+                    "parts": [
+                        {"type": "text", "text": "Analysis complete."},
+                        {"type": "text", "text": "Revenue is $1M."}
+                    ]
+                }
+            }
+        });
+        let resp = build_a2a_response_content(&state).unwrap();
+        assert_eq!(resp.status, "completed");
+        assert!(resp.text.contains("Analysis complete."));
+        assert!(resp.text.contains("Revenue is $1M."));
+    }
+
+    #[test]
+    fn build_a2a_response_from_artifacts() {
+        let state = serde_json::json!({
+            "task": {
+                "status": "completed",
+                "artifacts": [{"content": "CSV data here"}]
+            }
+        });
+        let resp = build_a2a_response_content(&state).unwrap();
+        assert!(resp.text.contains("CSV data here"));
+    }
+
+    #[test]
+    fn build_a2a_response_input_required() {
+        let state = serde_json::json!({
+            "task": {
+                "status": "input-required",
+                "message": {
+                    "parts": [{"type": "text", "text": "What file?"}]
+                }
+            }
+        });
+        let resp = build_a2a_response_content(&state).unwrap();
+        assert_eq!(resp.status, "input-required");
+        assert!(resp.text.starts_with("[Agent requires additional input]"));
+    }
+
+    #[test]
+    fn build_a2a_response_empty_returns_none() {
+        let state = serde_json::json!({"task": {"status": "completed"}});
+        assert!(build_a2a_response_content(&state).is_none());
+    }
+
+    #[test]
+    fn build_a2a_response_top_level_artifacts() {
+        let state = serde_json::json!({
+            "artifacts": [{"content": "top-level artifact"}]
+        });
+        let resp = build_a2a_response_content(&state).unwrap();
+        assert!(resp.text.contains("top-level artifact"));
+    }
+
+    // ── strip_internal_fields ───────────────────────────────────────
+
+    #[test]
+    fn strip_internal_fields_removes_specified() {
+        let value = serde_json::json!({"name": "calc", "responses": [], "_internal": true});
+        let stripped = strip_internal_fields(&value, &["responses", "_internal"]);
+        assert!(stripped.get("name").is_some());
+        assert!(stripped.get("responses").is_none());
+        assert!(stripped.get("_internal").is_none());
+    }
+
+    #[test]
+    fn strip_internal_fields_non_object_passthrough() {
+        let value = serde_json::json!("just a string");
+        let stripped = strip_internal_fields(&value, &["anything"]);
+        assert_eq!(stripped, serde_json::json!("just a string"));
+    }
+
+    // ── u64_to_usize ────────────────────────────────────────────────
+
+    #[test]
+    fn u64_to_usize_normal() {
+        assert_eq!(u64_to_usize(42), 42);
+        assert_eq!(u64_to_usize(0), 0);
+    }
+
+    // ── find_matching_template ───────────────────────────────────────
+
+    #[test]
+    fn find_matching_template_found() {
+        let state = serde_json::json!({
+            "resource_templates": [
+                {"uriTemplate": "file:///{path}", "name": "file"}
+            ]
+        });
+        let result = find_matching_template(&state, "file:///etc/passwd").unwrap();
+        assert_eq!(result["name"], "file");
+    }
+
+    #[test]
+    fn find_matching_template_no_match() {
+        let state = serde_json::json!({
+            "resource_templates": [
+                {"uriTemplate": "file:///{path}", "name": "file"}
+            ]
+        });
+        assert!(find_matching_template(&state, "http://example.com").is_none());
     }
 
     proptest! {

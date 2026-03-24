@@ -4,8 +4,10 @@
 //! over different transport mechanisms (stdio, HTTP). The transport layer handles
 //! message framing, serialization, and delivery behavior adaptation.
 
+pub mod context;
 pub mod http;
 pub mod jsonrpc;
+pub mod provider;
 pub mod sse;
 pub mod stdio;
 
@@ -147,6 +149,8 @@ pub enum TransportType {
     Stdio,
     /// HTTP POST + Server-Sent Events.
     Http,
+    /// Context-mode: LLM API via channel-based handles.
+    Context,
 }
 
 impl fmt::Display for TransportType {
@@ -154,6 +158,7 @@ impl fmt::Display for TransportType {
         match self {
             Self::Stdio => write!(f, "stdio"),
             Self::Http => write!(f, "http"),
+            Self::Context => write!(f, "context"),
         }
     }
 }
@@ -255,6 +260,7 @@ mod tests {
     fn test_transport_type_display() {
         assert_eq!(TransportType::Stdio.to_string(), "stdio");
         assert_eq!(TransportType::Http.to_string(), "http");
+        assert_eq!(TransportType::Context.to_string(), "context");
     }
 
     #[test]

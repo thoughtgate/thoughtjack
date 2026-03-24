@@ -32,6 +32,17 @@ pub struct VerdictOutput {
     pub execution_summary: ExecutionSummary,
 }
 
+impl VerdictOutput {
+    /// Sets context-mode attribution fields on the execution summary.
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    pub fn set_context_attribution(&mut self, provider: &str, model: &str) {
+        self.execution_summary.transport = Some("context".to_string());
+        self.execution_summary.context_provider = Some(provider.to_string());
+        self.execution_summary.context_model = Some(model.to_string());
+    }
+}
+
 /// Attack metadata extracted from the OATF document.
 ///
 /// Implements: TJ-SPEC-014 F-007
@@ -149,6 +160,15 @@ pub struct ExecutionSummary {
     pub trace_messages: usize,
     /// Total execution time in milliseconds.
     pub duration_ms: u64,
+    /// Transport mode used ("context" for context-mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// LLM provider name in context-mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_provider: Option<String>,
+    /// LLM model used in context-mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_model: Option<String>,
 }
 
 // ============================================================================
@@ -258,6 +278,9 @@ pub fn build_verdict_output(
         grace_period_applied: grace_str,
         trace_messages,
         duration_ms,
+        transport: None,
+        context_provider: None,
+        context_model: None,
     };
 
     VerdictOutput {
@@ -535,6 +558,9 @@ mod tests {
                 grace_period_applied: Some("30s".to_string()),
                 trace_messages: 12,
                 duration_ms: 4520,
+                transport: None,
+                context_provider: None,
+                context_model: None,
             },
         }
     }
@@ -691,6 +717,9 @@ mod tests {
                 grace_period_applied: None,
                 trace_messages: 1,
                 duration_ms: 100,
+                transport: None,
+                context_provider: None,
+                context_model: None,
             },
         };
 
@@ -751,6 +780,9 @@ mod tests {
                 grace_period_applied: None,
                 trace_messages: 0,
                 duration_ms: 0,
+                transport: None,
+                context_provider: None,
+                context_model: None,
             },
         };
         print_human_summary(&output);
@@ -1050,6 +1082,146 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.is_empty());
+    }
+
+    #[test]
+    fn set_context_attribution_populates_fields() {
+        let mut output = make_verdict_output("exploited");
+        assert!(output.execution_summary.transport.is_none());
+        output.set_context_attribution("openai", "gpt-4o");
+        assert_eq!(
+            output.execution_summary.transport.as_deref(),
+            Some("context")
+        );
+        assert_eq!(
+            output.execution_summary.context_provider.as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            output.execution_summary.context_model.as_deref(),
+            Some("gpt-4o")
+        );
+
+        // Verify it serializes into JSON
+        let json = serde_json::to_string(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["execution_summary"]["transport"], "context");
+        assert_eq!(parsed["execution_summary"]["context_provider"], "openai");
+        assert_eq!(parsed["execution_summary"]["context_model"], "gpt-4o");
+    }
+
+    #[test]
+    fn build_verdict_output_no_grace_period() {
+        let attack = oatf::Attack {
+            id: Some("ATK-003".to_string()),
+            name: None,
+            version: None,
+            status: None,
+            created: None,
+            modified: None,
+            author: None,
+            description: None,
+            grace_period: None,
+            severity: None,
+            impact: None,
+            classification: None,
+            references: None,
+            execution: oatf::Execution {
+                mode: None,
+                state: None,
+                phases: None,
+                actors: None,
+                extensions: indexmap::IndexMap::new(),
+            },
+            indicators: None,
+            correlation: None,
+            extensions: indexmap::IndexMap::new(),
+        };
+        let verdict = oatf::AttackVerdict {
+            attack_id: None,
+            result: AttackResult::NotExploited,
+            indicator_verdicts: vec![],
+            evaluation_summary: oatf::EvaluationSummary {
+                matched: 0,
+                not_matched: 0,
+                error: 0,
+                skipped: 0,
+            },
+            timestamp: None,
+            source: None,
+        };
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0);
+        assert!(output.execution_summary.grace_period_applied.is_none());
+    }
+
+    #[test]
+    fn build_verdict_output_with_indicator_evidence() {
+        let attack = oatf::Attack {
+            id: Some("ATK-004".to_string()),
+            name: None,
+            version: None,
+            status: None,
+            created: None,
+            modified: None,
+            author: None,
+            description: None,
+            grace_period: None,
+            severity: None,
+            impact: None,
+            classification: None,
+            references: None,
+            execution: oatf::Execution {
+                mode: None,
+                state: None,
+                phases: None,
+                actors: None,
+                extensions: indexmap::IndexMap::new(),
+            },
+            indicators: None,
+            correlation: None,
+            extensions: indexmap::IndexMap::new(),
+        };
+        let verdict = oatf::AttackVerdict {
+            attack_id: Some("ATK-004".to_string()),
+            result: AttackResult::Exploited,
+            indicator_verdicts: vec![oatf::IndicatorVerdict {
+                indicator_id: "ind-1".to_string(),
+                result: IndicatorResult::Matched,
+                timestamp: None,
+                evidence: Some("found ssh key in arguments".to_string()),
+                source: None,
+            }],
+            evaluation_summary: oatf::EvaluationSummary {
+                matched: 1,
+                not_matched: 0,
+                error: 0,
+                skipped: 0,
+            },
+            timestamp: None,
+            source: None,
+        };
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 200);
+        assert_eq!(output.verdict.indicator_verdicts.len(), 1);
+        assert_eq!(output.verdict.indicator_verdicts[0].result, "matched");
+        assert_eq!(
+            output.verdict.indicator_verdicts[0].evidence.as_deref(),
+            Some("found ssh key in arguments")
+        );
+    }
+
+    #[test]
+    fn human_summary_error_status_actor() {
+        let mut output = make_verdict_output("error");
+        output.execution_summary.actors = vec![ActorStatus {
+            name: "broken_actor".to_string(),
+            status: "error".to_string(),
+            phases_completed: 0,
+            total_phases: 2,
+            terminal_phase: None,
+            error: Some("connection refused".to_string()),
+        }];
+        // Should not panic; prints error details
+        print_human_summary(&output);
     }
 
     #[test]

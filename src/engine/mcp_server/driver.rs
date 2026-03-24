@@ -25,7 +25,7 @@ use super::handlers::{
     handle_tasks_cancel, handle_tasks_get, handle_tasks_list, handle_tasks_result,
     handle_tools_list, handle_unknown,
 };
-use super::helpers::find_by_name;
+use super::helpers::{build_a2a_response_content, find_a2a_skill, find_by_name};
 use super::response::dispatch_response;
 
 use crate::engine::actions::EntryActionSender;
@@ -91,6 +91,18 @@ impl McpServerDriver {
             deferred_requests: VecDeque::new(),
             buffered_server_responses: HashMap::new(),
         }
+    }
+
+    /// Pre-populate client capabilities (context-mode only).
+    ///
+    /// In context-mode, the `initialize` handshake is skipped because
+    /// the drive loop calls the LLM directly rather than connecting a
+    /// real MCP client. This method enables capability-gated features
+    /// (elicitation, sampling) that would otherwise be blocked.
+    ///
+    /// Implements: TJ-SPEC-022 F-001
+    pub fn set_client_capabilities(&mut self, caps: Value) {
+        self.client_capabilities = Some(caps);
     }
 
     /// Creates an `McpTransportEntryActionSender` sharing this driver's transport.
@@ -243,7 +255,11 @@ impl McpServerDriver {
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        let Some(tool) = find_by_name(state, "tools", tool_name) else {
+        // Look up the tool in MCP state first, then fall back to A2A skills
+        // (context-mode shim — see helpers::find_a2a_skill for details).
+        let Some(tool) =
+            find_by_name(state, "tools", tool_name).or_else(|| find_a2a_skill(state, tool_name))
+        else {
             return JsonRpcResponse::error(
                 request.id.clone(),
                 crate::transport::jsonrpc::error_codes::INVALID_PARAMS,
@@ -259,6 +275,22 @@ impl McpServerDriver {
             .await;
         self.maybe_send_elicitation(state, params, tool_name, event_tx, cancel)
             .await;
+
+        // A2A response content (R4): when an A2A skill has no `responses[]`,
+        // try to build response content from `state.task.message.parts[]` or
+        // `state.artifacts[]`. Includes `_a2a_status` for input-required
+        // multi-turn support.
+        if tool.get("responses").is_none()
+            && let Some(a2a_resp) = build_a2a_response_content(state)
+        {
+            return JsonRpcResponse::success(
+                request.id.clone(),
+                json!({
+                    "content": [{"type": "text", "text": a2a_resp.text}],
+                    "_a2a_status": a2a_resp.status,
+                }),
+            );
+        }
 
         dispatch_response(
             &request.id,

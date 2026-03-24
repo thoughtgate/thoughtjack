@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use oatf::enums::ExtractorSource;
 use oatf::primitives::evaluate_extractor;
+use serde_json::json;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -63,6 +64,7 @@ struct EventContext<'a> {
     actor_name: &'a str,
     protocol: &'a str,
     is_server_mode: bool,
+    is_context_mode: bool,
     events: &'a EventEmitter,
 }
 
@@ -105,8 +107,22 @@ fn process_protocol_event(
     // `tools/call` would fire after ~3 requests because each generates
     // both an incoming request and an outgoing response event).
     if evt.direction == Direction::Incoming {
+        // A2A event aliasing for context-mode (R3):  In context-mode,
+        // all server actors receive `tools/call` events, but OATF A2A
+        // triggers use A2A-specific event names.  Map in-place for
+        // trigger evaluation only (trace retains the original method).
+        let trigger_method = if ctx.is_context_mode && ctx.protocol == "a2a" {
+            match evt.method.as_str() {
+                "tools/call" => "tasks/send".to_string(),
+                "tools/list" => "agent_card_read".to_string(),
+                _ => evt.method.clone(),
+            }
+        } else {
+            evt.method.clone()
+        };
+
         let oatf_event = oatf::ProtocolEvent {
-            event_type: evt.method.clone(),
+            event_type: trigger_method,
             content: evt.content.clone(),
         };
         let result = phase_engine.process_event(&oatf_event);
@@ -248,6 +264,20 @@ pub struct PhaseLoopConfig {
     pub entry_action_sender: Option<Box<dyn EntryActionSender>>,
     /// Event emitter for structured observability events.
     pub events: Arc<EventEmitter>,
+    /// Optional watch channel for publishing tool definitions on phase advance.
+    ///
+    /// Used in context-mode to synchronize tool definitions with the drive loop.
+    /// Traffic-mode passes `None`.
+    pub tool_watch_tx: Option<watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
+    /// Optional watch channel for publishing the current A2A default skill on
+    /// phase advance.  Ensures the drive loop dispatches to the correct skill
+    /// after capability escalation.
+    pub a2a_skill_tx: Option<watch::Sender<Option<String>>>,
+    /// Whether this loop runs in context mode.
+    ///
+    /// Enables A2A event aliasing and temporal trigger bypass.
+    /// Defaults to `false` (traffic mode).
+    pub context_mode: bool,
 }
 
 /// Core execution loop for a single actor.
@@ -265,11 +295,14 @@ pub struct PhaseLoop<D: PhaseDriver> {
     actor_name: String,
     protocol: String,
     is_server_mode: bool,
+    context_mode: bool,
     await_extractors_config: HashMap<usize, Vec<AwaitExtractor>>,
     cancel: CancellationToken,
     extractors_tx: watch::Sender<HashMap<String, String>>,
     entry_action_sender: Option<Box<dyn EntryActionSender>>,
     events: Arc<EventEmitter>,
+    tool_watch_tx: Option<watch::Sender<Vec<crate::transport::context::ToolDefinition>>>,
+    a2a_skill_tx: Option<watch::Sender<Option<String>>>,
 }
 
 impl<D: PhaseDriver> PhaseLoop<D> {
@@ -279,11 +312,12 @@ impl<D: PhaseDriver> PhaseLoop<D> {
     ///
     /// Implements: TJ-SPEC-013 F-001
     #[must_use]
-    pub fn new(driver: D, phase_engine: PhaseEngine, config: PhaseLoopConfig) -> Self {
+    pub fn new(driver: D, mut phase_engine: PhaseEngine, config: PhaseLoopConfig) -> Self {
         let mode = &phase_engine.actor().mode;
         let protocol = crate::verdict::evaluation::extract_protocol(mode).to_string();
         let is_server_mode = mode.ends_with("_server");
         let (extractors_tx, _) = watch::channel(HashMap::new());
+        phase_engine.context_mode = config.context_mode;
 
         Self {
             driver,
@@ -293,11 +327,14 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             actor_name: config.actor_name,
             protocol,
             is_server_mode,
+            context_mode: config.context_mode,
             await_extractors_config: config.await_extractors_config,
             cancel: config.cancel,
             extractors_tx,
             entry_action_sender: config.entry_action_sender,
             events: config.events,
+            tool_watch_tx: config.tool_watch_tx,
+            a2a_skill_tx: config.a2a_skill_tx,
         }
     }
 
@@ -340,6 +377,54 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             let effective_state = self.phase_engine.effective_state();
             let (event_tx, mut event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
+            // Context-mode: when a phase's on_enter sends
+            // notifications/tools/list_changed, there is no real agent to
+            // re-fetch the tool list. Inject a synthetic tools/list event so
+            // the phase trigger can evaluate against it (enables rug pull /
+            // temporal attack scenarios like OATF-002).
+            if self.context_mode {
+                let phase = self.phase_engine.get_phase(phase_index);
+                if let Some(on_enter) = &phase.on_enter {
+                    let sends_list_changed = on_enter.iter().any(|a| {
+                        matches!(
+                            a,
+                            oatf::Action::Send { method, .. }
+                                if method == "notifications/tools/list_changed"
+                        )
+                    });
+                    if sends_list_changed {
+                        let _ = event_tx.try_send(ProtocolEvent {
+                            direction: Direction::Incoming,
+                            method: "tools/list".to_string(),
+                            content: effective_state.get("tools").cloned().unwrap_or(json!([])),
+                        });
+                        tracing::debug!(
+                            actor = %self.actor_name,
+                            phase = phase_index,
+                            "injected synthetic tools/list event for tools/list_changed on_enter"
+                        );
+                    }
+                }
+            }
+
+            // Context-mode A2A: inject synthetic agent_card_read at phase 0.
+            // This represents the moment the LLM's tool list is loaded and
+            // the Agent Card has been "discovered" by the orchestrator.
+            if self.context_mode && self.protocol == "a2a" && phase_index == 0 {
+                let _ = event_tx.try_send(ProtocolEvent {
+                    direction: Direction::Incoming,
+                    method: "agent_card_read".to_string(),
+                    content: effective_state
+                        .get("agent_card")
+                        .cloned()
+                        .unwrap_or(json!({})),
+                });
+                tracing::debug!(
+                    actor = %self.actor_name,
+                    "injected synthetic agent_card_read event for A2A context-mode"
+                );
+            }
+
             // Run driver and event consumer concurrently.
             // drive_fut is scoped so its mutable borrow drops before on_phase_advanced.
             let phase_cancel = self.cancel.child_token();
@@ -350,6 +435,7 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 actor_name: &self.actor_name,
                 protocol: &self.protocol,
                 is_server_mode: self.is_server_mode,
+                is_context_mode: self.context_mode,
                 events: &self.events,
             };
             let action = {
@@ -393,6 +479,29 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                                     {
                                         phase_advancing = true;
                                         phase_cancel.cancel();
+                                    }
+                                    // Drain remaining queued events before yielding
+                                    // back to the driver.  In context mode all channel
+                                    // sends are non-blocking, so the driver can queue
+                                    // many events between polls.  Processing them all
+                                    // here ensures the trigger fires before the driver
+                                    // consumes the next message.
+                                    while !phase_advancing {
+                                        match event_rx.try_recv() {
+                                            Ok(queued) => {
+                                                phase_message_count += 1;
+                                                if process_protocol_event(
+                                                    queued,
+                                                    &mut self.phase_engine,
+                                                    &ctx,
+                                                ) == PhaseAction::Advance
+                                                {
+                                                    phase_advancing = true;
+                                                    phase_cancel.cancel();
+                                                }
+                                            }
+                                            Err(_) => break,
+                                        }
                                     }
                                 }
                                 None => {
@@ -439,9 +548,36 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                     message_count: phase_message_count,
                 });
                 let to = self.phase_engine.advance_phase();
+                // Publish updated tool definitions on the watch channel (context-mode).
+                if let Some(ref tx) = self.tool_watch_tx {
+                    let effective = self.phase_engine.effective_state();
+                    let tools = crate::transport::context::extract_tool_definitions_for_actor(
+                        &effective,
+                        &self.actor_name,
+                        &self.phase_engine.actor().mode,
+                    );
+                    let _ = tx.send(tools);
+
+                    // Also update the A2A default skill so dispatch uses
+                    // the current phase's first skill, not the Phase 0 one.
+                    if let Some(ref skill_tx) = self.a2a_skill_tx {
+                        let new_skill = crate::engine::a2a::skill_array(&effective)
+                            .and_then(|arr| arr.first())
+                            .and_then(|s| crate::engine::a2a::skill_name(s))
+                            .map(String::from);
+                        let _ = skill_tx.send(new_skill);
+                    }
+                }
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
-            if self.phase_engine.is_terminal() {
+            // Context-mode server actors stay alive in their terminal phase
+            // so they can keep serving requests on follow-up LLM turns
+            // (e.g. rug pull: trust_building → exploit, then follow-up call).
+            // All other actors (traffic-mode servers, client-mode) exit
+            // immediately — traffic-mode servers are cancelled by the session
+            // timeout, clients have no more work.
+            let context_mode_server = self.context_mode && self.is_server_mode;
+            if self.phase_engine.is_terminal() && !context_mode_server {
                 return Ok(self.build_result(TerminationReason::TerminalPhaseReached));
             }
         }
@@ -703,6 +839,9 @@ mod tests {
             cancel: CancellationToken::new(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
+            a2a_skill_tx: None,
+            context_mode: false,
         }
     }
 
@@ -880,6 +1019,9 @@ attack:
             cancel: cancel.clone(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
+            a2a_skill_tx: None,
+            context_mode: false,
         };
 
         let engine = PhaseEngine::new(doc, 0);
@@ -997,6 +1139,9 @@ attack:
             cancel: CancellationToken::new(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
+            a2a_skill_tx: None,
+            context_mode: false,
         };
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
 
@@ -1548,6 +1693,9 @@ attack:
             cancel: CancellationToken::new(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
+            a2a_skill_tx: None,
+            context_mode: false,
         };
 
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
@@ -1638,6 +1786,9 @@ attack:
             cancel: cancel.clone(),
             entry_action_sender: None,
             events: Arc::new(EventEmitter::noop()),
+            tool_watch_tx: None,
+            a2a_skill_tx: None,
+            context_mode: false,
         };
         let mut phase_loop = PhaseLoop::new(driver, engine, config);
 

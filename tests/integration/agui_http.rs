@@ -38,6 +38,9 @@ fn test_config(trace: SharedTrace) -> PhaseLoopConfig {
         cancel: CancellationToken::new(),
         entry_action_sender: None,
         events: Arc::new(EventEmitter::noop()),
+        tool_watch_tx: None,
+        a2a_skill_tx: None,
+        context_mode: false,
     }
 }
 

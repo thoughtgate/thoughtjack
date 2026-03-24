@@ -11,4 +11,5 @@
 pub mod a2a_client;
 pub mod a2a_server;
 pub mod agui;
+pub mod context_agui;
 pub mod mcp_client;

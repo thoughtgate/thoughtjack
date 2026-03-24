@@ -73,6 +73,10 @@ fn a2a_server_config(bind_addr: &str) -> ActorConfig {
         grace_period: None,
         max_session: Duration::from_secs(30),
         readiness_timeout: Duration::from_secs(5),
+        context_mode: false,
+        context_provider_config: None,
+        max_turns: None,
+        context_system_prompt: None,
     }
 }
 
