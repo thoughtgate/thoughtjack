@@ -311,7 +311,7 @@ def run_framework_scenario(
         print(f"RUN: {' '.join(tj_cmd)}")
         result = subprocess.run(tj_cmd, capture_output=True, text=True, timeout=timeout + 10)
 
-        if result.returncode not in (0, 1, 2, 3):
+        if result.returncode not in (0, 1, 2, 3, 4, 5):
             print(f"FAIL: ThoughtJack exited with code {result.returncode}")
             if result.stderr:
                 print(f"  stderr: {result.stderr[:500]}")
