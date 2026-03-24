@@ -94,6 +94,11 @@ pub async fn run_from_yaml(
     let (events, progress_handle): (Arc<EventEmitter>, Option<tokio::task::JoinHandle<()>>) =
         if progress_enabled {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            // When progress is active, only write raw JSON events if
+            // --events-file was explicitly set. Otherwise suppress JSON
+            // output — the progress renderer already shows a formatted
+            // view of the same events and raw JSON would interleave
+            // with it on the terminal.
             let writer: Box<dyn std::io::Write + Send> = match &args.events_file {
                 Some(path) => Box::new(
                     std::fs::OpenOptions::new()
@@ -101,7 +106,7 @@ pub async fn run_from_yaml(
                         .append(true)
                         .open(path)?,
                 ),
-                None => Box::new(std::io::stdout()),
+                None => Box::new(std::io::sink()),
             };
             let emitter = Arc::new(EventEmitter::with_progress(writer, tx));
             let color_enabled = resolve_color(color);
