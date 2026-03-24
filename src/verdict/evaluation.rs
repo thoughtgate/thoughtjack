@@ -1546,7 +1546,10 @@ mod tests {
             assert_eq!(shadow.direction, Direction::Outgoing);
         }
         // AG-UI self-shadow preserves Incoming direction
-        assert_eq!(augmented[3].content["response"]["content"], "model response");
+        assert_eq!(
+            augmented[3].content["response"]["content"],
+            "model response"
+        );
         assert_eq!(augmented[3].direction, Direction::Incoming);
     }
 
@@ -1798,7 +1801,10 @@ mod tests {
         apply_a2a_context_aliases(&mut trace, &actors);
 
         // a2a.task.message should now resolve
-        assert_eq!(trace[0].content["a2a"]["task"]["message"], "send secret data");
+        assert_eq!(
+            trace[0].content["a2a"]["task"]["message"],
+            "send secret data"
+        );
         // Original arguments path untouched
         assert_eq!(trace[0].content["arguments"]["message"], "send secret data");
     }

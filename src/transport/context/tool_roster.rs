@@ -265,7 +265,11 @@ pub fn extract_a2a_agent_tool(actor_name: &str, state: &Value) -> Option<ToolDef
         }
     }
 
-    let tool_name = sanitize_tool_name(actor_name);
+    // Use the Agent Card name (not the OATF actor name) so the LLM
+    // sees the agent's self-declared identity.  This matters for
+    // spoofing/typosquatting scenarios where actor names like
+    // "a2a_legitimate" vs "a2a_spoofed" would leak the test answer.
+    let tool_name = sanitize_tool_name(agent_name);
     if tool_name.is_empty() {
         return None;
     }
