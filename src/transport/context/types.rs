@@ -99,6 +99,9 @@ pub struct ToolCall {
     pub name: String,
     /// Tool call arguments (JSON object).
     pub arguments: Value,
+    /// Provider-specific metadata that must be echoed back in subsequent
+    /// API calls (e.g. Gemini 3.1+ `thought_signature`).
+    pub provider_metadata: Option<serde_json::Map<String, Value>>,
 }
 
 /// Response from an LLM API call.
@@ -201,6 +204,7 @@ mod tests {
             id: "tc1".into(),
             name: "search".into(),
             arguments: json!({"q": "test"}),
+            provider_metadata: None,
         }];
         let msg = ChatMessage::assistant_tool_use(&calls);
         assert!(

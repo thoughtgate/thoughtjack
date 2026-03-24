@@ -202,6 +202,7 @@ impl LlmProvider for AnthropicProvider {
                         id,
                         name,
                         arguments,
+                        provider_metadata: None,
                     })
                 })
                 .collect();
@@ -264,6 +265,7 @@ mod tests {
                     id: "tc1".into(),
                     name: "search".into(),
                     arguments: json!({"q": "test"}),
+                    provider_metadata: None,
                 }],
             },
             ChatMessage::ToolResult {

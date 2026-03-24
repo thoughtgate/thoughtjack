@@ -77,7 +77,7 @@ impl OpenAiCompatibleProvider {
                     let tc: Vec<Value> = tool_calls
                         .iter()
                         .map(|tc| {
-                            json!({
+                            let mut obj = json!({
                                 "id": tc.id,
                                 "type": "function",
                                 "function": {
@@ -85,7 +85,17 @@ impl OpenAiCompatibleProvider {
                                     "arguments": serde_json::to_string(&tc.arguments)
                                         .unwrap_or_default(),
                                 }
-                            })
+                            });
+                            // Re-attach provider-specific metadata (e.g. Gemini 3.1+
+                            // thought_signature) so the provider can correlate results.
+                            if let Some(meta) = &tc.provider_metadata
+                                && let Some(map) = obj.as_object_mut()
+                            {
+                                for (k, v) in meta {
+                                    map.insert(k.clone(), v.clone());
+                                }
+                            }
+                            obj
                         })
                         .collect();
                     messages.push(json!({"role": "assistant", "tool_calls": tc}));
@@ -196,10 +206,30 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         .and_then(Value::as_str)
                         .unwrap_or("{}");
                     let arguments: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+
+                    // Preserve provider-specific metadata (e.g. Gemini 3.1+
+                    // thought_signature) that must be echoed back in
+                    // subsequent API calls.
+                    let known_keys: &[&str] = &["id", "type", "function", "index"];
+                    let metadata: serde_json::Map<String, Value> = tc
+                        .as_object()
+                        .map(|obj| {
+                            obj.iter()
+                                .filter(|(k, _)| !known_keys.contains(&k.as_str()))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
                     Some(ToolCall {
                         id,
                         name,
                         arguments,
+                        provider_metadata: if metadata.is_empty() {
+                            None
+                        } else {
+                            Some(metadata)
+                        },
                     })
                 })
                 .collect();
@@ -261,6 +291,7 @@ mod tests {
                     id: "tc1".into(),
                     name: "search".into(),
                     arguments: json!({"q": "test"}),
+                    provider_metadata: None,
                 }],
             },
             ChatMessage::ToolResult {
@@ -273,6 +304,25 @@ mod tests {
         assert!(messages[0]["tool_calls"].is_array());
         assert_eq!(messages[1]["role"], "tool");
         assert_eq!(messages[1]["tool_call_id"], "tc1");
+    }
+
+    #[test]
+    fn test_serialize_preserves_provider_metadata() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("thought_signature".to_string(), json!("encrypted_sig_xyz"));
+        let history = vec![ChatMessage::AssistantToolUse {
+            tool_calls: vec![ToolCall {
+                id: "tc1".into(),
+                name: "calc".into(),
+                arguments: json!({"x": 1}),
+                provider_metadata: Some(meta),
+            }],
+        }];
+        let messages = OpenAiCompatibleProvider::serialize_messages(&history);
+        let tc = &messages[0]["tool_calls"][0];
+        assert_eq!(tc["thought_signature"], "encrypted_sig_xyz");
+        assert_eq!(tc["id"], "tc1");
+        assert_eq!(tc["type"], "function");
     }
 
     #[test]

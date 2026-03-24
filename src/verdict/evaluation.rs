@@ -85,10 +85,36 @@ pub fn filter_trace_for_indicator<'a>(
         }
     }
 
+    // Determine whether the indicator's target restricts which event
+    // methods are eligible.  `target: "arguments"` should only match
+    // actual tool-call / message-send events — never `tools/list`
+    // responses (which contain tool *descriptions*) or
+    // `text_message_content` events (which contain the model's
+    // user-facing text and could quote the attack payload in a
+    // defensive warning).
+    let arguments_methods: &[&str] = &["tools/call", "message/send", "tasks/send"];
+    let is_arguments_target = matches!(
+        indicator.target.as_str(),
+        "arguments" | "request.params.arguments"
+    );
+
     trace
         .iter()
         .filter(|entry| matching_actors.contains(entry.actor.as_str()))
         .filter(|entry| indicator.actor.as_ref().is_none_or(|a| entry.actor == *a))
+        .filter(|entry| {
+            if is_arguments_target {
+                if !arguments_methods.contains(&entry.method.as_str()) {
+                    return false;
+                }
+                // Only match requests TO the server (model sending a
+                // tool call), not responses FROM the server.
+                if entry.direction != Direction::Incoming {
+                    return false;
+                }
+            }
+            true
+        })
         .filter(|entry| {
             indicator.direction.as_ref().is_none_or(|dir| {
                 let is_server = actors
@@ -151,9 +177,16 @@ fn build_context_mode_shadow_entries(
 
         // Create shadow entry for each server actor so the protocol
         // filter in filter_trace_for_indicator can find it.
+        //
+        // The AG-UI client emits `text_message_content` as `Incoming`
+        // (model → client). For a server actor, `Incoming` means
+        // "request to server" and `Outgoing` means "response from
+        // server". The model's response text should be treated as
+        // *server response*, so flip to `Outgoing`. This lets
+        // indicators with `direction: response` match via the
+        // (Outgoing, server=true) → Response mapping.
         let shadow_content = serde_json::json!({
             "response": {"content": delta},
-            "arguments": delta,
             "body": delta,
             "content": delta,
         });
@@ -164,7 +197,7 @@ fn build_context_mode_shadow_entries(
                 timestamp: entry.timestamp,
                 actor: server_actor.to_string(),
                 phase: entry.phase.clone(),
-                direction: entry.direction,
+                direction: Direction::Outgoing,
                 method: "text_message_content".to_string(),
                 content: shadow_content.clone(),
             });
@@ -641,6 +674,72 @@ mod tests {
 
         let filtered = filter_trace_for_indicator(&trace, &indicator, &actors, false);
         assert!(filtered.is_empty());
+    }
+
+    // ── Fix: target "arguments" only matches tools/call ─────────────────
+
+    #[test]
+    fn filter_arguments_target_excludes_tools_list() {
+        let trace = vec![
+            make_trace_entry("srv", "tools/call", serde_json::json!({"name": "calc"})),
+            make_trace_entry("srv", "tools/list", serde_json::json!({"tools": []})),
+            make_trace_entry(
+                "srv",
+                "text_message_content",
+                serde_json::json!({"delta": "warning about ~/.ssh/id_rsa"}),
+            ),
+        ];
+        let actors = vec![make_actor("srv", "mcp_server")];
+
+        // Indicator with target "arguments" — should only match tools/call
+        let mut indicator = make_pattern_indicator("ind-args", "calc");
+        indicator.target = "arguments".to_string();
+
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors, false);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].method, "tools/call");
+    }
+
+    #[test]
+    fn shadow_entries_use_outgoing_direction_for_servers() {
+        let trace = vec![{
+            let mut entry = make_trace_entry(
+                "ui",
+                "text_message_content",
+                serde_json::json!({"delta": "hello"}),
+            );
+            entry.direction = Direction::Incoming; // AG-UI: model → client
+            entry
+        }];
+        let actors = vec![
+            make_actor("ui", "ag_ui_client"),
+            make_actor("a2a_srv", "a2a_server"),
+        ];
+
+        let augmented = build_context_mode_shadow_entries(&trace, &actors);
+        // Should have original + 1 shadow
+        assert_eq!(augmented.len(), 2);
+        let shadow = &augmented[1];
+        assert_eq!(shadow.actor, "a2a_srv");
+        // Shadow should be Outgoing (server response), not Incoming
+        assert_eq!(shadow.direction, Direction::Outgoing);
+        // Shadow should have response.content but not arguments
+        assert!(shadow.content.get("response").is_some());
+        assert!(shadow.content.get("arguments").is_none());
+    }
+
+    #[test]
+    fn filter_non_arguments_target_matches_all_methods() {
+        let trace = vec![
+            make_trace_entry("srv", "tools/call", serde_json::json!({})),
+            make_trace_entry("srv", "tools/list", serde_json::json!({})),
+        ];
+        let actors = vec![make_actor("srv", "mcp_server")];
+
+        // Indicator with target "description" — no method filtering
+        let indicator = make_pattern_indicator("ind-desc", "test");
+        let filtered = filter_trace_for_indicator(&trace, &indicator, &actors, false);
+        assert_eq!(filtered.len(), 2);
     }
 
     // ── EC-VERDICT-009: Multi-Actor Trace — Protocol Filtering ──────────

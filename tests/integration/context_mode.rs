@@ -1150,6 +1150,7 @@ async fn ec_ctx_015_tool_result_deadline_fires() {
             id: "tc-1".into(),
             name: "slow_tool".into(),
             arguments: json!({}),
+            provider_metadata: None,
         }]),
         LlmResponse::Text(TextResponse {
             text: "Tool timed out, continuing.".into(),

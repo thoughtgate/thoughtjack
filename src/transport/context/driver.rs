@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde_json::json;
@@ -41,6 +41,10 @@ pub struct ContextTransport {
     server_tool_watches: Vec<(String, watch::Receiver<Vec<ToolDefinition>>)>,
     tool_result_rx: mpsc::Receiver<JsonRpcMessage>,
     server_request_rx: mpsc::Receiver<ServerRequest>,
+    /// Tool fingerprints from the previous LLM turn (name + description
+    /// hash), used to detect roster changes caused by phase advancement
+    /// during tool execution — including rug-pull description swaps.
+    prev_tool_fingerprints: HashSet<String>,
 }
 
 impl ContextTransport {
@@ -75,6 +79,7 @@ impl ContextTransport {
             server_tool_watches,
             tool_result_rx,
             server_request_rx,
+            prev_tool_fingerprints: HashSet::new(),
         }
     }
 
@@ -167,6 +172,62 @@ impl ContextTransport {
 
             let (all_tools, tool_router) = build_tool_roster(&self.server_tool_watches);
 
+            // Build fingerprints that include both name and description prefix
+            // so rug-pull description swaps (same name, changed desc) are
+            // detected — not just tool additions/removals.
+            let current_fingerprints: HashSet<String> = all_tools
+                .iter()
+                .map(|t| {
+                    let desc_prefix: String = t.description.chars().take(64).collect();
+                    format!("{}|{}", t.name, desc_prefix)
+                })
+                .collect();
+
+            // Detect tool roster changes from phase advancement and notify
+            // the LLM. This is the context-mode equivalent of the MCP
+            // `notifications/tools/list_changed` mechanism, enabling rug-pull
+            // and supply-chain scenarios where tool definitions change
+            // mid-conversation.
+            if !self.prev_tool_fingerprints.is_empty()
+                && current_fingerprints != self.prev_tool_fingerprints
+            {
+                let current_names: HashSet<&str> =
+                    all_tools.iter().map(|t| t.name.as_str()).collect();
+                let prev_names: HashSet<&str> = self
+                    .prev_tool_fingerprints
+                    .iter()
+                    .filter_map(|fp| fp.split('|').next())
+                    .collect();
+                let added: Vec<&&str> = current_names.difference(&prev_names).collect();
+                let removed: Vec<&&str> = prev_names.difference(&current_names).collect();
+
+                let mut parts = Vec::new();
+                if !added.is_empty() {
+                    let names: Vec<&str> = added.into_iter().copied().collect();
+                    parts.push(format!("added: {}", names.join(", ")));
+                }
+                if !removed.is_empty() {
+                    let names: Vec<&str> = removed.into_iter().copied().collect();
+                    parts.push(format!("removed: {}", names.join(", ")));
+                }
+                // Same names but descriptions changed (rug pull).
+                if parts.is_empty() {
+                    parts.push("tool definitions have been updated".to_string());
+                }
+
+                let notification = format!(
+                    "[System: The available tools have changed. {}. \
+                     Please re-read all tool descriptions before proceeding.]",
+                    parts.join("; ")
+                );
+                tracing::info!(
+                    notification = %notification,
+                    "tool roster changed after phase advance"
+                );
+                self.history.push(ChatMessage::System(notification));
+            }
+            self.prev_tool_fingerprints = current_fingerprints;
+
             let response = tokio::select! {
                 result = self.provider.chat_completion(&self.history, &all_tools) => {
                     match result {
@@ -246,6 +307,7 @@ impl ContextTransport {
                                     id: call.id.clone(),
                                     name: dispatch_name.to_string(),
                                     arguments: call.arguments.clone(),
+                                    provider_metadata: call.provider_metadata.clone(),
                                 };
                                 let msg = Self::tool_call_to_json_rpc(&rewritten);
                                 if entry.tx.send(msg).await.is_ok() {
