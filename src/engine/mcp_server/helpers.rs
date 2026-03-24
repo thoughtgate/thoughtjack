@@ -295,6 +295,212 @@ mod tests {
         let _ = matches_uri_template("{a}{b}{c}", "αβγ");
     }
 
+    // ── find_by_name / find_by_field ───────────────────────────────
+
+    #[test]
+    fn find_by_name_found() {
+        let state = serde_json::json!({
+            "tools": [
+                {"name": "search", "desc": "web search"},
+                {"name": "calc", "desc": "calculator"}
+            ]
+        });
+        let result = find_by_name(&state, "tools", "calc").unwrap();
+        assert_eq!(result["desc"], "calculator");
+    }
+
+    #[test]
+    fn find_by_name_not_found() {
+        let state = serde_json::json!({"tools": [{"name": "search"}]});
+        assert!(find_by_name(&state, "tools", "missing").is_none());
+    }
+
+    #[test]
+    fn find_by_name_missing_collection() {
+        let state = serde_json::json!({});
+        assert!(find_by_name(&state, "tools", "any").is_none());
+    }
+
+    #[test]
+    fn find_by_field_custom_field() {
+        let state = serde_json::json!({
+            "skills": [
+                {"id": "s1", "name": "translate"},
+                {"id": "s2", "name": "summarize"}
+            ]
+        });
+        let result = find_by_field(&state, "skills", "id", "s2").unwrap();
+        assert_eq!(result["name"], "summarize");
+    }
+
+    // ── find_a2a_skill ──────────────────────────────────────────────
+
+    #[test]
+    fn find_a2a_skill_by_id_top_level() {
+        let state = serde_json::json!({
+            "skills": [{"id": "translate", "name": "Translate Text"}]
+        });
+        let skill = find_a2a_skill(&state, "translate").unwrap();
+        assert_eq!(skill["name"], "Translate Text");
+    }
+
+    #[test]
+    fn find_a2a_skill_by_id_in_agent_card() {
+        let state = serde_json::json!({
+            "agent_card": {
+                "skills": [{"id": "analyze", "name": "Data Analysis"}]
+            }
+        });
+        let skill = find_a2a_skill(&state, "analyze").unwrap();
+        assert_eq!(skill["name"], "Data Analysis");
+    }
+
+    #[test]
+    fn find_a2a_skill_falls_back_to_name() {
+        let state = serde_json::json!({
+            "skills": [{"name": "process-data"}]
+        });
+        // No "id" field — should match on "name"
+        let skill = find_a2a_skill(&state, "process-data").unwrap();
+        assert_eq!(skill["name"], "process-data");
+    }
+
+    #[test]
+    fn find_a2a_skill_name_fallback_in_agent_card() {
+        let state = serde_json::json!({
+            "agent_card": {
+                "skills": [{"name": "deep-search"}]
+            }
+        });
+        let skill = find_a2a_skill(&state, "deep-search").unwrap();
+        assert_eq!(skill["name"], "deep-search");
+    }
+
+    #[test]
+    fn find_a2a_skill_not_found() {
+        let state = serde_json::json!({
+            "skills": [{"id": "a", "name": "b"}]
+        });
+        assert!(find_a2a_skill(&state, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn find_a2a_skill_empty_state() {
+        assert!(find_a2a_skill(&serde_json::json!({}), "any").is_none());
+    }
+
+    // ── build_a2a_response_content ──────────────────────────────────
+
+    #[test]
+    fn build_a2a_response_from_task_parts() {
+        let state = serde_json::json!({
+            "task": {
+                "status": "completed",
+                "message": {
+                    "parts": [
+                        {"type": "text", "text": "Analysis complete."},
+                        {"type": "text", "text": "Revenue is $1M."}
+                    ]
+                }
+            }
+        });
+        let resp = build_a2a_response_content(&state).unwrap();
+        assert_eq!(resp.status, "completed");
+        assert!(resp.text.contains("Analysis complete."));
+        assert!(resp.text.contains("Revenue is $1M."));
+    }
+
+    #[test]
+    fn build_a2a_response_from_artifacts() {
+        let state = serde_json::json!({
+            "task": {
+                "status": "completed",
+                "artifacts": [{"content": "CSV data here"}]
+            }
+        });
+        let resp = build_a2a_response_content(&state).unwrap();
+        assert!(resp.text.contains("CSV data here"));
+    }
+
+    #[test]
+    fn build_a2a_response_input_required() {
+        let state = serde_json::json!({
+            "task": {
+                "status": "input-required",
+                "message": {
+                    "parts": [{"type": "text", "text": "What file?"}]
+                }
+            }
+        });
+        let resp = build_a2a_response_content(&state).unwrap();
+        assert_eq!(resp.status, "input-required");
+        assert!(resp.text.starts_with("[Agent requires additional input]"));
+    }
+
+    #[test]
+    fn build_a2a_response_empty_returns_none() {
+        let state = serde_json::json!({"task": {"status": "completed"}});
+        assert!(build_a2a_response_content(&state).is_none());
+    }
+
+    #[test]
+    fn build_a2a_response_top_level_artifacts() {
+        let state = serde_json::json!({
+            "artifacts": [{"content": "top-level artifact"}]
+        });
+        let resp = build_a2a_response_content(&state).unwrap();
+        assert!(resp.text.contains("top-level artifact"));
+    }
+
+    // ── strip_internal_fields ───────────────────────────────────────
+
+    #[test]
+    fn strip_internal_fields_removes_specified() {
+        let value = serde_json::json!({"name": "calc", "responses": [], "_internal": true});
+        let stripped = strip_internal_fields(&value, &["responses", "_internal"]);
+        assert!(stripped.get("name").is_some());
+        assert!(stripped.get("responses").is_none());
+        assert!(stripped.get("_internal").is_none());
+    }
+
+    #[test]
+    fn strip_internal_fields_non_object_passthrough() {
+        let value = serde_json::json!("just a string");
+        let stripped = strip_internal_fields(&value, &["anything"]);
+        assert_eq!(stripped, serde_json::json!("just a string"));
+    }
+
+    // ── u64_to_usize ────────────────────────────────────────────────
+
+    #[test]
+    fn u64_to_usize_normal() {
+        assert_eq!(u64_to_usize(42), 42);
+        assert_eq!(u64_to_usize(0), 0);
+    }
+
+    // ── find_matching_template ───────────────────────────────────────
+
+    #[test]
+    fn find_matching_template_found() {
+        let state = serde_json::json!({
+            "resource_templates": [
+                {"uriTemplate": "file:///{path}", "name": "file"}
+            ]
+        });
+        let result = find_matching_template(&state, "file:///etc/passwd").unwrap();
+        assert_eq!(result["name"], "file");
+    }
+
+    #[test]
+    fn find_matching_template_no_match() {
+        let state = serde_json::json!({
+            "resource_templates": [
+                {"uriTemplate": "file:///{path}", "name": "file"}
+            ]
+        });
+        assert!(find_matching_template(&state, "http://example.com").is_none());
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 

@@ -396,6 +396,214 @@ mod tests {
         assert!(result.starts_with("[Server sampling request]"));
     }
 
+    // ── extract_run_agent_input_messages edge cases ────────────────
+
+    #[test]
+    fn extract_messages_unrecognized_role_errors() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: Some(json!({
+                "messages": [{"role": "moderator", "content": "hello"}]
+            })),
+            id: json!("1"),
+        });
+        let err = extract_run_agent_input_messages(&msg).unwrap_err();
+        assert!(err.to_string().contains("unrecognized role 'moderator'"));
+    }
+
+    #[test]
+    fn extract_messages_missing_params() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: None,
+            id: json!("1"),
+        });
+        assert!(extract_run_agent_input_messages(&msg).is_err());
+    }
+
+    #[test]
+    fn extract_messages_missing_messages_array() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: Some(json!({"other": "data"})),
+            id: json!("1"),
+        });
+        let err = extract_run_agent_input_messages(&msg).unwrap_err();
+        assert!(err.to_string().contains("missing 'messages' array"));
+    }
+
+    // ── extract_run_agent_input_context ─────────────────────────────
+
+    #[test]
+    fn extract_context_with_items() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: Some(json!({
+                "messages": [],
+                "context": [
+                    {"key": "theme", "value": "dark"},
+                    {"key": "prefs", "value": {"lang": "en"}}
+                ]
+            })),
+            id: json!("1"),
+        });
+        let text = extract_run_agent_input_context(&msg).unwrap();
+        assert!(text.contains("[Agent Run Context]"));
+        assert!(text.contains("theme: dark"));
+        assert!(text.contains("prefs:"));
+        assert!(text.contains("lang"));
+    }
+
+    #[test]
+    fn extract_context_empty_array_returns_none() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: Some(json!({"messages": [], "context": []})),
+            id: json!("1"),
+        });
+        assert!(extract_run_agent_input_context(&msg).is_none());
+    }
+
+    #[test]
+    fn extract_context_no_context_field_returns_none() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: Some(json!({"messages": []})),
+            id: json!("1"),
+        });
+        assert!(extract_run_agent_input_context(&msg).is_none());
+    }
+
+    #[test]
+    fn extract_context_from_notification_returns_none() {
+        let msg = JsonRpcMessage::Notification(crate::transport::JsonRpcNotification {
+            jsonrpc: "2.0".into(),
+            method: "something".into(),
+            params: Some(json!({"context": [{"key": "k", "value": "v"}]})),
+        });
+        assert!(extract_run_agent_input_context(&msg).is_none());
+    }
+
+    // ── extract_user_message edge cases ─────────────────────────────
+
+    #[test]
+    fn extract_user_message_no_user_role_falls_back() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: Some(json!({
+                "messages": [{"role": "system", "content": "only system"}]
+            })),
+            id: json!("1"),
+        });
+        // Should fall back to serialized params
+        let result = extract_user_message(&msg);
+        assert!(result.contains("messages"));
+    }
+
+    #[test]
+    fn extract_user_message_from_notification() {
+        let msg = JsonRpcMessage::Notification(crate::transport::JsonRpcNotification {
+            jsonrpc: "2.0".into(),
+            method: "run_agent_input".into(),
+            params: None,
+        });
+        // No params → empty string
+        assert!(extract_user_message(&msg).is_empty());
+    }
+
+    // ── format_server_request_as_user_message ───────────────────────
+
+    #[test]
+    fn format_server_request_unknown_method() {
+        let result = format_server_request_as_user_message("custom/method", &Some(json!({"x": 1})));
+        assert!(result.starts_with("[Server request: custom/method]"));
+        assert!(result.contains("\"x\":1") || result.contains("\"x\": 1"));
+    }
+
+    #[test]
+    fn format_server_request_none_params() {
+        let result = format_server_request_as_user_message("elicitation/create", &None);
+        assert!(result.contains("[Server elicitation]"));
+    }
+
+    // ── extract_result_content edge cases ────────────────────────────
+
+    #[test]
+    fn extract_result_content_null_result() {
+        let resp = JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            result: None,
+            error: None,
+            id: json!("1"),
+        });
+        assert_eq!(extract_result_content(&resp), json!(null));
+    }
+
+    #[test]
+    fn extract_result_content_from_notification() {
+        let msg = JsonRpcMessage::Notification(crate::transport::JsonRpcNotification {
+            jsonrpc: "2.0".into(),
+            method: "something".into(),
+            params: None,
+        });
+        assert_eq!(extract_result_content(&msg), json!(null));
+    }
+
+    #[test]
+    fn extract_result_content_error_with_data() {
+        let resp = JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            result: None,
+            error: Some(crate::transport::JsonRpcError {
+                code: -32000,
+                message: "server error".into(),
+                data: Some(json!({"detail": "stack trace"})),
+            }),
+            id: json!("1"),
+        });
+        let content = extract_result_content(&resp);
+        assert_eq!(content["error"]["code"], -32000);
+        assert_eq!(content["error"]["data"]["detail"], "stack trace");
+    }
+
+    // ── extract_response_id edge cases ──────────────────────────────
+
+    #[test]
+    fn extract_response_id_from_bool() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            result: None,
+            error: None,
+            id: json!(true),
+        };
+        // Non-standard but should not panic
+        let id = extract_response_id(&resp);
+        assert_eq!(id, "true");
+    }
+
+    // ── normalize_a2a_parts edge cases ──────────────────────────────
+
+    #[test]
+    fn normalize_a2a_parts_empty() {
+        let result = normalize_a2a_parts(&[]);
+        assert_eq!(result, Value::String(String::new()));
+    }
+
+    #[test]
+    fn normalize_a2a_parts_non_text_kind() {
+        let parts = vec![json!({"kind": "image", "uri": "s3://img.png"})];
+        let result = normalize_a2a_parts(&parts);
+        let s = result.as_str().unwrap();
+        assert!(s.starts_with("[image]:"));
+    }
+
     #[test]
     fn test_normalize_a2a_parts() {
         let parts = vec![

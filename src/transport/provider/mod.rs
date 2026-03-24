@@ -66,3 +66,62 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>, 
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(provider_type: &str) -> ProviderConfig {
+        ProviderConfig {
+            provider_type: provider_type.to_string(),
+            api_key: "test-key".to_string(),
+            model: "test-model".to_string(),
+            base_url: None,
+            temperature: 0.0,
+            max_tokens: None,
+            timeout_secs: 30,
+        }
+    }
+
+    #[test]
+    fn create_openai_provider() {
+        let provider = create_provider(&test_config("openai")).unwrap();
+        assert_eq!(provider.provider_name(), "openai");
+        assert_eq!(provider.model_name(), "test-model");
+    }
+
+    #[test]
+    fn create_anthropic_provider() {
+        let provider = create_provider(&test_config("anthropic")).unwrap();
+        assert_eq!(provider.provider_name(), "anthropic");
+        assert_eq!(provider.model_name(), "test-model");
+    }
+
+    #[test]
+    fn create_unknown_provider_errors() {
+        let result = create_provider(&test_config("llama"));
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(
+            err.to_string().contains("unknown context provider type"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn openai_with_base_url_and_max_tokens() {
+        let mut config = test_config("openai");
+        config.base_url = Some("https://custom.api.com/v1".to_string());
+        config.max_tokens = Some(1024);
+        let provider = create_provider(&config).unwrap();
+        assert_eq!(provider.provider_name(), "openai");
+    }
+
+    #[test]
+    fn provider_config_debug_impl() {
+        let config = test_config("openai");
+        let debug = format!("{config:?}");
+        assert!(debug.contains("openai"));
+        assert!(debug.contains("test-model"));
+    }
+}
