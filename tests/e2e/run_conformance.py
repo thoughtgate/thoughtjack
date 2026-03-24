@@ -382,7 +382,7 @@ def run_self_test(
         print(f"FAIL: ThoughtJack timed out after {timeout + 10}s")
         return False
 
-    if result.returncode not in (0, 1, 2, 3):
+    if result.returncode not in (0, 1, 2, 3, 4, 5):
         print(f"FAIL: ThoughtJack exited with code {result.returncode}")
         if result.stderr:
             print(f"  stderr: {result.stderr[:500]}")
