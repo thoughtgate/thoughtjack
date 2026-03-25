@@ -12,7 +12,7 @@ use crate::transport::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, Json
 
 use super::extraction::{
     extract_response_id, extract_run_agent_input_context, extract_run_agent_input_messages,
-    extract_user_message, format_server_request_as_user_message,
+    extract_run_agent_input_state, extract_user_message, format_server_request_as_user_message,
 };
 use super::handles::{ServerActorEntry, ServerRequest};
 use super::tool_roster::build_tool_roster;
@@ -145,6 +145,12 @@ impl ContextTransport {
         // This surfaces run_agent_input.context for state injection scenarios.
         if let Some(context_text) = extract_run_agent_input_context(&initial) {
             self.history.push(ChatMessage::System(context_text));
+        }
+        // Inject AG-UI shared state as a system message.
+        // This surfaces run_agent_input.state for state injection scenarios
+        // like OATF-028.
+        if let Some(state_text) = extract_run_agent_input_state(&initial) {
+            self.history.push(ChatMessage::System(state_text));
         }
         let seed_messages = extract_run_agent_input_messages(&initial)?;
         for msg in seed_messages {
@@ -568,21 +574,59 @@ impl ContextTransport {
         }
 
         // Sampling targets the LLM — perform a real LLM roundtrip.
-        let prompt = format_server_request_as_user_message(method, params);
+        //
+        // Per the MCP spec, sampling creates an ISOLATED LLM call using
+        // only the server's provided systemPrompt and messages — NOT the
+        // main conversation history.  This is critical for faithful
+        // simulation: the model sees a blank context with just the
+        // server's content, with no anchoring from the main conversation.
+        let mut fork: Vec<ChatMessage> = Vec::new();
 
-        // Use a fork of the history that excludes pending tool_calls.
-        // Server requests arrive while tool results are being collected.
-        // The main history may end with assistant tool_calls without
-        // corresponding tool result messages, violating the OpenAI API
-        // sequencing requirement. The fork strips the trailing block.
-        let mut fork = self.history.clone();
-        while fork
-            .last()
-            .is_some_and(|m| matches!(m, ChatMessage::AssistantToolUse { .. }))
-        {
-            fork.pop();
+        if let Some(params_val) = params {
+            // Extract systemPrompt if provided by the server
+            if let Some(sys) = params_val
+                .get("systemPrompt")
+                .and_then(serde_json::Value::as_str)
+            {
+                fork.push(ChatMessage::System(sys.to_string()));
+            }
+
+            // Extract messages array from the sampling request
+            if let Some(messages) = params_val
+                .get("messages")
+                .and_then(serde_json::Value::as_array)
+            {
+                for msg in messages {
+                    let role = msg
+                        .get("role")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("user");
+                    let text = msg
+                        .get("content")
+                        .and_then(|c| {
+                            // Content can be a string or {"type":"text","text":"..."}
+                            c.as_str().map(String::from).or_else(|| {
+                                c.get("text")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(String::from)
+                            })
+                        })
+                        .unwrap_or_default();
+
+                    match role {
+                        "assistant" => fork.push(ChatMessage::AssistantText(text)),
+                        "user" => fork.push(ChatMessage::User(text)),
+                        _ => fork.push(ChatMessage::System(text)),
+                    }
+                }
+            }
         }
-        fork.push(ChatMessage::user(&prompt));
+
+        // Fallback: if no messages were extracted, use the formatted prompt
+        if fork.is_empty() {
+            let prompt = format_server_request_as_user_message(method, params);
+            fork.push(ChatMessage::User(prompt));
+        }
 
         let response = tokio::select! {
             result = self.provider.chat_completion(&fork, &[]) => {
