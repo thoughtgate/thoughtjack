@@ -313,7 +313,7 @@ fn quiet_verdict_exit_does_not_write_stderr() {
 
     assert_exit_code(
         &output,
-        2,
+        5,
         "semantic-only verdict should exit with evaluation error code",
     );
 

@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use oatf::enums::{AttackResult, CorrelationLogic, IndicatorResult};
+use oatf::enums::{AttackResult, CorrelationLogic, IndicatorResult, Tier};
 use serde::Serialize;
 
 use crate::engine::types::TerminationReason;
@@ -72,6 +72,13 @@ pub struct AttackMetadata {
 pub struct VerdictBlock {
     /// Overall attack result.
     pub result: String,
+    /// Highest outcome tier among matched indicators (OATF §6.5).
+    ///
+    /// Present when `result` is not `not_exploited` and at least one
+    /// matched indicator has a `tier` field. Values: `"ingested"`,
+    /// `"local_action"`, `"boundary_breach"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tier: Option<String>,
     /// Per-indicator verdicts.
     pub indicator_verdicts: Vec<IndicatorVerdictOutput>,
     /// Summary counts.
@@ -199,6 +206,16 @@ pub fn indicator_result_to_string(result: &IndicatorResult) -> String {
     }
 }
 
+/// Converts a `Tier` to its wire string representation.
+#[must_use]
+pub const fn tier_to_string(tier: &Tier) -> &'static str {
+    match tier {
+        Tier::Ingested => "ingested",
+        Tier::LocalAction => "local_action",
+        Tier::BoundaryBreach => "boundary_breach",
+    }
+}
+
 /// Converts a `TerminationReason` to a status string for the execution summary.
 #[must_use]
 pub fn termination_to_status(reason: &TerminationReason) -> String {
@@ -257,8 +274,14 @@ pub fn build_verdict_output(
         }
     });
 
+    let max_tier = verdict
+        .max_tier
+        .as_ref()
+        .map(|t| tier_to_string(t).to_string());
+
     let verdict_block = VerdictBlock {
         result: attack_result_to_string(&verdict.result),
+        max_tier,
         indicator_verdicts,
         evaluation_summary: EvaluationSummaryOutput {
             matched: verdict.evaluation_summary.matched,
@@ -407,8 +430,18 @@ pub fn print_human_summary(output: &VerdictOutput) {
         "error" => "ERROR",
         _ => result_str.as_str(),
     };
+    // Tier suffix: show (tier) for exploited/partial, (unclassified) if
+    // no indicator has a tier field, nothing for not_exploited.
+    let tier_suffix = if result_str == "not_exploited" || result_str == "error" {
+        String::new()
+    } else if let Some(ref tier) = output.verdict.max_tier {
+        format!(" ({tier})")
+    } else {
+        " (unclassified)".to_string()
+    };
+
     let _ = writeln!(w);
-    let _ = writeln!(w, "  Result: {symbol}");
+    let _ = writeln!(w, "  Result: {symbol}{tier_suffix}");
 
     // Indicators
     if !output.verdict.indicator_verdicts.is_empty() {
@@ -485,21 +518,39 @@ pub fn print_human_summary(output: &VerdictOutput) {
 // Exit Code Mapping
 // ============================================================================
 
-/// Maps an `AttackResult` to the corresponding process exit code.
+/// Maps an `AttackResult` and optional tier to the corresponding exit code.
 ///
-/// - `NotExploited` → 0 (success)
-/// - `Exploited` → 1 (failure)
-/// - `Error` → 2 (evaluation error)
-/// - `Partial` → 3 (partial)
+/// When `max_tier` is set, it takes priority — even if `result` is `Partial`,
+/// the exit code reflects the severity tier because a matched tier indicator
+/// confirms the attack reached that stage regardless of evidence completeness.
+///
+/// - `NotExploited` → 0
+/// - Exploited/Partial + no tier or `Ingested` → 1
+/// - Exploited/Partial + `LocalAction` → 2
+/// - Exploited/Partial + `BoundaryBreach` → 3
+/// - `Partial` (no tier set) → 4
+/// - `Error` → 5
 ///
 /// Implements: TJ-SPEC-014 F-009
 #[must_use]
-pub const fn verdict_exit_code(result: &AttackResult) -> i32 {
+pub const fn verdict_exit_code(result: &AttackResult, max_tier: Option<&Tier>) -> i32 {
     match result {
         AttackResult::NotExploited => ExitCode::NOT_EXPLOITED,
-        AttackResult::Exploited => ExitCode::EXPLOITED,
         AttackResult::Error => ExitCode::ERROR,
-        AttackResult::Partial => ExitCode::PARTIAL,
+        // Tier takes priority: if max_tier is set, use it for both
+        // exploited and partial results.
+        AttackResult::Exploited | AttackResult::Partial => match max_tier {
+            Some(Tier::BoundaryBreach) => ExitCode::EXPLOITED_BOUNDARY_BREACH,
+            Some(Tier::LocalAction) => ExitCode::EXPLOITED_LOCAL_ACTION,
+            Some(Tier::Ingested) => ExitCode::EXPLOITED,
+            None => {
+                // No tier: distinguish exploited (1) from partial (4).
+                match result {
+                    AttackResult::Partial => ExitCode::PARTIAL,
+                    _ => ExitCode::EXPLOITED,
+                }
+            }
+        },
     }
 }
 
@@ -522,6 +573,7 @@ mod tests {
             },
             verdict: VerdictBlock {
                 result: result.to_string(),
+                max_tier: None,
                 indicator_verdicts: vec![
                     IndicatorVerdictOutput {
                         id: "ind-1".to_string(),
@@ -569,22 +621,72 @@ mod tests {
 
     #[test]
     fn exit_code_not_exploited() {
-        assert_eq!(verdict_exit_code(&AttackResult::NotExploited), 0);
+        assert_eq!(verdict_exit_code(&AttackResult::NotExploited, None), 0);
     }
 
     #[test]
-    fn exit_code_exploited() {
-        assert_eq!(verdict_exit_code(&AttackResult::Exploited), 1);
+    fn exit_code_exploited_no_tier() {
+        assert_eq!(verdict_exit_code(&AttackResult::Exploited, None), 1);
+    }
+
+    #[test]
+    fn exit_code_exploited_ingested() {
+        assert_eq!(
+            verdict_exit_code(&AttackResult::Exploited, Some(&Tier::Ingested)),
+            1
+        );
+    }
+
+    #[test]
+    fn exit_code_exploited_local_action() {
+        assert_eq!(
+            verdict_exit_code(&AttackResult::Exploited, Some(&Tier::LocalAction)),
+            2
+        );
+    }
+
+    #[test]
+    fn exit_code_exploited_boundary_breach() {
+        assert_eq!(
+            verdict_exit_code(&AttackResult::Exploited, Some(&Tier::BoundaryBreach)),
+            3
+        );
+    }
+
+    #[test]
+    fn exit_code_partial_no_tier() {
+        assert_eq!(verdict_exit_code(&AttackResult::Partial, None), 4);
+    }
+
+    #[test]
+    fn exit_code_partial_with_tier_uses_tier() {
+        // Tier takes priority: partial + boundary_breach → 3 (not 4)
+        assert_eq!(
+            verdict_exit_code(&AttackResult::Partial, Some(&Tier::BoundaryBreach)),
+            3
+        );
+        assert_eq!(
+            verdict_exit_code(&AttackResult::Partial, Some(&Tier::LocalAction)),
+            2
+        );
+        assert_eq!(
+            verdict_exit_code(&AttackResult::Partial, Some(&Tier::Ingested)),
+            1
+        );
     }
 
     #[test]
     fn exit_code_error() {
-        assert_eq!(verdict_exit_code(&AttackResult::Error), 2);
+        assert_eq!(verdict_exit_code(&AttackResult::Error, None), 5);
     }
 
     #[test]
-    fn exit_code_partial() {
-        assert_eq!(verdict_exit_code(&AttackResult::Partial), 3);
+    fn exit_code_error_ignores_tier() {
+        // Error means evaluation failed — tier is irrelevant.
+        assert_eq!(
+            verdict_exit_code(&AttackResult::Error, Some(&Tier::BoundaryBreach)),
+            5
+        );
     }
 
     // ── Result string conversion ────────────────────────────────────────
@@ -695,6 +797,7 @@ mod tests {
             },
             verdict: VerdictBlock {
                 result: "exploited".to_string(),
+                max_tier: None,
                 indicator_verdicts: vec![IndicatorVerdictOutput {
                     id: "ind-1".to_string(),
                     result: "matched".to_string(),
@@ -764,6 +867,7 @@ mod tests {
             },
             verdict: VerdictBlock {
                 result: "not_exploited".to_string(),
+                max_tier: None,
                 indicator_verdicts: vec![],
                 evaluation_summary: EvaluationSummaryOutput {
                     matched: 0,
@@ -821,6 +925,7 @@ mod tests {
         let verdict = oatf::AttackVerdict {
             attack_id: Some("ATK-001".to_string()),
             result: AttackResult::NotExploited,
+            max_tier: None,
             indicator_verdicts: vec![],
             evaluation_summary: oatf::EvaluationSummary {
                 matched: 0,
@@ -894,6 +999,7 @@ mod tests {
         let verdict = oatf::AttackVerdict {
             attack_id: Some("ATK-002".to_string()),
             result: AttackResult::Exploited,
+            max_tier: None,
             indicator_verdicts: vec![],
             evaluation_summary: oatf::EvaluationSummary {
                 matched: 2,
@@ -908,6 +1014,60 @@ mod tests {
         let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 100);
         let corr = output.verdict.correlation.as_ref().unwrap();
         assert_eq!(corr.logic, "all");
+    }
+
+    #[test]
+    fn build_verdict_output_with_max_tier() {
+        let attack = oatf::Attack {
+            id: Some("ATK-TIER".to_string()),
+            name: None,
+            version: None,
+            status: None,
+            created: None,
+            modified: None,
+            author: None,
+            description: None,
+            grace_period: None,
+            severity: None,
+            impact: None,
+            classification: None,
+            references: None,
+            execution: oatf::Execution {
+                mode: None,
+                state: None,
+                phases: None,
+                actors: None,
+                extensions: indexmap::IndexMap::new(),
+            },
+            indicators: None,
+            correlation: None,
+            extensions: indexmap::IndexMap::new(),
+        };
+        let verdict = oatf::AttackVerdict {
+            attack_id: Some("ATK-TIER".to_string()),
+            result: AttackResult::Exploited,
+            max_tier: Some(Tier::BoundaryBreach),
+            indicator_verdicts: vec![],
+            evaluation_summary: oatf::EvaluationSummary {
+                matched: 1,
+                not_matched: 0,
+                error: 0,
+                skipped: 0,
+            },
+            timestamp: None,
+            source: None,
+        };
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 3, 500);
+        assert_eq!(
+            output.verdict.max_tier.as_deref(),
+            Some("boundary_breach"),
+            "max_tier should round-trip through build_verdict_output"
+        );
+
+        // Verify JSON serialization
+        let json = serde_json::to_string(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["verdict"]["max_tier"], "boundary_breach");
     }
 
     #[test]
@@ -941,6 +1101,7 @@ mod tests {
         let verdict = oatf::AttackVerdict {
             attack_id: None,
             result: AttackResult::NotExploited,
+            max_tier: None,
             indicator_verdicts: vec![],
             evaluation_summary: oatf::EvaluationSummary {
                 matched: 0,
@@ -1140,6 +1301,7 @@ mod tests {
         let verdict = oatf::AttackVerdict {
             attack_id: None,
             result: AttackResult::NotExploited,
+            max_tier: None,
             indicator_verdicts: vec![],
             evaluation_summary: oatf::EvaluationSummary {
                 matched: 0,
@@ -1184,6 +1346,7 @@ mod tests {
         let verdict = oatf::AttackVerdict {
             attack_id: Some("ATK-004".to_string()),
             result: AttackResult::Exploited,
+            max_tier: None,
             indicator_verdicts: vec![oatf::IndicatorVerdict {
                 indicator_id: "ind-1".to_string(),
                 result: IndicatorResult::Matched,

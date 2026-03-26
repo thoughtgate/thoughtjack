@@ -402,13 +402,22 @@ impl ProgressRenderer {
                 let _ = writeln!(out, "{}", self.colors.dim(&timing));
             }
 
-            ThoughtJackEvent::VerdictComputed { result, .. } => {
+            ThoughtJackEvent::VerdictComputed {
+                result, max_tier, ..
+            } => {
                 self.verdict_seen = true;
                 let rule = "━".repeat(38);
                 let _ = writeln!(out, "\n  {}", self.colors.dim(&rule));
 
                 let is_fail = result == "exploited" || result == "partial";
-                let label = format!("Verdict: {}", result.to_uppercase());
+                let tier_suffix = if result == "not_exploited" || result == "error" {
+                    String::new()
+                } else if let Some(tier) = max_tier {
+                    format!(" ({tier})")
+                } else {
+                    " (unclassified)".to_string()
+                };
+                let label = format!("Verdict: {}{tier_suffix}", result.to_uppercase());
                 if is_fail {
                     let _ = writeln!(out, "  {}", self.colors.red(&label));
                 } else {
@@ -1291,6 +1300,7 @@ attack:
             &mut r,
             &[ThoughtJackEvent::VerdictComputed {
                 result: "exploited".to_string(),
+                max_tier: None,
                 matched: 2,
                 total: 3,
             }],
@@ -1309,6 +1319,7 @@ attack:
             &mut r,
             &[ThoughtJackEvent::VerdictComputed {
                 result: "not_exploited".to_string(),
+                max_tier: None,
                 matched: 0,
                 total: 3,
             }],
@@ -1323,6 +1334,7 @@ attack:
             &mut r,
             &[ThoughtJackEvent::VerdictComputed {
                 result: "partial".to_string(),
+                max_tier: None,
                 matched: 1,
                 total: 3,
             }],
@@ -1338,6 +1350,7 @@ attack:
             &mut r,
             &[ThoughtJackEvent::VerdictComputed {
                 result: "exploited".to_string(),
+                max_tier: None,
                 matched: 1,
                 total: 1,
             }],
@@ -1527,6 +1540,7 @@ attack:
                 // Verdict
                 ThoughtJackEvent::VerdictComputed {
                     result: "exploited".to_string(),
+                    max_tier: Some("boundary_breach".to_string()),
                     matched: 2,
                     total: 2,
                 },

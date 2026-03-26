@@ -100,6 +100,34 @@ pub fn extract_run_agent_input_context(msg: &JsonRpcMessage) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+/// Extracts the `state` object from a `RunAgentInput` message and formats
+/// it as text suitable for injection as a system message.
+///
+/// AG-UI's `RunAgentInput` can carry arbitrary shared state (e.g., user
+/// preferences, session metadata). This function serializes the state so
+/// the LLM can see it — enabling state-injection attack scenarios like
+/// OATF-028.
+///
+/// Returns `None` if no state is present.
+///
+/// Implements: TJ-SPEC-022 F-024
+#[must_use]
+pub fn extract_run_agent_input_state(msg: &JsonRpcMessage) -> Option<String> {
+    let params = match msg {
+        JsonRpcMessage::Request(r) => r.params.as_ref(),
+        _ => None,
+    }?;
+    let state = params.get("state")?;
+    if state.is_null() {
+        return None;
+    }
+    let formatted = serde_json::to_string_pretty(state).unwrap_or_default();
+    if formatted.is_empty() || formatted == "{}" {
+        return None;
+    }
+    Some(format!("[Agent Shared State]\n{formatted}"))
+}
+
 /// Extracts the last user message from a follow-up `RunAgentInput`.
 ///
 /// Append-only invariant: only the last user message is extracted from

@@ -122,14 +122,20 @@ impl ExitCode {
     /// Alias for `NOT_EXPLOITED` — used in `main.rs` for general success.
     pub const SUCCESS: i32 = Self::NOT_EXPLOITED;
 
-    /// Scenario completed, agent WAS exploited (verdict: exploited).
+    /// Scenario completed, exploited — unclassified or `ingested` tier (T1).
     pub const EXPLOITED: i32 = 1;
 
-    /// Scenario completed with errors during execution.
-    pub const ERROR: i32 = 2;
+    /// Scenario completed, exploited with `local_action` tier (T2).
+    pub const EXPLOITED_LOCAL_ACTION: i32 = 2;
 
-    /// Scenario completed, partial exploitation (verdict: partial).
-    pub const PARTIAL: i32 = 3;
+    /// Scenario completed, exploited with `boundary_breach` tier (T3).
+    pub const EXPLOITED_BOUNDARY_BREACH: i32 = 3;
+
+    /// Scenario completed, partial exploitation (no tier set).
+    pub const PARTIAL: i32 = 4;
+
+    /// Scenario completed with errors during execution.
+    pub const ERROR: i32 = 5;
 
     /// Runtime error (transport failure, I/O error, etc.).
     pub const RUNTIME_ERROR: i32 = 10;
@@ -344,8 +350,10 @@ mod tests {
         assert_eq!(ExitCode::NOT_EXPLOITED, 0);
         assert_eq!(ExitCode::SUCCESS, 0);
         assert_eq!(ExitCode::EXPLOITED, 1);
-        assert_eq!(ExitCode::ERROR, 2);
-        assert_eq!(ExitCode::PARTIAL, 3);
+        assert_eq!(ExitCode::EXPLOITED_LOCAL_ACTION, 2);
+        assert_eq!(ExitCode::EXPLOITED_BOUNDARY_BREACH, 3);
+        assert_eq!(ExitCode::PARTIAL, 4);
+        assert_eq!(ExitCode::ERROR, 5);
         assert_eq!(ExitCode::RUNTIME_ERROR, 10);
         assert_eq!(ExitCode::USAGE_ERROR, 64);
         assert_eq!(ExitCode::INTERRUPTED, 130);
