@@ -117,6 +117,7 @@ async fn ec_ctx_002_empty_response() {
         Box::new(provider),
         None,
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -204,6 +205,7 @@ async fn ec_ctx_009_single_actor_no_tools() {
         Box::new(provider),
         None,
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -280,6 +282,7 @@ async fn ec_ctx_007_max_turns_reached() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         2, // max_turns = 2
@@ -361,6 +364,7 @@ async fn ec_ctx_014_repeated_truncation_terminates() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -512,6 +516,7 @@ async fn ec_ctx_019_cancellation_stops_drive_loop() {
         Box::new(BlockingProvider),
         None,
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -563,6 +568,7 @@ async fn ec_ctx_020_follow_up_timeout_ends_conversation() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -629,6 +635,7 @@ async fn ec_ctx_022_initial_message_timeout() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -859,6 +866,7 @@ async fn ec_ctx_003_rate_limited_propagates_error() {
         Box::new(RateLimitedProvider),
         None,
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -920,6 +928,7 @@ async fn ec_ctx_004_auth_error_fails_immediately() {
 
     let transport = ContextTransport::new(
         Box::new(AuthErrorProvider),
+        None,
         None,
         None,
         20,
@@ -1015,6 +1024,7 @@ async fn ec_ctx_010_timeout_propagates_error() {
         Box::new(TimeoutProvider),
         None,
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -1076,6 +1086,7 @@ async fn ec_ctx_011_context_window_exceeded() {
 
     let transport = ContextTransport::new(
         Box::new(ContextWindowProvider),
+        None,
         None,
         None,
         20,
@@ -1179,6 +1190,7 @@ async fn ec_ctx_015_tool_result_deadline_fires() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -1695,6 +1707,7 @@ async fn tool_roster_change_injects_system_notification() {
         Box::new(provider),
         None,
         None,
+        None,
         10,
         agui_tx,
         response_rx,
@@ -1804,6 +1817,7 @@ async fn no_notification_when_tools_unchanged() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         10,

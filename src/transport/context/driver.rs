@@ -31,6 +31,8 @@ pub struct ContextTransport {
     cli_system_prompt: Option<String>,
     /// A2A agent roster injected as a system message during history seeding.
     a2a_system_context: Option<String>,
+    /// MCP resource content injected as system messages during history seeding.
+    resource_context: Option<String>,
     turn_count: u32,
     max_turns: u32,
     agui_tx: mpsc::Sender<JsonRpcMessage>,
@@ -55,6 +57,7 @@ impl ContextTransport {
         provider: Box<dyn LlmProvider>,
         cli_system_prompt: Option<String>,
         a2a_system_context: Option<String>,
+        resource_context: Option<String>,
         max_turns: u32,
         agui_tx: mpsc::Sender<JsonRpcMessage>,
         agui_response_rx: mpsc::Receiver<JsonRpcMessage>,
@@ -69,6 +72,7 @@ impl ContextTransport {
             history: Vec::new(),
             cli_system_prompt,
             a2a_system_context,
+            resource_context,
             turn_count: 0,
             max_turns,
             agui_tx,
@@ -141,6 +145,12 @@ impl ContextTransport {
         if let Some(ref a2a_ctx) = self.a2a_system_context {
             self.history.push(ChatMessage::System(a2a_ctx.clone()));
         }
+        // Inject MCP resource content as system messages.
+        // Real agent frameworks include resource content in the LLM context
+        // when resources are available from connected MCP servers.
+        if let Some(ref res_ctx) = self.resource_context {
+            self.history.push(ChatMessage::System(res_ctx.clone()));
+        }
         // Inject AG-UI context items (key-value state) as a system message.
         // This surfaces run_agent_input.context for state injection scenarios.
         if let Some(context_text) = extract_run_agent_input_context(&initial) {
@@ -158,6 +168,15 @@ impl ContextTransport {
         }
 
         let mut consecutive_truncations: u32 = 0;
+
+        // Outer loop for multi-turn support. Each iteration handles one
+        // run_agent_input (user request). After emitting run_finished, the
+        // drive loop waits briefly for the AG-UI actor to advance to a new
+        // phase and send another run_agent_input. This enables multi-turn
+        // scenarios like rug pulls where tool definitions change between
+        // user requests, matching how real agent frameworks (CrewAI,
+        // LangGraph) issue sequential LLM calls with refreshed context.
+        'multi_turn: loop {
 
         loop {
             self.turn_count += 1;
@@ -439,7 +458,36 @@ impl ContextTransport {
             }
         }
 
+        tracing::debug!("multi-turn: emitting run_finished");
         self.emit_run_finished().await;
+
+        // Multi-turn: wait for the AG-UI actor to potentially advance to a
+        // new phase and send another run_agent_input. This happens when the
+        // AG-UI actor has a trigger (e.g. event: run_finished) that advances
+        // to a phase with a new run_agent_input.
+        tracing::debug!("multi-turn: waiting for next run_agent_input (5s timeout)");
+        match tokio::time::timeout(Duration::from_secs(2), self.agui_response_rx.recv()).await {
+            Ok(Some(next_input)) => {
+                let next_messages = extract_run_agent_input_messages(&next_input)?;
+                for msg in next_messages {
+                    self.history.push(msg);
+                }
+                self.run_id = Uuid::new_v4().to_string();
+                tracing::info!("multi-turn: received next run_agent_input, continuing");
+                continue 'multi_turn;
+            }
+            Ok(None) => {
+                tracing::debug!("multi-turn: channel closed, no next input");
+                break 'multi_turn;
+            }
+            Err(_) => {
+                tracing::debug!("multi-turn: timeout waiting for next input");
+                break 'multi_turn;
+            }
+        }
+
+        } // end 'multi_turn loop
+
         Ok(())
     }
 

@@ -766,11 +766,16 @@ pub async fn orchestrate_context(
     // 7. Construct ContextTransport
     // Build A2A system context roster (R2) — populated in Phase C
     let a2a_system_context = build_a2a_system_context(actors, &server_indices, &loaded.document);
+    // Build MCP resource context — injects resource content from MCP server
+    // actors into the LLM context, matching how real agent frameworks
+    // present available resources.
+    let resource_context = build_resource_context(actors, &server_indices, &loaded.document);
 
     let context_transport = ContextTransport::new(
         provider,
         config.context_system_prompt.clone(),
         a2a_system_context,
+        resource_context,
         max_turns,
         agui_tx,
         agui_response_rx,
@@ -1087,6 +1092,69 @@ fn build_a2a_system_context(
 
     text.push_str("\nTo interact with an A2A agent, call its tool with a message parameter.\n");
     Some(text)
+}
+
+/// Builds MCP resource content for system prompt injection.
+///
+/// Extracts resource URIs and text content from all `mcp_server` actors
+/// and formats them as a structured text section. Returns `None` if no
+/// resources are defined. This replicates how real agent frameworks
+/// include available resource content in the LLM context.
+fn build_resource_context(
+    actors: &[oatf::Actor],
+    server_indices: &[usize],
+    document: &oatf::Document,
+) -> Option<String> {
+    use std::fmt::Write;
+
+    use crate::engine::PhaseEngine;
+    use serde_json::Value;
+
+    let mut text = String::new();
+    let mut found_any = false;
+
+    for &idx in server_indices {
+        let actor = &actors[idx];
+        if actor.mode != "mcp_server" {
+            continue;
+        }
+        let engine_tmp = PhaseEngine::new(document.clone(), idx);
+        let state = engine_tmp.effective_state();
+
+        let Some(resources) = state.get("resources").and_then(Value::as_array) else {
+            continue;
+        };
+
+        for resource in resources {
+            let uri = resource.get("uri").and_then(Value::as_str).unwrap_or("");
+            let name = resource.get("name").and_then(Value::as_str).unwrap_or(uri);
+
+            // Extract text content from the resource.
+            // Supports both `content` as a string and `content` as an object
+            // with a `text` field (matching MCP resource content format).
+            let content_text = resource
+                .get("content")
+                .and_then(|c| {
+                    c.as_str().map(String::from).or_else(|| {
+                        c.get("text").and_then(Value::as_str).map(String::from)
+                    })
+                });
+
+            if let Some(content) = content_text {
+                if !found_any {
+                    text.push_str("## Available Resources\n\n");
+                    found_any = true;
+                }
+                let _ = writeln!(text, "### {name}");
+                if !uri.is_empty() {
+                    let _ = writeln!(text, "URI: {uri}");
+                }
+                let _ = writeln!(text, "\n{content}");
+            }
+        }
+    }
+
+    if found_any { Some(text) } else { None }
 }
 
 /// Configuration for running a server actor in context-mode.
