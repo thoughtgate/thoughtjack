@@ -110,6 +110,25 @@ sequenceDiagram
 
 Server actors work identically in both modes — rug pulls, phased attacks, and all temporal behaviors produce the same payloads. Only the transport layer differs.
 
+### Why this matches production behavior
+
+Context mode simulates how real agent frameworks (CrewAI, LangGraph, Google ADK) present protocol data to an LLM. The LLM receives standard tool/function definitions, conversation history, and content — never raw MCP JSON-RPC or A2A wire protocol. This matches production behavior: all major frameworks convert MCP tools to function-calling schema, present A2A agents as callable tools with a message parameter, and flatten multi-part responses to text.
+
+What context mode faithfully reproduces:
+
+- **MCP tool definitions** — name, description, and inputSchema converted to function-calling format
+- **A2A agents as tools** — matching Google ADK's `AgentTool` and CrewAI's delegation pattern
+- **Tool response content** — text, with multi-part concatenation
+- **Resource content injection** — as system context
+- **Tool definition changes between turns** — rug pull detection via fingerprinting (more than LangChain or CrewAI support, since neither handles `notifications/tools/list_changed`)
+
+### Known limitations
+
+- **No elicitation or human-in-the-loop.** MCP `elicitation/create` is rejected. Scenarios requiring simulated user responses cannot be tested. No production framework supports this either.
+- **MCP sampling supported but isolated.** When a server requests `sampling/createMessage`, context mode makes a separate LLM call without tool access, returning the result to the server. This matches the MCP spec's guidance that the client controls sampling context. Most frameworks don't support sampling at all.
+- **Framework-neutral prompt construction.** Context mode uses a minimal system prompt rather than replicating any specific framework's scaffolding (CrewAI's role/goal/backstory, LangGraph's state annotations). This makes results more generalizable but means exploit rates may differ from a specific framework deployment. Use `--context-system-prompt` to test with framework-specific instructions.
+- **A2A protocol abstraction.** A2A agents are presented as tools, not as native A2A task lifecycle entities. Agent Card metadata appears in tool descriptions. This matches how all current frameworks present A2A to the LLM, but scenarios testing A2A wire-level attacks (task state manipulation, streaming artifact injection) require traffic mode.
+
 ## Actor restrictions
 
 Not all actor modes are valid in context mode. Context mode simulates a single agent conversation, so client-mode actors (which initiate connections to external services) don't apply.

@@ -1,0 +1,170 @@
+---
+title: Analyze Protocol Traces
+sidebar_position: 10
+description: "Read, filter, and interpret ThoughtJack protocol traces exported with --export-trace to understand attack execution and agent behavior."
+---
+
+# Analyze Protocol Traces
+
+ThoughtJack can export a full protocol trace — every message between ThoughtJack and the agent — as a JSONL file. This guide shows how to read, filter, and interpret these traces.
+
+## Export a trace
+
+Add `--export-trace` to any run:
+
+```bash
+# Traffic mode
+thoughtjack scenarios run oatf-002 \
+  --mcp-server 127.0.0.1:8080 \
+  --export-trace trace.jsonl
+
+# Context mode
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY \
+  --export-trace trace.jsonl
+
+# Write to stdout (pipe to other tools)
+thoughtjack scenarios run oatf-001 --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY \
+  --export-trace -
+```
+
+## Trace entry format
+
+Each line is a JSON object with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `seq` | integer | Monotonically increasing sequence number (global across actors) |
+| `timestamp` | string | UTC ISO-8601 timestamp |
+| `actor` | string | Actor name that produced this event |
+| `phase` | string | Phase name when the event occurred |
+| `direction` | string | `"Incoming"` (from agent) or `"Outgoing"` (to agent) |
+| `method` | string | Protocol method (e.g., `"tools/call"`, `"tools/list"`) |
+| `content` | object | Full message payload |
+
+Example entry:
+
+```json
+{"seq":5,"timestamp":"2026-03-15T10:30:00.123Z","actor":"server","phase":"trust_building","direction":"Incoming","method":"tools/call","content":{"name":"calculator","arguments":{"expression":"2+2"}}}
+```
+
+## List all events
+
+Show a summary of every event in the trace:
+
+```bash
+cat trace.jsonl | python3 -c "
+import json, sys
+for line in sys.stdin:
+    e = json.loads(line)
+    print(f'[{e[\"seq\"]:3d}] {e[\"direction\"]:8s} {e[\"actor\"]}/{e[\"method\"]}  ({e[\"phase\"]})')
+"
+```
+
+Output:
+
+```
+[  0] Outgoing server/initialize  (trust_building)
+[  1] Incoming server/tools/list  (trust_building)
+[  2] Outgoing server/tools/list  (trust_building)
+[  3] Incoming server/tools/call  (trust_building)
+[  4] Outgoing server/tools/call  (trust_building)
+...
+```
+
+## Filter by phase
+
+Find events in a specific phase:
+
+```bash
+jq -c 'select(.phase == "exploit")' trace.jsonl
+```
+
+## Filter by direction
+
+Show only incoming events (messages from the agent):
+
+```bash
+jq -c 'select(.direction == "Incoming")' trace.jsonl
+```
+
+## Filter by method
+
+Show only tool calls:
+
+```bash
+jq -c 'select(.method == "tools/call")' trace.jsonl
+```
+
+## Find the exploit moment
+
+Look for the phase transition and what happens after. Tool calls in the exploit phase are where the agent acts on adversarial instructions:
+
+```bash
+jq -c 'select(.phase == "exploit" or .phase == "swap_definition") |
+  {seq, phase, direction, method, args: .content.arguments}' trace.jsonl
+```
+
+## Inspect tool call arguments
+
+Extract the arguments from every `tools/call` — this is what indicators match against:
+
+```bash
+jq -c 'select(.method == "tools/call" and .direction == "Incoming") |
+  {seq, phase, name: .content.name, args: .content.arguments}' trace.jsonl
+```
+
+## Filter by actor (multi-actor scenarios)
+
+In multi-actor scenarios, filter by actor name:
+
+```bash
+# Only MCP server events
+jq -c 'select(.actor == "mcp_poison")' trace.jsonl
+
+# Only AG-UI client events
+jq -c 'select(.actor == "agui")' trace.jsonl
+```
+
+## Count events per phase
+
+```bash
+jq -r '.phase' trace.jsonl | sort | uniq -c | sort -rn
+```
+
+## Compare two runs
+
+Export traces from two different models and diff the tool calls:
+
+```bash
+# Run against two models
+thoughtjack scenarios run oatf-001 --context \
+  --context-model gpt-4o --context-api-key $OPENAI_API_KEY \
+  --export-trace trace-gpt4o.jsonl
+
+thoughtjack scenarios run oatf-001 --context \
+  --context-provider anthropic \
+  --context-model claude-sonnet-4-20250514 --context-api-key $ANTHROPIC_API_KEY \
+  --export-trace trace-sonnet.jsonl
+
+# Compare tool call arguments
+diff \
+  <(jq -c 'select(.method == "tools/call" and .direction == "Incoming") | .content.arguments' trace-gpt4o.jsonl) \
+  <(jq -c 'select(.method == "tools/call" and .direction == "Incoming") | .content.arguments' trace-sonnet.jsonl)
+```
+
+## Pretty-print a single entry
+
+```bash
+jq -s '.[10]' trace.jsonl
+```
+
+## See also
+
+- [CLI Reference](/docs/reference/cli) — `--export-trace` flag
+- [Integrate with CI/CD](/docs/how-to/ci-integration) — export traces in pipelines
+- [Execution Modes](/docs/explanation/execution-modes) — traces work in both modes
