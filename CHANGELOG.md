@@ -7,6 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Fix second exit code check missed by previous commit (cf3a593)
+- Accept exit codes 4 (partial) and 5 (error) in e2e runner (29cca87)
+- Use Agent Card name for A2A tool naming in context mode (bcddbcd)
+- Add context-mode target aliases for A2A and AG-UI indicators (3185d6f)
+- Redact API key in Debug output, remove .expect() from provider constructors (53c8713)
+- Suppress raw JSON events when progress renderer is active (796c046)
+- Gemini 3.1 thought_signature, indicator false positives, context-mode tool refresh (8bffba8)
+- A2A skill lookup fallback and dynamic skill dispatch (d56573e)
+- Enable sampling and reject elicitation in context mode (3a19f22)
+- A2A tool names and temporal phase transitions in context mode (35f6998)
+- Use max_completion_tokens for newer OpenAI models (886c5d5)
+- Handle closed channels and server request errors in drive loop (a190619)
+- Address review findings for context-mode (ed5ac83)
+- Use valid API key pattern in OATF-006 credential exfil test (9b7d8e9)
+- Move scenarios submodule up one level to eliminate double-nested path (41fcf0c)
+- Default --progress auto to detailed on TTY (30a9ca7)
+- Emit PhaseEntered only on actual phase changes (79b2750)
+- Group messages by actor, fix protocol display and phase chain (da997b9)
+- Remove surface-as-method filter and narrow scenario scan (33657a0)
+- Capture per-request response channel for slow_stream delivery (e7e2321)
+- Skip outgoing events in trigger evaluation and auto-increment server ports (51daff9)
+- Release hardening — remove local-only validation, fix panics, update specs (442d9cb)
+- Complete indicator trace filtering and add depth/actor validation (e3b6627)
+- Include MCP-Protocol-Version header in HTTP client requests (944ed11)
+- Use method-specific empty fallback shapes in dispatch_response (46abaca)
+- Use taskId instead of id in MCP Tasks API handlers (89fec6b)
+- Restore conformance.yaml and fix formatting (38e7f6d)
+- Bound all attacker-controlled buffers (P1/P2/P3) (8b562e9)
+- Allow cognitive_complexity on send_server_request (779c36b)
+- Maintainability improvements across engine, tests, and CLI (5858d2d)
+- Align run config parsing and quiet exits (d759637)
+- Fix clippy/fmt and revert over-aggressive actor failure reporting (83fd01e)
+- Harden v0.5 engine against review findings (72076fa)
+- CLI behaviour alignment and test coverage ([#37](https://github.com/thoughtgate/thoughtjack/pull/37)) (bf5a425)
+- Disable value_relayed indicator due to MCP server panic in 4-actor scenario (0937ae3)
+- Fix extractor race, revert a2a min_traces, disable mcp-side-effects (4e0cf38)
+- Pass node-version 22 to MCP conformance action (f54179c)
+- Replace stdio with NullTransport in tests to prevent hangs (d1a72f5)
+- Make --config optional for scenarios run (edd9401)
+- Replace panicking signal handlers with graceful fallbacks (0e84fc8)
+- Exclude fuzz crate from workspace to fix release builds (4473e94)
+- URI template multi-byte panic + fuzz job permissions (6fd4b11)
+
+### Build
+
+- Update all Rust and GitHub Actions dependencies (9b04662)
+- Bump GitHub Actions and Rust dependencies (70ecf08)
+
+### CI/CD
+
+- Add dns-rebinding-protection to conformance baseline (a719e03)
+- Fetch scenarios submodule in checkout steps (a208ace)
+- Add GitHub Pages deployment workflow and live status badges (697abfd)
+
+### Documentation
+
+- Add adversarial testing explanation and tutorial progress component (1be0601)
+- Redesign docs site with indigo palette, styled components, and scenario cards (aec72e0)
+- Fix P0 adoption blockers and update how-to guides to OATF format (e11e246)
+- Align docs site with v0.5 OATF engine and progress output (72cff99)
+- Fix remaining docs site issues and SEO optimization (6e2c14b)
+- Fix stale scenario counts and deprecated trigger syntax (7c791a4)
+- Fix stale file paths, scenario count, and Quick Start in README (908d932)
+- Define OATF, add client mode tutorial, fix stale references (962d675)
+- Fix exit codes, CLI flags, and trigger examples (e6c27de)
+
+### Features
+
+- AG-UI state extraction and isolated sampling context (33ac33a)
+- Integrate OATF 0.4.0 output tiers (0d74a34)
+- Tool disambiguation, event drain, AG-UI context extraction (b894b64)
+- A2A context-mode overhaul — agent-level tools, event aliasing, indicator fix (cef42aa)
+- Implement context-mode (TJ-SPEC-022) (c987222)
+- Add Docker lab support and update CLAUDE.md (fd372db)
+- Implement --export-trace for full protocol trace output (4a604c7)
+- Add --progress compact|detailed flag with enriched events (5f6301f)
+- Add interactive progress output for TTY sessions (c05dd61)
+- Replace built-in scenarios with OATF official library (6d36225)
+- Add unified /mcp endpoint for MCP Streamable HTTP transport (f1d01e9)
+- Harden conformance suite with deeper assertions and attack coverage (05c369e)
+- Add e2e conformance test infrastructure ([#35](https://github.com/thoughtgate/thoughtjack/pull/35)) (97acc74)
+
+### Refactoring
+
+- Split context.rs God Module, extract shared retry and A2A helpers (1de6c49)
+- Consolidate A2A skill lookup into shared helpers (e78124a)
+- Simplify context-mode drive loop (ca093e6)
+- Simplify --progress to on/off/auto and default JSONL to stdout (a6cf8a3)
+- Upgrade oatf SDK from 0.2 to 0.3 (1759136)
+- Deduplicate local validation, merge A2A response resolution, bound MCP client reads (be0ba30)
+- Archive v0.2 scenarios, migrate rug-pull to OATF (b5f6d11)
+
+### Testing
+
+- Add tier 1+2 coverage tests (f3c6732)
+- Add high-priority coverage for indicator evaluation and context-mode driver (73e5478)
+- Complete edge case coverage for context-mode (f86ed5c)
+- Complete edge case coverage for context-mode (96e022e)
+- Add edge case tests and verdict attribution for context-mode (a42c779)
+- Add 44 tests for ProgressRenderer (30% → ~85% coverage) (882c328)
+- Fix 6 test-quality issues from security review (T1–T6) (53419d5)
+
 ## [0.5.0] - 2026-03-02
 
 ### Added
