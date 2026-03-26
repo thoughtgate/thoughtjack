@@ -15,7 +15,7 @@ Complete reference for the `thoughtjack` command-line interface. See [TJ-SPEC-00
 | `--verbose` | `-v` | Increase verbosity (repeat for more: `-v` info, `-vv` debug, `-vvv` trace) |
 | `--quiet` | `-q` | Suppress all non-error output |
 | `--color <when>` | | Color output: `auto`, `always`, `never` |
-| `--log-format <format>` | | Log format: `human` (default), `json` |
+| `--log-format <format>` | | Log format: `human` (default), `json`. Env: `THOUGHTJACK_LOG_FORMAT` |
 
 ## Commands
 
@@ -42,11 +42,29 @@ thoughtjack run --config <oatf.yaml>
 | `--readiness-timeout <DURATION>` | | Timeout for server readiness gate [default: 30s] |
 | `-o, --output <PATH>` | | Write JSON verdict to file (use `-` for stdout) |
 | `--header <KEY:VALUE>` | | HTTP headers for client transports (repeatable) |
-| `--no-semantic` | | Disable semantic (LLM-as-judge) indicator evaluation |
+| `--no-semantic` | | Disable semantic (LLM-as-judge) indicator evaluation (not yet implemented) |
 | `--raw-synthesize` | | Bypass synthesize output validation |
-| `--progress <LEVEL>` | `THOUGHTJACK_PROGRESS` | Progress detail level: `off`, `compact`, `detailed`, `auto` (default) |
+| `--progress <LEVEL>` | `THOUGHTJACK_PROGRESS` | Progress output: `off`, `on`, `auto` (default: `auto` — on for TTY, off otherwise) |
 | `--metrics-port <port>` | `THOUGHTJACK_METRICS_PORT` | Enable Prometheus metrics endpoint |
 | `--events-file <path>` | `THOUGHTJACK_EVENTS_FILE` | Write structured events to JSONL file |
+| `--export-trace <PATH>` | `THOUGHTJACK_EXPORT_TRACE` | Write full protocol trace to JSONL file (use `-` for stdout) |
+
+#### Context-mode flags
+
+Enable [context mode](/docs/explanation/execution-modes#context-mode) to call an LLM API directly instead of running real protocol infrastructure.
+
+| Flag | Env Variable | Description |
+|------|-------------|-------------|
+| `--context` | | Enable context mode |
+| `--context-model <MODEL>` | `THOUGHTJACK_CONTEXT_MODEL` | LLM model identifier (required with `--context`) |
+| `--context-api-key <KEY>` | `THOUGHTJACK_CONTEXT_API_KEY` | API key for LLM provider |
+| `--context-base-url <URL>` | `THOUGHTJACK_CONTEXT_BASE_URL` | Override provider's default base URL |
+| `--context-provider <TYPE>` | `THOUGHTJACK_CONTEXT_PROVIDER` | Provider type: `openai` (default), `anthropic` |
+| `--context-temperature <FLOAT>` | `THOUGHTJACK_CONTEXT_TEMPERATURE` | Sampling temperature [default: 0.0] |
+| `--context-max-tokens <TOKENS>` | `THOUGHTJACK_CONTEXT_MAX_TOKENS` | Max tokens per LLM response [default: 4096] |
+| `--context-system-prompt <PROMPT>` | `THOUGHTJACK_CONTEXT_SYSTEM_PROMPT` | System prompt for simulated agent |
+| `--context-timeout <SECONDS>` | `THOUGHTJACK_CONTEXT_TIMEOUT` | Per-request LLM timeout [default: 120] |
+| `--max-turns <N>` | | Maximum conversation turns in context mode [default: 20] |
 
 ### `validate`
 
@@ -112,21 +130,33 @@ thoughtjack version [--format human|json]
 | `THOUGHTJACK_CONFIG` | — | Default OATF document file path |
 | `THOUGHTJACK_METRICS_PORT` | — | Prometheus metrics port |
 | `THOUGHTJACK_EVENTS_FILE` | — | Structured event output file |
-| `THOUGHTJACK_PROGRESS` | `auto` | Progress detail level (`off`, `compact`, `detailed`, `auto`) |
+| `THOUGHTJACK_PROGRESS` | `auto` | Progress output (`off`, `on`, `auto`) |
 | `THOUGHTJACK_COLOR` | `auto` | Color output control |
 | `THOUGHTJACK_LOG_LEVEL` | — | Override log level (trace, debug, info, warn, error) |
 | `NO_COLOR` | — | Disable color output (any value) |
+| `THOUGHTJACK_LOG_FORMAT` | `human` | Log format (`human`, `json`) |
+| `THOUGHTJACK_EXPORT_TRACE` | — | Default export trace file path |
+| `THOUGHTJACK_CONTEXT_API_KEY` | — | API key for context-mode LLM provider |
+| `THOUGHTJACK_CONTEXT_BASE_URL` | — | Override LLM provider base URL |
+| `THOUGHTJACK_CONTEXT_MODEL` | — | LLM model identifier for context mode |
+| `THOUGHTJACK_CONTEXT_PROVIDER` | `openai` | LLM provider type (`openai`, `anthropic`) |
+| `THOUGHTJACK_CONTEXT_SYSTEM_PROMPT` | — | System prompt for context mode |
+| `THOUGHTJACK_CONTEXT_TEMPERATURE` | — | Sampling temperature for context mode |
+| `THOUGHTJACK_CONTEXT_MAX_TOKENS` | `4096` | Max tokens per LLM response |
+| `THOUGHTJACK_CONTEXT_TIMEOUT` | `120` | Per-request LLM timeout in seconds |
 
 ## Exit codes
 
-Exit codes are verdict-based in v0.5:
+Exit codes encode both the verdict result and the attack severity tier. When an indicator with a `tier` field matches, the exit code reflects the highest tier. See [Execution Modes](/docs/explanation/execution-modes#tier-based-exit-codes) for details.
 
 | Code | Name | Description |
 |------|------|-------------|
 | 0 | `not_exploited` | Agent was not exploited — pass |
-| 1 | `exploited` | Agent was exploited — fail |
-| 2 | `error` | Evaluation error — unstable |
-| 3 | `partial` | Partial exploitation — warning |
+| 1 | `exploited` | Exploited (no tier, or Ingested tier) |
+| 2 | `exploited_local_action` | Exploited with LocalAction tier |
+| 3 | `exploited_boundary_breach` | Exploited with BoundaryBreach tier |
+| 4 | `partial` | Partial exploitation |
+| 5 | `error` | Evaluation error |
 | 10 | Runtime error | Infrastructure or engine failure |
 | 64 | Usage error | Invalid CLI arguments |
 | 130 | Interrupted | SIGINT received (Ctrl+C) |
@@ -137,3 +167,5 @@ Exit codes are verdict-based in v0.5:
 - [Getting Started](/docs/tutorials/getting-started) — install and run your first scenario
 - [Integrate with CI/CD](/docs/how-to/ci-integration) — use exit codes in automated pipelines
 - [OATF Document Schema](/docs/reference/config-schema) — the YAML format the CLI consumes
+- [Execution Modes](/docs/explanation/execution-modes) — traffic mode vs context mode
+- [Configure Context Mode Providers](/docs/how-to/context-mode-providers) — OpenAI, Anthropic, Azure, local models

@@ -13,7 +13,7 @@ ThoughtJack is a monolithic Rust crate that implements an adversarial agent secu
 ```mermaid
 graph TD
     CLI[CLI<br/>args.rs, commands/] --> Config[Config<br/>schema, loader, validation]
-    CLI --> Scenarios[Scenarios<br/>10 built-in attacks]
+    CLI --> Scenarios[Scenarios<br/>91 built-in attacks]
     CLI --> Orchestrator[Orchestrator<br/>orchestration/orchestrator.rs]
     Orchestrator --> ActorRunner[ActorRunner<br/>orchestration/runner.rs]
     ActorRunner --> PhaseLoop[PhaseLoop<br/>engine/loop.rs]
@@ -25,11 +25,14 @@ graph TD
         A2A_S[A2A Server<br/>protocol/a2a_server.rs]
         A2A_C[A2A Client<br/>protocol/a2a_client.rs]
         AGUI[AG-UI Client<br/>protocol/agui.rs]
+        CTX_AGUI[Context AG-UI<br/>protocol/context_agui.rs]
     end
     PhaseLoop --> ExtractorStore[ExtractorStore<br/>orchestration/store.rs]
     Orchestrator --> Verdict[Verdict<br/>evaluation, grace, output]
     Config --> Generator[Generators<br/>nested JSON, garbage, ...]
     ActorRunner --> Transport[Transport<br/>stdio, HTTP/SSE]
+    Orchestrator --> ContextTransport[Context Transport<br/>transport/context/]
+    ContextTransport --> Provider[LLM Provider<br/>transport/provider/]
     Orchestrator --> Observability[Observability<br/>logging, metrics, events]
 ```
 
@@ -76,16 +79,28 @@ Each protocol mode has a driver implementing the `PhaseDriver` trait:
 Post-execution evaluation pipeline:
 
 - **Grace period** — configurable wait after execution for delayed effects
-- **Indicator evaluation** — CEL expressions and semantic (LLM-as-judge) checks
-- **Verdict computation** — `exploited`, `not_exploited`, `partial`, `error`
+- **Indicator evaluation** — pattern matching and CEL expressions (semantic LLM-as-judge evaluation is planned)
+- **Verdict computation** — `exploited`, `not_exploited`, `partial`, `error` with tier-based severity
 - **Output** — JSON verdict file and human-readable summary
 
 ### Transport (`transport/`)
 
-Abstracts the communication channel:
+Abstracts the communication channel for [traffic mode](/docs/explanation/execution-modes#traffic-mode-default):
 
 - **stdio** — JSON-RPC over stdin/stdout, single connection
 - **HTTP** — Axum-based HTTP server with SSE for server-to-client messages, multi-connection
+
+### Context transport (`transport/context/`)
+
+The [context mode](/docs/explanation/execution-modes#context-mode) transport bypasses real network connections. Instead of HTTP or stdio, it:
+
+1. Builds a conversation history from OATF scenario state
+2. Injects adversarial payloads as tool-call results in the history
+3. Calls an LLM API via the `LlmProvider` trait (`OpenAI` or `Anthropic` implementations in `transport/provider/`)
+4. Observes the LLM's response — particularly any tool calls it makes
+5. Routes tool calls to server actors via channel-based handles (`AgUiHandle`, `ServerHandle`)
+
+The `ContextTransport` owns the conversation loop and coordinates with server actors through `mpsc` and `watch` channels, keeping the `PhaseDriver` implementations transport-agnostic. Server actors run their normal PhaseLoop/PhaseDriver machinery — only the transport layer differs.
 
 ### Generators (`generator/`)
 
@@ -100,7 +115,7 @@ Controls response delivery and side effects:
 
 ### Scenarios (`scenarios/`)
 
-10 built-in OATF attack scenarios embedded at compile time via `include_str!`. Scenarios are sourced from the [OATF scenarios](https://github.com/oatf-spec/scenarios) git submodule. Supports listing, detail display, fuzzy name matching, and YAML export.
+91 built-in OATF attack scenarios embedded at compile time. Scenarios are sourced from the [OATF scenarios](https://github.com/oatf-spec/scenarios) git submodule and validated with `oatf::load()` during the build. Supports listing, detail display, fuzzy name matching, and YAML export.
 
 ### Observability (`observability/`)
 
@@ -161,4 +176,6 @@ The key flow:
 
 **Transport abstraction**: The `Transport` trait abstracts stdio and HTTP, so the server runtime doesn't need to know which transport is active. Side effects that are transport-specific (e.g., `pipe_deadlock` for stdio only) check compatibility at runtime.
 
-**Verdict-based exit codes**: Exit codes map to verdicts (`0` = not exploited, `1` = exploited, `3` = partial), making CI integration straightforward.
+**Verdict-based exit codes**: Exit codes map to verdicts and severity tiers (`0` = not exploited, `1` = exploited, `2` = local action, `3` = boundary breach), making CI integration straightforward.
+
+**Context mode reuses server actors**: In context mode, server actors (MCP server, A2A server) run their normal PhaseLoop/PhaseDriver machinery. The only difference is the transport layer — channel-based handles instead of network sockets. This means rug pulls, phased attacks, and all temporal behaviors work identically in both modes.

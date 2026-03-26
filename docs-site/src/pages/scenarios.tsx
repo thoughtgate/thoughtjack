@@ -137,7 +137,7 @@ export default function Scenarios(): React.ReactElement {
           <header className={styles.header}>
             <h1>Scenario Library</h1>
             <p className={styles.subtitle}>
-              ThoughtJack ships with 10 built-in attack scenarios across MCP, A2A, and AG-UI
+              ThoughtJack ships with 91 built-in attack scenarios across MCP, A2A, and AG-UI
               protocols. Each scenario is an{' '}
               <a href="https://oatf.dev" target="_blank" rel="noopener noreferrer">
                 OATF

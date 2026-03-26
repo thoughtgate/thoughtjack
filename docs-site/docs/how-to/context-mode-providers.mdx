@@ -1,0 +1,124 @@
+---
+title: Configure Context Mode Providers
+sidebar_position: 9
+description: "Set up ThoughtJack context mode with OpenAI, Anthropic, Azure OpenAI, and local LLM providers like Ollama and vLLM."
+---
+
+# Configure Context Mode Providers
+
+This guide shows how to configure [context mode](/docs/explanation/execution-modes#context-mode) for different LLM providers. Context mode calls an LLM API directly to test whether a model follows adversarial instructions.
+
+## OpenAI (default)
+
+OpenAI is the default provider. Set the model and API key:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY
+```
+
+Or with environment variables:
+
+```bash
+export THOUGHTJACK_CONTEXT_API_KEY=$OPENAI_API_KEY
+export THOUGHTJACK_CONTEXT_MODEL=gpt-4o
+
+thoughtjack scenarios run oatf-001 --context
+```
+
+## Anthropic
+
+Set `--context-provider anthropic`:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-provider anthropic \
+  --context-model claude-sonnet-4-20250514 \
+  --context-api-key $ANTHROPIC_API_KEY
+```
+
+Or with environment variables:
+
+```bash
+export THOUGHTJACK_CONTEXT_PROVIDER=anthropic
+export THOUGHTJACK_CONTEXT_API_KEY=$ANTHROPIC_API_KEY
+export THOUGHTJACK_CONTEXT_MODEL=claude-sonnet-4-20250514
+
+thoughtjack scenarios run oatf-001 --context
+```
+
+## Azure OpenAI
+
+Use the `openai` provider with a custom base URL pointing to your Azure deployment:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-base-url https://my-deployment.openai.azure.com/openai/deployments/gpt-4o \
+  --context-model gpt-4o \
+  --context-api-key $AZURE_OPENAI_KEY
+```
+
+## Local models (Ollama, vLLM)
+
+Any OpenAI-compatible endpoint works. Point `--context-base-url` at your local server:
+
+```bash
+# Ollama
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-base-url http://localhost:11434/v1 \
+  --context-model llama3.1
+
+# vLLM
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-base-url http://localhost:8000/v1 \
+  --context-model meta-llama/Llama-3.1-70B-Instruct
+```
+
+Local endpoints typically don't require an API key. If yours does, pass `--context-api-key`.
+
+## Tuning parameters
+
+| Parameter | Flag | Default | When to adjust |
+|-----------|------|---------|----------------|
+| Temperature | `--context-temperature` | 0.0 | Raise for non-deterministic testing; keep at 0 for reproducible benchmarks |
+| Max tokens | `--context-max-tokens` | 4096 | Increase if the model's responses are being truncated |
+| Timeout | `--context-timeout` | 120s | Increase for slow models or high-latency endpoints |
+| Max turns | `--max-turns` | 20 | Lower to reduce API cost; raise for complex multi-turn scenarios |
+
+## Environment variables for CI
+
+Set all context-mode configuration via environment variables to avoid passing secrets on the command line:
+
+```bash
+# .env or CI secrets
+THOUGHTJACK_CONTEXT_API_KEY=sk-...
+THOUGHTJACK_CONTEXT_MODEL=gpt-4o
+THOUGHTJACK_CONTEXT_PROVIDER=openai        # optional, "openai" is default
+THOUGHTJACK_CONTEXT_BASE_URL=              # optional, uses provider default
+THOUGHTJACK_CONTEXT_SYSTEM_PROMPT=         # optional
+THOUGHTJACK_CONTEXT_TIMEOUT=120            # optional
+```
+
+See [Integrate with CI/CD](/docs/how-to/ci-integration#context-mode-in-ci) for a GitHub Actions example.
+
+## Actor restrictions
+
+Context mode supports only these actor configurations:
+
+- **Required:** Exactly one `ag_ui_client` actor (provides the user message)
+- **Allowed:** One or more `mcp_server` and/or `a2a_server` actors (provide tools)
+- **Not supported:** `mcp_client` and `a2a_client` actors
+
+If a scenario uses client-mode actors, run it in [traffic mode](/docs/explanation/execution-modes#traffic-mode-default) instead.
+
+## See also
+
+- [Testing with Context Mode](/docs/tutorials/context-mode) — step-by-step tutorial
+- [Execution Modes](/docs/explanation/execution-modes) — architecture and design
+- [CLI Reference](/docs/reference/cli) — all `--context*` flags
