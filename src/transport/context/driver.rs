@@ -35,8 +35,8 @@ pub struct ContextTransport {
     resource_context: Option<String>,
     turn_count: u32,
     max_turns: u32,
-    agui_tx: mpsc::Sender<JsonRpcMessage>,
-    agui_response_rx: mpsc::Receiver<JsonRpcMessage>,
+    agui_tx: mpsc::UnboundedSender<JsonRpcMessage>,
+    agui_response_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
     thread_id: String,
     run_id: String,
     server_actors: HashMap<String, ServerActorEntry>,
@@ -59,8 +59,8 @@ impl ContextTransport {
         a2a_system_context: Option<String>,
         resource_context: Option<String>,
         max_turns: u32,
-        agui_tx: mpsc::Sender<JsonRpcMessage>,
-        agui_response_rx: mpsc::Receiver<JsonRpcMessage>,
+        agui_tx: mpsc::UnboundedSender<JsonRpcMessage>,
+        agui_response_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
         thread_id: String,
         server_actors: HashMap<String, ServerActorEntry>,
         server_tool_watches: Vec<(String, watch::Receiver<Vec<ToolDefinition>>)>,
@@ -120,11 +120,11 @@ impl ContextTransport {
                 match result {
                     Ok(Some(msg)) => msg,
                     Ok(None) => {
-                        self.emit_run_finished().await;
+                        self.emit_run_finished();
                         return Ok(());
                     }
                     Err(_) => {
-                        self.emit_run_finished().await;
+                        self.emit_run_finished();
                         return Err(EngineError::Driver(
                             "AG-UI actor did not send initial message within 30s".into(),
                         ));
@@ -132,7 +132,7 @@ impl ContextTransport {
                 }
             }
             () = cancel.cancelled() => {
-                self.emit_run_finished().await;
+                self.emit_run_finished();
                 return Ok(());
             }
         };
@@ -258,7 +258,7 @@ impl ContextTransport {
                     match result {
                         Ok(res) => res,
                         Err(e) => {
-                            self.emit_run_finished().await;
+                            self.emit_run_finished();
                             return Err(EngineError::Driver(format!("LLM API error: {e}")));
                         }
                     }
@@ -270,12 +270,12 @@ impl ContextTransport {
                 LlmResponse::Text(text_resp) => {
                     self.history
                         .push(ChatMessage::assistant_text(&text_resp.text));
-                    self.emit_text_content(&text_resp.text).await;
+                    self.emit_text_content(&text_resp.text);
 
                     if text_resp.is_truncated {
                         consecutive_truncations += 1;
                         if consecutive_truncations >= 2 {
-                            self.emit_run_finished().await;
+                            self.emit_run_finished();
                             return Err(EngineError::Driver(
                                 "Repeated truncation — increase --context-max-tokens".into(),
                             ));
@@ -299,7 +299,7 @@ impl ContextTransport {
                     if self.server_actors.is_empty() {
                         // Single-actor: emit tool call events to AG-UI
                         for call in &calls {
-                            self.emit_tool_attempt_to_agui(call).await;
+                            self.emit_tool_attempt_to_agui(call);
                         }
                         if let Some(user_text) = self.wait_for_followup(&cancel).await {
                             self.history.push(ChatMessage::user(&user_text));
@@ -459,14 +459,14 @@ impl ContextTransport {
         }
 
         tracing::debug!("multi-turn: emitting run_finished");
-        self.emit_run_finished().await;
+        self.emit_run_finished();
 
         // Multi-turn: wait for the AG-UI actor to potentially advance to a
         // new phase and send another run_agent_input. This happens when the
         // AG-UI actor has a trigger (e.g. event: run_finished) that advances
         // to a phase with a new run_agent_input.
         tracing::debug!("multi-turn: waiting for next run_agent_input (5s timeout)");
-        match tokio::time::timeout(Duration::from_secs(2), self.agui_response_rx.recv()).await {
+        match tokio::time::timeout(Duration::from_secs(5), self.agui_response_rx.recv()).await {
             Ok(Some(next_input)) => {
                 let next_messages = extract_run_agent_input_messages(&next_input)?;
                 for msg in next_messages {
@@ -526,7 +526,7 @@ impl ContextTransport {
         }
     }
 
-    async fn emit_text_content(&self, text: &str) {
+    fn emit_text_content(&self, text: &str) {
         let msg_id = Uuid::new_v4().to_string();
         let content_notif = JsonRpcMessage::Notification(JsonRpcNotification::new(
             "text_message_content",
@@ -536,12 +536,12 @@ impl ContextTransport {
             "text_message_end",
             Some(json!({ "messageId": msg_id })),
         ));
-        let _ = self.agui_tx.send(content_notif).await;
-        let _ = self.agui_tx.send(end_notif).await;
+        let _ = self.agui_tx.send(content_notif);
+        let _ = self.agui_tx.send(end_notif);
     }
 
     /// Emits `tool_call_start` + `tool_call_end` to the AG-UI actor (single-actor only).
-    async fn emit_tool_attempt_to_agui(&self, call: &ToolCall) {
+    fn emit_tool_attempt_to_agui(&self, call: &ToolCall) {
         let tc_id = Uuid::new_v4().to_string();
         let start_notif = JsonRpcMessage::Notification(JsonRpcNotification::new(
             "tool_call_start",
@@ -555,12 +555,12 @@ impl ContextTransport {
             "tool_call_end",
             Some(json!({ "toolCallId": tc_id })),
         ));
-        let _ = self.agui_tx.send(start_notif).await;
-        let _ = self.agui_tx.send(end_notif).await;
+        let _ = self.agui_tx.send(start_notif);
+        let _ = self.agui_tx.send(end_notif);
     }
 
     /// Emits `run_finished` to the AG-UI actor.
-    async fn emit_run_finished(&self) {
+    fn emit_run_finished(&self) {
         let finish_notif = JsonRpcMessage::Notification(JsonRpcNotification::new(
             "run_finished",
             Some(json!({
@@ -568,7 +568,7 @@ impl ContextTransport {
                 "runId": self.run_id,
             })),
         ));
-        let _ = self.agui_tx.send(finish_notif).await;
+        let _ = self.agui_tx.send(finish_notif);
     }
 
     /// Converts a `ToolCall` to a `JsonRpcMessage` for context-mode dispatch.

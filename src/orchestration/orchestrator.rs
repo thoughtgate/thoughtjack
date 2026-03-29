@@ -678,9 +678,11 @@ pub async fn orchestrate_context(
     let extractor_store = ExtractorStore::new();
     let thread_id = uuid::Uuid::new_v4().to_string();
 
-    // 3. AG-UI channels
-    let (agui_tx, agui_rx) = tokio::sync::mpsc::channel(16);
-    let (agui_response_tx, agui_response_rx) = tokio::sync::mpsc::channel(16);
+    // 3. AG-UI channels — unbounded to prevent deadlock between drive
+    // loop and AG-UI actor (bounded channels risk circular wait when both
+    // sides block on send simultaneously).
+    let (agui_tx, agui_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (agui_response_tx, agui_response_rx) = tokio::sync::mpsc::unbounded_channel();
 
     // 4. Shared result/request channels
     let (tool_result_tx, tool_result_rx) = tokio::sync::mpsc::channel(16);
@@ -791,6 +793,7 @@ pub async fn orchestrate_context(
 
     // 9. Spawn actors
     let mut join_set: JoinSet<ActorTaskResult> = JoinSet::new();
+    let mut task_meta: TaskMetaMap = HashMap::new();
 
     // 9a. AG-UI actor — spawn PhaseLoop directly
     {
@@ -832,8 +835,8 @@ pub async fn orchestrate_context(
             context_mode: true,
         };
 
-        let actor_name_owned = agui_actor_name;
-        join_set.spawn(async move {
+        let actor_name_owned = agui_actor_name.clone();
+        let abort_handle = join_set.spawn(async move {
             let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
             let result = phase_loop.run().await;
             ActorTaskResult {
@@ -842,6 +845,7 @@ pub async fn orchestrate_context(
                 result,
             }
         });
+        task_meta.insert(abort_handle.id(), (agui_actor_name, false));
     }
 
     // 9b. Server actors — use ServerHandle as transport
@@ -865,7 +869,7 @@ pub async fn orchestrate_context(
             .collect();
 
         let mode = actor.mode.clone();
-        join_set.spawn(async move {
+        let abort_handle = join_set.spawn(async move {
             let server_cfg = ContextServerActorConfig {
                 actor_index: idx,
                 document: doc,
@@ -887,6 +891,7 @@ pub async fn orchestrate_context(
                 result,
             }
         });
+        task_meta.insert(abort_handle.id(), (actor_name.clone(), true));
     }
 
     // 10. Spawn drive loop
@@ -929,7 +934,9 @@ pub async fn orchestrate_context(
                         }
                     }
                     Err(join_err) => {
-                        let actor_name = "(unknown)".to_string();
+                        let actor_name = task_meta
+                            .get(&join_err.id())
+                            .map_or_else(|| "(unknown)".to_string(), |(name, _)| name.clone());
                         if join_err.is_panic() {
                             outcomes.push(ActorOutcome::Panic { actor_name });
                         } else {

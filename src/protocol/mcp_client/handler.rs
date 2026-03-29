@@ -51,6 +51,9 @@ pub(super) async fn server_request_handler(
                     content: content.clone(),
                 }).is_err() {
                     tracing::error!("handler event backlog exceeded; cancelling MCP client session");
+                    let _ = writer.lock().await
+                        .send_error_response(&req.id, error_codes::INTERNAL_ERROR, "handler backlog exceeded")
+                        .await;
                     cancel.cancel();
                     break;
                 }
@@ -82,7 +85,7 @@ pub(super) async fn server_request_handler(
                             method: req.method.clone(),
                             content: result_value.clone(),
                         }).is_err() {
-                            tracing::error!("handler event backlog exceeded; cancelling MCP client session");
+                            tracing::error!("handler event backlog exceeded on response; cancelling MCP client session");
                             cancel.cancel();
                             break;
                         }

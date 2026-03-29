@@ -135,6 +135,11 @@ pub struct HttpTransport {
     /// RAII guard that cleans up connection tracking on drop.
     // std::sync::Mutex: same rationale as current_context — brief, synchronous access only.
     current_guard: std::sync::Mutex<Option<ConnectionGuard>>,
+    /// Retains recent connection guards to prevent premature removal from
+    /// the tracking `DashMap`. Without this, replacing `current_guard` drops
+    /// the old guard immediately, removing the connection entry while its
+    /// response channel may still be in use. Capped at 2 to bound memory.
+    previous_guards: std::sync::Mutex<Vec<ConnectionGuard>>,
     _server_handle: JoinHandle<()>,
 }
 
@@ -199,6 +204,7 @@ impl HttpTransport {
                 connected_at: Instant::now(),
             }),
             current_guard: std::sync::Mutex::new(None),
+            previous_guards: std::sync::Mutex::new(Vec::new()),
             _server_handle: server_handle,
         };
 
@@ -515,13 +521,29 @@ impl Transport for HttpTransport {
             };
         }
 
-        // Create RAII guard for connection cleanup (replaces any previous guard)
+        // Create RAII guard for connection cleanup.
+        // Retain old guards to prevent premature DashMap removal while
+        // response channels may still be draining. Cap at 2 entries.
         {
-            let mut guard = self
+            let old_guard = self
                 .current_guard
                 .lock()
-                .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))?;
-            *guard = Some(ConnectionGuard::new(
+                .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))?
+                .take();
+            // Retain old guard so its connection entry stays in the DashMap.
+            if let Some(guard) = old_guard
+                && let Ok(mut prev) = self.previous_guards.lock()
+            {
+                prev.push(guard);
+                while prev.len() > 2 {
+                    prev.remove(0);
+                }
+            }
+            *self
+                .current_guard
+                .lock()
+                .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))? =
+                Some(ConnectionGuard::new(
                 Arc::clone(&self.shared.connections),
                 req.connection_id,
             ));
