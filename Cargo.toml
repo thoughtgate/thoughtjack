@@ -54,7 +54,7 @@ indexmap = "2"
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3.24"
-proptest = "1.10"
+proptest = "1.11"
 
 [[bin]]
 name = "thoughtjack"
