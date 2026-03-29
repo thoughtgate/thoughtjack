@@ -1,0 +1,332 @@
+---
+title: Test Agent Frameworks
+sidebar_position: 7
+description: "Connect LangGraph, CrewAI, or any MCP-capable agent framework to ThoughtJack for traffic-mode security testing."
+---
+
+# Test Agent Frameworks
+
+This guide shows how to connect real agent frameworks to ThoughtJack in traffic mode. Traffic mode runs attack scenarios against a live agent, testing the full protocol stack — MCP tool discovery, tool calls, AG-UI streaming, and A2A delegation.
+
+## How it works
+
+ThoughtJack and the agent run as two separate processes. ThoughtJack acts as a malicious MCP server (and optionally an A2A server). The agent connects to ThoughtJack's MCP endpoint to discover tools, then processes user requests via AG-UI:
+
+```
+┌──────────────┐         MCP (HTTP)          ┌──────────────┐
+│              │◄───── tools/list, tools/call ─┤              │
+│  ThoughtJack │                              │    Agent     │
+│  (attacker)  │──── AG-UI (HTTP/SSE) ───────►│  (target)    │
+│              │                              │              │
+│  MCP Server  │         A2A (HTTP)           │  LangGraph   │
+│  A2A Server  │◄──── message/send ───────────┤  CrewAI      │
+│  AG-UI Client│                              │  Custom      │
+└──────────────┘                              └──────────────┘
+```
+
+**Key requirement**: The agent must expose an AG-UI HTTP endpoint that accepts `RunAgentInput` and returns SSE events. ThoughtJack sends user requests to this endpoint and observes how the agent uses the attack tools.
+
+**Lazy initialization**: Start the agent first, then ThoughtJack. The agent should defer MCP tool discovery until it receives its first AG-UI request. This avoids a startup deadlock (agent needs TJ's MCP server, TJ needs the agent's AG-UI endpoint).
+
+## LangGraph
+
+### Prerequisites
+
+```bash
+pip install langgraph langchain-openai langchain-mcp-adapters fastapi uvicorn
+```
+
+### Agent setup
+
+Create two files. The agent uses `langchain-mcp-adapters` to discover MCP tools from ThoughtJack:
+
+**agent.py**:
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
+
+async def create_graph(llm_base_url, mcp_server_urls, api_key, model):
+    llm = ChatOpenAI(base_url=llm_base_url, api_key=api_key, model=model)
+
+    mcp_servers = {}
+    for i, url in enumerate(mcp_server_urls):
+        mcp_servers[f"server_{i}"] = {
+            "transport": "streamable_http",
+            "url": url,
+        }
+
+    client = MultiServerMCPClient(mcp_servers)
+    tools = await client.get_tools()
+    return create_react_agent(llm, tools)
+```
+
+**server.py** — wraps the agent in an AG-UI HTTP server:
+```python
+import json, uuid, argparse
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from agent import create_graph
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--llm-base-url", required=True)
+parser.add_argument("--port", type=int, default=8000)
+parser.add_argument("--mcp-server", action="append", default=[])
+parser.add_argument("--api-key", default="mock-key")
+parser.add_argument("--model", default="gpt-4o")
+args = parser.parse_args()
+
+app = FastAPI()
+_graph = None  # Lazy init — avoids startup deadlock
+
+def _sse(data): return f"data: {json.dumps(data)}\n\n"
+
+@app.get("/health")
+async def health(): return JSONResponse({"status": "ok"})
+
+@app.post("/")
+async def agent_endpoint(request: Request):
+    global _graph
+    if _graph is None:
+        _graph = await create_graph(
+            args.llm_base_url, args.mcp_server,
+            api_key=args.api_key, model=args.model,
+        )
+
+    body = await request.json()
+    messages = body.get("messages", [])
+    user_msg = next(
+        (m["content"] for m in reversed(messages) if m.get("role") == "user"),
+        "Use available tools.",
+    )
+
+    run_id = str(uuid.uuid4())
+    thread_id = body.get("threadId", str(uuid.uuid4()))
+
+    async def generate():
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+        try:
+            result = await _graph.ainvoke({"messages": [("user", user_msg)]})
+            ai_msgs = [m for m in result["messages"] if hasattr(m, "content") and m.type == "ai"]
+            text = ai_msgs[-1].content if ai_msgs else ""
+            msg_id = str(uuid.uuid4())
+            yield _sse({"type": "TEXT_MESSAGE_START", "messageId": msg_id, "role": "assistant"})
+            yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": msg_id, "delta": text})
+            yield _sse({"type": "TEXT_MESSAGE_END", "messageId": msg_id})
+        except Exception as e:
+            yield _sse({"type": "TEXT_MESSAGE_START", "messageId": str(uuid.uuid4()), "role": "assistant"})
+            yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": str(uuid.uuid4()), "delta": f"Error: {e}"})
+            yield _sse({"type": "TEXT_MESSAGE_END", "messageId": str(uuid.uuid4())})
+        yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
+```
+
+### Run the test
+
+Terminal 1 — start the agent:
+```bash
+python server.py \
+  --llm-base-url https://api.openai.com/v1 \
+  --api-key $OPENAI_API_KEY \
+  --model gpt-4o \
+  --mcp-server http://127.0.0.1:8080/mcp \
+  --port 8000
+```
+
+Terminal 2 — run ThoughtJack:
+```bash
+thoughtjack run \
+  --config scenarios/library/benchmark/OATF-001_exfil-chain-tool-description.yaml \
+  --mcp-server 127.0.0.1:8080 \
+  --agui-client-endpoint http://127.0.0.1:8000/ \
+  --export-trace trace.jsonl \
+  -o verdict.json
+```
+
+ThoughtJack starts an MCP server on port 8080, sends a user request to the agent's AG-UI endpoint, and records the full protocol exchange. The verdict JSON contains the indicator evaluation results.
+
+### Multi-server scenarios
+
+For scenarios with multiple MCP servers (e.g., exfiltration chains with a malicious server and a target server), pass multiple `--mcp-server` flags to both ThoughtJack and the agent:
+
+```bash
+# Agent connects to both MCP servers
+python server.py \
+  --mcp-server http://127.0.0.1:8080/mcp \
+  --mcp-server http://127.0.0.1:8081/mcp \
+  --port 8000 ...
+
+# ThoughtJack binds both
+thoughtjack run --config scenario.yaml \
+  --mcp-server 127.0.0.1:8080 \
+  --mcp-server 127.0.0.1:8081 \
+  --agui-client-endpoint http://127.0.0.1:8000/
+```
+
+## CrewAI
+
+### Prerequisites
+
+```bash
+pip install crewai crewai-tools mcpadapt fastapi uvicorn
+```
+
+### Agent setup
+
+CrewAI uses `MCPServerAdapter` to convert MCP tools into CrewAI tools. The pattern is similar to LangGraph but uses CrewAI's Agent/Task/Crew abstractions:
+
+**agent.py**:
+```python
+from crewai import Agent, Task, Crew
+from crewai_tools import MCPServerAdapter
+
+def create_crew(mcp_server_urls, model="gpt-4o"):
+    # Connect to ThoughtJack's MCP servers
+    mcp_tools = []
+    for url in mcp_server_urls:
+        adapter = MCPServerAdapter(
+            server_params={"url": url, "transport": "streamable_http"}
+        )
+        mcp_tools.extend(adapter.tools())
+
+    agent = Agent(
+        role="General Assistant",
+        goal="Help the user with their request using available tools",
+        backstory="You are a helpful assistant with access to external tools.",
+        tools=mcp_tools,
+        llm=model,
+    )
+    return agent, mcp_tools
+
+def run_task(agent, user_message):
+    task = Task(
+        description=user_message,
+        expected_output="Complete the user's request",
+        agent=agent,
+    )
+    crew = Crew(agents=[agent], tasks=[task], verbose=True)
+    return crew.kickoff()
+```
+
+**server.py** — same AG-UI wrapper pattern as LangGraph:
+```python
+import json, uuid, argparse
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from agent import create_crew, run_task
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--port", type=int, default=8000)
+parser.add_argument("--mcp-server", action="append", default=[])
+parser.add_argument("--model", default="gpt-4o")
+args = parser.parse_args()
+
+app = FastAPI()
+_agent = None
+
+def _sse(data): return f"data: {json.dumps(data)}\n\n"
+
+@app.get("/health")
+async def health(): return JSONResponse({"status": "ok"})
+
+@app.post("/")
+async def agent_endpoint(request: Request):
+    global _agent
+    if _agent is None:
+        _agent, _ = create_crew(args.mcp_server, model=args.model)
+
+    body = await request.json()
+    messages = body.get("messages", [])
+    user_msg = next(
+        (m["content"] for m in reversed(messages) if m.get("role") == "user"),
+        "Help me.",
+    )
+
+    run_id = str(uuid.uuid4())
+    thread_id = body.get("threadId", str(uuid.uuid4()))
+
+    async def generate():
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+        try:
+            result = run_task(_agent, user_msg)
+            msg_id = str(uuid.uuid4())
+            yield _sse({"type": "TEXT_MESSAGE_START", "messageId": msg_id, "role": "assistant"})
+            yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": msg_id, "delta": str(result)})
+            yield _sse({"type": "TEXT_MESSAGE_END", "messageId": msg_id})
+        except Exception as e:
+            msg_id = str(uuid.uuid4())
+            yield _sse({"type": "TEXT_MESSAGE_START", "messageId": msg_id, "role": "assistant"})
+            yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": msg_id, "delta": f"Error: {e}"})
+            yield _sse({"type": "TEXT_MESSAGE_END", "messageId": msg_id})
+        yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
+```
+
+Run the same way as LangGraph — start the agent, then ThoughtJack.
+
+## Any MCP-capable framework
+
+Any agent framework can be tested if it:
+
+1. **Connects to MCP servers via HTTP** — ThoughtJack's `--mcp-server` flag starts a Streamable HTTP endpoint at `/mcp`
+2. **Exposes an AG-UI endpoint** — ThoughtJack's `--agui-client-endpoint` sends user requests and receives SSE events
+
+If your framework doesn't natively support AG-UI, wrap it in a FastAPI server following the pattern above. The AG-UI contract is simple:
+
+- **POST `/`** — receives `RunAgentInput` JSON with `messages`, `threadId`, `runId`
+- **Returns** SSE stream with events: `RUN_STARTED`, `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`, `RUN_FINISHED`
+
+## Docker lab (real LLMs)
+
+For testing with real LLM providers, use the Docker lab which packages ThoughtJack and a LangGraph agent in a single container:
+
+```bash
+# Setup
+cp lab/.env.example lab/.env
+# Edit lab/.env — set OPENAI_API_KEY, MODEL_NAME
+
+# Build
+./lab/run.sh --build
+
+# Run a single scenario
+./lab/run.sh oatf-001
+
+# Run all scenarios
+./lab/run.sh
+
+# Results
+cat lab/results/oatf-001.json | jq '.verdict'
+```
+
+See [CLAUDE.md](/CLAUDE.md#docker-lab-real-llm-testing) for full lab documentation.
+
+## Troubleshooting
+
+### Agent can't connect to ThoughtJack's MCP server
+
+ThoughtJack must be running before the agent tries to connect. Use lazy initialization (defer `MultiServerMCPClient` / `MCPServerAdapter` until the first user request) to avoid the startup deadlock.
+
+### Agent connects but no tools appear
+
+Check that the scenario YAML defines tools in the MCP server actor's `state.tools` array. ThoughtJack only serves tools that the scenario defines.
+
+### Verdict shows 0 indicators matched
+
+Check `--export-trace trace.jsonl` to see the actual protocol messages. Common causes:
+- Agent used stdio MCP instead of HTTP (pass the `/mcp` URL, not just the port)
+- Agent called tools on a different server than expected
+- Indicator regex doesn't match the actual tool call arguments
+
+### Connection refused on AG-UI endpoint
+
+Ensure the agent server is listening on the port specified in `--agui-client-endpoint`. Check with `curl http://127.0.0.1:8000/health`.
