@@ -152,21 +152,26 @@ ThoughtJack starts an MCP server on port 8080, sends a user request to the agent
 
 ### Multi-server scenarios
 
-For scenarios with multiple MCP servers (e.g., exfiltration chains with a malicious server and a target server), pass multiple `--mcp-server` flags to both ThoughtJack and the agent:
+Scenarios with multiple MCP server actors (e.g., exfiltration chains with a malicious server and a target server) auto-assign ports. Pass a single `--mcp-server` base address and ThoughtJack increments the port for each actor in document order:
 
 ```bash
-# Agent connects to both MCP servers
+# ThoughtJack auto-assigns: actor 1 → :8080, actor 2 → :8081, actor 3 → :8082
+thoughtjack run --config scenario.yaml \
+  --mcp-server 127.0.0.1:8080 \
+  --agui-client-endpoint http://127.0.0.1:8000/
+```
+
+The agent should connect to all the MCP server ports. Check the startup log for `ActorReady` events to see which actor bound to which port:
+
+```bash
+# Agent connects to all MCP servers
 python server.py \
   --mcp-server http://127.0.0.1:8080/mcp \
   --mcp-server http://127.0.0.1:8081/mcp \
   --port 8000 ...
-
-# ThoughtJack binds both
-thoughtjack run --config scenario.yaml \
-  --mcp-server 127.0.0.1:8080 \
-  --mcp-server 127.0.0.1:8081 \
-  --agui-client-endpoint http://127.0.0.1:8000/
 ```
+
+The agent doesn't need to know which actor is which — it discovers tools from all servers and the LLM decides which to call.
 
 ## CrewAI
 
