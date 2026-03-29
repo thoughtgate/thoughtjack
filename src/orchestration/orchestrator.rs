@@ -99,6 +99,55 @@ struct ActorTaskResult {
 /// `unpack_join_result` to recover the identity via `JoinError::id()`.
 type TaskMetaMap = HashMap<TaskId, (String, bool)>;
 
+/// Log actor configuration at startup for visibility.
+fn log_actor_configuration(actors: &[oatf::Actor], config: &ActorConfig, context_mode: bool) {
+    let mode_label = if context_mode { "context" } else { "traffic" };
+    for actor in actors {
+        let transport: String = if context_mode
+            && matches!(
+                actor.mode.as_str(),
+                "mcp_server" | "a2a_server" | "ag_ui_client"
+            ) {
+            "context-mode proxy".into()
+        } else {
+            match actor.mode.as_str() {
+                "mcp_server" => config
+                    .mcp_server_bind
+                    .as_deref()
+                    .map_or_else(|| "stdio".into(), |a| format!("http://{a}/mcp")),
+                "a2a_server" => config
+                    .a2a_server_bind
+                    .as_deref()
+                    .map_or_else(|| "(not configured)".into(), |a| format!("http://{a}")),
+                "ag_ui_client" => config
+                    .agui_client_endpoint
+                    .as_deref()
+                    .unwrap_or("(not configured)")
+                    .into(),
+                "a2a_client" => config
+                    .a2a_client_endpoint
+                    .as_deref()
+                    .unwrap_or("(not configured)")
+                    .into(),
+                "mcp_client" => config
+                    .mcp_client_endpoint
+                    .as_deref()
+                    .or(config.mcp_client_command.as_deref())
+                    .unwrap_or("(not configured)")
+                    .into(),
+                _ => "unknown".into(),
+            }
+        };
+        tracing::info!(
+            actor = %actor.name,
+            mode = %actor.mode,
+            transport = %transport,
+            execution = %mode_label,
+            "actor configured"
+        );
+    }
+}
+
 // ============================================================================
 // orchestrate()
 // ============================================================================
@@ -152,6 +201,56 @@ pub async fn orchestrate(
         server_count,
         client_count,
     });
+
+    // 1b. Validate actor configuration and warn on missing transport binds
+    let has_remote_clients = actors
+        .iter()
+        .any(|a| matches!(a.mode.as_str(), "ag_ui_client" | "a2a_client" | "mcp_client"));
+    for actor in actors {
+        match actor.mode.as_str() {
+            "mcp_server" if config.mcp_server_bind.is_none() && has_remote_clients => {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "MCP server actor will use stdio — unreachable by remote clients. \
+                     Pass --mcp-server <ADDR:PORT> for HTTP."
+                );
+            }
+            "a2a_server" if config.a2a_server_bind.is_none() => {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "A2A server actor has no --a2a-server bind address. \
+                     Pass --a2a-server <ADDR:PORT> to enable."
+                );
+            }
+            "ag_ui_client" if config.agui_client_endpoint.is_none() => {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "AG-UI client actor has no --agui-client-endpoint. \
+                     The actor cannot connect to an agent."
+                );
+            }
+            "a2a_client" if config.a2a_client_endpoint.is_none() => {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "A2A client actor has no --a2a-client-endpoint. \
+                     The actor cannot connect to a remote agent."
+                );
+            }
+            "mcp_client"
+                if config.mcp_client_command.is_none()
+                    && config.mcp_client_endpoint.is_none() =>
+            {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "MCP client actor has no --mcp-client-command or --mcp-client-endpoint. \
+                     The actor cannot connect to a server."
+                );
+            }
+            _ => {}
+        }
+    }
+
+    log_actor_configuration(actors, config, false);
 
     // 2. Create shared state
     let trace = SharedTrace::new();
@@ -630,6 +729,7 @@ pub async fn orchestrate_context(
     use tokio::task::JoinSet;
 
     let actors = document_actors(&loaded.document);
+    log_actor_configuration(actors, config, true);
 
     // 1. Validate actors
     let mut agui_index = None;
