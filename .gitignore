@@ -5,3 +5,7 @@ tests/e2e/results/*.json
 tests/e2e/results/*.stderr
 lab/
 .playwright-mcp/
+.claude/
+tests/e2e/reference-agents/langgraph/__pycache__/
+tests/e2e/reference-agents/langgraph/build/
+tests/e2e/reference-agents/langgraph/thoughtjack_e2e_langgraph.egg-info/
