@@ -205,7 +205,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         .get("arguments")
                         .and_then(Value::as_str)
                         .unwrap_or("{}");
-                    let arguments: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                    let arguments: Value = serde_json::from_str(args_str).unwrap_or_else(|e| {
+                        tracing::warn!(args_str, error = %e, "malformed tool call arguments from LLM provider, defaulting to {{}}");
+                        json!({})
+                    });
 
                     // Preserve provider-specific metadata (e.g. Gemini 3.1+
                     // thought_signature) that must be echoed back in

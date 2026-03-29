@@ -197,14 +197,16 @@ impl ContextTransport {
 
             let (all_tools, tool_router) = build_tool_roster(&self.server_tool_watches);
 
-            // Build fingerprints that include both name and description prefix
-            // so rug-pull description swaps (same name, changed desc) are
-            // detected — not just tool additions/removals.
+            // Build fingerprints that include both name and a hash of the full
+            // description so rug-pull description swaps are detected — not
+            // just tool additions/removals.
             let current_fingerprints: HashSet<String> = all_tools
                 .iter()
                 .map(|t| {
-                    let desc_prefix: String = t.description.chars().take(64).collect();
-                    format!("{}|{}", t.name, desc_prefix)
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    t.description.hash(&mut hasher);
+                    format!("{}|{:x}", t.name, hasher.finish())
                 })
                 .collect();
 
