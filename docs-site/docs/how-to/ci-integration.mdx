@@ -48,7 +48,7 @@ thoughtjack scenarios list --format json
 When running scenarios in CI, use JSON logs for machine parsing:
 
 ```bash
-thoughtjack run --config my_config.yaml --log-format json -vv
+thoughtjack run my_config.yaml --log-format json -vv
 ```
 
 Each log line is a JSON object:
@@ -62,8 +62,7 @@ Each log line is a JSON object:
 Write structured events to a JSONL file for post-run analysis:
 
 ```bash
-thoughtjack run \
-  --config my_config.yaml \
+thoughtjack run my_config.yaml \
   --events-file events.jsonl \
   --log-format json
 ```
@@ -97,7 +96,7 @@ ThoughtJack uses verdict-based exit codes that CI pipelines can check. Exit code
 
 ```yaml
 - name: Run scenario
-  run: thoughtjack run --config test.yaml -o verdict.json
+  run: thoughtjack run test.yaml -o verdict.json
   continue-on-error: false
 ```
 
@@ -124,8 +123,7 @@ Use `--max-turns` to control LLM API cost per run. Use `--context-timeout` to se
 For long-running test sessions, expose metrics:
 
 ```bash
-thoughtjack run \
-  --config my_config.yaml \
+thoughtjack run my_config.yaml \
   --mcp-server 127.0.0.1:8080 \
   --metrics-port 9090
 ```

@@ -252,7 +252,7 @@ attack:
 thoughtjack validate my_scenario.yaml
 
 # Run as MCP server on HTTP
-thoughtjack run --config my_scenario.yaml --mcp-server 127.0.0.1:8080
+thoughtjack run my_scenario.yaml --mcp-server 127.0.0.1:8080
 ```
 
 Connect your MCP client and make 3 `tools/call` requests to `review_code`. After the third call, watch for:

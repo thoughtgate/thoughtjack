@@ -297,7 +297,7 @@ def run_framework_scenario(
         # 4. Run ThoughtJack (agent will lazily connect to TJ's MCP on first request)
         tj_cmd = [
             str(tj_binary), "run",
-            "--config", str(attack_yaml),
+            str(attack_yaml),
             "--output", str(verdict_path),
             "--max-session", f"{timeout}s",
             "--no-semantic",
@@ -359,7 +359,7 @@ def run_self_test(
 
     tj_cmd = [
         str(tj_binary), "run",
-        "--config", str(attack_yaml),
+        str(attack_yaml),
         "--output", str(verdict_path),
         "--max-session", f"{timeout}s",
         "--no-semantic",

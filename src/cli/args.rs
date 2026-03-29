@@ -228,8 +228,8 @@ pub struct ExecutionArgs {
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// Path to OATF scenario YAML document.
-    #[arg(short, long, env = "THOUGHTJACK_CONFIG", value_name = "PATH")]
-    pub config: PathBuf,
+    #[arg(env = "THOUGHTJACK_SCENARIO", value_name = "SCENARIO")]
+    pub scenario: PathBuf,
 
     /// Shared runtime and output options.
     #[command(flatten)]
@@ -295,7 +295,7 @@ pub struct ScenariosShowArgs {
 /// Arguments for `scenarios run`.
 ///
 /// Runs a built-in scenario with the same flags as `run`.
-/// `--config` is not supported for this command.
+/// Does not accept a positional scenario path (uses built-in YAML).
 ///
 /// Implements: TJ-SPEC-010 F-008
 #[derive(Args, Debug)]
@@ -303,7 +303,7 @@ pub struct ScenariosRunArgs {
     /// Built-in scenario name.
     pub name: String,
 
-    /// Shared runtime and output options (same as `thoughtjack run`, except `--config`).
+    /// Shared runtime and output options (same as `thoughtjack run`, minus the positional scenario path).
     #[command(flatten)]
     pub execution: ExecutionArgs,
 }
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_run_with_config() {
-        let cli = Cli::try_parse_from(["thoughtjack", "run", "--config", "test.yaml"]);
+        let cli = Cli::try_parse_from(["thoughtjack", "run", "test.yaml"]);
         assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 
@@ -436,8 +436,7 @@ mod tests {
                 "--color",
                 variant,
                 "run",
-                "--config",
-                "x.yaml",
+                                "x.yaml",
             ]);
             assert!(cli.is_ok(), "Failed to parse color={variant}");
         }
@@ -446,14 +445,14 @@ mod tests {
     #[test]
     fn test_verbose_count() {
         let cli =
-            Cli::try_parse_from(["thoughtjack", "-vvv", "run", "--config", "x.yaml"]).unwrap();
+            Cli::try_parse_from(["thoughtjack", "-vvv", "run", "x.yaml"]).unwrap();
         assert_eq!(cli.verbose, 3);
     }
 
     #[test]
     fn test_quiet_flag() {
         let cli =
-            Cli::try_parse_from(["thoughtjack", "--quiet", "run", "--config", "x.yaml"]).unwrap();
+            Cli::try_parse_from(["thoughtjack", "--quiet", "run", "x.yaml"]).unwrap();
         assert!(cli.quiet);
     }
 
@@ -479,8 +478,7 @@ mod tests {
             "--verbose",
             "--quiet",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
         ]);
         assert!(result.is_err(), "Expected conflict error for -v + -q");
     }
@@ -489,7 +487,7 @@ mod tests {
     #[test]
     fn test_excessive_verbosity_clamps() {
         let cli =
-            Cli::try_parse_from(["thoughtjack", "-vvvv", "run", "--config", "x.yaml"]).unwrap();
+            Cli::try_parse_from(["thoughtjack", "-vvvv", "run", "x.yaml"]).unwrap();
         assert_eq!(cli.verbose, 4, "Expected verbosity count of 4");
     }
 
@@ -503,7 +501,7 @@ mod tests {
         ];
         for (input, variant) in expected {
             let cli =
-                Cli::try_parse_from(["thoughtjack", "--color", input, "run", "--config", "x.yaml"])
+                Cli::try_parse_from(["thoughtjack", "--color", input, "run", "x.yaml"])
                     .unwrap();
             assert_eq!(cli.color, variant, "Unexpected color variant for {input}");
         }
@@ -517,8 +515,7 @@ mod tests {
             "--color",
             "rainbow",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
         ]);
         assert!(result.is_err(), "Expected error for invalid color value");
     }
@@ -570,8 +567,7 @@ mod tests {
                 "--log-format",
                 input,
                 "run",
-                "--config",
-                "x.yaml",
+                                "x.yaml",
             ])
             .unwrap();
             assert_eq!(cli.log_format, variant, "Unexpected log-format for {input}");
@@ -598,8 +594,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "thoughtjack",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
             "--max-session",
             "10m",
         ]);
@@ -612,8 +607,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "thoughtjack",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
             "--grace-period",
             "30s",
         ]);
@@ -626,8 +620,7 @@ mod tests {
         let result = Cli::try_parse_from([
             "thoughtjack",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
             "--mcp-client-args",
             "foo",
         ]);
@@ -643,8 +636,7 @@ mod tests {
         let result = Cli::try_parse_from([
             "thoughtjack",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
             "--mcp-client-command",
             "npx server",
             "--mcp-client-endpoint",
@@ -664,8 +656,7 @@ mod tests {
             "--log-format",
             "json",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
         ])
         .unwrap();
         assert_eq!(cli.log_format, LogFormatChoice::Json);
@@ -676,8 +667,7 @@ mod tests {
             "--log-format",
             "xml",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
         ]);
         assert!(
             invalid.is_err(),
@@ -685,7 +675,7 @@ mod tests {
         );
     }
 
-    /// Scenarios run rejects --config (built-in YAML only).
+    /// Scenarios run rejects a positional path (built-in YAML only).
     #[test]
     fn test_scenarios_run_rejects_config() {
         let result = Cli::try_parse_from([
@@ -693,12 +683,11 @@ mod tests {
             "scenarios",
             "run",
             "rug-pull",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
         ]);
         assert!(
             result.is_err(),
-            "Expected clap parse error: scenarios run should not accept --config"
+            "Expected clap parse error: scenarios run should not accept positional path"
         );
     }
 
@@ -709,7 +698,7 @@ mod tests {
         assert!(cli.is_ok(), "Failed to parse: {cli:?}");
     }
 
-    /// `run` without --config should fail at parse time.
+    /// `run` without a scenario path should fail at parse time.
     #[test]
     fn test_run_without_config_fails() {
         let cli = Cli::try_parse_from(["thoughtjack", "run"]);
@@ -728,8 +717,7 @@ mod tests {
             let cli = Cli::try_parse_from([
                 "thoughtjack",
                 "run",
-                "--config",
-                "x.yaml",
+                                "x.yaml",
                 "--progress",
                 input,
             ])
@@ -749,8 +737,7 @@ mod tests {
         let result = Cli::try_parse_from([
             "thoughtjack",
             "run",
-            "--config",
-            "x.yaml",
+                        "x.yaml",
             "--progress",
             "verbose",
         ]);
@@ -760,7 +747,7 @@ mod tests {
     /// --progress defaults to auto.
     #[test]
     fn test_progress_default_auto() {
-        let cli = Cli::try_parse_from(["thoughtjack", "run", "--config", "x.yaml"]).unwrap();
+        let cli = Cli::try_parse_from(["thoughtjack", "run", "x.yaml"]).unwrap();
         match cli.command {
             Commands::Run(args) => {
                 assert_eq!(args.execution.progress, ProgressLevel::Auto);

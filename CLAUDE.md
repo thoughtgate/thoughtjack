@@ -169,10 +169,10 @@ cargo fmt
 cargo fmt -- --check
 
 # Run a scenario (v0.5)
-cargo run -- run --config <path.yaml>
+cargo run -- run <path.yaml>
 
 # Run a scenario with full trace output
-cargo run -- run --config <path.yaml> --export-trace trace.jsonl
+cargo run -- run <path.yaml> --export-trace trace.jsonl
 
 # Run a built-in scenario
 cargo run -- scenarios run oatf-001 --mcp-server 127.0.0.1:8080

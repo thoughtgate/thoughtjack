@@ -182,7 +182,7 @@ thoughtjack scenarios show oatf-002 > my-scenario.yaml
 Run from the file:
 
 ```bash
-thoughtjack run --config my-scenario.yaml --mcp-server 127.0.0.1:8080
+thoughtjack run my-scenario.yaml --mcp-server 127.0.0.1:8080
 ```
 
 Always validate configs before running:
@@ -200,7 +200,7 @@ The examples above run ThoughtJack as a **server** to test MCP clients. ThoughtJ
 If the target MCP server is already listening on HTTP:
 
 ```bash
-thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:3000/mcp
+thoughtjack run scenario.yaml --mcp-client-endpoint http://localhost:3000/mcp
 ```
 
 ### Spawn the server as a subprocess
@@ -208,7 +208,7 @@ thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:30
 ThoughtJack can launch the server process and connect over stdio:
 
 ```bash
-thoughtjack run --config scenario.yaml \
+thoughtjack run scenario.yaml \
   --mcp-client-command "npx" \
   --mcp-client-args "-y @modelcontextprotocol/server-everything"
 ```

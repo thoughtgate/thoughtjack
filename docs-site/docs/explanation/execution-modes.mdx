@@ -19,10 +19,10 @@ Traffic mode runs real protocol infrastructure. ThoughtJack spins up HTTP server
 thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080
 
 # MCP client — ThoughtJack connects to your server
-thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:3000/mcp
+thoughtjack run scenario.yaml --mcp-client-endpoint http://localhost:3000/mcp
 
 # Multi-actor — MCP server + AG-UI client + A2A server
-thoughtjack run --config multi-actor.yaml \
+thoughtjack run multi-actor.yaml \
   --mcp-server 127.0.0.1:8080 \
   --agui-client-endpoint http://localhost:8000 \
   --a2a-server 127.0.0.1:9090

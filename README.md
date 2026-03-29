@@ -299,7 +299,7 @@ attack:
 ### Commands
 
 ```
-thoughtjack run --config <path.yaml>    # Run an OATF scenario
+thoughtjack run <path.yaml>    # Run an OATF scenario
 thoughtjack validate <path.yaml>        # Validate an OATF document
 thoughtjack scenarios list              # List built-in scenarios
 thoughtjack scenarios show <name>       # Show scenario YAML
@@ -311,7 +311,7 @@ thoughtjack version                     # Display version and build info
 
 | Flag | Description |
 |------|-------------|
-| `-c, --config <path>` | Path to OATF scenario YAML |
+| `<SCENARIO>` | Path to OATF scenario YAML (positional) |
 | `--mcp-server <ADDR:PORT>` | MCP server listen address |
 | `--mcp-client-endpoint <URL>` | Connect MCP client to endpoint |
 | `--agui-client-endpoint <URL>` | Connect AG-UI client to endpoint |

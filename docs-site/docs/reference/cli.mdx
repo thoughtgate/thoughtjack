@@ -24,12 +24,12 @@ Complete reference for the `thoughtjack` command-line interface. See [TJ-SPEC-00
 Execute an OATF scenario against a target agent.
 
 ```bash
-thoughtjack run --config <oatf.yaml>
+thoughtjack run <oatf.yaml>
 ```
 
 | Flag | Env Variable | Description |
 |------|-------------|-------------|
-| `-c, --config <path>` | `THOUGHTJACK_CONFIG` | Path to OATF scenario YAML document |
+| `<SCENARIO>` | `THOUGHTJACK_SCENARIO` | Path to OATF scenario YAML document (positional) |
 | `--mcp-server <ADDR:PORT>` | | MCP server HTTP listen address (omit for stdio) |
 | `--mcp-client-command <CMD>` | | Spawn MCP client by running a command |
 | `--mcp-client-args <ARGS>` | | Extra arguments for `--mcp-client-command` |
@@ -113,7 +113,7 @@ Run a built-in scenario by name.
 thoughtjack scenarios run <name> [run flags...]
 ```
 
-Accepts all `run` flags (except `--config`) after the scenario name. Uses the built-in scenario YAML.
+Accepts all `run` flags after the scenario name (no positional scenario path). Uses the built-in scenario YAML.
 
 ### `version`
 

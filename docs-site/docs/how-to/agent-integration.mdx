@@ -141,7 +141,7 @@ python server.py \
 Terminal 2 — run ThoughtJack:
 ```bash
 thoughtjack run \
-  --config scenarios/library/benchmark/OATF-001_exfil-chain-tool-description.yaml \
+  scenarios/library/benchmark/OATF-001_exfil-chain-tool-description.yaml \
   --mcp-server 127.0.0.1:8080 \
   --agui-client-endpoint http://127.0.0.1:8000/ \
   --export-trace trace.jsonl \
@@ -156,7 +156,7 @@ Scenarios with multiple MCP server actors (e.g., exfiltration chains with a mali
 
 ```bash
 # ThoughtJack auto-assigns: actor 1 → :8080, actor 2 → :8081, actor 3 → :8082
-thoughtjack run --config scenario.yaml \
+thoughtjack run scenario.yaml \
   --mcp-server 127.0.0.1:8080 \
   --agui-client-endpoint http://127.0.0.1:8000/
 ```

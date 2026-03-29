@@ -136,7 +136,7 @@ Different system prompts can significantly affect whether a model follows advers
 Some scenarios use multiple server actors (e.g., an MCP server and an A2A server) to test cross-protocol attacks. In context mode, all server actors provide tools to the same LLM conversation:
 
 ```bash
-thoughtjack run --config multi-actor-scenario.yaml \
+thoughtjack run multi-actor-scenario.yaml \
   --context \
   --context-model gpt-4o \
   --context-api-key $OPENAI_API_KEY

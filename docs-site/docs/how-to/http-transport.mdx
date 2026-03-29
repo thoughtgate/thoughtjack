@@ -11,7 +11,7 @@ By default ThoughtJack uses stdio (JSON-RPC over stdin/stdout). The HTTP transpo
 ## Start with HTTP
 
 ```bash
-thoughtjack run --config my_scenario.yaml --mcp-server 127.0.0.1:8080
+thoughtjack run my_scenario.yaml --mcp-server 127.0.0.1:8080
 ```
 
 This binds an HTTP server at `http://127.0.0.1:8080/mcp`.
@@ -20,10 +20,10 @@ This binds an HTTP server at `http://127.0.0.1:8080/mcp`.
 
 ```bash
 # Bind to all interfaces
-thoughtjack run --config my_scenario.yaml --mcp-server 0.0.0.0:8080
+thoughtjack run my_scenario.yaml --mcp-server 0.0.0.0:8080
 
 # Bind to specific interface
-thoughtjack run --config my_scenario.yaml --mcp-server 192.168.1.100:3000
+thoughtjack run my_scenario.yaml --mcp-server 192.168.1.100:3000
 ```
 
 ## Test with curl
@@ -74,7 +74,7 @@ All `run` flags work with HTTP transport:
 
 ```bash
 thoughtjack run \
-  --config my_scenario.yaml \
+  my_scenario.yaml \
   --mcp-server 127.0.0.1:8080 \
   --events-file events.jsonl \
   --progress on
