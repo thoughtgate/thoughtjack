@@ -398,6 +398,7 @@ impl McpClientDriver {
     /// Returns `EngineError::Driver` on request/response failure.
     ///
     /// Implements: TJ-SPEC-018 F-006
+    #[allow(clippy::cognitive_complexity)]
     async fn execute_action(
         &mut self,
         action: &Value,

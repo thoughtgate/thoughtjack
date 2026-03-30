@@ -173,7 +173,7 @@ fn log_actor_configuration(actors: &[oatf::Actor], config: &ActorConfig, context
 /// collected in `OrchestratorResult::outcomes`.
 ///
 /// Implements: TJ-SPEC-015 F-004
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn orchestrate(
     loaded: &LoadedDocument,
     config: &ActorConfig,
