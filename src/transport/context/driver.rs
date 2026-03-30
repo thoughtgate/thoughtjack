@@ -177,321 +177,319 @@ impl ContextTransport {
         // user requests, matching how real agent frameworks (CrewAI,
         // LangGraph) issue sequential LLM calls with refreshed context.
         'multi_turn: loop {
-
-        loop {
-            self.turn_count += 1;
-            if self.turn_count > self.max_turns || cancel.is_cancelled() {
-                break;
-            }
-
-            // Drain any queued notifications from server actors (e.g.
-            // notifications/tools/list_changed sent by on_enter actions). These
-            // are processed by PhaseLoop via synthetic events; the drive loop
-            // only needs to clear them so they don't interfere with tool result
-            // collection later in this turn.
-            while let Ok(msg) = self.tool_result_rx.try_recv() {
-                if let JsonRpcMessage::Notification(ref n) = msg {
-                    tracing::debug!(method = %n.method, "drained queued notification");
-                }
-            }
-
-            let (all_tools, tool_router) = build_tool_roster(&self.server_tool_watches);
-
-            // Build fingerprints that include both name and a hash of the full
-            // description so rug-pull description swaps are detected — not
-            // just tool additions/removals.
-            let current_fingerprints: HashSet<String> = all_tools
-                .iter()
-                .map(|t| {
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    t.description.hash(&mut hasher);
-                    format!("{}|{:x}", t.name, hasher.finish())
-                })
-                .collect();
-
-            // Detect tool roster changes from phase advancement and notify
-            // the LLM. This is the context-mode equivalent of the MCP
-            // `notifications/tools/list_changed` mechanism, enabling rug-pull
-            // and supply-chain scenarios where tool definitions change
-            // mid-conversation.
-            if !self.prev_tool_fingerprints.is_empty()
-                && current_fingerprints != self.prev_tool_fingerprints
-            {
-                let current_names: HashSet<&str> =
-                    all_tools.iter().map(|t| t.name.as_str()).collect();
-                let prev_names: HashSet<&str> = self
-                    .prev_tool_fingerprints
-                    .iter()
-                    .filter_map(|fp| fp.split('|').next())
-                    .collect();
-                let added: Vec<&&str> = current_names.difference(&prev_names).collect();
-                let removed: Vec<&&str> = prev_names.difference(&current_names).collect();
-
-                let mut parts = Vec::new();
-                if !added.is_empty() {
-                    let names: Vec<&str> = added.into_iter().copied().collect();
-                    parts.push(format!("added: {}", names.join(", ")));
-                }
-                if !removed.is_empty() {
-                    let names: Vec<&str> = removed.into_iter().copied().collect();
-                    parts.push(format!("removed: {}", names.join(", ")));
-                }
-                // Same names but descriptions changed (rug pull).
-                if parts.is_empty() {
-                    parts.push("tool definitions have been updated".to_string());
-                }
-
-                let notification = format!(
-                    "[System: The available tools have changed. {}. \
-                     Please re-read all tool descriptions before proceeding.]",
-                    parts.join("; ")
-                );
-                tracing::info!(
-                    notification = %notification,
-                    "tool roster changed after phase advance"
-                );
-                self.history.push(ChatMessage::System(notification));
-            }
-            self.prev_tool_fingerprints = current_fingerprints;
-
-            let response = tokio::select! {
-                result = self.provider.chat_completion(&self.history, &all_tools) => {
-                    match result {
-                        Ok(res) => res,
-                        Err(e) => {
-                            self.emit_run_finished();
-                            return Err(EngineError::Driver(format!("LLM API error: {e}")));
-                        }
-                    }
-                },
-                () = cancel.cancelled() => break,
-            };
-
-            match response {
-                LlmResponse::Text(text_resp) => {
-                    self.history
-                        .push(ChatMessage::assistant_text(&text_resp.text));
-                    self.emit_text_content(&text_resp.text);
-
-                    if text_resp.is_truncated {
-                        consecutive_truncations += 1;
-                        if consecutive_truncations >= 2 {
-                            self.emit_run_finished();
-                            return Err(EngineError::Driver(
-                                "Repeated truncation — increase --context-max-tokens".into(),
-                            ));
-                        }
-                        self.history.push(ChatMessage::user("Please continue."));
-                        continue;
-                    }
-
-                    consecutive_truncations = 0;
-
-                    if let Some(user_text) = self.wait_for_followup(&cancel).await {
-                        self.history.push(ChatMessage::user(&user_text));
-                        continue;
-                    }
+            loop {
+                self.turn_count += 1;
+                if self.turn_count > self.max_turns || cancel.is_cancelled() {
                     break;
                 }
-                LlmResponse::ToolUse(calls) => {
-                    consecutive_truncations = 0;
-                    if calls.is_empty() {
-                        tracing::debug!("LLM returned empty tool_use — ending conversation");
-                        break;
-                    }
-                    self.history.push(ChatMessage::assistant_tool_use(&calls));
 
-                    if self.server_actors.is_empty() {
-                        // Single-actor: emit tool call events to AG-UI
-                        for call in &calls {
-                            self.emit_tool_attempt_to_agui(call);
+                // Drain any queued notifications from server actors (e.g.
+                // notifications/tools/list_changed sent by on_enter actions). These
+                // are processed by PhaseLoop via synthetic events; the drive loop
+                // only needs to clear them so they don't interfere with tool result
+                // collection later in this turn.
+                while let Ok(msg) = self.tool_result_rx.try_recv() {
+                    if let JsonRpcMessage::Notification(ref n) = msg {
+                        tracing::debug!(method = %n.method, "drained queued notification");
+                    }
+                }
+
+                let (all_tools, tool_router) = build_tool_roster(&self.server_tool_watches);
+
+                // Build fingerprints that include both name and a hash of the full
+                // description so rug-pull description swaps are detected — not
+                // just tool additions/removals.
+                let current_fingerprints: HashSet<String> = all_tools
+                    .iter()
+                    .map(|t| {
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        t.description.hash(&mut hasher);
+                        format!("{}|{:x}", t.name, hasher.finish())
+                    })
+                    .collect();
+
+                // Detect tool roster changes from phase advancement and notify
+                // the LLM. This is the context-mode equivalent of the MCP
+                // `notifications/tools/list_changed` mechanism, enabling rug-pull
+                // and supply-chain scenarios where tool definitions change
+                // mid-conversation.
+                if !self.prev_tool_fingerprints.is_empty()
+                    && current_fingerprints != self.prev_tool_fingerprints
+                {
+                    let current_names: HashSet<&str> =
+                        all_tools.iter().map(|t| t.name.as_str()).collect();
+                    let prev_names: HashSet<&str> = self
+                        .prev_tool_fingerprints
+                        .iter()
+                        .filter_map(|fp| fp.split('|').next())
+                        .collect();
+                    let added: Vec<&&str> = current_names.difference(&prev_names).collect();
+                    let removed: Vec<&&str> = prev_names.difference(&current_names).collect();
+
+                    let mut parts = Vec::new();
+                    if !added.is_empty() {
+                        let names: Vec<&str> = added.into_iter().copied().collect();
+                        parts.push(format!("added: {}", names.join(", ")));
+                    }
+                    if !removed.is_empty() {
+                        let names: Vec<&str> = removed.into_iter().copied().collect();
+                        parts.push(format!("removed: {}", names.join(", ")));
+                    }
+                    // Same names but descriptions changed (rug pull).
+                    if parts.is_empty() {
+                        parts.push("tool definitions have been updated".to_string());
+                    }
+
+                    let notification = format!(
+                        "[System: The available tools have changed. {}. \
+                     Please re-read all tool descriptions before proceeding.]",
+                        parts.join("; ")
+                    );
+                    tracing::info!(
+                        notification = %notification,
+                        "tool roster changed after phase advance"
+                    );
+                    self.history.push(ChatMessage::System(notification));
+                }
+                self.prev_tool_fingerprints = current_fingerprints;
+
+                let response = tokio::select! {
+                    result = self.provider.chat_completion(&self.history, &all_tools) => {
+                        match result {
+                            Ok(res) => res,
+                            Err(e) => {
+                                self.emit_run_finished();
+                                return Err(EngineError::Driver(format!("LLM API error: {e}")));
+                            }
                         }
+                    },
+                    () = cancel.cancelled() => break,
+                };
+
+                match response {
+                    LlmResponse::Text(text_resp) => {
+                        self.history
+                            .push(ChatMessage::assistant_text(&text_resp.text));
+                        self.emit_text_content(&text_resp.text);
+
+                        if text_resp.is_truncated {
+                            consecutive_truncations += 1;
+                            if consecutive_truncations >= 2 {
+                                self.emit_run_finished();
+                                return Err(EngineError::Driver(
+                                    "Repeated truncation — increase --context-max-tokens".into(),
+                                ));
+                            }
+                            self.history.push(ChatMessage::user("Please continue."));
+                            continue;
+                        }
+
+                        consecutive_truncations = 0;
+
                         if let Some(user_text) = self.wait_for_followup(&cancel).await {
                             self.history.push(ChatMessage::user(&user_text));
                             continue;
                         }
                         break;
                     }
-
-                    // Multi-actor: route tool calls to owning actors.
-                    let mut pending: HashMap<String, &ToolCall> = HashMap::new();
-                    for call in &calls {
-                        if let Some(actor_name) = tool_router.get(&call.name) {
-                            if let Some(entry) = self.server_actors.get(actor_name) {
-                                // For A2A actors, the LLM calls the actor-name
-                                // tool but McpServerDriver needs the skill name
-                                // to find the tool via find_a2a_skill().
-                                // For disambiguated MCP tools, strip the actor
-                                // prefix so the server receives the original name.
-                                let a2a_skill_name = entry
-                                    .a2a_skill_rx
-                                    .as_ref()
-                                    .and_then(|rx| rx.borrow().clone());
-                                let dispatch_name = if entry.mode == "a2a_server" {
-                                    a2a_skill_name.as_deref().unwrap_or(&call.name)
-                                } else {
-                                    let prefix = format!("{actor_name}__");
-                                    call.name.strip_prefix(&prefix).unwrap_or(&call.name)
-                                };
-                                let rewritten = ToolCall {
-                                    id: call.id.clone(),
-                                    name: dispatch_name.to_string(),
-                                    arguments: call.arguments.clone(),
-                                    provider_metadata: call.provider_metadata.clone(),
-                                };
-                                let msg = Self::tool_call_to_json_rpc(&rewritten);
-                                if entry.tx.send(msg).await.is_ok() {
-                                    pending.insert(call.id.clone(), call);
-                                } else {
-                                    tracing::warn!(
-                                        tool = %call.name,
-                                        actor = %actor_name,
-                                        "server actor channel closed, synthesizing error"
-                                    );
-                                    self.history.push(ChatMessage::tool_error(
-                                        &call.id,
-                                        &format!(
-                                            "server actor channel closed for tool: {}",
-                                            call.name
-                                        ),
-                                    ));
-                                }
-                            }
-                        } else {
-                            tracing::warn!(
-                                tool = %call.name,
-                                "no actor owns tool, synthesizing error"
-                            );
-                            self.history.push(ChatMessage::tool_error(
-                                &call.id,
-                                &format!("no server actor owns tool: {}", call.name),
-                            ));
+                    LlmResponse::ToolUse(calls) => {
+                        consecutive_truncations = 0;
+                        if calls.is_empty() {
+                            tracing::debug!("LLM returned empty tool_use — ending conversation");
+                            break;
                         }
-                    }
+                        self.history.push(ChatMessage::assistant_tool_use(&calls));
 
-                    // Collect results with absolute deadline.
-                    let deadline = tokio::time::Instant::now()
-                        + Duration::from_secs(30 * pending.len() as u64);
-                    while !pending.is_empty() {
-                        tokio::select! {
-                            result = self.tool_result_rx.recv() => {
-                                match result {
-                                    Some(ref msg @ JsonRpcMessage::Response(ref resp)) => {
-                                        let result_id = extract_response_id(resp);
-                                        if let Some(call) = pending.remove(&result_id) {
-                                            self.history.push(ChatMessage::tool_result(
-                                                &call.id,
-                                                msg,
-                                            ));
-                                        } else {
+                        if self.server_actors.is_empty() {
+                            // Single-actor: emit tool call events to AG-UI
+                            for call in &calls {
+                                self.emit_tool_attempt_to_agui(call);
+                            }
+                            if let Some(user_text) = self.wait_for_followup(&cancel).await {
+                                self.history.push(ChatMessage::user(&user_text));
+                                continue;
+                            }
+                            break;
+                        }
+
+                        // Multi-actor: route tool calls to owning actors.
+                        let mut pending: HashMap<String, &ToolCall> = HashMap::new();
+                        for call in &calls {
+                            if let Some(actor_name) = tool_router.get(&call.name) {
+                                if let Some(entry) = self.server_actors.get(actor_name) {
+                                    // For A2A actors, the LLM calls the actor-name
+                                    // tool but McpServerDriver needs the skill name
+                                    // to find the tool via find_a2a_skill().
+                                    // For disambiguated MCP tools, strip the actor
+                                    // prefix so the server receives the original name.
+                                    let a2a_skill_name = entry
+                                        .a2a_skill_rx
+                                        .as_ref()
+                                        .and_then(|rx| rx.borrow().clone());
+                                    let dispatch_name = if entry.mode == "a2a_server" {
+                                        a2a_skill_name.as_deref().unwrap_or(&call.name)
+                                    } else {
+                                        let prefix = format!("{actor_name}__");
+                                        call.name.strip_prefix(&prefix).unwrap_or(&call.name)
+                                    };
+                                    let rewritten = ToolCall {
+                                        id: call.id.clone(),
+                                        name: dispatch_name.to_string(),
+                                        arguments: call.arguments.clone(),
+                                        provider_metadata: call.provider_metadata.clone(),
+                                    };
+                                    let msg = Self::tool_call_to_json_rpc(&rewritten);
+                                    if entry.tx.send(msg).await.is_ok() {
+                                        pending.insert(call.id.clone(), call);
+                                    } else {
+                                        tracing::warn!(
+                                            tool = %call.name,
+                                            actor = %actor_name,
+                                            "server actor channel closed, synthesizing error"
+                                        );
+                                        self.history.push(ChatMessage::tool_error(
+                                            &call.id,
+                                            &format!(
+                                                "server actor channel closed for tool: {}",
+                                                call.name
+                                            ),
+                                        ));
+                                    }
+                                }
+                            } else {
+                                tracing::warn!(
+                                    tool = %call.name,
+                                    "no actor owns tool, synthesizing error"
+                                );
+                                self.history.push(ChatMessage::tool_error(
+                                    &call.id,
+                                    &format!("no server actor owns tool: {}", call.name),
+                                ));
+                            }
+                        }
+
+                        // Collect results with absolute deadline.
+                        let deadline = tokio::time::Instant::now()
+                            + Duration::from_secs(30 * pending.len() as u64);
+                        while !pending.is_empty() {
+                            tokio::select! {
+                                result = self.tool_result_rx.recv() => {
+                                    match result {
+                                        Some(ref msg @ JsonRpcMessage::Response(ref resp)) => {
+                                            let result_id = extract_response_id(resp);
+                                            if let Some(call) = pending.remove(&result_id) {
+                                                self.history.push(ChatMessage::tool_result(
+                                                    &call.id,
+                                                    msg,
+                                                ));
+                                            } else {
+                                                tracing::warn!(
+                                                    id = %result_id,
+                                                    "unexpected tool result id"
+                                                );
+                                            }
+                                        }
+                                        Some(JsonRpcMessage::Notification(ref notif)) => {
+                                            tracing::trace!(
+                                                method = %notif.method,
+                                                "discarding notification in context-mode"
+                                            );
+                                        }
+                                        Some(JsonRpcMessage::Request(_)) => {
                                             tracing::warn!(
-                                                id = %result_id,
-                                                "unexpected tool result id"
+                                                "unexpected Request on tool_result_rx"
+                                            );
+                                        }
+                                        None => {
+                                            tracing::warn!(
+                                                remaining = pending.len(),
+                                                "server channel closed, synthesizing errors"
+                                            );
+                                            for (_id, call) in pending.drain() {
+                                                self.history.push(ChatMessage::tool_error(
+                                                    &call.id,
+                                                    "server channel closed",
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                Some(server_req) = self.server_request_rx.recv() => {
+                                    match self
+                                        .handle_server_initiated_request(&server_req, &cancel)
+                                        .await
+                                    {
+                                        Ok(response) => {
+                                            if let Some(entry) = self.server_actors.get(&server_req.actor_name) {
+                                                let _ = entry.tx.send(response).await;
+                                            }
+                                        }
+                                        Err(err) => {
+                                            // Log but don't propagate — the drive loop must
+                                            // exit normally to emit run_finished.
+                                            tracing::warn!(
+                                                actor = %server_req.actor_name,
+                                                error = %err,
+                                                "server-initiated request failed, continuing"
                                             );
                                         }
                                     }
-                                    Some(JsonRpcMessage::Notification(ref notif)) => {
-                                        tracing::trace!(
-                                            method = %notif.method,
-                                            "discarding notification in context-mode"
-                                        );
-                                    }
-                                    Some(JsonRpcMessage::Request(_)) => {
-                                        tracing::warn!(
-                                            "unexpected Request on tool_result_rx"
-                                        );
-                                    }
-                                    None => {
-                                        tracing::warn!(
-                                            remaining = pending.len(),
-                                            "server channel closed, synthesizing errors"
-                                        );
-                                        for (_id, call) in pending.drain() {
-                                            self.history.push(ChatMessage::tool_error(
-                                                &call.id,
-                                                "server channel closed",
-                                            ));
-                                        }
+                                }
+                                () = tokio::time::sleep_until(deadline) => {
+                                    tracing::warn!(
+                                        remaining = pending.len(),
+                                        "tool result deadline expired, synthesizing errors"
+                                    );
+                                    for (_id, call) in pending.drain() {
+                                        self.history.push(ChatMessage::tool_error(
+                                            &call.id,
+                                            "tool result deadline expired",
+                                        ));
                                     }
                                 }
-                            }
-                            Some(server_req) = self.server_request_rx.recv() => {
-                                match self
-                                    .handle_server_initiated_request(&server_req, &cancel)
-                                    .await
-                                {
-                                    Ok(response) => {
-                                        if let Some(entry) = self.server_actors.get(&server_req.actor_name) {
-                                            let _ = entry.tx.send(response).await;
-                                        }
+                                () = cancel.cancelled() => {
+                                    for (_id, call) in pending.drain() {
+                                        self.history.push(ChatMessage::tool_error(
+                                            &call.id,
+                                            "cancelled",
+                                        ));
                                     }
-                                    Err(err) => {
-                                        // Log but don't propagate — the drive loop must
-                                        // exit normally to emit run_finished.
-                                        tracing::warn!(
-                                            actor = %server_req.actor_name,
-                                            error = %err,
-                                            "server-initiated request failed, continuing"
-                                        );
-                                    }
+                                    break;
                                 }
-                            }
-                            () = tokio::time::sleep_until(deadline) => {
-                                tracing::warn!(
-                                    remaining = pending.len(),
-                                    "tool result deadline expired, synthesizing errors"
-                                );
-                                for (_id, call) in pending.drain() {
-                                    self.history.push(ChatMessage::tool_error(
-                                        &call.id,
-                                        "tool result deadline expired",
-                                    ));
-                                }
-                            }
-                            () = cancel.cancelled() => {
-                                for (_id, call) in pending.drain() {
-                                    self.history.push(ChatMessage::tool_error(
-                                        &call.id,
-                                        "cancelled",
-                                    ));
-                                }
-                                break;
                             }
                         }
                     }
                 }
             }
-        }
 
-        tracing::debug!("multi-turn: emitting run_finished");
-        self.emit_run_finished();
+            tracing::debug!("multi-turn: emitting run_finished");
+            self.emit_run_finished();
 
-        // Multi-turn: wait for the AG-UI actor to potentially advance to a
-        // new phase and send another run_agent_input. This happens when the
-        // AG-UI actor has a trigger (e.g. event: run_finished) that advances
-        // to a phase with a new run_agent_input.
-        tracing::debug!("multi-turn: waiting for next run_agent_input (5s timeout)");
-        match tokio::time::timeout(Duration::from_secs(5), self.agui_response_rx.recv()).await {
-            Ok(Some(next_input)) => {
-                let next_messages = extract_run_agent_input_messages(&next_input)?;
-                for msg in next_messages {
-                    self.history.push(msg);
+            // Multi-turn: wait for the AG-UI actor to potentially advance to a
+            // new phase and send another run_agent_input. This happens when the
+            // AG-UI actor has a trigger (e.g. event: run_finished) that advances
+            // to a phase with a new run_agent_input.
+            tracing::debug!("multi-turn: waiting for next run_agent_input (5s timeout)");
+            match tokio::time::timeout(Duration::from_secs(5), self.agui_response_rx.recv()).await {
+                Ok(Some(next_input)) => {
+                    let next_messages = extract_run_agent_input_messages(&next_input)?;
+                    for msg in next_messages {
+                        self.history.push(msg);
+                    }
+                    self.run_id = Uuid::new_v4().to_string();
+                    tracing::info!("multi-turn: received next run_agent_input, continuing");
+                    continue 'multi_turn;
                 }
-                self.run_id = Uuid::new_v4().to_string();
-                tracing::info!("multi-turn: received next run_agent_input, continuing");
-                continue 'multi_turn;
+                Ok(None) => {
+                    tracing::debug!("multi-turn: channel closed, no next input");
+                    break 'multi_turn;
+                }
+                Err(_) => {
+                    tracing::debug!("multi-turn: timeout waiting for next input");
+                    break 'multi_turn;
+                }
             }
-            Ok(None) => {
-                tracing::debug!("multi-turn: channel closed, no next input");
-                break 'multi_turn;
-            }
-            Err(_) => {
-                tracing::debug!("multi-turn: timeout waiting for next input");
-                break 'multi_turn;
-            }
-        }
-
         } // end 'multi_turn loop
 
         Ok(())

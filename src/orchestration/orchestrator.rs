@@ -203,9 +203,12 @@ pub async fn orchestrate(
     });
 
     // 1b. Validate actor configuration and warn on missing transport binds
-    let has_remote_clients = actors
-        .iter()
-        .any(|a| matches!(a.mode.as_str(), "ag_ui_client" | "a2a_client" | "mcp_client"));
+    let has_remote_clients = actors.iter().any(|a| {
+        matches!(
+            a.mode.as_str(),
+            "ag_ui_client" | "a2a_client" | "mcp_client"
+        )
+    });
     for actor in actors {
         match actor.mode.as_str() {
             "mcp_server" if config.mcp_server_bind.is_none() && has_remote_clients => {
@@ -237,8 +240,7 @@ pub async fn orchestrate(
                 );
             }
             "mcp_client"
-                if config.mcp_client_command.is_none()
-                    && config.mcp_client_endpoint.is_none() =>
+                if config.mcp_client_command.is_none() && config.mcp_client_endpoint.is_none() =>
             {
                 tracing::warn!(
                     actor = %actor.name,
@@ -1239,13 +1241,11 @@ fn build_resource_context(
             // Extract text content from the resource.
             // Supports both `content` as a string and `content` as an object
             // with a `text` field (matching MCP resource content format).
-            let content_text = resource
-                .get("content")
-                .and_then(|c| {
-                    c.as_str().map(String::from).or_else(|| {
-                        c.get("text").and_then(Value::as_str).map(String::from)
-                    })
-                });
+            let content_text = resource.get("content").and_then(|c| {
+                c.as_str()
+                    .map(String::from)
+                    .or_else(|| c.get("text").and_then(Value::as_str).map(String::from))
+            });
 
             if let Some(content) = content_text {
                 if !found_any {

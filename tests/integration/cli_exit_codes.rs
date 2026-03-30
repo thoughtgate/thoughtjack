@@ -292,8 +292,10 @@ fn run_help_mentions_thoughtjack_config_env() {
 fn run_accepts_thoughtjack_config_env() {
     let file = write_terminal_yaml();
     let config_path = file.path().to_string_lossy().into_owned();
-    let output =
-        run_thoughtjack_with_env(&["run", "--quiet"], &[("THOUGHTJACK_SCENARIO", &config_path)]);
+    let output = run_thoughtjack_with_env(
+        &["run", "--quiet"],
+        &[("THOUGHTJACK_SCENARIO", &config_path)],
+    );
 
     assert_exit_code(
         &output,
@@ -427,13 +429,7 @@ attack:
 "#;
     let file = write_temp_yaml(yaml);
     let config_path = file.path().to_string_lossy().into_owned();
-    let output = run_thoughtjack(&[
-        "run",
-        &config_path,
-        "--max-session",
-        "300ms",
-        "--quiet",
-    ]);
+    let output = run_thoughtjack(&["run", &config_path, "--max-session", "300ms", "--quiet"]);
 
     assert_exit_code(
         &output,

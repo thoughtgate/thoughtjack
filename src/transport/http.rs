@@ -542,11 +542,9 @@ impl Transport for HttpTransport {
             *self
                 .current_guard
                 .lock()
-                .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))? =
-                Some(ConnectionGuard::new(
-                Arc::clone(&self.shared.connections),
-                req.connection_id,
-            ));
+                .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))? = Some(
+                ConnectionGuard::new(Arc::clone(&self.shared.connections), req.connection_id),
+            );
         }
 
         Ok(Some(req.message))

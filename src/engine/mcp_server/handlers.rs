@@ -41,7 +41,9 @@ pub fn handle_initialize(request: &JsonRpcRequest, state: &Value) -> JsonRpcResp
     });
     if let Some(si) = state.get("server_info").and_then(Value::as_object) {
         // SAFETY: json! macro always creates an Object
-        let obj = server_info.as_object_mut().expect("json! macro creates Object");
+        let obj = server_info
+            .as_object_mut()
+            .expect("json! macro creates Object");
         for (key, value) in si {
             obj.insert(key.clone(), value.clone());
         }

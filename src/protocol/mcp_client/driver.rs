@@ -417,7 +417,8 @@ impl McpClientDriver {
                     tracing::warn!(raw_name, diagnostics = ?name_diags, "interpolation warnings in call_tool name");
                 }
                 let arguments = action.get("arguments").cloned().unwrap_or(json!({}));
-                let (interpolated_args, args_diags) = interpolate_value(&arguments, extractors, None, None);
+                let (interpolated_args, args_diags) =
+                    interpolate_value(&arguments, extractors, None, None);
                 if !args_diags.is_empty() {
                     tracing::warn!(diagnostics = ?args_diags, "interpolation warnings in call_tool arguments");
                 }
@@ -449,7 +450,8 @@ impl McpClientDriver {
                     tracing::warn!(diagnostics = ?name_diags, "interpolation warnings in name");
                 }
                 let arguments = action.get("arguments").cloned().unwrap_or(json!({}));
-                let (interpolated_args, interpolated_args_diags) = interpolate_value(&arguments, extractors, None, None);
+                let (interpolated_args, interpolated_args_diags) =
+                    interpolate_value(&arguments, extractors, None, None);
                 if !interpolated_args_diags.is_empty() {
                     tracing::warn!(diagnostics = ?interpolated_args_diags, "interpolation warnings in interpolated_args");
                 }
