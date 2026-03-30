@@ -176,6 +176,9 @@ pub struct ExecutionSummary {
     /// LLM model used in context-mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_model: Option<String>,
+    /// True if the trace buffer was truncated (exceeded `MAX_TRACE_ENTRIES`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trace_truncated: bool,
 }
 
 // ============================================================================
@@ -239,6 +242,7 @@ pub fn build_verdict_output(
     grace_period_applied: Option<std::time::Duration>,
     trace_messages: usize,
     duration_ms: u64,
+    trace_truncated: bool,
 ) -> VerdictOutput {
     let attack_metadata = AttackMetadata {
         id: attack.id.clone(),
@@ -304,6 +308,7 @@ pub fn build_verdict_output(
         transport: None,
         context_provider: None,
         context_model: None,
+        trace_truncated,
     };
 
     VerdictOutput {
@@ -613,6 +618,7 @@ mod tests {
                 transport: None,
                 context_provider: None,
                 context_model: None,
+                trace_truncated: false,
             },
         }
     }
@@ -823,6 +829,7 @@ mod tests {
                 transport: None,
                 context_provider: None,
                 context_model: None,
+                trace_truncated: false,
             },
         };
 
@@ -887,6 +894,7 @@ mod tests {
                 transport: None,
                 context_provider: None,
                 context_model: None,
+                trace_truncated: false,
             },
         };
         print_human_summary(&output);
@@ -953,6 +961,7 @@ mod tests {
             Some(std::time::Duration::from_secs(30)),
             10,
             1500,
+            false,
         );
 
         assert_eq!(output.attack.id.as_deref(), Some("ATK-001"));
@@ -1011,7 +1020,7 @@ mod tests {
             source: None,
         };
 
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 100);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 100, false);
         let corr = output.verdict.correlation.as_ref().unwrap();
         assert_eq!(corr.logic, "all");
     }
@@ -1057,7 +1066,7 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 3, 500);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 3, 500, false);
         assert_eq!(
             output.verdict.max_tier.as_deref(),
             Some("boundary_breach"),
@@ -1113,7 +1122,7 @@ mod tests {
             source: None,
         };
 
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false);
         let corr = output.verdict.correlation.as_ref().unwrap();
         assert_eq!(corr.logic, "any");
     }
@@ -1312,7 +1321,7 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false);
         assert!(output.execution_summary.grace_period_applied.is_none());
     }
 
@@ -1363,7 +1372,7 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 200);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 200, false);
         assert_eq!(output.verdict.indicator_verdicts.len(), 1);
         assert_eq!(output.verdict.indicator_verdicts[0].result, "matched");
         assert_eq!(

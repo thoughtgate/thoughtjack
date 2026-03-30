@@ -1014,8 +1014,13 @@ impl PhaseDriver for AgUiDriver {
                             return Ok(DriveResult::Complete);
                         }
                         Ok(Err(SseStreamError::Parse(e))) => {
-                            // Parse error — warn and continue (up to MAX_CONSECUTIVE_ERRORS)
+                            // Parse error — warn and emit event so trace captures it
                             tracing::warn!("SSE parse error: {e}");
+                            let _ = event_tx.send(ProtocolEvent {
+                                direction: Direction::Incoming,
+                                method: "_sse_parse_error".to_string(),
+                                content: serde_json::json!({"error": e.clone()}),
+                            }).await;
                             if stream.parser.consecutive_errors() >= MAX_CONSECUTIVE_ERRORS {
                                 tracing::warn!(
                                     "closing AG-UI connection after {} consecutive parse errors",

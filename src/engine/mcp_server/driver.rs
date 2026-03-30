@@ -542,7 +542,7 @@ impl McpServerDriver {
                 // SAFETY: json! macro always creates an Object
                 notif_params
                     .as_object_mut()
-                    .unwrap()
+                    .expect("json! macro creates Object")
                     .insert("total".to_string(), json!(total_val));
             }
 

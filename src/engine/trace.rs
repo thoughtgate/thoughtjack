@@ -149,6 +149,12 @@ impl SharedTrace {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Returns `true` if the trace buffer reached capacity and dropped entries.
+    #[must_use]
+    pub fn was_truncated(&self) -> bool {
+        self.capacity_warned.load(Ordering::Relaxed)
+    }
 }
 
 impl Default for SharedTrace {

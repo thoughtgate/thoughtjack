@@ -93,6 +93,11 @@ pub(super) async fn server_request_handler(
                     }
                     Err(e) => {
                         tracing::warn!(method = %req.method, error = %e, "handler error, sending error response");
+                        let _ = handler_event_tx.try_send(ProtocolEvent {
+                            direction: Direction::Outgoing,
+                            method: req.method.clone(),
+                            content: json!({"error": e.to_string()}),
+                        });
                         let _ = writer.lock().await
                             .send_error_response(&req.id, error_codes::INTERNAL_ERROR, &e.to_string())
                             .await;

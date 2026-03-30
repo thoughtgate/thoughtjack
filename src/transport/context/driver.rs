@@ -296,6 +296,10 @@ impl ContextTransport {
                 }
                 LlmResponse::ToolUse(calls) => {
                     consecutive_truncations = 0;
+                    if calls.is_empty() {
+                        tracing::debug!("LLM returned empty tool_use — ending conversation");
+                        break;
+                    }
                     self.history.push(ChatMessage::assistant_tool_use(&calls));
 
                     if self.server_actors.is_empty() {

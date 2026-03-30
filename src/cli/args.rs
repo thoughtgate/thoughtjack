@@ -218,7 +218,7 @@ pub struct ExecutionArgs {
     /// Maximum LLM conversation turns in context-mode [default: 20].
     ///
     /// Implements: TJ-SPEC-022 F-001
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub max_turns: Option<u32>,
 }
 
