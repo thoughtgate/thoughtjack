@@ -578,4 +578,60 @@ mod tests {
             let _ = matches_uri_template(&template, &uri);
         }
     }
+
+    // ── build_a2a_response_content ──────────────────────────────────
+
+    #[test]
+    fn build_a2a_response_content_from_task_responses() {
+        let state = serde_json::json!({
+            "task_responses": [{
+                "content": {
+                    "id": "task-1",
+                    "status": "completed",
+                    "message": {
+                        "role": "agent",
+                        "parts": [
+                            {"type": "text", "text": "Dataset cleaned."}
+                        ]
+                    },
+                    "artifacts": [
+                        {"name": "output.csv", "content": "a,b,c\n1,2,3"}
+                    ]
+                }
+            }]
+        });
+        let result = build_a2a_response_content(&state).unwrap();
+        assert!(result.text.contains("Dataset cleaned."));
+        assert!(result.text.contains("a,b,c"));
+        assert_eq!(result.status, "completed");
+    }
+
+    #[test]
+    fn build_a2a_response_content_prefers_task_over_task_responses() {
+        // When state.task.message.parts exists, task_responses is not used
+        let state = serde_json::json!({
+            "task": {
+                "message": {
+                    "parts": [{"type": "text", "text": "From task."}]
+                },
+                "status": "completed"
+            },
+            "task_responses": [{
+                "content": {
+                    "message": {
+                        "parts": [{"type": "text", "text": "From task_responses."}]
+                    }
+                }
+            }]
+        });
+        let result = build_a2a_response_content(&state).unwrap();
+        assert!(result.text.contains("From task."));
+        assert!(!result.text.contains("From task_responses."));
+    }
+
+    #[test]
+    fn build_a2a_response_content_empty_state_returns_none() {
+        let state = serde_json::json!({});
+        assert!(build_a2a_response_content(&state).is_none());
+    }
 }

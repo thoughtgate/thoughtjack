@@ -567,6 +567,51 @@ pub const fn verdict_exit_code(result: &AttackResult, max_tier: Option<&Tier>) -
 mod tests {
     use super::*;
 
+    fn make_test_attack(id: &str) -> oatf::Attack {
+        oatf::Attack {
+            id: Some(id.to_string()),
+            name: None,
+            version: None,
+            status: None,
+            created: None,
+            modified: None,
+            author: None,
+            description: None,
+            grace_period: None,
+            severity: None,
+            impact: None,
+            classification: None,
+            references: None,
+            execution: oatf::Execution {
+                mode: None,
+                state: None,
+                phases: None,
+                actors: None,
+                extensions: indexmap::IndexMap::new(),
+            },
+            indicators: Some(vec![]),
+            correlation: None,
+            extensions: indexmap::IndexMap::new(),
+        }
+    }
+
+    fn make_test_verdict(id: &str) -> oatf::AttackVerdict {
+        oatf::AttackVerdict {
+            attack_id: Some(id.to_string()),
+            result: oatf::enums::AttackResult::NotExploited,
+            max_tier: None,
+            indicator_verdicts: vec![],
+            evaluation_summary: oatf::EvaluationSummary {
+                matched: 0,
+                not_matched: 0,
+                error: 0,
+                skipped: 0,
+            },
+            timestamp: None,
+            source: None,
+        }
+    }
+
     fn make_verdict_output(result: &str) -> VerdictOutput {
         VerdictOutput {
             attack: AttackMetadata {
@@ -1323,6 +1368,38 @@ mod tests {
         };
         let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false);
         assert!(output.execution_summary.grace_period_applied.is_none());
+    }
+
+    #[test]
+    fn build_verdict_output_trace_truncated_serializes() {
+        let output = build_verdict_output(
+            &make_test_attack("ATK-TRUNC"),
+            &make_test_verdict("ATK-TRUNC"),
+            vec![],
+            None,
+            0,
+            0,
+            true,
+        );
+        assert!(output.execution_summary.trace_truncated);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["execution_summary"]["trace_truncated"], true);
+    }
+
+    #[test]
+    fn build_verdict_output_trace_not_truncated_omitted() {
+        let output = build_verdict_output(
+            &make_test_attack("ATK-OK"),
+            &make_test_verdict("ATK-OK"),
+            vec![],
+            None,
+            0,
+            0,
+            false,
+        );
+        assert!(!output.execution_summary.trace_truncated);
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(json["execution_summary"].get("trace_truncated").is_none());
     }
 
     #[test]

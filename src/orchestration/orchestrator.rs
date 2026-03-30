@@ -2095,4 +2095,56 @@ attack:
             "not-a-socket-addr"
         );
     }
+
+    // ── build_resource_context ──────────────────────────────────────
+
+    #[test]
+    fn build_resource_context_extracts_string_content() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: mcp_srv
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              resources:
+                - name: "Travel Policy"
+                  uri: "resource://docs/travel"
+                  content: "Expense limit is $500 per day."
+              tools: []
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let actors = crate::loader::document_actors(&doc);
+        let result = build_resource_context(actors, &[0], &doc);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("Travel Policy"));
+        assert!(text.contains("resource://docs/travel"));
+        assert!(text.contains("Expense limit is $500 per day."));
+    }
+
+    #[test]
+    fn build_resource_context_returns_none_without_resources() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: mcp_srv
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              tools: []
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let actors = crate::loader::document_actors(&doc);
+        let result = build_resource_context(actors, &[0], &doc);
+        assert!(result.is_none());
+    }
 }

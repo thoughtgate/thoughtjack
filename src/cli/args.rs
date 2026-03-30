@@ -642,6 +642,20 @@ mod tests {
         assert!(cli.is_err(), "Expected clap parse error");
     }
 
+    /// --max-turns 0 should be rejected (minimum 1).
+    #[test]
+    fn test_max_turns_zero_rejected() {
+        let result = Cli::try_parse_from(["thoughtjack", "run", "x.yaml", "--max-turns", "0"]);
+        assert!(result.is_err(), "Expected error for --max-turns 0");
+    }
+
+    /// --max-turns 1 is the minimum valid value.
+    #[test]
+    fn test_max_turns_one_accepted() {
+        let cli = Cli::try_parse_from(["thoughtjack", "run", "x.yaml", "--max-turns", "1"]);
+        assert!(cli.is_ok(), "Failed to parse --max-turns 1");
+    }
+
     /// All valid --progress values parse correctly.
     #[test]
     fn test_progress_values() {

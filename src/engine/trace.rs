@@ -341,6 +341,14 @@ mod tests {
 
         assert_eq!(trace.len(), MAX_TRACE_ENTRIES);
         assert!(trace.capacity_warned.load(Ordering::Relaxed));
+        assert!(trace.was_truncated());
+    }
+
+    #[test]
+    fn was_truncated_false_when_under_capacity() {
+        let trace = SharedTrace::new();
+        trace.append("a", "p", Direction::Incoming, "m", &serde_json::json!({}));
+        assert!(!trace.was_truncated());
     }
 
     // ---- Property Tests ----
