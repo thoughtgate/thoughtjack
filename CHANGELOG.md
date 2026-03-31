@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Remove em dashes, AI slop, and misleading traffic-mode guidance (8a871d6)
+
+### Features
+
+- Auto-generate scenario library from OATF YAML files (cf2acda)
+
 ## [0.5.0] - 2026-03-02
 
 ### Added
