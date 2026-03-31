@@ -36,7 +36,7 @@ Compare the output with the indicator's `pattern.regex` in the scenario YAML (`t
 
 **Agent resisted the attack**
 
-A `NOT_EXPLOITED` verdict is a valid outcome — it means the agent didn't follow the adversarial instructions. This is the expected result for a well-defended agent.
+A `NOT_EXPLOITED` verdict is a valid outcome - it means the agent didn't follow the adversarial instructions. This is the expected result for a well-defended agent.
 
 ## Exit code 5 (Error) in context mode
 
@@ -62,7 +62,7 @@ thoughtjack scenarios run oatf-001 \
 If you're using an Anthropic key but didn't set `--context-provider anthropic`, the request goes to OpenAI's endpoint and fails:
 
 ```bash
-# Wrong — sends Anthropic key to OpenAI
+# Wrong - sends Anthropic key to OpenAI
 thoughtjack scenarios run oatf-001 --context --context-model claude-sonnet-4-20250514 --context-api-key $ANTHROPIC_API_KEY
 
 # Correct
@@ -149,6 +149,6 @@ thoughtjack run test.yaml -vvv --log-format json 2>debug.jsonl
 
 ## See also
 
-- [CLI Reference](/docs/reference/cli#exit-codes) — all exit codes and their meaning
-- [Analyze Protocol Traces](/docs/how-to/analyze-traces) — inspect what happened during a run
-- [Execution Modes](/docs/explanation/execution-modes) — understand traffic vs context mode
+- [CLI Reference](/docs/reference/cli#exit-codes) - all exit codes and their meaning
+- [Analyze Protocol Traces](/docs/how-to/analyze-traces) - inspect what happened during a run
+- [Execution Modes](/docs/explanation/execution-modes) - understand traffic vs context mode

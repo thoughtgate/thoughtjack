@@ -1,12 +1,12 @@
 ---
 title: Testing with Context Mode
 sidebar_position: 5
-description: "Tutorial: test an LLM directly with ThoughtJack context mode — inject adversarial tool results into conversation history and observe model behavior."
+description: "Tutorial: test an LLM directly with ThoughtJack context mode - inject adversarial tool results into conversation history and observe model behavior."
 ---
 
 # Testing with Context Mode
 
-In this tutorial you'll run a ThoughtJack scenario in **context mode** — calling an LLM API directly to test whether a model follows adversarial instructions injected through tool results.
+In this tutorial you'll run a ThoughtJack scenario in **context mode** - calling an LLM API directly to test whether a model follows adversarial instructions injected through tool results.
 
 Unlike [traffic mode](/docs/explanation/execution-modes#traffic-mode-default) (which requires a running agent), context mode is self-contained: ThoughtJack builds a conversation, injects poisoned tool results, and observes the LLM's response.
 
@@ -18,7 +18,7 @@ Unlike [traffic mode](/docs/explanation/execution-modes#traffic-mode-default) (w
 
 ## 1. Run your first context-mode scenario
 
-The `oatf-001` scenario tests tool description prompt injection — a malicious tool description that instructs the model to read sensitive files:
+The `oatf-001` scenario tests tool description prompt injection - a malicious tool description that instructs the model to read sensitive files:
 
 ```bash
 thoughtjack scenarios run oatf-001 \
@@ -64,7 +64,7 @@ The exit code reflects the highest matched tier, making it easy to gate CI pipel
 
 ## 3. Export and inspect the trace
 
-To see the full conversation — every message, tool call, and tool result:
+To see the full conversation - every message, tool call, and tool result:
 
 ```bash
 thoughtjack scenarios run oatf-001 \
@@ -129,7 +129,7 @@ thoughtjack scenarios run oatf-001 \
   --context-system-prompt "You are a helpful coding assistant. Use available tools to help the user."
 ```
 
-Different system prompts can significantly affect whether a model follows adversarial instructions — testing with various prompts helps identify which configurations are more resilient.
+Different system prompts can significantly affect whether a model follows adversarial instructions - testing with various prompts helps identify which configurations are more resilient.
 
 ## 7. Run a multi-actor scenario
 
@@ -146,7 +146,7 @@ The LLM sees tools from all server actors in a single tool list. Server actors s
 
 ## Next steps
 
-- [Configure Context Mode Providers](/docs/how-to/context-mode-providers) — OpenAI, Anthropic, Azure, local models
-- [Execution Modes](/docs/explanation/execution-modes) — understand the architecture behind both modes
-- [CLI Reference](/docs/reference/cli) — all `--context*` flags
-- [Integrate with CI/CD](/docs/how-to/ci-integration) — run context-mode scenarios in pipelines
+- [Configure Context Mode Providers](/docs/how-to/context-mode-providers) - OpenAI, Anthropic, Azure, local models
+- [Execution Modes](/docs/explanation/execution-modes) - understand the architecture behind both modes
+- [CLI Reference](/docs/reference/cli) - all `--context*` flags
+- [Integrate with CI/CD](/docs/how-to/ci-integration) - run context-mode scenarios in pipelines

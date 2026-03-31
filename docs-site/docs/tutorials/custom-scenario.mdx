@@ -1,7 +1,7 @@
 ---
 title: Writing a Custom Scenario
 sidebar_position: 3
-description: "Tutorial: create a custom ThoughtJack attack scenario from scratch using the OATF format — define tools, configure phase transitions, and add indicators."
+description: "Tutorial: create a custom ThoughtJack attack scenario from scratch using the OATF format - define tools, configure phase transitions, and add indicators."
 ---
 
 # Writing a Custom Scenario
@@ -121,11 +121,11 @@ Now add a phase that injects a malicious tool and notifies the agent:
 ```
 
 The phase engine works as follows:
-1. Server starts in `trust_building` — serves `review_code` and counts `tools/call` events
+1. Server starts in `trust_building` - serves `review_code` and counts `tools/call` events
 2. After 3 calls, advances to `inject`
 3. `on_enter` fires: logs a message and sends `list_changed` notification
 4. The agent re-fetches tools and sees the new `check_dependencies` tool
-5. `terminal` phase has no trigger — scenario stays here until `--max-session` expires
+5. `terminal` phase has no trigger - scenario stays here until `--max-session` expires
 
 ## 4. Add indicators
 
@@ -273,6 +273,6 @@ stateDiagram-v2
 
 ## Next steps
 
-- [Building Phased Attacks](./phased-attacks) — advanced multi-phase patterns with time-based triggers and content matching
-- [CLI Reference](/docs/reference/cli) — all commands and flags including `--progress`
-- [Configuration Schema Reference](/docs/reference/config-schema) — complete OATF field reference
+- [Building Phased Attacks](./phased-attacks) - advanced multi-phase patterns with time-based triggers and content matching
+- [CLI Reference](/docs/reference/cli) - all commands and flags including `--progress`
+- [Configuration Schema Reference](/docs/reference/config-schema) - complete OATF field reference

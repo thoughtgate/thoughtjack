@@ -5,7 +5,8 @@
   "scripts": {
     "docusaurus": "docusaurus",
     "start": "docusaurus start",
-    "build": "docusaurus build",
+    "generate-scenarios": "tsx scripts/generate-scenario-data.ts",
+    "build": "npm run generate-scenarios && docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",
@@ -29,6 +30,7 @@
     "@docusaurus/module-type-aliases": "^3.9",
     "@docusaurus/tsconfig": "^3.9",
     "linkinator": "^7.5.3",
+    "tsx": "^4.21.0",
     "typescript": "~5.7"
   },
   "browserslist": {

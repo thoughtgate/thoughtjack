@@ -4,3 +4,4 @@ build/
 
 # Node
 node_modules/
+src/data/

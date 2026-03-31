@@ -1,13 +1,13 @@
 ---
 title: Phase Engine Design
 sidebar_position: 4
-description: "Understand ThoughtJack's phase engine state machine — atomic transitions, timer mechanics, and how temporal attacks like rug pulls are modeled."
+description: "Understand ThoughtJack's phase engine state machine - atomic transitions, timer mechanics, and how temporal attacks like rug pulls are modeled."
 ---
 
 # Phase Engine Design
 
 :::info v0.5 Architecture
-In v0.5, the phase engine concepts described here are wrapped in the **PhaseLoop** / **PhaseDriver** architecture. PhaseLoop owns the event loop (trace append, extractor capture, trigger evaluation, phase advancement), while PhaseDriver implementations handle protocol I/O. The core concepts — linear state machine, response-before-transition, trigger types — still apply. See [Architecture](/docs/explanation/architecture) for the full v0.5 module diagram.
+In v0.5, the phase engine concepts described here are wrapped in the **PhaseLoop** / **PhaseDriver** architecture. PhaseLoop owns the event loop (trace append, extractor capture, trigger evaluation, phase advancement), while PhaseDriver implementations handle protocol I/O. The core concepts - linear state machine, response-before-transition, trigger types - still apply. See [Architecture](/docs/explanation/architecture) for the full v0.5 module diagram.
 :::
 
 The phase engine is the core of ThoughtJack's temporal attack capability. It implements a state machine that progresses through phases based on events, time, and content matching.
@@ -23,15 +23,15 @@ stateDiagram-v2
     phase_N --> [*]: terminal phase
 ```
 
-The phase engine is a **linear state machine** — phases advance in order from baseline through each configured phase. There are no backward transitions or branching paths. This models the typical attack lifecycle: reconnaissance → trust building → escalation → exploitation.
+The phase engine is a **linear state machine** - phases advance in order from baseline through each configured phase. There are no backward transitions or branching paths. This models the typical attack lifecycle: reconnaissance → trust building → escalation → exploitation.
 
 ## Phase lifecycle
 
 Each phase has three aspects:
 
-1. **Trigger** — the condition that advances to the next phase
-2. **Entry actions** — notifications, requests, and log messages fired on entry
-3. **Diffs** — modifications to the tool/resource/prompt sets
+1. **Trigger** - the condition that advances to the next phase
+2. **Entry actions** - notifications, requests, and log messages fired on entry
+3. **Diffs** - modifications to the tool/resource/prompt sets
 
 ```mermaid
 graph LR
@@ -52,14 +52,14 @@ This means:
 - The client sees the phase change on the **next** request, not the triggering one
 - Entry actions (like `send_notification: notifications/tools/list_changed`) fire after the response
 
-Why? Because real-world attacks operate this way — the malicious change happens between requests, not within one. This also prevents timing issues where a response might reference tools that don't exist yet.
+Why? Because real-world attacks operate this way - the malicious change happens between requests, not within one. This also prevents timing issues where a response might reference tools that don't exist yet.
 
 ## Phase state ownership
 
 In v0.5, the `PhaseEngine` owns the current phase index as a plain `usize` field. Thread safety comes from the architecture rather than atomic primitives:
 
 - Each actor gets its own `PhaseLoop` running on a single Tokio task
-- The `PhaseLoop` is the only writer of phase state — no concurrent mutation
+- The `PhaseLoop` is the only writer of phase state - no concurrent mutation
 - Drivers communicate via channels (`mpsc` for events, `watch` for extractors)
 - Cross-actor state uses `DashMap`-based `ExtractorStore`
 
@@ -175,7 +175,7 @@ on_enter:
       params: {}
 ```
 
-Entry actions are fire-and-forget — the engine doesn't wait for the client to process them before continuing.
+Entry actions are fire-and-forget - the engine doesn't wait for the client to process them before continuing.
 
 ## Terminal phases
 
@@ -212,4 +212,4 @@ Drivers focus on protocol I/O and emit `ProtocolEvent`s. PhaseLoop handles all s
 
 ### Watch channels for extractors
 
-Extractors are published via `tokio::sync::watch` channels — cheap atomic swaps for the publisher (PhaseLoop) and atomic loads for consumers (drivers). Server-mode drivers borrow per-request for fresh values; client-mode drivers clone once at the start.
+Extractors are published via `tokio::sync::watch` channels - cheap atomic swaps for the publisher (PhaseLoop) and atomic loads for consumers (drivers). Server-mode drivers borrow per-request for fresh values; client-mode drivers clone once at the start.

@@ -134,11 +134,18 @@ thoughtjack validate scenarios/library/benchmark/my-attack.yaml
 
 ## 5. Test the scenario
 
+**Context mode** (fastest, no agent needed):
 ```bash
 thoughtjack run scenarios/library/benchmark/my-attack.yaml \
-  --mcp-server 127.0.0.1:8080 \
-  --max-session 30s \
-  --no-semantic
+  --context --context-provider openai --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY \
+  --max-session 1m -o verdict.json
 ```
 
-Your scenario should execute and produce a verdict report with indicator evaluation results.
+**Traffic mode** (requires a connected agent):
+```bash
+thoughtjack run scenarios/library/benchmark/my-attack.yaml \
+  --mcp-server 127.0.0.1:8080
+```
+
+In traffic mode, connect your agent to `http://127.0.0.1:8080/mcp` to get a meaningful verdict. See [Test Agent Frameworks](/docs/how-to/agent-integration) for setup.

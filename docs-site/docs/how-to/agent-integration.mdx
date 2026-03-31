@@ -6,7 +6,7 @@ description: "Connect LangGraph, CrewAI, or any MCP-capable agent framework to T
 
 # Test Agent Frameworks
 
-This guide shows how to connect real agent frameworks to ThoughtJack in traffic mode. Traffic mode runs attack scenarios against a live agent, testing the full protocol stack — MCP tool discovery, tool calls, AG-UI streaming, and A2A delegation.
+This guide shows how to connect real agent frameworks to ThoughtJack in traffic mode. Traffic mode runs attack scenarios against a live agent, testing the full protocol stack - MCP tool discovery, tool calls, AG-UI streaming, and A2A delegation.
 
 ## How it works
 
@@ -61,7 +61,7 @@ async def create_graph(llm_base_url, mcp_server_urls, api_key, model):
     return create_react_agent(llm, tools)
 ```
 
-**server.py** — wraps the agent in an AG-UI HTTP server:
+**server.py** - wraps the agent in an AG-UI HTTP server:
 ```python
 import json, uuid, argparse
 import uvicorn
@@ -78,7 +78,7 @@ parser.add_argument("--model", default="gpt-4o")
 args = parser.parse_args()
 
 app = FastAPI()
-_graph = None  # Lazy init — avoids startup deadlock
+_graph = None  # Lazy init - avoids startup deadlock
 
 def _sse(data): return f"data: {json.dumps(data)}\n\n"
 
@@ -128,7 +128,7 @@ if __name__ == "__main__":
 
 ### Run the test
 
-Terminal 1 — start the agent:
+Terminal 1 - start the agent:
 ```bash
 python server.py \
   --llm-base-url https://api.openai.com/v1 \
@@ -138,7 +138,7 @@ python server.py \
   --port 8000
 ```
 
-Terminal 2 — run ThoughtJack:
+Terminal 2 - run ThoughtJack:
 ```bash
 thoughtjack run \
   scenarios/library/benchmark/OATF-001_exfil-chain-tool-description.yaml \
@@ -171,7 +171,7 @@ python server.py \
   --port 8000 ...
 ```
 
-The agent doesn't need to know which actor is which — it discovers tools from all servers and the LLM decides which to call.
+The agent doesn't need to know which actor is which - it discovers tools from all servers and the LLM decides which to call.
 
 ## CrewAI
 
@@ -218,7 +218,7 @@ def run_task(agent, user_message):
     return crew.kickoff()
 ```
 
-**server.py** — same AG-UI wrapper pattern as LangGraph:
+**server.py** - same AG-UI wrapper pattern as LangGraph:
 ```python
 import json, uuid, argparse
 import uvicorn
@@ -277,18 +277,18 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=args.port)
 ```
 
-Run the same way as LangGraph — start the agent, then ThoughtJack.
+Run the same way as LangGraph - start the agent, then ThoughtJack.
 
 ## Any MCP-capable framework
 
 Any agent framework can be tested if it:
 
-1. **Connects to MCP servers via HTTP** — ThoughtJack's `--mcp-server` flag starts a Streamable HTTP endpoint at `/mcp`
-2. **Exposes an AG-UI endpoint** — ThoughtJack's `--agui-client-endpoint` sends user requests and receives SSE events
+1. **Connects to MCP servers via HTTP** - ThoughtJack's `--mcp-server` flag starts a Streamable HTTP endpoint at `/mcp`
+2. **Exposes an AG-UI endpoint** - ThoughtJack's `--agui-client-endpoint` sends user requests and receives SSE events
 
 If your framework doesn't natively support AG-UI, wrap it in a FastAPI server following the pattern above. The AG-UI contract is simple:
 
-- **POST `/`** — receives `RunAgentInput` JSON with `messages`, `threadId`, `runId`
+- **POST `/`** - receives `RunAgentInput` JSON with `messages`, `threadId`, `runId`
 - **Returns** SSE stream with events: `RUN_STARTED`, `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`, `RUN_FINISHED`
 
 ## Docker lab (real LLMs)
@@ -298,7 +298,7 @@ For testing with real LLM providers, use the Docker lab which packages ThoughtJa
 ```bash
 # Setup
 cp lab/.env.example lab/.env
-# Edit lab/.env — set OPENAI_API_KEY, MODEL_NAME
+# Edit lab/.env - set OPENAI_API_KEY, MODEL_NAME
 
 # Build
 ./lab/run.sh --build

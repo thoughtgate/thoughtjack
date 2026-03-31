@@ -6,7 +6,7 @@ description: "Reference for ThoughtJack payload generators: nested JSON, garbage
 
 # Payload Generators
 
-Generators produce attack payloads via the `$generate` directive. They implement the `PayloadGenerator` trait and support lazy evaluation — factory objects are created at config load time, bytes are generated at response time.
+Generators produce attack payloads via the `$generate` directive. They implement the `PayloadGenerator` trait and support lazy evaluation - factory objects are created at config load time, bytes are generated at response time.
 
 See [TJ-SPEC-005](https://github.com/thoughtgate/thoughtjack/blob/main/specs/TJ-SPEC-005_Payload_Generation.md) for the formal specification.
 
@@ -176,8 +176,8 @@ Limits are validated in the generator constructor. Exceeding a limit causes a ru
 Payloads larger than 1 MB (the `STREAMING_THRESHOLD`) are generated as streams via the `PayloadStream` trait. Streaming generates chunks incrementally instead of buffering the entire payload in memory.
 
 The `GeneratedPayload` enum has two variants:
-- `Buffered(Vec<u8>)` — small payloads held in memory
-- `Streamed(Box<dyn PayloadStream>)` — large payloads yielded incrementally
+- `Buffered(Vec<u8>)` - small payloads held in memory
+- `Streamed(Box<dyn PayloadStream>)` - large payloads yielded incrementally
 
 ## Determinism
 
@@ -193,6 +193,6 @@ $generate:
 
 ## See also
 
-- [Use Payload Generators](/docs/how-to/use-generators) — practical guide to using generators in attack scenarios
-- [Behavioral Modes](/docs/reference/behaviors) — delivery behaviors that modify how generator output is transmitted
-- [OATF Document Schema](/docs/reference/config-schema) — full YAML reference including `$generate` directive
+- [Use Payload Generators](/docs/how-to/use-generators) - practical guide to using generators in attack scenarios
+- [Behavioral Modes](/docs/reference/behaviors) - delivery behaviors that modify how generator output is transmitted
+- [OATF Document Schema](/docs/reference/config-schema) - full YAML reference including `$generate` directive

@@ -44,7 +44,7 @@ thoughtjack run <oatf.yaml>
 | `--header <KEY:VALUE>` | | HTTP headers for client transports (repeatable) |
 | `--no-semantic` | | Disable semantic (LLM-as-judge) indicator evaluation (not yet implemented) |
 | `--raw-synthesize` | | Bypass synthesize output validation |
-| `--progress <LEVEL>` | `THOUGHTJACK_PROGRESS` | Progress output: `off`, `on`, `auto` (default: `auto` — on for TTY, off otherwise) |
+| `--progress <LEVEL>` | `THOUGHTJACK_PROGRESS` | Progress output: `off`, `on`, `auto` (default: `auto` - on for TTY, off otherwise) |
 | `--metrics-port <port>` | `THOUGHTJACK_METRICS_PORT` | Enable Prometheus metrics endpoint |
 | `--events-file <path>` | `THOUGHTJACK_EVENTS_FILE` | Write structured events to JSONL file |
 | `--export-trace <PATH>` | `THOUGHTJACK_EXPORT_TRACE` | Write full protocol trace to JSONL file (use `-` for stdout) |
@@ -127,21 +127,21 @@ thoughtjack version [--format human|json]
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `THOUGHTJACK_SCENARIO` | — | Default OATF scenario file path |
-| `THOUGHTJACK_METRICS_PORT` | — | Prometheus metrics port |
-| `THOUGHTJACK_EVENTS_FILE` | — | Structured event output file |
+| `THOUGHTJACK_SCENARIO` | - | Default OATF scenario file path |
+| `THOUGHTJACK_METRICS_PORT` | - | Prometheus metrics port |
+| `THOUGHTJACK_EVENTS_FILE` | - | Structured event output file |
 | `THOUGHTJACK_PROGRESS` | `auto` | Progress output (`off`, `on`, `auto`) |
 | `THOUGHTJACK_COLOR` | `auto` | Color output control |
-| `THOUGHTJACK_LOG_LEVEL` | — | Override log level (trace, debug, info, warn, error) |
-| `NO_COLOR` | — | Disable color output (any value) |
+| `THOUGHTJACK_LOG_LEVEL` | - | Override log level (trace, debug, info, warn, error) |
+| `NO_COLOR` | - | Disable color output (any value) |
 | `THOUGHTJACK_LOG_FORMAT` | `human` | Log format (`human`, `json`) |
-| `THOUGHTJACK_EXPORT_TRACE` | — | Default export trace file path |
-| `THOUGHTJACK_CONTEXT_API_KEY` | — | API key for context-mode LLM provider |
-| `THOUGHTJACK_CONTEXT_BASE_URL` | — | Override LLM provider base URL |
-| `THOUGHTJACK_CONTEXT_MODEL` | — | LLM model identifier for context mode |
+| `THOUGHTJACK_EXPORT_TRACE` | - | Default export trace file path |
+| `THOUGHTJACK_CONTEXT_API_KEY` | - | API key for context-mode LLM provider |
+| `THOUGHTJACK_CONTEXT_BASE_URL` | - | Override LLM provider base URL |
+| `THOUGHTJACK_CONTEXT_MODEL` | - | LLM model identifier for context mode |
 | `THOUGHTJACK_CONTEXT_PROVIDER` | `openai` | LLM provider type (`openai`, `anthropic`) |
-| `THOUGHTJACK_CONTEXT_SYSTEM_PROMPT` | — | System prompt for context mode |
-| `THOUGHTJACK_CONTEXT_TEMPERATURE` | — | Sampling temperature for context mode |
+| `THOUGHTJACK_CONTEXT_SYSTEM_PROMPT` | - | System prompt for context mode |
+| `THOUGHTJACK_CONTEXT_TEMPERATURE` | - | Sampling temperature for context mode |
 | `THOUGHTJACK_CONTEXT_MAX_TOKENS` | `4096` | Max tokens per LLM response |
 | `THOUGHTJACK_CONTEXT_TIMEOUT` | `120` | Per-request LLM timeout in seconds |
 
@@ -151,7 +151,7 @@ Exit codes encode both the verdict result and the attack severity tier. When an 
 
 | Code | Name | Description |
 |------|------|-------------|
-| 0 | `not_exploited` | Agent was not exploited — pass |
+| 0 | `not_exploited` | Agent was not exploited - pass |
 | 1 | `exploited` | Exploited (no tier, or Ingested tier) |
 | 2 | `exploited_local_action` | Exploited with LocalAction tier |
 | 3 | `exploited_boundary_breach` | Exploited with BoundaryBreach tier |
@@ -164,8 +164,8 @@ Exit codes encode both the verdict result and the attack severity tier. When an 
 
 ## See also
 
-- [Getting Started](/docs/tutorials/getting-started) — install and run your first scenario
-- [Integrate with CI/CD](/docs/how-to/ci-integration) — use exit codes in automated pipelines
-- [OATF Document Schema](/docs/reference/config-schema) — the YAML format the CLI consumes
-- [Execution Modes](/docs/explanation/execution-modes) — traffic mode vs context mode
-- [Configure Context Mode Providers](/docs/how-to/context-mode-providers) — OpenAI, Anthropic, Azure, local models
+- [Getting Started](/docs/tutorials/getting-started) - install and run your first scenario
+- [Integrate with CI/CD](/docs/how-to/ci-integration) - use exit codes in automated pipelines
+- [OATF Document Schema](/docs/reference/config-schema) - the YAML format the CLI consumes
+- [Execution Modes](/docs/explanation/execution-modes) - traffic mode vs context mode
+- [Configure Context Mode Providers](/docs/how-to/context-mode-providers) - OpenAI, Anthropic, Azure, local models
