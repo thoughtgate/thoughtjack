@@ -107,7 +107,7 @@ jobs:
 
       - name: Install mock-llm
         if: ${{ !matrix.self_test }}
-        run: npm install -g @dwmkerr/mock-llm
+        run: npm install -g @dwmkerr/mock-llm@0.1.28
 
       - name: Start mock-llm
         if: ${{ !matrix.self_test }}
@@ -121,7 +121,7 @@ jobs:
         run: pip install -e tests/e2e/reference-agents/${{ matrix.framework }}/
 
       - name: Install orchestrator dependencies
-        run: pip install pyyaml
+        run: pip install "pyyaml==6.0.3"
 
       - name: Run e2e scenario
         run: |
@@ -188,7 +188,7 @@ jobs:
           node-version: "22"
 
       - name: Install mock-llm
-        run: npm install -g @dwmkerr/mock-llm
+        run: npm install -g @dwmkerr/mock-llm@0.1.28
 
       - name: Start mock-llm
         run: |
@@ -200,7 +200,7 @@ jobs:
         run: pip install --upgrade -e tests/e2e/reference-agents/${{ matrix.framework }}/
 
       - name: Install orchestrator dependencies
-        run: pip install pyyaml
+        run: pip install "pyyaml==6.0.3"
 
       - name: Run e2e scenario
         run: |
