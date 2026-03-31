@@ -531,13 +531,17 @@ impl Transport for HttpTransport {
                 .map_err(|_| TransportError::InternalError("guard mutex poisoned".into()))?
                 .take();
             // Retain old guard so its connection entry stays in the DashMap.
-            if let Some(guard) = old_guard
-                && let Ok(mut prev) = self.previous_guards.lock()
-            {
+            // Without this, the dropped guard removes the connection from
+            // tracking while its response channel may still be draining.
+            if let Some(guard) = old_guard {
+                let mut prev = self.previous_guards.lock().map_err(|_| {
+                    TransportError::InternalError("previous_guards mutex poisoned".into())
+                })?;
                 prev.push(guard);
                 while prev.len() > 2 {
                     prev.remove(0);
                 }
+                drop(prev);
             }
             *self
                 .current_guard

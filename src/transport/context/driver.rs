@@ -177,9 +177,11 @@ impl ContextTransport {
         // user requests, matching how real agent frameworks (CrewAI,
         // LangGraph) issue sequential LLM calls with refreshed context.
         'multi_turn: loop {
+            let mut exhausted = false;
             loop {
                 self.turn_count += 1;
                 if self.turn_count > self.max_turns || cancel.is_cancelled() {
+                    exhausted = true;
                     break;
                 }
 
@@ -465,6 +467,12 @@ impl ContextTransport {
 
             tracing::debug!("multi-turn: emitting run_finished");
             self.emit_run_finished();
+
+            // If max_turns exhausted or cancelled, exit immediately — don't
+            // wait for a follow-up that we wouldn't be able to process.
+            if exhausted {
+                break 'multi_turn;
+            }
 
             // Multi-turn: wait for the AG-UI actor to potentially advance to a
             // new phase and send another run_agent_input. This happens when the

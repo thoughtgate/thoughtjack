@@ -128,13 +128,13 @@ thoughtjack scenarios show oatf-002
 ```
                           ┌─────────────┐
                           │     CLI     │
-                          └─────���┬──────┘
+                          └──────┬──────┘
                                  │
                     ┌────────────┴────────────┐
                     │       Orchestrator       │
                     └──┬─────────┬─────────┬──┘
                        │         │         │
-               ┌───────┴──┐ ┌───┴───���┐ ┌──┴───────┐
+               ┌───────┴──┐ ┌───┴────┐ ┌──┴───────┐
                │ActorRunner│ │  ...   │ │ActorRunner│
                └───────┬──┘ └────────┘ └──┬───────┘
                        │                   │
@@ -460,7 +460,7 @@ Built-in scenarios are listed with `thoughtjack scenarios list` and `thoughtjack
 
 ## Project Status
 
-**Current: v0.5** — OATF-based execution engine with multi-protocol, multi-actor support and two execution modes (traffic and context).
+**Current: v0.6.0** — OATF-based execution engine with multi-protocol, multi-actor support and two execution modes (traffic and context).
 
 **Implemented**:
 - OATF engine: PhaseEngine, PhaseLoop, PhaseDriver trait (TJ-SPEC-013)

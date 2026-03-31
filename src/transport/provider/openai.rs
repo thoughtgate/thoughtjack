@@ -206,7 +206,13 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         .and_then(Value::as_str)
                         .unwrap_or("{}");
                     let arguments: Value = serde_json::from_str(args_str).unwrap_or_else(|e| {
-                        tracing::warn!(args_str, error = %e, "malformed tool call arguments from LLM provider, defaulting to {{}}");
+                        let truncated: String = args_str.chars().take(200).collect();
+                        tracing::warn!(
+                            args_preview = %truncated,
+                            args_len = args_str.len(),
+                            error = %e,
+                            "malformed tool call arguments from LLM provider, defaulting to {{}}"
+                        );
                         json!({})
                     });
 
