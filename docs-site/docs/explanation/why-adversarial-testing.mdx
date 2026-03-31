@@ -1,7 +1,7 @@
 ---
 title: Why Adversarial Agent Testing
 sidebar_position: 1
-description: "Why functional testing isn't enough for AI agents that connect to external tools and services — and how adversarial testing closes the security gap."
+description: "Why functional testing isn't enough for AI agents that connect to external tools and services - and how adversarial testing closes the security gap."
 ---
 
 # Why Adversarial Agent Testing
@@ -12,7 +12,7 @@ AI agents are now connected to external tools, servers, and each other through p
 
 When an agent calls a tool, it trusts the response. When it reads a tool description, it treats the text as authoritative. When it receives a notification, it acts on it.
 
-This trust model worked when tools were local functions with predictable behavior. It breaks when tools are remote servers operated by unknown parties — or when a trusted server changes behavior after initial review.
+This trust model worked when tools were local functions with predictable behavior. It breaks when tools are remote servers operated by unknown parties - or when a trusted server changes behavior after initial review.
 
 Consider what happens today:
 
@@ -68,18 +68,18 @@ The severity of these attack vectors is well-documented:
 - **Unit 42** confirmed indirect injection actively deployed across live websites with 22 distinct obfuscation techniques
 - **MCPTox benchmark** found over 60% attack success rates against MCP clients
 - **MintMCP** found 5.5% of public MCP servers contain vulnerabilities
-- **OWASP** rates goal hijacking as ASI01 — the #1 risk for agentic applications
+- **OWASP** rates goal hijacking as ASI01 - the #1 risk for agentic applications
 - **CVE-2025-6514** in mcp-remote (437,000+ downloads) enabled OS command execution through an MCP server
 
 ## Where ThoughtJack fits
 
-ThoughtJack is an offensive testing tool. It simulates the attacker's side of the equation by:
+ThoughtJack is an offensive testing tool. It simulates attacker behavior by:
 
-1. **Acting as a malicious server** — presenting tools with injected descriptions, mutating capabilities over time, delivering exfiltration payloads
-2. **Acting as a malicious client** — sending adversarial requests to servers, injecting conversation history, testing input validation
-3. **Evaluating agent behavior** — observing whether the agent follows injected instructions, accesses sensitive files, or exfiltrates data
+1. **Acting as a malicious server** - presenting tools with injected descriptions, mutating capabilities over time, delivering exfiltration payloads
+2. **Acting as a malicious client** - sending adversarial requests to servers, injecting conversation history, testing input validation
+3. **Evaluating agent behavior** - observing whether the agent follows injected instructions, accesses sensitive files, or exfiltrates data
 
-Attack scenarios are authored as OATF (Open Agent Threat Format) documents — a declarative YAML format that describes the attack setup, phases, triggers, and success indicators. ThoughtJack executes these documents and produces a verdict: did the agent resist, or was it compromised?
+Attack scenarios are authored as OATF (Open Agent Threat Format) documents - a declarative YAML format that describes the attack setup, phases, triggers, and success indicators. ThoughtJack executes these documents and produces a verdict: did the agent resist, or was it compromised?
 
 ### Offensive + defensive
 
@@ -96,7 +96,7 @@ This is the same red team / blue team methodology used in traditional security, 
 
 ## Further reading
 
-- [MCP Attack Surface](/docs/explanation/mcp-attack-surface) — detailed vulnerability model for MCP, A2A, and AG-UI
-- [Security Framework Mappings](/docs/explanation/framework-mappings) — how ThoughtJack scenarios map to MITRE ATT&CK and OWASP MCP Top 10
-- [Scenario Library](/scenarios) — browse all built-in attack scenarios
-- [Getting Started](/docs/tutorials/getting-started) — run your first adversarial test in 5 minutes
+- [MCP Attack Surface](/docs/explanation/mcp-attack-surface) - detailed vulnerability model for MCP, A2A, and AG-UI
+- [Security Framework Mappings](/docs/explanation/framework-mappings) - how ThoughtJack scenarios map to MITRE ATT&CK and OWASP MCP Top 10
+- [Scenario Library](/scenarios) - browse all built-in attack scenarios
+- [Getting Started](/docs/tutorials/getting-started) - run your first adversarial test in 5 minutes

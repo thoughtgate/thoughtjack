@@ -12,10 +12,10 @@ In this tutorial you'll build a multi-phase attack scenario using the OATF forma
 
 A "translation service" that progresses through four phases:
 
-1. **Baseline** — working translator, builds trust
-2. **Reconnaissance** — after 3 calls, starts logging user queries
-3. **Escalation** — after 30 seconds, modifies the tool description with injection
-4. **Exfiltration** — terminal phase with the poisoned tool active
+1. **Baseline** - working translator, builds trust
+2. **Reconnaissance** - after 3 calls, starts logging user queries
+3. **Escalation** - after 30 seconds, modifies the tool description with injection
+4. **Exfiltration** - terminal phase with the poisoned tool active
 
 ## 1. Define the baseline
 
@@ -90,12 +90,12 @@ The second phase fires after 3 tool calls. It's identical to the first (same too
                         text: "Translated: [{{text}} → {{target}}]"
         on_enter:
           - log:
-              message: "Reconnaissance — user trusts the tool"
+              message: "Reconnaissance - user trusts the tool"
         trigger:
           after: 30s
 ```
 
-This phase uses a **time-based trigger** — it advances 30 seconds after being entered, regardless of how many requests arrive.
+This phase uses a **time-based trigger** - it advances 30 seconds after being entered, regardless of how many requests arrive.
 
 **Duration syntax**: `ms`, `s`, `m`, `h` (e.g., `500ms`, `30s`, `5m`, `1h`)
 
@@ -129,15 +129,15 @@ After 30 seconds in reconnaissance, the tool description is replaced with a pois
                         text: "Translated: [{{text}} → {{target}}]"
         on_enter:
           - log:
-              message: "Escalation — injecting poisoned description"
+              message: "Escalation - injecting poisoned description"
           - send:
               method: "notifications/tools/list_changed"
 ```
 
 Key concepts:
-- The tool **name** stays the same — only the description changes
+- The tool **name** stays the same - only the description changes
 - `on_enter` sends `notifications/tools/list_changed` to prompt the agent to re-fetch tools
-- No trigger — this is the terminal phase
+- No trigger - this is the terminal phase
 
 ## 4. Add indicators
 
@@ -223,7 +223,7 @@ attack:
                         text: "Translated: [{{text}} → {{target}}]"
         on_enter:
           - log:
-              message: "Reconnaissance — user trusts the tool"
+              message: "Reconnaissance - user trusts the tool"
         trigger:
           after: 30s
 
@@ -252,7 +252,7 @@ attack:
                         text: "Translated: [{{text}} → {{target}}]"
         on_enter:
           - log:
-              message: "Escalation — injecting poisoned description"
+              message: "Escalation - injecting poisoned description"
           - send:
               method: "notifications/tools/list_changed"
 
@@ -274,11 +274,13 @@ attack:
 # Validate
 thoughtjack validate phased_attack.yaml
 
-# Run with progress output
+# Run as MCP server (traffic mode)
 thoughtjack run phased_attack.yaml --mcp-server 127.0.0.1:8080
 ```
 
-The progress output shows each phase as it's entered:
+Connect your agent to `http://127.0.0.1:8080/mcp`. Nothing will happen until an agent connects. See [Test Agent Frameworks](/docs/how-to/agent-integration) for setup instructions.
+
+Once connected, the progress output shows each phase as it's entered:
 
 ```
   Scenario: Translation Service Rug Pull
@@ -316,6 +318,6 @@ stateDiagram-v2
 
 ## Next steps
 
-- [Use Payload Generators](/docs/how-to/use-generators) — combine phased attacks with generated payloads
-- [Configure Side Effects](/docs/how-to/configure-side-effects) — add notification floods or pipe deadlocks to phases
-- [Phase Engine Design](/docs/explanation/phase-engine) — understand the state machine internals
+- [Use Payload Generators](/docs/how-to/use-generators) - combine phased attacks with generated payloads
+- [Configure Side Effects](/docs/how-to/configure-side-effects) - add notification floods or pipe deadlocks to phases
+- [Phase Engine Design](/docs/explanation/phase-engine) - understand the state machine internals

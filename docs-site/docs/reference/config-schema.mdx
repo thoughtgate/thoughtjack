@@ -1,7 +1,7 @@
 ---
 title: Configuration Schema
 sidebar_position: 2
-description: "Complete OATF document schema for ThoughtJack attack scenarios — execution modes, phases, triggers, state, extractors, indicators, and verdict configuration."
+description: "Complete OATF document schema for ThoughtJack attack scenarios - execution modes, phases, triggers, state, extractors, indicators, and verdict configuration."
 ---
 
 # Configuration Schema
@@ -11,25 +11,25 @@ Complete reference for the OATF (Open Agent Threat Format) document schema used 
 ## Root structure
 
 ```yaml
-oatf: "0.1"              # Required — OATF format version
+oatf: "0.1"              # Required - OATF format version
 
 attack:
-  id: string              # Optional — scenario ID (e.g., "OATF-002")
-  name: string            # Optional — human-readable name
-  description: string     # Optional — multi-line description
-  version: integer        # Optional — scenario version
-  status: string          # Optional — stable, draft, experimental
-  severity:               # Optional — severity metadata
+  id: string              # Optional - scenario ID (e.g., "OATF-002")
+  name: string            # Optional - human-readable name
+  description: string     # Optional - multi-line description
+  version: integer        # Optional - scenario version
+  status: string          # Optional - stable, draft, experimental
+  severity:               # Optional - severity metadata
     level: string         #   critical, high, medium, low
     confidence: integer   #   0-100
-  execution:              # Required — defines how the scenario runs
+  execution:              # Required - defines how the scenario runs
     mode: string          # Actor mode (single-actor shorthand)
     actors: []            # Multi-actor configuration
     phases: []            # Phases (single-actor shorthand)
-  indicators: []          # Optional — verdict evaluation rules
-  correlation:            # Optional — how indicators combine
+  indicators: []          # Optional - verdict evaluation rules
+  correlation:            # Optional - how indicators combine
     logic: string         #   any (default), all
-  grace_period: string    # Optional — wait after final phase (e.g., "10s")
+  grace_period: string    # Optional - wait after final phase (e.g., "10s")
 ```
 
 ## Execution modes
@@ -75,7 +75,7 @@ attack:
 | `ag_ui_client` | AG-UI client | `--agui-client-endpoint <URL>` | Required (exactly one) |
 
 :::note Context mode restrictions
-In [context mode](/docs/explanation/execution-modes#context-mode) (`--context`), the scenario must include exactly one `ag_ui_client` actor. Additional `mcp_server` and `a2a_server` actors are allowed — they provide tool definitions and adversarial responses to the LLM. Client-mode actors (`mcp_client`, `a2a_client`) are not supported because there is no external service to connect to.
+In [context mode](/docs/explanation/execution-modes#context-mode) (`--context`), the scenario must include exactly one `ag_ui_client` actor. Additional `mcp_server` and `a2a_server` actors are allowed - they provide tool definitions and adversarial responses to the LLM. Client-mode actors (`mcp_client`, `a2a_client`) are not supported because there is no external service to connect to.
 :::
 
 ## Phases
@@ -84,8 +84,8 @@ Phases define the state machine for temporal attacks. Each phase has a `state` b
 
 ```yaml
 phases:
-  - name: string            # Optional — phase name (auto-generated as phase-0, phase-1 if omitted)
-    description: string     # Optional — human-readable description
+  - name: string            # Optional - phase name (auto-generated as phase-0, phase-1 if omitted)
+    description: string     # Optional - human-readable description
     state:                  # What the server serves in this phase
       capabilities: {}      # MCP capabilities
       tools: []             # Tool definitions
@@ -100,7 +100,7 @@ phases:
     extractors: []          # Value extractors for template interpolation
 ```
 
-The last phase in the list is the **terminal phase** — it has no trigger and runs indefinitely.
+The last phase in the list is the **terminal phase** - it has no trigger and runs indefinitely.
 
 ### State block
 
@@ -127,7 +127,7 @@ state:
                 text: "Result: 42"
 ```
 
-State is inherited — each phase merges with previous phases. Only fields you specify are overridden.
+State is inherited - each phase merges with previous phases. Only fields you specify are overridden.
 
 ### Tool responses
 
@@ -153,23 +153,23 @@ responses:
 See [Phase Triggers](./triggers) for the full trigger reference.
 
 ```yaml
-# Event count — advance after N matching events
+# Event count - advance after N matching events
 trigger:
   event: tools/call
   count: 3
 
-# Time-based — advance after duration
+# Time-based - advance after duration
 trigger:
   after: 30s
 
-# Content matching — advance on specific payload content
+# Content matching - advance on specific payload content
 trigger:
   event: tools/call
   match:
     args.expression:
       contains: "password"
 
-# Combined — event count with timeout fallback
+# Combined - event count with timeout fallback
 trigger:
   event: tools/call
   count: 10
@@ -250,7 +250,7 @@ indicators:
 | Method | Field | Description |
 |--------|-------|-------------|
 | `pattern` | `pattern.regex` | Regex match against trace content |
-| `semantic` | `semantic.intent` | LLM-as-judge evaluation (planned — not yet implemented) |
+| `semantic` | `semantic.intent` | LLM-as-judge evaluation (planned - not yet implemented) |
 | `cel` | `cel.expression` | CEL expression evaluation |
 
 :::note Planned features
@@ -278,6 +278,6 @@ Override at runtime with `--grace-period <DURATION>`.
 
 ## See also
 
-- [Phase Triggers](./triggers) — complete trigger syntax reference
-- [Getting Started](/docs/tutorials/getting-started) — run your first scenario
-- [CLI Reference](./cli) — all commands and flags
+- [Phase Triggers](./triggers) - complete trigger syntax reference
+- [Getting Started](/docs/tutorials/getting-started) - run your first scenario
+- [CLI Reference](./cli) - all commands and flags

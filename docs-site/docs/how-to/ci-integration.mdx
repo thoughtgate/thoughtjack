@@ -95,14 +95,22 @@ ThoughtJack uses verdict-based exit codes that CI pipelines can check. Exit code
 | 143 | Terminated | SIGTERM |
 
 ```yaml
+# Context mode (self-contained, no agent needed):
 - name: Run scenario
-  run: thoughtjack run test.yaml -o verdict.json
+  run: |
+    thoughtjack run test.yaml \
+      --context --context-provider openai --context-model gpt-4o \
+      --context-api-key ${{ secrets.OPENAI_API_KEY }} \
+      -o verdict.json
   continue-on-error: false
+
+# Traffic mode requires a running agent as a service in the CI job.
+# See the "Test Agent Frameworks" guide for setup.
 ```
 
 ## Context mode in CI
 
-[Context mode](/docs/explanation/execution-modes#context-mode) is self-contained — no agent infrastructure needed. Set API credentials via environment variables:
+[Context mode](/docs/explanation/execution-modes#context-mode) is self-contained - no agent infrastructure needed. Set API credentials via environment variables:
 
 ```yaml title=".github/workflows/context-test.yml"
 - name: Run context-mode scenario

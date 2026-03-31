@@ -6,19 +6,19 @@ description: "Read, filter, and interpret ThoughtJack protocol traces exported w
 
 # Analyze Protocol Traces
 
-ThoughtJack can export a full protocol trace — every message between ThoughtJack and the agent — as a JSONL file. This guide shows how to read, filter, and interpret these traces.
+ThoughtJack can export a full protocol trace - every message between ThoughtJack and the agent - as a JSONL file. This guide shows how to read, filter, and interpret these traces.
 
 ## Export a trace
 
 Add `--export-trace` to any run:
 
 ```bash
-# Traffic mode
+# Traffic mode (requires a connected agent - see "Test Agent Frameworks")
 thoughtjack scenarios run oatf-002 \
   --mcp-server 127.0.0.1:8080 \
   --export-trace trace.jsonl
 
-# Context mode
+# Context mode (self-contained, just needs an API key)
 thoughtjack scenarios run oatf-001 \
   --context \
   --context-model gpt-4o \
@@ -111,7 +111,7 @@ jq -c 'select(.phase == "exploit" or .phase == "swap_definition") |
 
 ## Inspect tool call arguments
 
-Extract the arguments from every `tools/call` — this is what indicators match against:
+Extract the arguments from every `tools/call` - this is what indicators match against:
 
 ```bash
 jq -c 'select(.method == "tools/call" and .direction == "Incoming") |
@@ -165,6 +165,6 @@ jq -s '.[10]' trace.jsonl
 
 ## See also
 
-- [CLI Reference](/docs/reference/cli) — `--export-trace` flag
-- [Integrate with CI/CD](/docs/how-to/ci-integration) — export traces in pipelines
-- [Execution Modes](/docs/explanation/execution-modes) — traces work in both modes
+- [CLI Reference](/docs/reference/cli) - `--export-trace` flag
+- [Integrate with CI/CD](/docs/how-to/ci-integration) - export traces in pipelines
+- [Execution Modes](/docs/explanation/execution-modes) - traces work in both modes

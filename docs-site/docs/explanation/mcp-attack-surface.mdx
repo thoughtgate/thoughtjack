@@ -1,7 +1,7 @@
 ---
 title: MCP Attack Surface
 sidebar_position: 5
-description: "Why the Model Context Protocol is vulnerable to injection, temporal, and resource attacks — and how ThoughtJack models these attack vectors."
+description: "Why the Model Context Protocol is vulnerable to injection, temporal, and resource attacks - and how ThoughtJack models these attack vectors."
 ---
 
 # MCP Attack Surface
@@ -12,11 +12,11 @@ The Model Context Protocol (MCP) introduces a new attack surface in AI agent sys
 
 MCP enables AI agents to interact with external tools, resources, and prompts. This creates trust boundaries that can be exploited:
 
-1. **Implicit trust in tool definitions** — agents treat tool descriptions as ground truth without verification
-2. **No authentication of tool servers** — MCP clients typically launch tool servers as subprocesses with no mutual authentication
-3. **Dynamic capability mutation** — tools can change after initialization via `list_changed` notifications
-4. **Unstructured text channels** — tool descriptions and responses are free-form text, enabling prompt injection
-5. **Bidirectional communication** — the server can send unsolicited notifications and requests to the client
+1. **Implicit trust in tool definitions** - agents treat tool descriptions as ground truth without verification
+2. **No authentication of tool servers** - MCP clients typically launch tool servers as subprocesses with no mutual authentication
+3. **Dynamic capability mutation** - tools can change after initialization via `list_changed` notifications
+4. **Unstructured text channels** - tool descriptions and responses are free-form text, enabling prompt injection
+5. **Bidirectional communication** - the server can send unsolicited notifications and requests to the client
 
 ## Attack vectors
 
@@ -33,7 +33,7 @@ Exploit the text-based nature of MCP to inject instructions into tool responses 
 | Credential harvesting | Fake credential prompts in descriptions | `credential-harvester` |
 | Unicode obfuscation | Invisible/lookalike characters in responses | `unicode-obfuscation` |
 
-**Why it works**: AI agents process tool output as context for their next action. If the output contains instructions, the agent may follow them — especially if the instructions mimic system-level directives.
+**Why it works**: AI agents process tool output as context for their next action. If the output contains instructions, the agent may follow them - especially if the instructions mimic system-level directives.
 
 ### Temporal attacks
 

@@ -48,19 +48,19 @@ Loads YAML configuration files, resolves directives (`$include`, `$file`, `$gene
 
 The v0.5 core engine. Key components:
 
-- **PhaseEngine** — the state machine that tracks phase index and evaluates triggers
-- **PhaseLoop** — owns the event loop: trace append, extractor capture, trigger evaluation, phase advancement. Generic over `PhaseDriver`.
-- **PhaseDriver** trait — implemented by each protocol driver. Handles protocol I/O and emits `ProtocolEvent`s.
-- **GenerationProvider** — handles `$generate` and synthesize output validation
+- **PhaseEngine** - the state machine that tracks phase index and evaluates triggers
+- **PhaseLoop** - owns the event loop: trace append, extractor capture, trigger evaluation, phase advancement. Generic over `PhaseDriver`.
+- **PhaseDriver** trait - implemented by each protocol driver. Handles protocol I/O and emits `ProtocolEvent`s.
+- **GenerationProvider** - handles `$generate` and synthesize output validation
 
 ### Orchestration (`orchestration/`)
 
 Multi-actor coordination:
 
-- **Orchestrator** — spawns `ActorRunner` tasks (one per actor in the OATF document), collects results
-- **ActorRunner** — creates a `PhaseLoop<SpecificDriver>` based on the actor's mode
-- **ExtractorStore** — `DashMap`-based shared state for cross-actor extractor publication
-- **SharedTrace** — append-only trace buffer merged across actors for verdict evaluation
+- **Orchestrator** - spawns `ActorRunner` tasks (one per actor in the OATF document), collects results
+- **ActorRunner** - creates a `PhaseLoop<SpecificDriver>` based on the actor's mode
+- **ExtractorStore** - `DashMap`-based shared state for cross-actor extractor publication
+- **SharedTrace** - append-only trace buffer merged across actors for verdict evaluation
 
 ### Protocol drivers (`protocol/`, `engine/mcp_server.rs`)
 
@@ -78,17 +78,17 @@ Each protocol mode has a driver implementing the `PhaseDriver` trait:
 
 Post-execution evaluation pipeline:
 
-- **Grace period** — configurable wait after execution for delayed effects
-- **Indicator evaluation** — pattern matching and CEL expressions (semantic LLM-as-judge evaluation is planned)
-- **Verdict computation** — `exploited`, `not_exploited`, `partial`, `error` with tier-based severity
-- **Output** — JSON verdict file and human-readable summary
+- **Grace period** - configurable wait after execution for delayed effects
+- **Indicator evaluation** - pattern matching and CEL expressions (semantic LLM-as-judge evaluation is planned)
+- **Verdict computation** - `exploited`, `not_exploited`, `partial`, `error` with tier-based severity
+- **Output** - JSON verdict file and human-readable summary
 
 ### Transport (`transport/`)
 
 Abstracts the communication channel for [traffic mode](/docs/explanation/execution-modes#traffic-mode-default):
 
-- **stdio** — JSON-RPC over stdin/stdout, single connection
-- **HTTP** — Axum-based HTTP server with SSE for server-to-client messages, multi-connection
+- **stdio** - JSON-RPC over stdin/stdout, single connection
+- **HTTP** - Axum-based HTTP server with SSE for server-to-client messages, multi-connection
 
 ### Context transport (`transport/context/`)
 
@@ -97,10 +97,10 @@ The [context mode](/docs/explanation/execution-modes#context-mode) transport byp
 1. Builds a conversation history from OATF scenario state
 2. Injects adversarial payloads as tool-call results in the history
 3. Calls an LLM API via the `LlmProvider` trait (`OpenAI` or `Anthropic` implementations in `transport/provider/`)
-4. Observes the LLM's response — particularly any tool calls it makes
+4. Observes the LLM's response - particularly any tool calls it makes
 5. Routes tool calls to server actors via channel-based handles (`AgUiHandle`, `ServerHandle`)
 
-The `ContextTransport` owns the conversation loop and coordinates with server actors through `mpsc` and `watch` channels, keeping the `PhaseDriver` implementations transport-agnostic. Server actors run their normal PhaseLoop/PhaseDriver machinery — only the transport layer differs.
+The `ContextTransport` owns the conversation loop and coordinates with server actors through `mpsc` and `watch` channels, keeping the `PhaseDriver` implementations transport-agnostic. Server actors run their normal PhaseLoop/PhaseDriver machinery - only the transport layer differs.
 
 ### Generators (`generator/`)
 
@@ -110,8 +110,8 @@ Factory objects that produce attack payloads lazily at response time. Each gener
 
 Controls response delivery and side effects:
 
-- **Delivery** — how bytes are transmitted (slow loris, unbounded line, etc.)
-- **Side effects** — additional actions (notification flood, pipe deadlock, etc.)
+- **Delivery** - how bytes are transmitted (slow loris, unbounded line, etc.)
+- **Side effects** - additional actions (notification flood, pipe deadlock, etc.)
 
 ### Scenarios (`scenarios/`)
 
@@ -119,9 +119,9 @@ Controls response delivery and side effects:
 
 ### Observability (`observability/`)
 
-- **Logging** — tracing-subscriber with human and JSON formatters
-- **Metrics** — Prometheus counters, gauges, and histograms
-- **Events** — structured JSONL event stream for post-run analysis
+- **Logging** - tracing-subscriber with human and JSON formatters
+- **Metrics** - Prometheus counters, gauges, and histograms
+- **Events** - structured JSONL event stream for post-run analysis
 
 ## Data flow (multi-actor orchestration)
 
@@ -159,7 +159,7 @@ The key flow:
 
 - **Async runtime**: Tokio multi-threaded runtime
 - **Phase state**: `AtomicU64` for the phase index within PhaseEngine
-- **Extractor publication**: `tokio::sync::watch` channel — PhaseLoop publishes, drivers consume
+- **Extractor publication**: `tokio::sync::watch` channel - PhaseLoop publishes, drivers consume
 - **Cross-actor state**: `DashMap`-based `ExtractorStore` for shared extractor values
 - **Trace**: `SharedTrace` with append-only semantics
 - **Shutdown**: Cooperative via `CancellationToken` (tokio-util)
@@ -178,4 +178,4 @@ The key flow:
 
 **Verdict-based exit codes**: Exit codes map to verdicts and severity tiers (`0` = not exploited, `1` = exploited, `2` = local action, `3` = boundary breach), making CI integration straightforward.
 
-**Context mode reuses server actors**: In context mode, server actors (MCP server, A2A server) run their normal PhaseLoop/PhaseDriver machinery. The only difference is the transport layer — channel-based handles instead of network sockets. This means rug pulls, phased attacks, and all temporal behaviors work identically in both modes.
+**Context mode reuses server actors**: In context mode, server actors (MCP server, A2A server) run their normal PhaseLoop/PhaseDriver machinery. The only difference is the transport layer - channel-based handles instead of network sockets. This means rug pulls, phased attacks, and all temporal behaviors work identically in both modes.
