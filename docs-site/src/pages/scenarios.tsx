@@ -3,90 +3,22 @@ import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 
 import styles from './scenarios.module.css';
+import scenarioData from '../data/scenarios.json';
 
 type Protocol = 'MCP' | 'A2A' | 'AG-UI';
-type Severity = 'critical' | 'high' | 'medium' | 'low';
+type Severity = 'critical' | 'high' | 'medium' | 'low' | 'unknown';
 
 interface Scenario {
   id: string;
   name: string;
   description: string;
   severity: Severity;
-  protocol: Protocol;
+  protocols: string[];
+  status: string;
+  tags: string[];
 }
 
-const scenarios: Scenario[] = [
-  {
-    id: 'oatf-001',
-    name: 'Tool Description Prompt Injection',
-    description: 'Injects adversarial instructions into MCP tool descriptions to manipulate agent behavior during tool discovery.',
-    severity: 'critical',
-    protocol: 'MCP',
-  },
-  {
-    id: 'oatf-002',
-    name: 'Tool Definition Rug Pull',
-    description: 'Builds trust with benign tool definitions, then swaps them for malicious versions mid-session via tools/list_changed.',
-    severity: 'critical',
-    protocol: 'MCP',
-  },
-  {
-    id: 'oatf-004',
-    name: 'Tool Response Injection',
-    description: 'Returns crafted tool call responses containing embedded instructions that hijack the agent\'s subsequent actions.',
-    severity: 'critical',
-    protocol: 'MCP',
-  },
-  {
-    id: 'oatf-005',
-    name: 'Confused Deputy via Tool Invocation',
-    description: 'Tricks the agent into invoking privileged tools on behalf of the attacker by abusing trust relationships.',
-    severity: 'critical',
-    protocol: 'MCP',
-  },
-  {
-    id: 'oatf-006',
-    name: 'Data Exfiltration via Tool Calls',
-    description: 'Manipulates the agent into sending sensitive data to attacker-controlled endpoints through tool call parameters.',
-    severity: 'critical',
-    protocol: 'MCP',
-  },
-  {
-    id: 'oatf-007',
-    name: 'MCP Server Supply Chain Attack',
-    description: 'Simulates a compromised MCP server package that activates malicious behavior after an update or delay.',
-    severity: 'critical',
-    protocol: 'MCP',
-  },
-  {
-    id: 'oatf-008',
-    name: 'Cross-Agent Prompt Injection',
-    description: 'Injects adversarial payloads through A2A message exchanges to compromise downstream agents in multi-agent systems.',
-    severity: 'critical',
-    protocol: 'A2A',
-  },
-  {
-    id: 'oatf-009',
-    name: 'Agent Card Spoofing / Impersonation',
-    description: 'Presents a falsified Agent Card to impersonate trusted agents, gaining unauthorized access to sensitive operations.',
-    severity: 'high',
-    protocol: 'A2A',
-  },
-  {
-    id: 'oatf-010',
-    name: 'Goal Hijacking / Instruction Override',
-    description: 'Overrides the agent\'s original goal through injected instructions that redirect its actions toward attacker objectives.',
-    severity: 'critical',
-    protocol: 'MCP',
-  },
-  {
-    id: 'oatf-011',
-    name: 'AG-UI Message List Injection',
-    description: 'Injects adversarial content into AG-UI message streams to manipulate the agent\'s conversation context and actions.',
-    severity: 'critical',
-    protocol: 'AG-UI',
-  },
-];
+const scenarios: Scenario[] = scenarioData as Scenario[];
 
 const filterTabs: Array<{label: string; value: Protocol | 'All'}> = [
   {label: 'All', value: 'All'},
@@ -108,13 +40,15 @@ function ScenarioCard({scenario}: {scenario: Scenario}): React.ReactElement {
     <div className={styles.scenarioCard}>
       <div className={styles.scenarioCardHeader}>
         <span className={styles.scenarioId}>{scenario.id}</span>
-        <SeverityBadge severity={scenario.severity} />
-        <span className={styles.scenarioProtocol}>{scenario.protocol}</span>
+        <SeverityBadge severity={scenario.severity as Severity} />
+        {scenario.protocols.map((p) => (
+          <span key={p} className={styles.scenarioProtocol}>{p}</span>
+        ))}
       </div>
       <h3 className={styles.scenarioName}>{scenario.name}</h3>
       <p className={styles.scenarioDesc}>{scenario.description}</p>
       <code className={styles.scenarioCmd}>
-        thoughtjack scenarios run {scenario.id}
+        thoughtjack scenarios run {scenario.id.toLowerCase()}
       </code>
     </div>
   );
@@ -125,7 +59,7 @@ export default function Scenarios(): React.ReactElement {
 
   const filtered = filter === 'All'
     ? scenarios
-    : scenarios.filter((s) => s.protocol === filter);
+    : scenarios.filter((s) => s.protocols.includes(filter));
 
   return (
     <Layout
@@ -137,7 +71,7 @@ export default function Scenarios(): React.ReactElement {
           <header className={styles.header}>
             <h1>Scenario Library</h1>
             <p className={styles.subtitle}>
-              ThoughtJack ships with 91 built-in attack scenarios across MCP, A2A, and AG-UI
+              ThoughtJack ships with {scenarios.length} built-in attack scenarios across MCP, A2A, and AG-UI
               protocols. Each scenario is an{' '}
               <a href="https://oatf.dev" target="_blank" rel="noopener noreferrer">
                 OATF
@@ -154,7 +88,7 @@ export default function Scenarios(): React.ReactElement {
                 onClick={() => setFilter(tab.value)}
                 type="button"
               >
-                {tab.label}
+                {tab.label} ({tab.value === 'All' ? scenarios.length : scenarios.filter(s => s.protocols.includes(tab.value)).length})
               </button>
             ))}
           </div>
@@ -180,8 +114,7 @@ export default function Scenarios(): React.ReactElement {
               >
                 git submodule
               </a>{' '}
-              that ThoughtJack ships with. Visit it for detailed scenario documentation,
-              indicator definitions, and MITRE ATT&CK mappings.
+              that ThoughtJack ships with.
             </p>
 
             <div className={styles.ctaLinks}>
