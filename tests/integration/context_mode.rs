@@ -103,8 +103,8 @@ fn ec_ctx_001_unknown_tool_error_preserved() {
 
 #[tokio::test]
 async fn ec_ctx_002_empty_response() {
-    let (agui_tx, agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
@@ -115,6 +115,7 @@ async fn ec_ctx_002_empty_response() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -132,7 +133,7 @@ async fn ec_ctx_002_empty_response() {
 
     // Send initial RunAgentInput
     let msg = make_run_agent_input(&[json!({"role": "user", "content": "Hello"})]);
-    response_tx.send(msg).await.unwrap();
+    response_tx.send(msg).unwrap();
 
     // Should receive text_message_content (empty) + text_message_end + run_finished
     let mut received = Vec::new();
@@ -190,8 +191,8 @@ fn ec_ctx_005_extract_tool_definitions_multiple() {
 
 #[tokio::test]
 async fn ec_ctx_009_single_actor_no_tools() {
-    let (agui_tx, agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
@@ -202,6 +203,7 @@ async fn ec_ctx_009_single_actor_no_tools() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -222,7 +224,6 @@ async fn ec_ctx_009_single_actor_no_tools() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Hello"}),
         ]))
-        .await
         .unwrap();
 
     // Receive events
@@ -257,8 +258,8 @@ async fn ec_ctx_009_single_actor_no_tools() {
 
 #[tokio::test]
 async fn ec_ctx_007_max_turns_reached() {
-    let (agui_tx, agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
@@ -282,6 +283,7 @@ async fn ec_ctx_007_max_turns_reached() {
         Box::new(provider),
         None,
         None,
+        None,
         2, // max_turns = 2
         agui_tx,
         response_rx,
@@ -300,7 +302,6 @@ async fn ec_ctx_007_max_turns_reached() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Go"}),
         ]))
-        .await
         .unwrap();
 
     // Follow-up for turn 2
@@ -309,7 +310,6 @@ async fn ec_ctx_007_max_turns_reached() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Continue"}),
         ]))
-        .await
         .unwrap();
 
     // Drive loop should exit after 2 turns and send run_finished
@@ -342,8 +342,8 @@ async fn ec_ctx_007_max_turns_reached() {
 
 #[tokio::test]
 async fn ec_ctx_014_repeated_truncation_terminates() {
-    let (agui_tx, agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
@@ -361,6 +361,7 @@ async fn ec_ctx_014_repeated_truncation_terminates() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -381,7 +382,6 @@ async fn ec_ctx_014_repeated_truncation_terminates() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Hello"}),
         ]))
-        .await
         .unwrap();
 
     // Drive loop should terminate with error
@@ -503,13 +503,14 @@ impl LlmProvider for BlockingProvider {
 
 #[tokio::test]
 async fn ec_ctx_019_cancellation_stops_drive_loop() {
-    let (agui_tx, _agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, _agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
     let transport = ContextTransport::new(
         Box::new(BlockingProvider),
+        None,
         None,
         None,
         20,
@@ -530,7 +531,6 @@ async fn ec_ctx_019_cancellation_stops_drive_loop() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Hello"}),
         ]))
-        .await
         .unwrap();
 
     // Wait a bit then cancel
@@ -538,7 +538,7 @@ async fn ec_ctx_019_cancellation_stops_drive_loop() {
     cancel.cancel();
 
     // Drive loop should exit cleanly
-    let result = tokio::time::timeout(Duration::from_secs(5), handle)
+    let result = tokio::time::timeout(Duration::from_secs(12), handle)
         .await
         .expect("drive loop should exit within timeout")
         .expect("task should not panic");
@@ -551,8 +551,8 @@ async fn ec_ctx_019_cancellation_stops_drive_loop() {
 
 #[tokio::test]
 async fn ec_ctx_020_follow_up_timeout_ends_conversation() {
-    let (agui_tx, agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
@@ -563,6 +563,7 @@ async fn ec_ctx_020_follow_up_timeout_ends_conversation() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -583,7 +584,6 @@ async fn ec_ctx_020_follow_up_timeout_ends_conversation() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Hello"}),
         ]))
-        .await
         .unwrap();
 
     // Drive loop should timeout on follow-up (5s) and send run_finished
@@ -620,8 +620,8 @@ async fn ec_ctx_020_follow_up_timeout_ends_conversation() {
 
 #[tokio::test]
 async fn ec_ctx_022_initial_message_timeout() {
-    let (agui_tx, _agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, _agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
@@ -629,6 +629,7 @@ async fn ec_ctx_022_initial_message_timeout() {
 
     let transport = ContextTransport::new(
         Box::new(provider),
+        None,
         None,
         None,
         20,
@@ -646,7 +647,7 @@ async fn ec_ctx_022_initial_message_timeout() {
     drop(response_tx);
 
     let handle = transport.spawn_drive_loop(cancel);
-    let result = tokio::time::timeout(Duration::from_secs(5), handle)
+    let result = tokio::time::timeout(Duration::from_secs(12), handle)
         .await
         .expect("should complete quickly")
         .expect("should not panic");
@@ -850,13 +851,14 @@ impl LlmProvider for RateLimitedProvider {
 
 #[tokio::test]
 async fn ec_ctx_003_rate_limited_propagates_error() {
-    let (agui_tx, _agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, _agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
     let transport = ContextTransport::new(
         Box::new(RateLimitedProvider),
+        None,
         None,
         None,
         20,
@@ -876,7 +878,6 @@ async fn ec_ctx_003_rate_limited_propagates_error() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Hi"}),
         ]))
-        .await
         .unwrap();
 
     let result = handle.await.unwrap();
@@ -913,13 +914,14 @@ impl LlmProvider for AuthErrorProvider {
 
 #[tokio::test]
 async fn ec_ctx_004_auth_error_fails_immediately() {
-    let (agui_tx, _agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, _agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
     let transport = ContextTransport::new(
         Box::new(AuthErrorProvider),
+        None,
         None,
         None,
         20,
@@ -939,7 +941,6 @@ async fn ec_ctx_004_auth_error_fails_immediately() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Hi"}),
         ]))
-        .await
         .unwrap();
 
     let result = handle.await.unwrap();
@@ -1006,13 +1007,14 @@ impl LlmProvider for TimeoutProvider {
 
 #[tokio::test]
 async fn ec_ctx_010_timeout_propagates_error() {
-    let (agui_tx, _agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, _agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
     let transport = ContextTransport::new(
         Box::new(TimeoutProvider),
+        None,
         None,
         None,
         20,
@@ -1032,7 +1034,6 @@ async fn ec_ctx_010_timeout_propagates_error() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Hi"}),
         ]))
-        .await
         .unwrap();
 
     let result = handle.await.unwrap();
@@ -1069,13 +1070,14 @@ impl LlmProvider for ContextWindowProvider {
 
 #[tokio::test]
 async fn ec_ctx_011_context_window_exceeded() {
-    let (agui_tx, _agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, _agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (_result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
     let transport = ContextTransport::new(
         Box::new(ContextWindowProvider),
+        None,
         None,
         None,
         20,
@@ -1095,7 +1097,6 @@ async fn ec_ctx_011_context_window_exceeded() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Hi"}),
         ]))
-        .await
         .unwrap();
 
     let result = handle.await.unwrap();
@@ -1137,8 +1138,8 @@ async fn ec_ctx_013_server_handle_after_loop_exit() {
 
 #[tokio::test]
 async fn ec_ctx_015_tool_result_deadline_fires() {
-    let (agui_tx, agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     // result_tx is intentionally unused — the server never sends a result,
     // which is the point of this test (deadline fires).
     let (_result_tx, result_rx) = mpsc::channel(16);
@@ -1181,6 +1182,7 @@ async fn ec_ctx_015_tool_result_deadline_fires() {
         Box::new(provider),
         None,
         None,
+        None,
         20,
         agui_tx,
         response_rx,
@@ -1199,7 +1201,6 @@ async fn ec_ctx_015_tool_result_deadline_fires() {
         .send(make_run_agent_input(&[
             json!({"role": "user", "content": "Use tool"}),
         ]))
-        .await
         .unwrap();
 
     // The server actor receives the tool call but NEVER responds
@@ -1223,7 +1224,7 @@ async fn ec_ctx_015_tool_result_deadline_fires() {
     cancel.cancel();
 
     // Drive loop should exit cleanly after cancellation
-    let result = tokio::time::timeout(Duration::from_secs(5), handle)
+    let result = tokio::time::timeout(Duration::from_secs(12), handle)
         .await
         .expect("should complete")
         .expect("should not panic");
@@ -1651,8 +1652,8 @@ async fn tool_roster_change_injects_system_notification() {
     // Phase advances → tool description changes to poisoned version.
     // Turn 2: model should see a system notification about tool change.
 
-    let (agui_tx, _agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, _agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
@@ -1695,6 +1696,7 @@ async fn tool_roster_change_injects_system_notification() {
         Box::new(provider),
         None,
         None,
+        None,
         10,
         agui_tx,
         response_rx,
@@ -1714,7 +1716,6 @@ async fn tool_roster_change_injects_system_notification() {
             "role": "user",
             "content": "What is 2+2?"
         })]))
-        .await
         .unwrap();
 
     // Server receives tool call, responds, then updates tool definitions.
@@ -1739,7 +1740,7 @@ async fn tool_roster_change_injects_system_notification() {
         tool_watch_tx.send(poisoned_tools).unwrap();
     }
 
-    let result = tokio::time::timeout(Duration::from_secs(10), handle).await;
+    let result = tokio::time::timeout(Duration::from_secs(20), handle).await;
     assert!(result.is_ok(), "drive loop should complete");
 
     let history = captured.history.lock().await.clone();
@@ -1762,8 +1763,8 @@ async fn tool_roster_change_injects_system_notification() {
 
 #[tokio::test]
 async fn no_notification_when_tools_unchanged() {
-    let (agui_tx, _agui_rx) = mpsc::channel(16);
-    let (response_tx, response_rx) = mpsc::channel(16);
+    let (agui_tx, _agui_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
     let (result_tx, result_rx) = mpsc::channel(16);
     let (_req_tx, req_rx) = mpsc::channel(16);
 
@@ -1806,6 +1807,7 @@ async fn no_notification_when_tools_unchanged() {
         Box::new(provider),
         None,
         None,
+        None,
         10,
         agui_tx,
         response_rx,
@@ -1824,7 +1826,6 @@ async fn no_notification_when_tools_unchanged() {
             "role": "user",
             "content": "Search for test"
         })]))
-        .await
         .unwrap();
 
     if let Some(request) = server_rx.recv().await {

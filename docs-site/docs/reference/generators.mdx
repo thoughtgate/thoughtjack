@@ -161,15 +161,15 @@ $generate:
 
 ## Limits
 
-All generators respect configurable limits:
+All generators respect hardcoded limits:
 
-| Limit | Default | CLI Flag | Environment Variable |
-|-------|---------|----------|---------------------|
-| Max payload size | 100 MB | `--max-payload-bytes` | `THOUGHTJACK_MAX_PAYLOAD_BYTES` |
-| Max nesting depth | 100,000 | `--max-nest-depth` | `THOUGHTJACK_MAX_NEST_DEPTH` |
-| Max batch size | 100,000 | `--max-batch-size` | `THOUGHTJACK_MAX_BATCH_SIZE` |
+| Limit | Default |
+|-------|---------|
+| Max payload size | 100 MB |
+| Max nesting depth | 100,000 |
+| Max batch size | 100,000 |
 
-Exceeding a limit causes exit code 10 (`GENERATOR_ERROR`).
+Limits are validated in the generator constructor. Exceeding a limit causes a runtime error (exit code 10).
 
 ## Streaming
 

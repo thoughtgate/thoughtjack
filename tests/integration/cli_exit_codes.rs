@@ -160,7 +160,7 @@ fn cli_command_paths_have_expected_exit_codes() {
     assert_exit_code(
         &run_no_config,
         64,
-        "run without --config should be usage error",
+        "run without scenario path should be usage error",
     );
 
     let mcp_client_only = write_temp_yaml(
@@ -179,7 +179,6 @@ attack:
     );
     let run_missing_transport = run_thoughtjack(&[
         "run",
-        "--config",
         &mcp_client_only.path().to_string_lossy(),
         "--quiet",
         "--max-session",
@@ -193,7 +192,6 @@ attack:
 
     let conflict = run_thoughtjack(&[
         "run",
-        "--config",
         "tests/fixtures/smoke_test.yaml",
         "--mcp-client-command",
         "echo hi",
@@ -206,13 +204,12 @@ attack:
         "scenarios",
         "run",
         "oatf-002",
-        "--config",
         "tests/fixtures/smoke_test.yaml",
     ]);
     assert_exit_code(
         &scenarios_config,
         64,
-        "scenarios run should reject --config at parse time",
+        "scenarios run should reject extra positional at parse time",
     );
 
     let scenarios_run = run_thoughtjack(&[
@@ -257,7 +254,7 @@ fn scenarios_run_ignores_thoughtjack_config_env() {
             "1s",
             "--quiet",
         ],
-        &[("THOUGHTJACK_CONFIG", "tests/fixtures/smoke_test.yaml")],
+        &[("THOUGHTJACK_SCENARIO", "tests/fixtures/smoke_test.yaml")],
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -267,11 +264,11 @@ fn scenarios_run_ignores_thoughtjack_config_env() {
         .unwrap_or_else(|| panic!("process terminated by signal:\n{stderr}"));
     assert_ne!(
         code, 64,
-        "scenarios run should not treat THOUGHTJACK_CONFIG env as an explicit --config override.\nstderr:\n{stderr}"
+        "scenarios run should not treat THOUGHTJACK_SCENARIO env as an explicit positional override.\nstderr:\n{stderr}"
     );
     assert!(
-        !stderr.contains("--config is not supported with `scenarios run`"),
-        "unexpected --config rejection from environment variable.\nstderr:\n{stderr}"
+        !stderr.contains("extra positional is not supported with `scenarios run`"),
+        "unexpected positional rejection from environment variable.\nstderr:\n{stderr}"
     );
 }
 
@@ -282,11 +279,11 @@ fn run_help_mentions_thoughtjack_config_env() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("THOUGHTJACK_CONFIG"),
-        "run help should mention THOUGHTJACK_CONFIG.\nstdout:\n{stdout}"
+        stdout.contains("THOUGHTJACK_SCENARIO"),
+        "run help should mention THOUGHTJACK_SCENARIO.\nstdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("--config <PATH>"),
+        stdout.contains("<SCENARIO>"),
         "run help should show config as a named argument.\nstdout:\n{stdout}"
     );
 }
@@ -295,13 +292,15 @@ fn run_help_mentions_thoughtjack_config_env() {
 fn run_accepts_thoughtjack_config_env() {
     let file = write_terminal_yaml();
     let config_path = file.path().to_string_lossy().into_owned();
-    let output =
-        run_thoughtjack_with_env(&["run", "--quiet"], &[("THOUGHTJACK_CONFIG", &config_path)]);
+    let output = run_thoughtjack_with_env(
+        &["run", "--quiet"],
+        &[("THOUGHTJACK_SCENARIO", &config_path)],
+    );
 
     assert_exit_code(
         &output,
         0,
-        "run should accept THOUGHTJACK_CONFIG without an explicit --config flag",
+        "run should accept THOUGHTJACK_SCENARIO without an explicit positional arg",
     );
 }
 
@@ -309,7 +308,7 @@ fn run_accepts_thoughtjack_config_env() {
 fn quiet_verdict_exit_does_not_write_stderr() {
     let file = write_semantic_only_yaml();
     let config_path = file.path().to_string_lossy().into_owned();
-    let output = run_thoughtjack(&["run", "--config", &config_path, "--quiet", "--output", "-"]);
+    let output = run_thoughtjack(&["run", &config_path, "--quiet", "--output", "-"]);
 
     assert_exit_code(
         &output,
@@ -337,7 +336,6 @@ fn run_sigint_exits_130() {
     let mut child = Command::new(thoughtjack_bin())
         .args([
             "run",
-            "--config",
             &config_path,
             "--mcp-server",
             "127.0.0.1:0",
@@ -373,7 +371,6 @@ fn run_sigterm_exits_143() {
     let mut child = Command::new(thoughtjack_bin())
         .args([
             "run",
-            "--config",
             &config_path,
             "--mcp-server",
             "127.0.0.1:0",
@@ -432,14 +429,7 @@ attack:
 "#;
     let file = write_temp_yaml(yaml);
     let config_path = file.path().to_string_lossy().into_owned();
-    let output = run_thoughtjack(&[
-        "run",
-        "--config",
-        &config_path,
-        "--max-session",
-        "300ms",
-        "--quiet",
-    ]);
+    let output = run_thoughtjack(&["run", &config_path, "--max-session", "300ms", "--quiet"]);
 
     assert_exit_code(
         &output,
@@ -490,7 +480,6 @@ attack:
 
     let output = run_thoughtjack(&[
         "run",
-        "--config",
         &config_path,
         "--mcp-server",
         "127.0.0.1:0",
@@ -519,7 +508,6 @@ fn export_trace_writes_jsonl_file() {
 
     let output = run_thoughtjack(&[
         "run",
-        "--config",
         &config_path,
         "--mcp-server",
         "127.0.0.1:0",
@@ -566,7 +554,6 @@ fn export_trace_creates_parent_dirs() {
 
     let output = run_thoughtjack(&[
         "run",
-        "--config",
         &config_path,
         "--mcp-server",
         "127.0.0.1:0",

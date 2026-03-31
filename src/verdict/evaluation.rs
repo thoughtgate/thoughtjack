@@ -73,11 +73,12 @@ pub fn filter_trace_for_indicator<'a>(
         .map(|a| a.name.as_str())
         .collect();
 
-    // In context mode, the LLM's response is always delivered via the
-    // AG-UI actor regardless of which protocol triggered the interaction.
-    // Include the AG-UI actor so indicators for any protocol can search
-    // the LLM's response text.
-    if context_mode {
+    // In context mode, the LLM's response text is projected as shadow
+    // entries on MCP server actors. Include the AG-UI actor only for
+    // MCP-protocol indicators so they can also match the response text.
+    // A2A and AG-UI protocol indicators should NOT search AG-UI entries
+    // — that would break protocol isolation.
+    if context_mode && target_protocol == "mcp" {
         for a in actors {
             if extract_protocol(&a.mode) == "ag_ui" {
                 matching_actors.insert(&a.name);

@@ -43,8 +43,8 @@ This spec covers:
 
 This spec does **not** cover:
 
-- Real LLM integration (deferred to leaderboard spec)
-- Statistical model evaluation or benchmarking (deferred to leaderboard spec)
+- Real LLM integration (deferred to benchmark spec)
+- Statistical model evaluation or benchmarking (deferred to benchmark spec)
 - Mock-llm lifecycle management by ThoughtJack (deferred to TJ-SPEC-022: OATF Actor Model)
 - Phase-aware mock-llm reconfiguration (deferred to TJ-SPEC-022)
 - Mock-llm as a first-class OATF actor type (deferred to TJ-SPEC-022)
@@ -52,7 +52,7 @@ This spec does **not** cover:
 
 ### 1.3 Design Principles
 
-**Conformance, not attacks.** A mock LLM has no judgment, no ability to refuse, no resilience. A rug pull with a mock LLM "succeeds" every time -- you are not testing whether the attack works, you are testing whether the protocol plumbing delivers data correctly. Attack scenarios belong exclusively in the leaderboard where a real LLM makes real decisions and resilience is the thing being measured. Conformance testing verifies: does every byte ThoughtJack sends arrive correctly at the agent, and does every byte the agent sends back arrive correctly at ThoughtJack, across every protocol surface?
+**Conformance, not attacks.** A mock LLM has no judgment, no ability to refuse, no resilience. A rug pull with a mock LLM "succeeds" every time -- you are not testing whether the attack works, you are testing whether the protocol plumbing delivers data correctly. Attack scenarios belong exclusively in the benchmark where a real LLM makes real decisions and resilience is the thing being measured. Conformance testing verifies: does every byte ThoughtJack sends arrive correctly at the agent, and does every byte the agent sends back arrive correctly at ThoughtJack, across every protocol surface?
 
 **ThoughtJack is a protocol tool, not a process manager.** ThoughtJack binds servers on specified ports, connects clients to specified endpoints, runs OATF documents, and produces verdicts. It does not start agents, manage child processes, parse readiness markers, or allocate ports. Process orchestration is inherently messy (platform-specific signals, process groups, health polling, stdout parsing) and belongs in a scripting language where it is trivial, not in a compiled binary where it adds hundreds of lines of code unrelated to protocol simulation.
 
@@ -1436,7 +1436,7 @@ Orchestrator's `subprocess.run(timeout=...)` fires, kills agent process group, e
 ### 16.1 TJ-SPEC-022: OATF Actor Model
 Makes mock-llm a first-class OATF actor with lifecycle management, inline config, phase-aware rules, and actor substitution (mock → real LLM).
 
-### 16.2 Leaderboard Spec
+### 16.2 Benchmark Spec
 Live LLM integration, statistical execution (K runs), scoring, ranking, public display.
 
 ### 16.3 Additional Frameworks

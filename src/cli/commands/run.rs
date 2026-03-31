@@ -45,7 +45,7 @@ pub async fn run(
     color: ColorChoice,
     cancel: CancellationToken,
 ) -> Result<(), ThoughtJackError> {
-    let yaml = std::fs::read_to_string(&args.config)?;
+    let yaml = std::fs::read_to_string(&args.scenario)?;
     run_from_yaml(&yaml, &args.execution, quiet, color, cancel).await
 }
 
@@ -214,6 +214,7 @@ pub async fn run_from_yaml(
             Some(grace_applied),
             trace_snapshot.len(),
             duration_ms,
+            trace.was_truncated(),
         );
 
         // Set context-mode attribution if applicable

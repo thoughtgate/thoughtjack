@@ -82,13 +82,17 @@ impl PhaseDriver for ContextAgUiDriver {
             .await
             .map_err(|e| EngineError::Driver(format!("send RunAgentInput: {e}")))?;
 
-        // Receive events from drive loop via transport.receive_message()
+        // Receive events from drive loop via transport.receive_message().
+        // Returns `Complete` on `run_finished` so the PhaseLoop can drain
+        // remaining events, evaluate triggers, and potentially advance to
+        // the next phase (enabling multi-turn scenarios).
         loop {
             tokio::select! {
                 result = self.transport.receive_message() => {
                     match result {
                         Ok(Some(msg)) => {
                             let (method, content) = extract_event_from_message(&msg);
+                            let is_run_finished = method == "run_finished";
                             let _ = event_tx
                                 .send(ProtocolEvent {
                                     direction: Direction::Incoming,
@@ -96,6 +100,9 @@ impl PhaseDriver for ContextAgUiDriver {
                                     content,
                                 })
                                 .await;
+                            if is_run_finished {
+                                return Ok(DriveResult::Complete);
+                            }
                         }
                         Ok(None) => return Ok(DriveResult::TransportClosed),
                         Err(e) => {

@@ -686,10 +686,9 @@ async fn run_a2a_server_actor(
         gate_rx: _gate_rx,
         events,
     } = ctx;
-    let bind_addr = config
-        .a2a_server_bind
-        .as_deref()
-        .unwrap_or("127.0.0.1:9090");
+    let bind_addr = config.a2a_server_bind.as_deref().ok_or_else(|| {
+        EngineError::Driver("A2A server actor requires --a2a-server <ADDR:PORT>".to_string())
+    })?;
 
     let (bound_addr_tx, mut bound_addr_rx) = oneshot::channel();
 

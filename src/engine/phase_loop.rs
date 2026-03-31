@@ -537,6 +537,17 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 return Ok(self.build_result(TerminationReason::TransportClosed));
             }
 
+            // Context-mode client actors: exit after their terminal phase
+            // runs once. The drive_phase sent the final run_agent_input and
+            // received run_finished — no more work to do.
+            if action == DriveLoopAction::Stay
+                && self.phase_engine.is_terminal()
+                && self.context_mode
+                && !self.is_server_mode
+            {
+                return Ok(self.build_result(TerminationReason::TerminalPhaseReached));
+            }
+
             if action == DriveLoopAction::Advance {
                 #[allow(clippy::cast_possible_truncation)]
                 let phase_elapsed_ms =
@@ -570,14 +581,13 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                 }
                 self.driver.on_phase_advanced(phase_index, to).await?;
             }
-            // Context-mode server actors stay alive in their terminal phase
-            // so they can keep serving requests on follow-up LLM turns
-            // (e.g. rug pull: trust_building → exploit, then follow-up call).
-            // All other actors (traffic-mode servers, client-mode) exit
-            // immediately — traffic-mode servers are cancelled by the session
-            // timeout, clients have no more work.
-            let context_mode_server = self.context_mode && self.is_server_mode;
-            if self.phase_engine.is_terminal() && !context_mode_server {
+            // Context-mode actors stay alive in their terminal phase so they
+            // can keep participating in the drive loop. Server actors keep
+            // serving requests on follow-up LLM turns (e.g. rug pull).
+            // Client actors (ag_ui_client) must run their terminal phase's
+            // drive_phase to send the final run_agent_input for multi-turn
+            // scenarios. Traffic-mode actors exit immediately.
+            if self.phase_engine.is_terminal() && !self.context_mode {
                 return Ok(self.build_result(TerminationReason::TerminalPhaseReached));
             }
         }

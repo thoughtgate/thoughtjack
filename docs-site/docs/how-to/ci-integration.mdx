@@ -48,7 +48,7 @@ thoughtjack scenarios list --format json
 When running scenarios in CI, use JSON logs for machine parsing:
 
 ```bash
-thoughtjack run --config my_config.yaml --log-format json -vv
+thoughtjack run my_config.yaml --log-format json -vv
 ```
 
 Each log line is a JSON object:
@@ -62,8 +62,7 @@ Each log line is a JSON object:
 Write structured events to a JSONL file for post-run analysis:
 
 ```bash
-thoughtjack run \
-  --config my_config.yaml \
+thoughtjack run my_config.yaml \
   --events-file events.jsonl \
   --log-format json
 ```
@@ -80,31 +79,51 @@ jq 'select(.type == "VerdictComputed")' events.jsonl
 
 ## Exit codes
 
-ThoughtJack uses verdict-based exit codes that CI pipelines can check:
+ThoughtJack uses verdict-based exit codes that CI pipelines can check. Exit codes 1–3 indicate exploitation at increasing severity tiers:
 
 | Code | Name | CI Interpretation |
 |------|------|-------------------|
 | 0 | `not_exploited` | Pass |
-| 1 | `exploited` | Fail |
-| 2 | `error` | Unstable |
-| 3 | `partial` | Warning |
+| 1 | `exploited` | Fail (no tier, or Ingested) |
+| 2 | `exploited_local_action` | Fail (LocalAction tier) |
+| 3 | `exploited_boundary_breach` | Fail (BoundaryBreach tier) |
+| 4 | `partial` | Warning |
+| 5 | `error` | Unstable |
 | 10 | Runtime error | Infra failure |
 | 64 | Usage error | Invalid args |
 | 130 | Interrupted | SIGINT |
+| 143 | Terminated | SIGTERM |
 
 ```yaml
 - name: Run scenario
-  run: thoughtjack run --config test.yaml -o verdict.json
+  run: thoughtjack run test.yaml -o verdict.json
   continue-on-error: false
 ```
+
+## Context mode in CI
+
+[Context mode](/docs/explanation/execution-modes#context-mode) is self-contained — no agent infrastructure needed. Set API credentials via environment variables:
+
+```yaml title=".github/workflows/context-test.yml"
+- name: Run context-mode scenario
+  env:
+    THOUGHTJACK_CONTEXT_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    THOUGHTJACK_CONTEXT_MODEL: gpt-4o
+  run: |
+    thoughtjack scenarios run oatf-001 \
+      --context \
+      -o verdict.json \
+      --export-trace trace.jsonl
+```
+
+Use `--max-turns` to control LLM API cost per run. Use `--context-timeout` to set a per-request deadline that matches your CI timeout budget.
 
 ## Prometheus metrics
 
 For long-running test sessions, expose metrics:
 
 ```bash
-thoughtjack run \
-  --config my_config.yaml \
+thoughtjack run my_config.yaml \
   --mcp-server 127.0.0.1:8080 \
   --metrics-port 9090
 ```

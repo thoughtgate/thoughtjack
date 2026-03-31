@@ -39,8 +39,8 @@ pub struct ServerRequest {
 ///
 /// Implements: TJ-SPEC-022 F-001
 pub struct AgUiHandle {
-    rx: tokio::sync::Mutex<mpsc::Receiver<JsonRpcMessage>>,
-    response_tx: mpsc::Sender<JsonRpcMessage>,
+    rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<JsonRpcMessage>>,
+    response_tx: mpsc::UnboundedSender<JsonRpcMessage>,
     created_at: Instant,
 }
 
@@ -48,8 +48,8 @@ impl AgUiHandle {
     /// Creates a new AG-UI handle.
     #[must_use]
     pub fn new(
-        rx: mpsc::Receiver<JsonRpcMessage>,
-        response_tx: mpsc::Sender<JsonRpcMessage>,
+        rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
+        response_tx: mpsc::UnboundedSender<JsonRpcMessage>,
     ) -> Self {
         Self {
             rx: tokio::sync::Mutex::new(rx),
@@ -64,7 +64,6 @@ impl Transport for AgUiHandle {
     async fn send_message(&self, message: &JsonRpcMessage) -> crate::transport::Result<()> {
         self.response_tx
             .send(message.clone())
-            .await
             .map_err(|_| TransportError::ConnectionClosed("drive loop closed".into()))?;
         Ok(())
     }

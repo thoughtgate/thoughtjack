@@ -1,0 +1,152 @@
+---
+title: Testing with Context Mode
+sidebar_position: 5
+description: "Tutorial: test an LLM directly with ThoughtJack context mode — inject adversarial tool results into conversation history and observe model behavior."
+---
+
+# Testing with Context Mode
+
+In this tutorial you'll run a ThoughtJack scenario in **context mode** — calling an LLM API directly to test whether a model follows adversarial instructions injected through tool results.
+
+Unlike [traffic mode](/docs/explanation/execution-modes#traffic-mode-default) (which requires a running agent), context mode is self-contained: ThoughtJack builds a conversation, injects poisoned tool results, and observes the LLM's response.
+
+## What you'll need
+
+- ThoughtJack installed ([Getting Started](/docs/tutorials/getting-started#1-install-thoughtjack))
+- An API key for an LLM provider (OpenAI or Anthropic)
+- A model identifier (e.g., `gpt-4o`, `claude-sonnet-4-20250514`)
+
+## 1. Run your first context-mode scenario
+
+The `oatf-001` scenario tests tool description prompt injection — a malicious tool description that instructs the model to read sensitive files:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY
+```
+
+The `--context` flag switches from traffic mode to context mode. Instead of starting an MCP server, ThoughtJack:
+
+1. Reads the scenario's tool definitions and adversarial payloads
+2. Builds a conversation with those tools available to the LLM
+3. Calls the LLM API and observes what tool calls it makes
+4. Evaluates indicators against the conversation trace
+
+You'll see output showing the conversation turns and the verdict:
+
+```
+  Scenario: OATF-001 Tool Description Prompt Injection
+  Protocol: MCP (context)   Severity: CRITICAL
+  Phases:   serve
+
+    ✗ OATF-001-01
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Verdict: EXPLOITED (boundary_breach)
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+If the model follows the injected instructions, the verdict is `EXPLOITED` with a tier indicating the severity. If the model resists, you'll see `NOT_EXPLOITED`.
+
+## 2. Understand the verdict tiers
+
+Context mode introduces severity tiers on indicators:
+
+| Tier | Exit code | Meaning |
+|------|-----------|---------|
+| Ingested | 1 | Model acknowledged or used the injected content |
+| LocalAction | 2 | Model took a local action based on the injection |
+| BoundaryBreach | 3 | Model crossed a trust boundary (e.g., attempted exfiltration) |
+
+The exit code reflects the highest matched tier, making it easy to gate CI pipelines on severity.
+
+## 3. Export and inspect the trace
+
+To see the full conversation — every message, tool call, and tool result:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY \
+  --export-trace trace.jsonl
+```
+
+Each line in `trace.jsonl` is a JSON object with the protocol event:
+
+```bash
+# See every event with actor and method
+cat trace.jsonl | python3 -c "
+import json, sys
+for line in sys.stdin:
+    obj = json.loads(line)
+    print(f'[{obj[\"seq\"]}] {obj[\"direction\"]:8s} {obj[\"actor\"]}/{obj[\"method\"]}')
+"
+```
+
+The trace shows the full conversation flow: initial user message, LLM tool calls, server actor responses (with adversarial payloads), and the LLM's final response.
+
+## 4. Use environment variables
+
+To avoid passing flags every time, set environment variables:
+
+```bash
+export THOUGHTJACK_CONTEXT_API_KEY=$OPENAI_API_KEY
+export THOUGHTJACK_CONTEXT_MODEL=gpt-4o
+```
+
+Then run with just:
+
+```bash
+thoughtjack scenarios run oatf-001 --context
+```
+
+## 5. Try with Anthropic
+
+Switch to an Anthropic model by setting the provider:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-provider anthropic \
+  --context-model claude-sonnet-4-20250514 \
+  --context-api-key $ANTHROPIC_API_KEY
+```
+
+Run the same scenario against multiple models to compare their resilience to the same attack.
+
+## 6. Customize the system prompt
+
+By default, context mode sends the scenario with a minimal system prompt. To simulate a specific agent framework or persona:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY \
+  --context-system-prompt "You are a helpful coding assistant. Use available tools to help the user."
+```
+
+Different system prompts can significantly affect whether a model follows adversarial instructions — testing with various prompts helps identify which configurations are more resilient.
+
+## 7. Run a multi-actor scenario
+
+Some scenarios use multiple server actors (e.g., an MCP server and an A2A server) to test cross-protocol attacks. In context mode, all server actors provide tools to the same LLM conversation:
+
+```bash
+thoughtjack run multi-actor-scenario.yaml \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY
+```
+
+The LLM sees tools from all server actors in a single tool list. Server actors still run their own phase engines, so rug pulls and phased attacks work the same as in traffic mode.
+
+## Next steps
+
+- [Configure Context Mode Providers](/docs/how-to/context-mode-providers) — OpenAI, Anthropic, Azure, local models
+- [Execution Modes](/docs/explanation/execution-modes) — understand the architecture behind both modes
+- [CLI Reference](/docs/reference/cli) — all `--context*` flags
+- [Integrate with CI/CD](/docs/how-to/ci-integration) — run context-mode scenarios in pipelines

@@ -518,7 +518,8 @@ async fn handle_message_stream(
                     if let Some(task) = shared.task_store.write().await.get_task_mut(&task_id) {
                         task.status.clone_from(&final_status);
                         task.history.clone_from(history_msgs.as_ref());
-                        task.artifacts.clone_from(artifacts.as_ref());
+                        // Artifacts are already pushed individually during streaming
+                        // steps — no need to overwrite with clone_from here.
                     }
                     let final_status_msg = json!({
                         "jsonrpc": "2.0",

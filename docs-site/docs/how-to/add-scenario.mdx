@@ -12,7 +12,7 @@ This guide walks you through creating a new attack scenario as an OATF document 
 
 Create a new file in the `scenarios/library/` directory:
 
-```yaml title="scenarios/library/mcp/my-attack.yaml"
+```yaml title="scenarios/library/benchmark/my-attack.yaml"
 oatf: "0.1"
 
 attack:
@@ -129,13 +129,13 @@ classification:
 ## 4. Validate
 
 ```bash
-thoughtjack validate scenarios/library/mcp/my-attack.yaml
+thoughtjack validate scenarios/library/benchmark/my-attack.yaml
 ```
 
 ## 5. Test the scenario
 
 ```bash
-thoughtjack run --config scenarios/library/mcp/my-attack.yaml \
+thoughtjack run scenarios/library/benchmark/my-attack.yaml \
   --mcp-server 127.0.0.1:8080 \
   --max-session 30s \
   --no-semantic

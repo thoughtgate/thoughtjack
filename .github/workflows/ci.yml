@@ -71,7 +71,7 @@ jobs:
       - name: Start server
         run: |
           ./target/release/thoughtjack run \
-            --config tests/fixtures/conformance.yaml \
+            tests/fixtures/conformance.yaml \
             --mcp-server 127.0.0.1:3001 \
             --max-session 5m &
           echo "SERVER_PID=$!" >> "$GITHUB_ENV"

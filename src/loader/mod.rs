@@ -86,6 +86,11 @@ fn preprocess_yaml(yaml: &str) -> Result<PreprocessResult, LoaderError> {
                     .to_string();
 
                 if let Some(phases) = actor.get_mut("phases") {
+                    // Normalize null phases to empty sequence so the SDK
+                    // doesn't reject the document.
+                    if phases.is_null() {
+                        *phases = serde_yaml::Value::Sequence(Vec::new());
+                    }
                     extract_from_phases(phases, &actor_name, is_single_actor, &mut await_map)?;
                 }
             }

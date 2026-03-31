@@ -6,7 +6,7 @@
 
 ThoughtJack is a configurable adversarial testing tool for AI agent security. It simulates malicious servers and clients across multiple agent protocols (MCP, A2A, AG-UI), executing temporal attacks (rug pulls, sleeper agents), delivering malformed payloads, and testing agent resilience to protocol-level attacks.
 
-Attack scenarios are authored as OATF (Open Agentic Testing Framework) documents — a declarative YAML format parsed by the `oatf-rs` SDK. ThoughtJack is the execution engine that brings these documents to life across protocols.
+Attack scenarios are authored as OATF (Open Agent Threat Format) documents — a declarative YAML format parsed by the `oatf-rs` SDK. ThoughtJack is the execution engine that brings these documents to life across protocols.
 
 **Purpose**: Offensive security testing tool — the counterpart to ThoughtGate (defensive proxy).
 
@@ -169,10 +169,10 @@ cargo fmt
 cargo fmt -- --check
 
 # Run a scenario (v0.5)
-cargo run -- run --config <path.yaml>
+cargo run -- run <path.yaml>
 
 # Run a scenario with full trace output
-cargo run -- run --config <path.yaml> --export-trace trace.jsonl
+cargo run -- run <path.yaml> --export-trace trace.jsonl
 
 # Run a built-in scenario
 cargo run -- scenarios run oatf-001 --mcp-server 127.0.0.1:8080

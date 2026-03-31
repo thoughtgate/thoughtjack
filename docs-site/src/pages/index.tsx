@@ -15,12 +15,12 @@ function Hero(): React.ReactElement {
           Test how your AI agents handle adversarial attacks — before real attackers do.
         </p>
         <p className={styles.heroDescription}>
-          Open-source security testing tool that simulates malicious MCP, A2A, and AG-UI
-          servers. Run rug pulls, prompt injections, and protocol-level attacks against
-          your agents in a controlled environment.
+          Open-source security testing tool for AI agent security. Test protocol-level
+          attacks with real infrastructure or test LLMs directly with context mode.
+          Supports MCP, A2A, and AG-UI protocols.
         </p>
         <p className={styles.heroStat}>
-          <strong>10 attack scenarios</strong> across <strong>3 protocols</strong> — ready to run.
+          <strong>Two execution modes</strong> — test agent protocols or LLM reasoning directly.
         </p>
         <div className={styles.heroButtons}>
           <Link className="button button--primary button--lg" to="/docs/tutorials/getting-started">
@@ -149,7 +149,7 @@ const quickLinks: QuickLinkProps[] = [
 export default function Home(): React.ReactElement {
   const {siteConfig} = useDocusaurusContext();
   return (
-    <Layout description="Open-source adversarial testing tool for AI agent security. Simulate malicious MCP, A2A, and AG-UI servers to test agent resilience to protocol-level attacks.">
+    <Layout description="Open-source adversarial testing tool for AI agent security. Test protocol-level attacks with real infrastructure or test LLMs directly with context mode. Supports MCP, A2A, and AG-UI.">
       <Hero />
       <TerminalDemo />
       <main>

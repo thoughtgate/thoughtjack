@@ -176,6 +176,9 @@ pub struct ExecutionSummary {
     /// LLM model used in context-mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_model: Option<String>,
+    /// True if the trace buffer was truncated (exceeded `MAX_TRACE_ENTRIES`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trace_truncated: bool,
 }
 
 // ============================================================================
@@ -239,6 +242,7 @@ pub fn build_verdict_output(
     grace_period_applied: Option<std::time::Duration>,
     trace_messages: usize,
     duration_ms: u64,
+    trace_truncated: bool,
 ) -> VerdictOutput {
     let attack_metadata = AttackMetadata {
         id: attack.id.clone(),
@@ -304,6 +308,7 @@ pub fn build_verdict_output(
         transport: None,
         context_provider: None,
         context_model: None,
+        trace_truncated,
     };
 
     VerdictOutput {
@@ -562,6 +567,51 @@ pub const fn verdict_exit_code(result: &AttackResult, max_tier: Option<&Tier>) -
 mod tests {
     use super::*;
 
+    fn make_test_attack(id: &str) -> oatf::Attack {
+        oatf::Attack {
+            id: Some(id.to_string()),
+            name: None,
+            version: None,
+            status: None,
+            created: None,
+            modified: None,
+            author: None,
+            description: None,
+            grace_period: None,
+            severity: None,
+            impact: None,
+            classification: None,
+            references: None,
+            execution: oatf::Execution {
+                mode: None,
+                state: None,
+                phases: None,
+                actors: None,
+                extensions: indexmap::IndexMap::new(),
+            },
+            indicators: Some(vec![]),
+            correlation: None,
+            extensions: indexmap::IndexMap::new(),
+        }
+    }
+
+    fn make_test_verdict(id: &str) -> oatf::AttackVerdict {
+        oatf::AttackVerdict {
+            attack_id: Some(id.to_string()),
+            result: oatf::enums::AttackResult::NotExploited,
+            max_tier: None,
+            indicator_verdicts: vec![],
+            evaluation_summary: oatf::EvaluationSummary {
+                matched: 0,
+                not_matched: 0,
+                error: 0,
+                skipped: 0,
+            },
+            timestamp: None,
+            source: None,
+        }
+    }
+
     fn make_verdict_output(result: &str) -> VerdictOutput {
         VerdictOutput {
             attack: AttackMetadata {
@@ -613,6 +663,7 @@ mod tests {
                 transport: None,
                 context_provider: None,
                 context_model: None,
+                trace_truncated: false,
             },
         }
     }
@@ -823,6 +874,7 @@ mod tests {
                 transport: None,
                 context_provider: None,
                 context_model: None,
+                trace_truncated: false,
             },
         };
 
@@ -887,6 +939,7 @@ mod tests {
                 transport: None,
                 context_provider: None,
                 context_model: None,
+                trace_truncated: false,
             },
         };
         print_human_summary(&output);
@@ -953,6 +1006,7 @@ mod tests {
             Some(std::time::Duration::from_secs(30)),
             10,
             1500,
+            false,
         );
 
         assert_eq!(output.attack.id.as_deref(), Some("ATK-001"));
@@ -1011,7 +1065,7 @@ mod tests {
             source: None,
         };
 
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 100);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 100, false);
         let corr = output.verdict.correlation.as_ref().unwrap();
         assert_eq!(corr.logic, "all");
     }
@@ -1057,7 +1111,7 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 3, 500);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 3, 500, false);
         assert_eq!(
             output.verdict.max_tier.as_deref(),
             Some("boundary_breach"),
@@ -1113,7 +1167,7 @@ mod tests {
             source: None,
         };
 
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false);
         let corr = output.verdict.correlation.as_ref().unwrap();
         assert_eq!(corr.logic, "any");
     }
@@ -1312,8 +1366,40 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false);
         assert!(output.execution_summary.grace_period_applied.is_none());
+    }
+
+    #[test]
+    fn build_verdict_output_trace_truncated_serializes() {
+        let output = build_verdict_output(
+            &make_test_attack("ATK-TRUNC"),
+            &make_test_verdict("ATK-TRUNC"),
+            vec![],
+            None,
+            0,
+            0,
+            true,
+        );
+        assert!(output.execution_summary.trace_truncated);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["execution_summary"]["trace_truncated"], true);
+    }
+
+    #[test]
+    fn build_verdict_output_trace_not_truncated_omitted() {
+        let output = build_verdict_output(
+            &make_test_attack("ATK-OK"),
+            &make_test_verdict("ATK-OK"),
+            vec![],
+            None,
+            0,
+            0,
+            false,
+        );
+        assert!(!output.execution_summary.trace_truncated);
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(json["execution_summary"].get("trace_truncated").is_none());
     }
 
     #[test]
@@ -1363,7 +1449,7 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 200);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 200, false);
         assert_eq!(output.verdict.indicator_verdicts.len(), 1);
         assert_eq!(output.verdict.indicator_verdicts[0].result, "matched");
         assert_eq!(

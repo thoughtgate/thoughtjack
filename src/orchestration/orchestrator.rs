@@ -99,6 +99,55 @@ struct ActorTaskResult {
 /// `unpack_join_result` to recover the identity via `JoinError::id()`.
 type TaskMetaMap = HashMap<TaskId, (String, bool)>;
 
+/// Log actor configuration at startup for visibility.
+fn log_actor_configuration(actors: &[oatf::Actor], config: &ActorConfig, context_mode: bool) {
+    let mode_label = if context_mode { "context" } else { "traffic" };
+    for actor in actors {
+        let transport: String = if context_mode
+            && matches!(
+                actor.mode.as_str(),
+                "mcp_server" | "a2a_server" | "ag_ui_client"
+            ) {
+            "context-mode proxy".into()
+        } else {
+            match actor.mode.as_str() {
+                "mcp_server" => config
+                    .mcp_server_bind
+                    .as_deref()
+                    .map_or_else(|| "stdio".into(), |a| format!("http://{a}/mcp")),
+                "a2a_server" => config
+                    .a2a_server_bind
+                    .as_deref()
+                    .map_or_else(|| "(not configured)".into(), |a| format!("http://{a}")),
+                "ag_ui_client" => config
+                    .agui_client_endpoint
+                    .as_deref()
+                    .unwrap_or("(not configured)")
+                    .into(),
+                "a2a_client" => config
+                    .a2a_client_endpoint
+                    .as_deref()
+                    .unwrap_or("(not configured)")
+                    .into(),
+                "mcp_client" => config
+                    .mcp_client_endpoint
+                    .as_deref()
+                    .or(config.mcp_client_command.as_deref())
+                    .unwrap_or("(not configured)")
+                    .into(),
+                _ => "unknown".into(),
+            }
+        };
+        tracing::info!(
+            actor = %actor.name,
+            mode = %actor.mode,
+            transport = %transport,
+            execution = %mode_label,
+            "actor configured"
+        );
+    }
+}
+
 // ============================================================================
 // orchestrate()
 // ============================================================================
@@ -124,7 +173,7 @@ type TaskMetaMap = HashMap<TaskId, (String, bool)>;
 /// collected in `OrchestratorResult::outcomes`.
 ///
 /// Implements: TJ-SPEC-015 F-004
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn orchestrate(
     loaded: &LoadedDocument,
     config: &ActorConfig,
@@ -152,6 +201,58 @@ pub async fn orchestrate(
         server_count,
         client_count,
     });
+
+    // 1b. Validate actor configuration and warn on missing transport binds
+    let has_remote_clients = actors.iter().any(|a| {
+        matches!(
+            a.mode.as_str(),
+            "ag_ui_client" | "a2a_client" | "mcp_client"
+        )
+    });
+    for actor in actors {
+        match actor.mode.as_str() {
+            "mcp_server" if config.mcp_server_bind.is_none() && has_remote_clients => {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "MCP server actor will use stdio — unreachable by remote clients. \
+                     Pass --mcp-server <ADDR:PORT> for HTTP."
+                );
+            }
+            "a2a_server" if config.a2a_server_bind.is_none() => {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "A2A server actor has no --a2a-server bind address. \
+                     Pass --a2a-server <ADDR:PORT> to enable."
+                );
+            }
+            "ag_ui_client" if config.agui_client_endpoint.is_none() => {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "AG-UI client actor has no --agui-client-endpoint. \
+                     The actor cannot connect to an agent."
+                );
+            }
+            "a2a_client" if config.a2a_client_endpoint.is_none() => {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "A2A client actor has no --a2a-client-endpoint. \
+                     The actor cannot connect to a remote agent."
+                );
+            }
+            "mcp_client"
+                if config.mcp_client_command.is_none() && config.mcp_client_endpoint.is_none() =>
+            {
+                tracing::warn!(
+                    actor = %actor.name,
+                    "MCP client actor has no --mcp-client-command or --mcp-client-endpoint. \
+                     The actor cannot connect to a server."
+                );
+            }
+            _ => {}
+        }
+    }
+
+    log_actor_configuration(actors, config, false);
 
     // 2. Create shared state
     let trace = SharedTrace::new();
@@ -630,6 +731,7 @@ pub async fn orchestrate_context(
     use tokio::task::JoinSet;
 
     let actors = document_actors(&loaded.document);
+    log_actor_configuration(actors, config, true);
 
     // 1. Validate actors
     let mut agui_index = None;
@@ -678,9 +780,11 @@ pub async fn orchestrate_context(
     let extractor_store = ExtractorStore::new();
     let thread_id = uuid::Uuid::new_v4().to_string();
 
-    // 3. AG-UI channels
-    let (agui_tx, agui_rx) = tokio::sync::mpsc::channel(16);
-    let (agui_response_tx, agui_response_rx) = tokio::sync::mpsc::channel(16);
+    // 3. AG-UI channels — unbounded to prevent deadlock between drive
+    // loop and AG-UI actor (bounded channels risk circular wait when both
+    // sides block on send simultaneously).
+    let (agui_tx, agui_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (agui_response_tx, agui_response_rx) = tokio::sync::mpsc::unbounded_channel();
 
     // 4. Shared result/request channels
     let (tool_result_tx, tool_result_rx) = tokio::sync::mpsc::channel(16);
@@ -766,11 +870,16 @@ pub async fn orchestrate_context(
     // 7. Construct ContextTransport
     // Build A2A system context roster (R2) — populated in Phase C
     let a2a_system_context = build_a2a_system_context(actors, &server_indices, &loaded.document);
+    // Build MCP resource context — injects resource content from MCP server
+    // actors into the LLM context, matching how real agent frameworks
+    // present available resources.
+    let resource_context = build_resource_context(actors, &server_indices, &loaded.document);
 
     let context_transport = ContextTransport::new(
         provider,
         config.context_system_prompt.clone(),
         a2a_system_context,
+        resource_context,
         max_turns,
         agui_tx,
         agui_response_rx,
@@ -786,6 +895,7 @@ pub async fn orchestrate_context(
 
     // 9. Spawn actors
     let mut join_set: JoinSet<ActorTaskResult> = JoinSet::new();
+    let mut task_meta: TaskMetaMap = HashMap::new();
 
     // 9a. AG-UI actor — spawn PhaseLoop directly
     {
@@ -827,8 +937,8 @@ pub async fn orchestrate_context(
             context_mode: true,
         };
 
-        let actor_name_owned = agui_actor_name;
-        join_set.spawn(async move {
+        let actor_name_owned = agui_actor_name.clone();
+        let abort_handle = join_set.spawn(async move {
             let mut phase_loop = PhaseLoop::new(driver, engine, loop_config);
             let result = phase_loop.run().await;
             ActorTaskResult {
@@ -837,6 +947,7 @@ pub async fn orchestrate_context(
                 result,
             }
         });
+        task_meta.insert(abort_handle.id(), (agui_actor_name, false));
     }
 
     // 9b. Server actors — use ServerHandle as transport
@@ -860,7 +971,7 @@ pub async fn orchestrate_context(
             .collect();
 
         let mode = actor.mode.clone();
-        join_set.spawn(async move {
+        let abort_handle = join_set.spawn(async move {
             let server_cfg = ContextServerActorConfig {
                 actor_index: idx,
                 document: doc,
@@ -882,6 +993,7 @@ pub async fn orchestrate_context(
                 result,
             }
         });
+        task_meta.insert(abort_handle.id(), (actor_name.clone(), true));
     }
 
     // 10. Spawn drive loop
@@ -924,7 +1036,9 @@ pub async fn orchestrate_context(
                         }
                     }
                     Err(join_err) => {
-                        let actor_name = "(unknown)".to_string();
+                        let actor_name = task_meta
+                            .get(&join_err.id())
+                            .map_or_else(|| "(unknown)".to_string(), |(name, _)| name.clone());
                         if join_err.is_panic() {
                             outcomes.push(ActorOutcome::Panic { actor_name });
                         } else {
@@ -1087,6 +1201,67 @@ fn build_a2a_system_context(
 
     text.push_str("\nTo interact with an A2A agent, call its tool with a message parameter.\n");
     Some(text)
+}
+
+/// Builds MCP resource content for system prompt injection.
+///
+/// Extracts resource URIs and text content from all `mcp_server` actors
+/// and formats them as a structured text section. Returns `None` if no
+/// resources are defined. This replicates how real agent frameworks
+/// include available resource content in the LLM context.
+fn build_resource_context(
+    actors: &[oatf::Actor],
+    server_indices: &[usize],
+    document: &oatf::Document,
+) -> Option<String> {
+    use std::fmt::Write;
+
+    use crate::engine::PhaseEngine;
+    use serde_json::Value;
+
+    let mut text = String::new();
+    let mut found_any = false;
+
+    for &idx in server_indices {
+        let actor = &actors[idx];
+        if actor.mode != "mcp_server" {
+            continue;
+        }
+        let engine_tmp = PhaseEngine::new(document.clone(), idx);
+        let state = engine_tmp.effective_state();
+
+        let Some(resources) = state.get("resources").and_then(Value::as_array) else {
+            continue;
+        };
+
+        for resource in resources {
+            let uri = resource.get("uri").and_then(Value::as_str).unwrap_or("");
+            let name = resource.get("name").and_then(Value::as_str).unwrap_or(uri);
+
+            // Extract text content from the resource.
+            // Supports both `content` as a string and `content` as an object
+            // with a `text` field (matching MCP resource content format).
+            let content_text = resource.get("content").and_then(|c| {
+                c.as_str()
+                    .map(String::from)
+                    .or_else(|| c.get("text").and_then(Value::as_str).map(String::from))
+            });
+
+            if let Some(content) = content_text {
+                if !found_any {
+                    text.push_str("## Available Resources\n\n");
+                    found_any = true;
+                }
+                let _ = writeln!(text, "### {name}");
+                if !uri.is_empty() {
+                    let _ = writeln!(text, "URI: {uri}");
+                }
+                let _ = writeln!(text, "\n{content}");
+            }
+        }
+    }
+
+    if found_any { Some(text) } else { None }
 }
 
 /// Configuration for running a server actor in context-mode.
@@ -1919,5 +2094,57 @@ attack:
             increment_bind_port("not-a-socket-addr", 1),
             "not-a-socket-addr"
         );
+    }
+
+    // ── build_resource_context ──────────────────────────────────────
+
+    #[test]
+    fn build_resource_context_extracts_string_content() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: mcp_srv
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              resources:
+                - name: "Travel Policy"
+                  uri: "resource://docs/travel"
+                  content: "Expense limit is $500 per day."
+              tools: []
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let actors = crate::loader::document_actors(&doc);
+        let result = build_resource_context(actors, &[0], &doc);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("Travel Policy"));
+        assert!(text.contains("resource://docs/travel"));
+        assert!(text.contains("Expense limit is $500 per day."));
+    }
+
+    #[test]
+    fn build_resource_context_returns_none_without_resources() {
+        let yaml = r#"
+oatf: "0.1"
+attack:
+  name: test
+  execution:
+    actors:
+      - name: mcp_srv
+        mode: mcp_server
+        phases:
+          - name: serve
+            state:
+              tools: []
+"#;
+        let doc = oatf::load(yaml).unwrap().document;
+        let actors = crate::loader::document_actors(&doc);
+        let result = build_resource_context(actors, &[0], &doc);
+        assert!(result.is_none());
     }
 }

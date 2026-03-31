@@ -66,13 +66,17 @@ attack:
 
 ### Supported modes
 
-| Mode | Description | CLI flag |
-|------|-------------|----------|
-| `mcp_server` | MCP server (ThoughtJack serves) | `--mcp-server <ADDR:PORT>` |
-| `mcp_client` | MCP client (ThoughtJack connects) | `--mcp-client-command` or `--mcp-client-endpoint` |
-| `a2a_server` | A2A server | `--a2a-server <ADDR:PORT>` |
-| `a2a_client` | A2A client | `--a2a-client-endpoint <URL>` |
-| `ag_ui_client` | AG-UI client | `--agui-client-endpoint <URL>` |
+| Mode | Description | CLI flag | Context mode |
+|------|-------------|----------|--------------|
+| `mcp_server` | MCP server (ThoughtJack serves) | `--mcp-server <ADDR:PORT>` | Allowed |
+| `mcp_client` | MCP client (ThoughtJack connects) | `--mcp-client-command` or `--mcp-client-endpoint` | Not supported |
+| `a2a_server` | A2A server | `--a2a-server <ADDR:PORT>` | Allowed |
+| `a2a_client` | A2A client | `--a2a-client-endpoint <URL>` | Not supported |
+| `ag_ui_client` | AG-UI client | `--agui-client-endpoint <URL>` | Required (exactly one) |
+
+:::note Context mode restrictions
+In [context mode](/docs/explanation/execution-modes#context-mode) (`--context`), the scenario must include exactly one `ag_ui_client` actor. Additional `mcp_server` and `a2a_server` actors are allowed — they provide tool definitions and adversarial responses to the LLM. Client-mode actors (`mcp_client`, `a2a_client`) are not supported because there is no external service to connect to.
+:::
 
 ## Phases
 
@@ -246,8 +250,12 @@ indicators:
 | Method | Field | Description |
 |--------|-------|-------------|
 | `pattern` | `pattern.regex` | Regex match against trace content |
-| `semantic` | `semantic.intent` | LLM-as-judge evaluation |
+| `semantic` | `semantic.intent` | LLM-as-judge evaluation (planned — not yet implemented) |
 | `cel` | `cel.expression` | CEL expression evaluation |
+
+:::note Planned features
+**Semantic evaluation** (`semantic` field) and **synthesize generation** (`synthesize` block) are defined in the OATF format but not yet implemented in ThoughtJack. Scenarios using `semantic` indicators will have those indicators skipped during evaluation. Use `pattern` or `cel` indicators for current evaluations.
+:::
 
 ## Correlation
 

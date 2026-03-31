@@ -1,0 +1,154 @@
+---
+title: Troubleshooting
+sidebar_position: 11
+description: "Common ThoughtJack issues and solutions: NOT_EXPLOITED verdicts, context mode errors, timeout handling, and debugging tips."
+---
+
+# Troubleshooting
+
+Common issues and how to resolve them.
+
+## Scenario always returns NOT_EXPLOITED
+
+**No agent connected (traffic mode)**
+
+If you run a traffic-mode scenario but no agent connects, the trace will be empty and the verdict defaults to `NOT_EXPLOITED`:
+
+```bash
+# This starts a server, but nothing connects
+thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080 --max-session 5s
+```
+
+**Fix**: Connect your MCP client to `http://127.0.0.1:8080/mcp` before the session timeout expires. Or use `--max-session` to extend the wait time.
+
+**Indicators don't match the trace**
+
+The scenario's indicators may not match what the agent actually sends. Export the trace and inspect the tool call arguments:
+
+```bash
+thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080 --export-trace trace.jsonl
+
+# See what the agent actually sent
+jq -c 'select(.method == "tools/call" and .direction == "Incoming") | .content.arguments' trace.jsonl
+```
+
+Compare the output with the indicator's `pattern.regex` in the scenario YAML (`thoughtjack scenarios show oatf-002`).
+
+**Agent resisted the attack**
+
+A `NOT_EXPLOITED` verdict is a valid outcome — it means the agent didn't follow the adversarial instructions. This is the expected result for a well-defended agent.
+
+## Exit code 5 (Error) in context mode
+
+**Empty trace**
+
+If context mode produces exit code 5 with an empty or near-empty trace, the LLM API call likely failed:
+
+- Check that `--context-api-key` is valid
+- Check that `--context-model` is a valid model identifier for your provider
+- Check that `--context-base-url` is correct (if using a custom endpoint)
+- Add `-vv` for debug logging to see the API request/response
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY \
+  -vv
+```
+
+**Wrong provider**
+
+If you're using an Anthropic key but didn't set `--context-provider anthropic`, the request goes to OpenAI's endpoint and fails:
+
+```bash
+# Wrong — sends Anthropic key to OpenAI
+thoughtjack scenarios run oatf-001 --context --context-model claude-sonnet-4-20250514 --context-api-key $ANTHROPIC_API_KEY
+
+# Correct
+thoughtjack scenarios run oatf-001 --context --context-provider anthropic --context-model claude-sonnet-4-20250514 --context-api-key $ANTHROPIC_API_KEY
+```
+
+## API timeout in context mode
+
+The default per-request timeout is 120 seconds. For slow models or high-latency endpoints, increase it:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY \
+  --context-timeout 300
+```
+
+For CI pipelines, also consider `--max-turns` to limit the number of LLM roundtrips:
+
+```bash
+--max-turns 10  # Default is 20
+```
+
+## Exit code 10 (Runtime error)
+
+Exit code 10 indicates an infrastructure failure, not a verdict. Common causes:
+
+- **Config parse error**: The OATF YAML is malformed. Run `thoughtjack validate <file.yaml>` first.
+- **Transport failure**: The HTTP server couldn't bind (port in use) or the client couldn't connect (wrong endpoint).
+- **Missing required flags**: Context mode requires `--context-model`. Transport flags must match the scenario's actor modes.
+
+Add `-v` for info-level logging to see what failed.
+
+## Phase never advances
+
+Phases advance when their trigger condition is met. If a phase seems stuck:
+
+1. Check the trigger definition: `thoughtjack scenarios show <name>` and look at the phase's `trigger` field
+2. The trigger may require a specific event (e.g., `tools/call`) that the agent hasn't sent
+3. Time-based triggers (`after: 30s`) need the wall clock to elapse
+4. Combined triggers (`event` + `after`) advance on whichever fires first
+
+Use `--progress on` to see real-time phase status and trigger counters.
+
+## Context mode: "actor mode not supported"
+
+Context mode only supports these actor configurations:
+- **Required**: Exactly one `ag_ui_client` actor
+- **Allowed**: `mcp_server` and `a2a_server` actors
+- **Not supported**: `mcp_client` and `a2a_client` actors
+
+If your scenario uses client-mode actors, run it in [traffic mode](/docs/explanation/execution-modes#traffic-mode-default) instead.
+
+## Scenario validation fails
+
+Run the validator with `--normalize` to see how ThoughtJack preprocesses the document:
+
+```bash
+thoughtjack validate my_scenario.yaml --normalize
+```
+
+Common issues:
+- Missing `oatf: "0.1"` header
+- `execution.mode` not set and no `actors` array
+- `trigger` on the last phase (the terminal phase should have no trigger)
+- Invalid YAML syntax (tabs instead of spaces, missing colons)
+
+## Verbose logging
+
+Add `-v` flags for increasing detail:
+
+```bash
+-v      # Info: phase transitions, actor lifecycle
+-vv     # Debug: trigger evaluation, extractor capture, message routing
+-vvv    # Trace: full protocol messages, channel operations
+```
+
+Combine with `--log-format json` for machine-parseable output:
+
+```bash
+thoughtjack run test.yaml -vvv --log-format json 2>debug.jsonl
+```
+
+## See also
+
+- [CLI Reference](/docs/reference/cli#exit-codes) — all exit codes and their meaning
+- [Analyze Protocol Traces](/docs/how-to/analyze-traces) — inspect what happened during a run
+- [Execution Modes](/docs/explanation/execution-modes) — understand traffic vs context mode

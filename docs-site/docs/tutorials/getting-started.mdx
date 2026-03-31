@@ -8,7 +8,9 @@ description: Install ThoughtJack, run your first adversarial MCP security test s
 
 In this tutorial you'll install ThoughtJack, run a built-in attack scenario, and learn to read the output. By the end you'll understand the core workflow for testing MCP clients.
 
-ThoughtJack executes attack scenarios authored as [OATF](https://oatf.io) (Open Agent Threat Format) documents — a declarative YAML format for describing adversarial agent test cases.
+This tutorial uses **traffic mode** (the default), where ThoughtJack runs real protocol infrastructure. To test LLMs directly without agent infrastructure, see [Testing with Context Mode](./context-mode).
+
+ThoughtJack executes attack scenarios authored as [OATF](https://oatf.dev) (Open Agent Threat Format) documents — a declarative YAML format for describing adversarial agent test cases.
 
 ## 1. Install ThoughtJack
 
@@ -76,7 +78,7 @@ thoughtjack scenarios list
 ```
 
 ```
-Built-in Scenarios (10 available)
+Built-in Scenarios (91 available)
 
   Temporal
     oatf-002                Tool Definition Rug Pull
@@ -150,12 +152,9 @@ When testing your MCP client against this scenario, watch for:
 
 ThoughtJack shows real-time progress by default when running in a terminal. The progress display shows phase transitions, trigger counters, entry actions, and indicator results.
 
-Use `--progress compact` for a less detailed view, or `--progress off` to disable progress and show only the human summary after completion:
+Use `--progress off` to disable progress and show only the human summary after completion:
 
 ```bash
-# Compact — no trigger counters or phase timing
-thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080 --progress compact
-
 # Off — human summary only
 thoughtjack scenarios run oatf-002 --mcp-server 127.0.0.1:8080 --progress off
 ```
@@ -183,7 +182,7 @@ thoughtjack scenarios show oatf-002 > my-scenario.yaml
 Run from the file:
 
 ```bash
-thoughtjack run --config my-scenario.yaml --mcp-server 127.0.0.1:8080
+thoughtjack run my-scenario.yaml --mcp-server 127.0.0.1:8080
 ```
 
 Always validate configs before running:
@@ -201,7 +200,7 @@ The examples above run ThoughtJack as a **server** to test MCP clients. ThoughtJ
 If the target MCP server is already listening on HTTP:
 
 ```bash
-thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:3000/mcp
+thoughtjack run scenario.yaml --mcp-client-endpoint http://localhost:3000/mcp
 ```
 
 ### Spawn the server as a subprocess
@@ -209,15 +208,31 @@ thoughtjack run --config scenario.yaml --mcp-client-endpoint http://localhost:30
 ThoughtJack can launch the server process and connect over stdio:
 
 ```bash
-thoughtjack run --config scenario.yaml \
+thoughtjack run scenario.yaml \
   --mcp-client-command "npx" \
   --mcp-client-args "-y @modelcontextprotocol/server-everything"
 ```
 
 In client mode, ThoughtJack sends requests defined in the OATF scenario (tool calls, resource reads, etc.) and evaluates the server's responses against the configured indicators.
 
+## 8. Try context mode
+
+The examples above use **traffic mode** — real protocol connections between ThoughtJack and your agent. ThoughtJack also supports **context mode**, which calls an LLM API directly and injects adversarial payloads into the conversation history.
+
+This is useful when you want to test whether a model follows injected instructions without setting up a full agent pipeline:
+
+```bash
+thoughtjack scenarios run oatf-001 \
+  --context \
+  --context-model gpt-4o \
+  --context-api-key $OPENAI_API_KEY
+```
+
+See [Testing with Context Mode](./context-mode) for a full walkthrough, or [Execution Modes](/docs/explanation/execution-modes) to understand how the two modes differ.
+
 ## Next steps
 
+- [Testing with Context Mode](./context-mode) — test LLMs directly without agent infrastructure
 - [Writing a Custom Scenario](./custom-scenario) — create your own OATF scenario
 - [Building Phased Attacks](./phased-attacks) — multi-phase state machines with advanced triggers
 - [CLI Reference](/docs/reference/cli) — all commands and flags

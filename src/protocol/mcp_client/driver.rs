@@ -398,6 +398,7 @@ impl McpClientDriver {
     /// Returns `EngineError::Driver` on request/response failure.
     ///
     /// Implements: TJ-SPEC-018 F-006
+    #[allow(clippy::cognitive_complexity)]
     async fn execute_action(
         &mut self,
         action: &Value,
@@ -412,9 +413,16 @@ impl McpClientDriver {
             }
             "call_tool" => {
                 let raw_name = action["name"].as_str().unwrap_or_default();
-                let (name, _) = interpolate_template(raw_name, extractors, None, None);
+                let (name, name_diags) = interpolate_template(raw_name, extractors, None, None);
+                if !name_diags.is_empty() {
+                    tracing::warn!(raw_name, diagnostics = ?name_diags, "interpolation warnings in call_tool name");
+                }
                 let arguments = action.get("arguments").cloned().unwrap_or(json!({}));
-                let (interpolated_args, _) = interpolate_value(&arguments, extractors, None, None);
+                let (interpolated_args, args_diags) =
+                    interpolate_value(&arguments, extractors, None, None);
+                if !args_diags.is_empty() {
+                    tracing::warn!(diagnostics = ?args_diags, "interpolation warnings in call_tool arguments");
+                }
                 let params = json!({"name": name, "arguments": interpolated_args});
                 self.send_and_await("tools/call", Some(params), event_tx)
                     .await?;
@@ -425,7 +433,10 @@ impl McpClientDriver {
             }
             "read_resource" => {
                 let raw_uri = action["uri"].as_str().unwrap_or_default();
-                let (uri, _) = interpolate_template(raw_uri, extractors, None, None);
+                let (uri, uri_diags) = interpolate_template(raw_uri, extractors, None, None);
+                if !uri_diags.is_empty() {
+                    tracing::warn!(diagnostics = ?uri_diags, "interpolation warnings in uri");
+                }
                 let params = json!({"uri": uri});
                 self.send_and_await("resources/read", Some(params), event_tx)
                     .await?;
@@ -435,16 +446,26 @@ impl McpClientDriver {
             }
             "get_prompt" => {
                 let raw_name = action["name"].as_str().unwrap_or_default();
-                let (name, _) = interpolate_template(raw_name, extractors, None, None);
+                let (name, name_diags) = interpolate_template(raw_name, extractors, None, None);
+                if !name_diags.is_empty() {
+                    tracing::warn!(diagnostics = ?name_diags, "interpolation warnings in name");
+                }
                 let arguments = action.get("arguments").cloned().unwrap_or(json!({}));
-                let (interpolated_args, _) = interpolate_value(&arguments, extractors, None, None);
+                let (interpolated_args, interpolated_args_diags) =
+                    interpolate_value(&arguments, extractors, None, None);
+                if !interpolated_args_diags.is_empty() {
+                    tracing::warn!(diagnostics = ?interpolated_args_diags, "interpolation warnings in interpolated_args");
+                }
                 let params = json!({"name": name, "arguments": interpolated_args});
                 self.send_and_await("prompts/get", Some(params), event_tx)
                     .await?;
             }
             "subscribe_resource" => {
                 let raw_uri = action["uri"].as_str().unwrap_or_default();
-                let (uri, _) = interpolate_template(raw_uri, extractors, None, None);
+                let (uri, uri_diags) = interpolate_template(raw_uri, extractors, None, None);
+                if !uri_diags.is_empty() {
+                    tracing::warn!(diagnostics = ?uri_diags, "interpolation warnings in uri");
+                }
                 let params = json!({"uri": uri});
                 self.send_and_await("resources/subscribe", Some(params), event_tx)
                     .await?;
