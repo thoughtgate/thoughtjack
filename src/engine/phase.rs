@@ -101,7 +101,9 @@ impl PhaseEngine {
         // Use document_actors() instead of self.actors_slice() to allow
         // disjoint borrow of self.trigger_state alongside self.document.
         let actors = document_actors(&self.document);
-        let phase = &actors[self.actor_index].phases[self.current_phase];
+        let Some(phase) = actors[self.actor_index].phases.get(self.current_phase) else {
+            return PhaseAction::Stay; // Past last phase
+        };
 
         let Some(trigger) = &phase.trigger else {
             return PhaseAction::Stay; // Terminal phase — no trigger
@@ -111,7 +113,7 @@ impl PhaseEngine {
         // large synthetic elapsed duration.  Context-mode conversations
         // complete in seconds, but temporal triggers target minutes.
         let elapsed = if self.context_mode {
-            std::time::Duration::from_secs(3600)
+            std::time::Duration::MAX
         } else {
             self.phase_start_time.elapsed()
         };
@@ -127,24 +129,32 @@ impl PhaseEngine {
     ///
     /// Delegates to the SDK's `compute_effective_state()` which applies
     /// state inheritance by walking phases 0 through the current index.
+    /// When past the last phase, returns the terminal phase's state.
     ///
     /// Implements: TJ-SPEC-013 F-001
     #[must_use]
     pub fn effective_state(&self) -> serde_json::Value {
-        compute_effective_state(&self.actor().phases, self.current_phase)
+        let phases = &self.actor().phases;
+        let clamped = self.current_phase.min(phases.len().saturating_sub(1));
+        compute_effective_state(phases, clamped)
     }
 
     /// Advances to the next phase, resetting per-phase state.
     ///
-    /// Resets trigger count tracking and the phase elapsed timer.
-    /// Returns the new phase index.
+    /// Returns `Some(new_index)` on success, or `None` if already at or
+    /// past the last phase. Resets trigger count tracking and the phase
+    /// elapsed timer on success.
     ///
     /// Implements: TJ-SPEC-013 F-001
-    pub fn advance_phase(&mut self) -> usize {
+    pub fn advance_phase(&mut self) -> Option<usize> {
+        let max = self.actor().phases.len();
+        if self.current_phase >= max {
+            return None;
+        }
         self.current_phase += 1;
         self.trigger_state = TriggerState::default();
         self.phase_start_time = Instant::now();
-        self.current_phase
+        Some(self.current_phase)
     }
 
     /// Returns `true` when the current phase has no trigger (terminal phase).
@@ -159,14 +169,13 @@ impl PhaseEngine {
         phases[self.current_phase].trigger.is_none()
     }
 
-    /// Returns a reference to the phase at the given index.
+    /// Returns a reference to the phase at the given index, or `None`
+    /// if the index is out of bounds.
     ///
-    /// # Panics
-    ///
-    /// Panics if `index` is out of bounds.
+    /// Implements: TJ-SPEC-013 F-001
     #[must_use]
-    pub fn get_phase(&self, index: usize) -> &Phase {
-        &self.actor().phases[index]
+    pub fn get_phase(&self, index: usize) -> Option<&Phase> {
+        self.actor().phases.get(index)
     }
 
     /// Returns the current phase index.
@@ -286,7 +295,7 @@ attack:
         let mut engine = PhaseEngine::new(doc, 0);
         assert!(!engine.is_terminal());
 
-        engine.advance_phase();
+        engine.advance_phase().unwrap();
         assert!(engine.is_terminal());
     }
 
@@ -305,7 +314,7 @@ attack:
         // Manually set trigger state to simulate counts
         engine.trigger_state.event_count = 5;
 
-        let new_index = engine.advance_phase();
+        let new_index = engine.advance_phase().unwrap();
         assert_eq!(new_index, 1);
         assert_eq!(engine.current_phase(), 1);
         assert_eq!(engine.trigger_state.event_count, 0);
@@ -529,7 +538,7 @@ attack:
 
         let mut engine = PhaseEngine::new(doc, 0);
         // Advance to phase_two (terminal)
-        let new_idx = engine.advance_phase();
+        let new_idx = engine.advance_phase().unwrap();
         assert_eq!(new_idx, 1);
         assert!(engine.is_terminal());
 
@@ -540,11 +549,13 @@ attack:
         };
         assert_eq!(engine.process_event(&event), PhaseAction::Stay);
 
-        // Advancing beyond last phase should be treated as terminal completion
-        // and must not panic in is_terminal().
+        // Advancing beyond last phase reaches out-of-bounds index
         let beyond = engine.advance_phase();
-        assert_eq!(beyond, 2);
+        assert_eq!(beyond, Some(2));
         assert!(engine.is_terminal());
+
+        // Further advance from out-of-bounds returns None
+        assert!(engine.advance_phase().is_none());
     }
 
     #[test]
@@ -670,7 +681,7 @@ attack:
         assert_eq!(engine.process_event(&call_event), PhaseAction::Advance);
 
         // Advance to phase 1 (swap_definition)
-        engine.advance_phase();
+        engine.advance_phase().unwrap();
         assert_eq!(engine.current_phase_name(), "swap_definition");
 
         // Phase 1: synthetic tools/list fires immediately via temporal bypass
@@ -681,7 +692,7 @@ attack:
         assert_eq!(engine.process_event(&list_event), PhaseAction::Advance);
 
         // Advance to phase 2 (terminal)
-        engine.advance_phase();
+        engine.advance_phase().unwrap();
         assert_eq!(engine.current_phase_name(), "exploit");
         assert!(engine.is_terminal());
     }
@@ -734,13 +745,13 @@ attack:
         assert_eq!(tools0[0]["name"], "tool_0");
 
         // Advance to phase 1
-        engine.advance_phase();
+        engine.advance_phase().unwrap();
         let state1 = engine.effective_state();
         let tools1 = state1.get("tools").unwrap();
         assert_eq!(tools1[0]["name"], "tool_1");
 
         // Advance to phase 2
-        engine.advance_phase();
+        engine.advance_phase().unwrap();
         let state2 = engine.effective_state();
         let tools2 = state2.get("tools").unwrap();
         assert_eq!(tools2[0]["name"], "tool_2");

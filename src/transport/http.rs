@@ -507,7 +507,10 @@ impl Transport for HttpTransport {
             },
         );
 
-        // Update connection context using the timestamp captured in the handler
+        // Update connection context using the timestamp captured in the handler.
+        // std::sync::Mutex is used here (not tokio::sync::Mutex) because the
+        // critical section is synchronous and brief. Poison propagation is
+        // intentional — a panic during context update indicates corrupted state.
         {
             let mut ctx = self
                 .current_context
@@ -538,7 +541,7 @@ impl Transport for HttpTransport {
                     TransportError::InternalError("previous_guards mutex poisoned".into())
                 })?;
                 prev.push(guard);
-                while prev.len() > 2 {
+                while prev.len() > 8 {
                     prev.remove(0);
                 }
                 drop(prev);

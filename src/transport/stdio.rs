@@ -8,6 +8,7 @@ use super::{
     ConnectionContext, DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_STDIO_BUFFER_SIZE, JsonRpcMessage, Result,
     Transport, TransportType,
 };
+use crate::error::TransportError;
 use std::str::FromStr;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::Mutex;
@@ -30,7 +31,7 @@ impl StdioConfig {
     /// Loads configuration from environment variables with defaults.
     ///
     /// | Variable | Default |
-    /// |----------|---------|
+    /// |----------|--------|
     /// | `THOUGHTJACK_MAX_MESSAGE_SIZE` | 10 MB |
     /// | `THOUGHTJACK_STDIO_BUFFER_SIZE` | 64 KB |
     ///
@@ -127,6 +128,88 @@ impl StdioTransport {
     pub const fn context(&self) -> &ConnectionContext {
         &self.context
     }
+
+    #[allow(clippy::significant_drop_tightening)] // reader must be held across the loop
+    async fn receive_message_inner(&self) -> Result<Option<JsonRpcMessage>> {
+        let mut reader = self.reader.lock().await;
+        let read_limit = self.config.max_message_size + 1;
+        let mut buf: Vec<u8> = Vec::with_capacity(read_limit.min(64 * 1024));
+
+        loop {
+            buf.clear();
+            let mut overflowed = false;
+
+            loop {
+                let available = reader.fill_buf().await?;
+                if available.is_empty() {
+                    if buf.is_empty() {
+                        return Ok(None);
+                    }
+                    break;
+                }
+
+                if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+                    if !overflowed {
+                        let remaining_cap = read_limit.saturating_sub(buf.len());
+                        let copy_len = pos.min(remaining_cap);
+                        buf.extend_from_slice(&available[..copy_len]);
+                        if pos > remaining_cap {
+                            overflowed = true;
+                        }
+                    }
+                    reader.consume(pos + 1);
+                    break;
+                }
+
+                if !overflowed {
+                    let remaining_cap = read_limit.saturating_sub(buf.len());
+                    if remaining_cap == 0 {
+                        overflowed = true;
+                    } else {
+                        let copy_len = available.len().min(remaining_cap);
+                        buf.extend_from_slice(&available[..copy_len]);
+                        if available.len() > remaining_cap {
+                            overflowed = true;
+                        }
+                    }
+                }
+                let consumed = available.len();
+                reader.consume(consumed);
+            }
+
+            if overflowed {
+                tracing::warn!(
+                    limit = self.config.max_message_size,
+                    "message exceeds size limit (read capped), skipping"
+                );
+                continue;
+            }
+
+            let line = match std::str::from_utf8(&buf) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("invalid UTF-8 in message, skipping line: {e}");
+                    continue;
+                }
+            };
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<JsonRpcMessage>(trimmed) {
+                Ok(message) => return Ok(Some(message)),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        line = %sanitize_for_log(trimmed, 200),
+                        "invalid JSON-RPC message, skipping"
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl Default for StdioTransport {
@@ -164,97 +247,19 @@ impl Transport for StdioTransport {
         Ok(())
     }
 
-    #[allow(clippy::significant_drop_tightening)] // reader must be held across the loop
     async fn receive_message(&self) -> Result<Option<JsonRpcMessage>> {
-        let mut reader = self.reader.lock().await;
-        // Bounded line reading: prevents OOM from a single line without '\n'.
-        // We read from the BufReader's internal buffer in a loop, copying up to
-        // max_message_size + 1 bytes. If the line exceeds the limit before we
-        // find '\n', we drain the remainder and skip.
-        let read_limit = self.config.max_message_size + 1;
-        let mut buf: Vec<u8> = Vec::with_capacity(read_limit.min(64 * 1024));
-
-        loop {
-            buf.clear();
-            let mut overflowed = false;
-
-            // Bounded line read using fill_buf + consume
-            loop {
-                let available = reader.fill_buf().await?;
-                if available.is_empty() {
-                    // EOF
-                    if buf.is_empty() {
-                        return Ok(None);
-                    }
-                    // Last line without trailing '\n' (EC-TRANS-008)
-                    break;
-                }
-
-                // Find newline in available buffer
-                if let Some(pos) = available.iter().position(|&b| b == b'\n') {
-                    if !overflowed {
-                        let remaining_cap = read_limit.saturating_sub(buf.len());
-                        let copy_len = pos.min(remaining_cap);
-                        buf.extend_from_slice(&available[..copy_len]);
-                        if pos > remaining_cap {
-                            overflowed = true;
-                        }
-                    }
-                    reader.consume(pos + 1); // consume through the newline
-                    break;
-                }
-
-                // No newline in this chunk — append if within limit
-                if !overflowed {
-                    let remaining_cap = read_limit.saturating_sub(buf.len());
-                    if remaining_cap == 0 {
-                        overflowed = true;
-                    } else {
-                        let copy_len = available.len().min(remaining_cap);
-                        buf.extend_from_slice(&available[..copy_len]);
-                        if available.len() > remaining_cap {
-                            overflowed = true;
-                        }
-                    }
-                }
-                let consumed = available.len();
-                reader.consume(consumed);
-            }
-
-            if overflowed {
+        const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+        tokio::time::timeout(READ_TIMEOUT, self.receive_message_inner())
+            .await
+            .unwrap_or_else(|_| {
                 tracing::warn!(
-                    limit = self.config.max_message_size,
-                    "message exceeds size limit (read capped), skipping"
+                    timeout_secs = READ_TIMEOUT.as_secs(),
+                    "stdio read timed out"
                 );
-                continue;
-            }
-
-            let line = match std::str::from_utf8(&buf) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("invalid UTF-8 in message, skipping line: {e}");
-                    continue;
-                }
-            };
-            let trimmed = line.trim();
-
-            // EC-TRANS-009: Skip empty lines
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            // Parse JSON-RPC message (EC-TRANS-016: invalid NDJSON logged and skipped)
-            match serde_json::from_str::<JsonRpcMessage>(trimmed) {
-                Ok(message) => return Ok(Some(message)),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        line = %sanitize_for_log(trimmed, 200),
-                        "invalid JSON-RPC message, skipping"
-                    );
-                }
-            }
-        }
+                Err(TransportError::ConnectionClosed(
+                    "stdio read timeout".into(),
+                ))
+            })
     }
 
     fn transport_type(&self) -> TransportType {

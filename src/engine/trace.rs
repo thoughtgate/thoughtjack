@@ -66,6 +66,7 @@ pub struct SharedTrace {
     seq_counter: Arc<AtomicU64>,
     /// Whether the capacity warning has been logged (log once).
     capacity_warned: Arc<AtomicBool>,
+    dropped_count: Arc<AtomicU64>,
 }
 
 impl SharedTrace {
@@ -76,6 +77,7 @@ impl SharedTrace {
             entries: Arc::new(Mutex::new(Vec::new())),
             seq_counter: Arc::new(AtomicU64::new(0)),
             capacity_warned: Arc::new(AtomicBool::new(false)),
+            dropped_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -99,11 +101,15 @@ impl SharedTrace {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if entries.len() >= MAX_TRACE_ENTRIES {
+            let dropped = self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
             if !self.capacity_warned.swap(true, Ordering::Relaxed) {
                 tracing::warn!(
                     max = MAX_TRACE_ENTRIES,
                     "trace buffer full — dropping new entries"
                 );
+            }
+            if dropped.is_multiple_of(1000) {
+                tracing::warn!(dropped, "trace entries dropped so far");
             }
             return;
         }
@@ -154,6 +160,12 @@ impl SharedTrace {
     #[must_use]
     pub fn was_truncated(&self) -> bool {
         self.capacity_warned.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of trace entries dropped due to capacity limits.
+    #[must_use]
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped_count.load(Ordering::Relaxed)
     }
 }
 

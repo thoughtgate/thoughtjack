@@ -51,8 +51,15 @@ impl ExtractorStore {
     /// `send_modify` closure so that subscribers always see the new
     /// value when they wake.
     pub fn set(&self, actor: &str, name: &str, value: String) {
-        let store = Arc::clone(&self.store);
         let key = (actor.to_string(), name.to_string());
+        if self
+            .store
+            .get(&key)
+            .is_some_and(|existing| *existing.value() == value)
+        {
+            return;
+        }
+        let store = Arc::clone(&self.store);
         self.version_tx.send_modify(move |v| {
             store.insert(key, value);
             *v += 1;
