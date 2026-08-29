@@ -86,6 +86,9 @@ pub(super) async fn server_request_handler(
                             content: result_value.clone(),
                         }).is_err() {
                             tracing::error!("handler event backlog exceeded on response; cancelling MCP client session");
+                            let _ = writer.lock().await
+                                .send_error_response(&req.id, error_codes::INTERNAL_ERROR, "handler backlog exceeded")
+                                .await;
                             cancel.cancel();
                             break;
                         }
@@ -93,11 +96,13 @@ pub(super) async fn server_request_handler(
                     }
                     Err(e) => {
                         tracing::warn!(method = %req.method, error = %e, "handler error, sending error response");
-                        let _ = handler_event_tx.try_send(ProtocolEvent {
+                        if handler_event_tx.try_send(ProtocolEvent {
                             direction: Direction::Outgoing,
                             method: req.method.clone(),
                             content: json!({"error": e.to_string()}),
-                        });
+                        }).is_err() {
+                            tracing::warn!("failed to emit error event, channel full");
+                        }
                         let _ = writer.lock().await
                             .send_error_response(&req.id, error_codes::INTERNAL_ERROR, &e.to_string())
                             .await;
