@@ -520,6 +520,13 @@ async fn wait_for_completion(
                 if should_grace && !grace_started {
                     grace_started = true;
                     tracing::info!("starting grace period");
+                    // Extend max_session deadline to accommodate the full grace period
+                    let grace = config.grace_period.unwrap_or(Duration::ZERO);
+                    if !grace.is_zero() {
+                        max_session_sleep
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + grace + Duration::from_secs(1));
+                    }
                     spawn_grace_task(config, cancel, events);
                 }
             }
@@ -787,8 +794,8 @@ pub async fn orchestrate_context(
     let (agui_response_tx, agui_response_rx) = tokio::sync::mpsc::unbounded_channel();
 
     // 4. Shared result/request channels
-    let (tool_result_tx, tool_result_rx) = tokio::sync::mpsc::channel(16);
-    let (server_request_tx, server_request_rx) = tokio::sync::mpsc::channel(16);
+    let (tool_result_tx, tool_result_rx) = tokio::sync::mpsc::channel(256);
+    let (server_request_tx, server_request_rx) = tokio::sync::mpsc::channel(256);
 
     // 5. Per-server-actor setup (OATF document order)
     let mut server_actor_entries: HashMap<String, ServerActorEntry> = HashMap::new();
@@ -808,7 +815,7 @@ pub async fn orchestrate_context(
         let actor = &actors[idx];
         let actor_name = actor.name.clone();
 
-        let (server_tx, server_rx) = tokio::sync::mpsc::channel(16);
+        let (server_tx, server_rx) = tokio::sync::mpsc::channel(256);
 
         // Extract initial tool definitions from phase 0 (mode-aware for A2A)
         let engine_tmp = PhaseEngine::new(loaded.document.clone(), idx);
