@@ -204,7 +204,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     let args_str = function
                         .get("arguments")
                         .and_then(Value::as_str)
-                        .unwrap_or("{}");
+                        .unwrap_or_else(|| {
+                            tracing::debug!(tool = %name, "tool call missing 'arguments' field, defaulting to {{}}");
+                            "{}"
+                        });
                     let arguments: Value = serde_json::from_str(args_str).unwrap_or_else(|e| {
                         let truncated: String = args_str.chars().take(200).collect();
                         tracing::warn!(
