@@ -956,20 +956,24 @@ impl PhaseDriver for AgUiDriver {
         // Emit outgoing request event
         let input_value = serde_json::to_value(&input)
             .map_err(|e| EngineError::Driver(format!("failed to serialize RunAgentInput: {e}")))?;
-        let _ = event_tx
+        if event_tx
             .send(ProtocolEvent {
                 direction: Direction::Outgoing,
                 method: "run_agent_input".to_string(),
                 content: input_value,
             })
-            .await;
+            .await
+            .is_err()
+        {
+            tracing::warn!("failed to send outgoing run_agent_input event, channel closed");
+        }
 
         // Send request, get SSE stream (or HTTP error per §9.1)
         let mut stream = match self.transport.send_run(&input).await? {
             SendResult::Stream(s) => s,
             SendResult::HttpError { status, body } => {
                 tracing::warn!(status, %body, "AG-UI agent returned HTTP error");
-                let _ = event_tx
+                if event_tx
                     .send(ProtocolEvent {
                         direction: Direction::Incoming,
                         method: "run_error".to_string(),
@@ -979,7 +983,11 @@ impl PhaseDriver for AgUiDriver {
                             "code": format!("HTTP_{status}"),
                         }),
                     })
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("failed to send run_error event, channel closed");
+                }
                 return Ok(DriveResult::Complete);
             }
         };
@@ -998,19 +1006,23 @@ impl PhaseDriver for AgUiDriver {
                             self.accumulator.process_event(&event);
 
                             // Emit incoming event
-                            let _ = event_tx.send(ProtocolEvent {
+                            if event_tx.send(ProtocolEvent {
                                 direction: Direction::Incoming,
                                 method: event.event_type,
                                 content: event.data,
-                            }).await;
+                            }).await.is_err() {
+                                tracing::warn!("failed to send AG-UI event, channel closed");
+                            }
                         }
                         Ok(Ok(None)) => {
                             // Stream closed — emit accumulated response and complete
-                            let _ = event_tx.send(ProtocolEvent {
+                            if event_tx.send(ProtocolEvent {
                                 direction: Direction::Incoming,
                                 method: "_accumulated_response".to_string(),
                                 content: self.accumulator.accumulated_response(),
-                            }).await;
+                            }).await.is_err() {
+                                tracing::warn!("failed to send _accumulated_response event, channel closed");
+                            }
                             return Ok(DriveResult::Complete);
                         }
                         Ok(Err(SseStreamError::Parse(e))) => {
@@ -1028,11 +1040,13 @@ impl PhaseDriver for AgUiDriver {
                                     "closing AG-UI connection after {} consecutive parse errors",
                                     MAX_CONSECUTIVE_ERRORS
                                 );
-                                let _ = event_tx.send(ProtocolEvent {
+                                if event_tx.send(ProtocolEvent {
                                     direction: Direction::Incoming,
                                     method: "_accumulated_response".to_string(),
                                     content: self.accumulator.accumulated_response(),
-                                }).await;
+                                }).await.is_err() {
+                                    tracing::warn!("failed to send _accumulated_response after parse errors, channel closed");
+                                }
                                 return Ok(DriveResult::Complete);
                             }
                         }
@@ -1042,11 +1056,13 @@ impl PhaseDriver for AgUiDriver {
                         Err(_) => {
                             // Timeout
                             tracing::warn!(?run_timeout, "AG-UI run timed out");
-                            let _ = event_tx.send(ProtocolEvent {
+                            if event_tx.send(ProtocolEvent {
                                 direction: Direction::Incoming,
                                 method: "_accumulated_response".to_string(),
                                 content: self.accumulator.accumulated_response(),
-                            }).await;
+                            }).await.is_err() {
+                                tracing::warn!("failed to send _accumulated_response after timeout, channel closed");
+                            }
                             return Ok(DriveResult::Complete);
                         }
                     }
