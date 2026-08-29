@@ -111,6 +111,8 @@ impl ContextTransport {
         clippy::cognitive_complexity
     )]
     async fn drive_loop(&mut self, cancel: CancellationToken) -> Result<(), EngineError> {
+        const MAX_HISTORY_ENTRIES: usize = 500;
+
         // Wait for initial RunAgentInput from AG-UI actor (30s timeout).
         let initial = tokio::select! {
             result = tokio::time::timeout(
@@ -185,6 +187,22 @@ impl ContextTransport {
                     break;
                 }
 
+                if self.history.len() > MAX_HISTORY_ENTRIES {
+                    tracing::warn!(
+                        count = self.history.len(),
+                        max = MAX_HISTORY_ENTRIES,
+                        "conversation history exceeds limit, truncating oldest non-system entries"
+                    );
+                    let keep_prefix = self
+                        .history
+                        .iter()
+                        .take_while(|m| matches!(m, ChatMessage::System(_)))
+                        .count();
+                    let keep_suffix = MAX_HISTORY_ENTRIES - keep_prefix;
+                    let drain_end = self.history.len() - keep_suffix;
+                    self.history.drain(keep_prefix..drain_end);
+                }
+
                 // Drain any queued notifications from server actors (e.g.
                 // notifications/tools/list_changed sent by on_enter actions). These
                 // are processed by PhaseLoop via synthetic events; the drive loop
@@ -198,17 +216,13 @@ impl ContextTransport {
 
                 let (all_tools, tool_router) = build_tool_roster(&self.server_tool_watches);
 
-                // Build fingerprints that include both name and a hash of the full
-                // description so rug-pull description swaps are detected — not
-                // just tool additions/removals.
+                // Build fingerprints from tool name + full description so
+                // rug-pull description swaps are detected — not just tool
+                // additions/removals. Uses the full description string to
+                // avoid hash collision risks.
                 let current_fingerprints: HashSet<String> = all_tools
                     .iter()
-                    .map(|t| {
-                        use std::hash::{Hash, Hasher};
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                        t.description.hash(&mut hasher);
-                        format!("{}|{:x}", t.name, hasher.finish())
-                    })
+                    .map(|t| format!("{}|{}", t.name, t.description))
                     .collect();
 
                 // Detect tool roster changes from phase advancement and notify
@@ -298,7 +312,7 @@ impl ContextTransport {
                     LlmResponse::ToolUse(calls) => {
                         consecutive_truncations = 0;
                         if calls.is_empty() {
-                            tracing::debug!("LLM returned empty tool_use — ending conversation");
+                            tracing::info!("LLM returned empty tool_use — ending conversation");
                             break;
                         }
                         self.history.push(ChatMessage::assistant_tool_use(&calls));
