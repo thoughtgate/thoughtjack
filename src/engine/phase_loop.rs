@@ -203,7 +203,9 @@ fn run_extractors(
     is_server_mode: bool,
 ) {
     let current_phase = phase_engine.current_phase;
-    let phase = phase_engine.get_phase(current_phase);
+    let Some(phase) = phase_engine.get_phase(current_phase) else {
+        return;
+    };
 
     // Clone extractors to release the borrow on phase_engine
     let Some(extractors) = phase.extractors.clone() else {
@@ -382,28 +384,28 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             // re-fetch the tool list. Inject a synthetic tools/list event so
             // the phase trigger can evaluate against it (enables rug pull /
             // temporal attack scenarios like OATF-002).
-            if self.context_mode {
-                let phase = self.phase_engine.get_phase(phase_index);
-                if let Some(on_enter) = &phase.on_enter {
-                    let sends_list_changed = on_enter.iter().any(|a| {
-                        matches!(
-                            a,
-                            oatf::Action::Send { method, .. }
-                                if method == "notifications/tools/list_changed"
-                        )
+            if self.context_mode
+                && let Some(phase) = self.phase_engine.get_phase(phase_index)
+                && let Some(on_enter) = &phase.on_enter
+            {
+                let sends_list_changed = on_enter.iter().any(|a| {
+                    matches!(
+                        a,
+                        oatf::Action::Send { method, .. }
+                            if method == "notifications/tools/list_changed"
+                    )
+                });
+                if sends_list_changed {
+                    let _ = event_tx.try_send(ProtocolEvent {
+                        direction: Direction::Incoming,
+                        method: "tools/list".to_string(),
+                        content: effective_state.get("tools").cloned().unwrap_or(json!([])),
                     });
-                    if sends_list_changed {
-                        let _ = event_tx.try_send(ProtocolEvent {
-                            direction: Direction::Incoming,
-                            method: "tools/list".to_string(),
-                            content: effective_state.get("tools").cloned().unwrap_or(json!([])),
-                        });
-                        tracing::debug!(
-                            actor = %self.actor_name,
-                            phase = phase_index,
-                            "injected synthetic tools/list event for tools/list_changed on_enter"
-                        );
-                    }
+                    tracing::debug!(
+                        actor = %self.actor_name,
+                        phase = phase_index,
+                        "injected synthetic tools/list event for tools/list_changed on_enter"
+                    );
                 }
             }
 
@@ -558,7 +560,9 @@ impl<D: PhaseDriver> PhaseLoop<D> {
                     duration_ms: phase_elapsed_ms,
                     message_count: phase_message_count,
                 });
-                let to = self.phase_engine.advance_phase();
+                let Some(to) = self.phase_engine.advance_phase() else {
+                    return Ok(self.build_result(TerminationReason::TerminalPhaseReached));
+                };
                 // Publish updated tool definitions on the watch channel (context-mode).
                 if let Some(ref tx) = self.tool_watch_tx {
                     let effective = self.phase_engine.effective_state();
@@ -647,8 +651,9 @@ impl<D: PhaseDriver> PhaseLoop<D> {
             build_interpolation_extractors(&self.phase_engine, &self.extractor_store);
         let _ = self.extractors_tx.send(interpolation_extractors.clone());
 
-        let phase = self.phase_engine.get_phase(phase_index);
-        if let Some(on_enter) = &phase.on_enter {
+        if let Some(phase) = self.phase_engine.get_phase(phase_index)
+            && let Some(on_enter) = &phase.on_enter
+        {
             // Emit entry action events for progress display
             for action in on_enter {
                 let action_type = match action {

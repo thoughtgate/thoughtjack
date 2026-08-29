@@ -14,6 +14,11 @@ use serde::Serialize;
 use crate::engine::types::TerminationReason;
 use crate::error::ExitCode;
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires &T
+const fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
 // ============================================================================
 // Verdict Output Structure
 // ============================================================================
@@ -179,6 +184,9 @@ pub struct ExecutionSummary {
     /// True if the trace buffer was truncated (exceeded `MAX_TRACE_ENTRIES`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub trace_truncated: bool,
+    /// Number of trace entries dropped due to capacity limits.
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub trace_dropped_count: u64,
 }
 
 // ============================================================================
@@ -235,6 +243,7 @@ pub fn termination_to_status(reason: &TerminationReason) -> String {
 ///
 /// Implements: TJ-SPEC-014 F-007
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn build_verdict_output(
     attack: &oatf::Attack,
     verdict: &oatf::AttackVerdict,
@@ -243,6 +252,7 @@ pub fn build_verdict_output(
     trace_messages: usize,
     duration_ms: u64,
     trace_truncated: bool,
+    trace_dropped_count: u64,
 ) -> VerdictOutput {
     let attack_metadata = AttackMetadata {
         id: attack.id.clone(),
@@ -309,6 +319,7 @@ pub fn build_verdict_output(
         context_provider: None,
         context_model: None,
         trace_truncated,
+        trace_dropped_count,
     };
 
     VerdictOutput {
@@ -664,6 +675,7 @@ mod tests {
                 context_provider: None,
                 context_model: None,
                 trace_truncated: false,
+                trace_dropped_count: 0,
             },
         }
     }
@@ -875,6 +887,7 @@ mod tests {
                 context_provider: None,
                 context_model: None,
                 trace_truncated: false,
+                trace_dropped_count: 0,
             },
         };
 
@@ -940,6 +953,7 @@ mod tests {
                 context_provider: None,
                 context_model: None,
                 trace_truncated: false,
+                trace_dropped_count: 0,
             },
         };
         print_human_summary(&output);
@@ -1007,6 +1021,7 @@ mod tests {
             10,
             1500,
             false,
+            0,
         );
 
         assert_eq!(output.attack.id.as_deref(), Some("ATK-001"));
@@ -1065,7 +1080,7 @@ mod tests {
             source: None,
         };
 
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 100, false);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 100, false, 0);
         let corr = output.verdict.correlation.as_ref().unwrap();
         assert_eq!(corr.logic, "all");
     }
@@ -1111,7 +1126,7 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 3, 500, false);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 3, 500, false, 0);
         assert_eq!(
             output.verdict.max_tier.as_deref(),
             Some("boundary_breach"),
@@ -1167,7 +1182,7 @@ mod tests {
             source: None,
         };
 
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false, 0);
         let corr = output.verdict.correlation.as_ref().unwrap();
         assert_eq!(corr.logic, "any");
     }
@@ -1366,7 +1381,7 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 0, 0, false, 0);
         assert!(output.execution_summary.grace_period_applied.is_none());
     }
 
@@ -1380,6 +1395,7 @@ mod tests {
             0,
             0,
             true,
+            0,
         );
         assert!(output.execution_summary.trace_truncated);
         let json = serde_json::to_value(&output).unwrap();
@@ -1396,6 +1412,7 @@ mod tests {
             0,
             0,
             false,
+            0,
         );
         assert!(!output.execution_summary.trace_truncated);
         let json = serde_json::to_value(&output).unwrap();
@@ -1449,7 +1466,7 @@ mod tests {
             timestamp: None,
             source: None,
         };
-        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 200, false);
+        let output = build_verdict_output(&attack, &verdict, vec![], None, 5, 200, false, 0);
         assert_eq!(output.verdict.indicator_verdicts.len(), 1);
         assert_eq!(output.verdict.indicator_verdicts[0].result, "matched");
         assert_eq!(
