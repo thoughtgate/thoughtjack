@@ -215,6 +215,7 @@ pub async fn run_from_yaml(
             trace_snapshot.len(),
             duration_ms,
             trace.was_truncated(),
+            trace.dropped_count(),
         );
 
         // Set context-mode attribution if applicable
